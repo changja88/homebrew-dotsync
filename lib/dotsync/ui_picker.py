@@ -16,6 +16,13 @@ from __future__ import annotations
 import select
 import sys
 
+from . import ui
+
+
+_GLYPH_CURSOR = "▸"
+_CHECK_ON = "[x]"
+_CHECK_OFF = "[ ]"
+
 
 class PickerState:
     """Pure logic for the picker. Inputs are abstract event strings.
@@ -88,3 +95,25 @@ def _read_key() -> str | None:
     if ch in ("q", "Q"):
         return "cancel"
     return None
+
+
+def _render(state: PickerState, title: str, *, first: bool) -> None:
+    """Print or redraw the picker. `first=True` for the initial pass;
+    subsequent passes move the cursor up and clear the previous frame."""
+    out = sys.stdout
+    n = len(state.items)
+    if not first:
+        out.write(f"\x1b[{n + 2}A")   # move cursor up (n items + title + spacer)
+        out.write("\x1b[J")           # clear from cursor to end of screen
+    title_part = ui._wrap(ui.BOLD, title)
+    hint = ui._wrap(ui.DIM_ANSI, "↑/↓ move · space toggle · enter submit")
+    out.write(f"  {title_part}   {hint}\n")
+    out.write("\n")
+    for i, name in enumerate(state.items):
+        cursor_marker = ui._wrap(ui.PRIMARY, _GLYPH_CURSOR) if i == state.cursor else " "
+        if name in state.selected:
+            check = ui._wrap(ui.GREEN, _CHECK_ON)
+        else:
+            check = _CHECK_OFF
+        out.write(f"  {cursor_marker} {check} {name}\n")
+    out.flush()

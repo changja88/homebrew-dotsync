@@ -2,7 +2,7 @@ import io
 
 import pytest
 
-from dotsync.ui_picker import PickerState, _read_key
+from dotsync.ui_picker import PickerState, _read_key, _render
 
 
 ITEMS = ["claude", "ghostty", "bettertouchtool", "zsh"]
@@ -169,3 +169,54 @@ def test_read_key_ctrl_c_raises_keyboardinterrupt(monkeypatch):
 def test_read_key_unknown_byte_returns_none(monkeypatch):
     _stdin_with("z", monkeypatch)
     assert _read_key() is None
+
+
+def test_render_first_pass_shows_title_and_all_items(capsys, monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    state = PickerState(ITEMS, preselected={"claude", "zsh"})
+    _render(state, "Pick apps to track", first=True)
+    out = capsys.readouterr().out
+    assert "Pick apps to track" in out
+    assert "claude" in out and "ghostty" in out
+    assert "bettertouchtool" in out and "zsh" in out
+    # Hint row is printed
+    assert "space toggle" in out
+    assert "enter submit" in out
+
+
+def test_render_marks_selected_items(capsys, monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    state = PickerState(ITEMS, preselected={"claude", "zsh"})
+    _render(state, "Pick apps", first=True)
+    lines = capsys.readouterr().out.splitlines()
+    claude_line = next(l for l in lines if "claude" in l)
+    ghostty_line = next(l for l in lines if "ghostty" in l)
+    assert "[x]" in claude_line
+    assert "[ ]" in ghostty_line
+
+
+def test_render_marks_cursor_position(capsys, monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    state = PickerState(ITEMS, preselected=set())
+    state.handle("down")    # cursor on ghostty
+    _render(state, "Pick apps", first=True)
+    lines = capsys.readouterr().out.splitlines()
+    ghostty_line = next(l for l in lines if "ghostty" in l)
+    claude_line = next(l for l in lines if "claude" in l)
+    # ▸ marker appears on the cursor row, not on others
+    assert "▸" in ghostty_line
+    assert "▸" not in claude_line
+
+
+def test_render_redraw_emits_cursor_up_and_clear(capsys, monkeypatch):
+    """Subsequent renders must move the cursor up and clear so the picker
+    stays in place rather than scrolling."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    state = PickerState(ITEMS, preselected=set())
+    _render(state, "Pick apps", first=True)
+    capsys.readouterr()  # discard first
+    _render(state, "Pick apps", first=False)
+    out = capsys.readouterr().out
+    # Cursor up by (items + 2) and clear-to-end-of-screen
+    assert f"\x1b[{len(ITEMS) + 2}A" in out
+    assert "\x1b[J" in out
