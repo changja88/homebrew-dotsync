@@ -26,8 +26,9 @@ TAP_DIR="$(brew --repository)/Library/Taps/${TAP_USER}/homebrew-${TAP_NAME}"
 TAP_REF="${TAP_USER}/${TAP_NAME}/dotsync"
 LOCAL_FORMULA="${TAP_DIR}/Formula/dotsync.rb"
 
-# colors (subset of ui.py PRIMARY/DIM/BOLD)
+# colors (mirrors ui.py PRIMARY/DIM/BOLD/GREEN)
 PURPLE='\033[38;2;167;139;250m'
+GREEN='\033[32m'
 DIM='\033[2m'
 BOLD='\033[1m'
 RESET='\033[0m'
@@ -35,11 +36,19 @@ RESET='\033[0m'
 step()  { echo; printf "${PURPLE}▶${RESET} ${BOLD}%s${RESET}\n" "$*"; echo; }
 note()  { printf "${DIM}  %s${RESET}\n" "$*"; }
 pause() { printf "${DIM}  press enter to continue...${RESET}"; read -r _; }
+ask()   { printf "${PURPLE}${BOLD}?${RESET} %s ${DIM}[%s]${RESET} ${PURPLE}›${RESET} " "$1" "$2"; }
+ask_yn(){ printf "${PURPLE}${BOLD}?${RESET} %s ${DIM}[%s]${RESET} ${PURPLE}›${RESET} " "$1" "$2"; }
 
 # --- preflight --------------------------------------------------------------
 command -v brew >/dev/null    || { echo "brew not found — install Homebrew first"; exit 1; }
 command -v shasum >/dev/null  || { echo "shasum not available"; exit 1; }
 command -v git >/dev/null     || { echo "git not available"; exit 1; }
+
+# Idempotent: silently scrub any leftover from a previous run so re-running
+# `make demo` is always safe. (DEMO_DIR is asked about explicitly in step 3.)
+rm -f "$TARBALL"
+[[ -d "$TAP_DIR" ]] && rm -rf "$TAP_DIR"
+brew uninstall dotsync >/dev/null 2>&1 || true
 
 DEMO_DIR=""  # determined in step 3
 
@@ -66,9 +75,6 @@ awk -v ver="$VERSION" '
 ' "$LOCAL_FORMULA" > "${LOCAL_FORMULA}.tmp" && mv "${LOCAL_FORMULA}.tmp" "$LOCAL_FORMULA"
 rm -f "$LOCAL_FORMULA.bak"
 
-# uninstall any leftover from a previous demo run (silent if not installed)
-brew uninstall dotsync >/dev/null 2>&1 || true
-
 echo
 brew install --build-from-source "$TAP_REF"
 echo
@@ -84,12 +90,12 @@ pause
 step "3/5  dotsync init — pick a sync folder"
 note "for safety, the demo only tracks the 'zsh' app"
 echo
-printf "${DIM}  sync folder absolute path [${DEFAULT_DEMO_DIR}]: ${RESET}"
+ask "sync folder absolute path" "$DEFAULT_DEMO_DIR"
 read -r dir_input
 DEMO_DIR="${dir_input:-$DEFAULT_DEMO_DIR}"
 
 if [[ -d "$DEMO_DIR" ]]; then
-  printf "${DIM}  $DEMO_DIR already exists — remove and continue? [y/N]: ${RESET}"
+  ask_yn "$DEMO_DIR already exists — remove and continue?" "y/N"
   read -r yn
   [[ "$yn" =~ ^[Yy]$ ]] || { echo "aborted"; exit 1; }
   rm -rf "$DEMO_DIR"
@@ -115,12 +121,12 @@ pause
 
 # --- cleanup ----------------------------------------------------------------
 step "cleanup"
-printf "${DIM}  uninstall dotsync? [Y/n]: ${RESET}"
+ask_yn "uninstall dotsync?" "Y/n"
 read -r yn
 if [[ ! "$yn" =~ ^[Nn]$ ]]; then
   brew uninstall dotsync
 fi
-printf "${DIM}  remove demo folder $DEMO_DIR? [Y/n]: ${RESET}"
+ask_yn "remove demo folder $DEMO_DIR?" "Y/n"
 read -r yn
 if [[ ! "$yn" =~ ^[Nn]$ ]]; then
   rm -rf "$DEMO_DIR"
@@ -129,4 +135,4 @@ note "removing throwaway tap and tarball"
 rm -rf "$TAP_DIR" "$TARBALL"
 
 echo
-printf "${PURPLE}✔${RESET} demo complete\n"
+printf "${GREEN}✔${RESET} ${BOLD}demo complete${RESET}\n"

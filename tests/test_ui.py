@@ -88,3 +88,16 @@ def test_format_divider_with_label():
 def test_format_divider_without_label():
     out = ui.format_divider()
     assert "─" in out
+
+
+def test_format_ask_includes_question_and_pointer():
+    out = ui.format_ask("sync folder")
+    assert "sync folder" in out
+    assert "?" in out
+    assert "›" in out
+
+
+def test_format_ask_with_default_renders_brackets():
+    out = ui.format_ask("sync folder", "/tmp/default")
+    assert "/tmp/default" in out
+    assert "[" in out and "]" in out

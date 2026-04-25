@@ -80,7 +80,7 @@ def cmd_init(args) -> int:
         else:
             dir_path = default_dir
     else:
-        dir_str = input(f"sync folder (absolute path) [{default_dir}]: ").strip()
+        dir_str = ui.ask("sync folder (absolute path)", default=str(default_dir))
         dir_path = Path(dir_str).expanduser().resolve() if dir_str else default_dir
     dir_path.mkdir(parents=True, exist_ok=True)
 
@@ -106,7 +106,7 @@ def cmd_init(args) -> int:
     # 4. resolve BTT preset
     btt_preset = args.btt_preset or DEFAULT_BTT_PRESET
     if not args.yes and "bettertouchtool" in apps:
-        entered = input(f"BetterTouchTool preset name [{btt_preset}]: ").strip()
+        entered = ui.ask("BetterTouchTool preset name", default=btt_preset)
         if entered:
             btt_preset = entered
 
@@ -142,8 +142,8 @@ def _resolve_apps_for_init(args) -> "list[str] | None":
     if detected:
         print("Detected on this machine:")
         for name in detected:
-            print(f"  ✓ {name}")
-        choice = input("Track all of these? [Y/n/edit]: ").strip().lower()
+            print(f"  {ui._wrap(ui.GREEN, ui.GLYPH_OK)} {name}")
+        choice = ui.ask("Track all of these?", default="Y/n/edit").lower()
     else:
         print("No apps were auto-detected on this machine.")
         choice = "edit"
@@ -153,9 +153,9 @@ def _resolve_apps_for_init(args) -> "list[str] | None":
     if choice in ("n", "no"):
         return []
     if choice in ("edit", "e"):
-        apps_str = input(
-            f"apps to track (comma-separated, options: {sorted(SUPPORTED_APPS)}): "
-        ).strip()
+        apps_str = ui.ask(
+            f"apps to track (comma-separated, options: {sorted(SUPPORTED_APPS)})"
+        )
         return [a.strip() for a in apps_str.split(",") if a.strip()]
     print(f"unknown choice: {choice}", file=sys.stderr)
     return None

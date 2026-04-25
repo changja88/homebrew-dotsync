@@ -168,6 +168,24 @@ def format_divider(label: str = "") -> str:
     return f"  {_wrap(DIM_ANSI, bar)} {label} {_wrap(DIM_ANSI, GLYPH_HORIZ * 40)}"
 
 
+def format_ask(question: str, default: str = "") -> str:
+    """A high-visibility input prompt: `? question [default] › `
+
+    Use for any line that requires user action — much more legible than a dim
+    one-color prompt.
+    """
+    bullet = _wrap(PRIMARY, _wrap(BOLD, "?"))
+    arrow = _wrap(PRIMARY, "›")
+    if default:
+        return f"{bullet} {question} {_wrap(DIM_ANSI, '[' + default + ']')} {arrow} "
+    return f"{bullet} {question} {arrow} "
+
+
+def ask(question: str, default: str = "") -> str:
+    """Side-effect: render an accented prompt and return stripped user input."""
+    return input(format_ask(question, default)).strip()
+
+
 def format_summary(*, ok: int = 0, warn: int = 0, error: int = 0, duration_ms: int = 0) -> str:
     """Bottom rounded box with counts + elapsed time."""
     width = BOX_WIDTH
