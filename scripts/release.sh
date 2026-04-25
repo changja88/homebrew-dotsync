@@ -50,8 +50,6 @@ esac
 NEW="${MAJ}.${MIN}.${PAT}"
 
 step "New version: v$NEW"
-read -rp "Proceed? [y/N]: " confirm
-[[ "$confirm" =~ ^[Yy]$ ]] || die "Cancelled"
 
 # 3. bump version strings ----------------------------------------------------
 step "Bumping version strings"
