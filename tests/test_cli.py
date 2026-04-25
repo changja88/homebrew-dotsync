@@ -1,6 +1,7 @@
 from pathlib import Path
 from unittest.mock import patch
 import pytest
+from dotsync import __version__
 from dotsync.cli import main
 from dotsync.config import Config, save_config
 
@@ -10,7 +11,7 @@ def test_version_flag(capsys):
         main(["--version"])
     assert exc.value.code == 0
     out = capsys.readouterr().out
-    assert "0.1.0" in out
+    assert __version__ in out
 
 
 def test_init_writes_config_noninteractive(fake_home, tmp_path):
