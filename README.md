@@ -23,11 +23,11 @@ dotsync welcome   # ASCII 환영 배너와 첫 시작 안내를 출력
 
 #### 1. 처음 한 번 — sync 대상 폴더 정하기 (앱은 자동 감지됨)
 
-대화형으로 폴더 경로만 입력하면, 이 머신에 설치된 앱들이 자동 감지돼 default로 제시된다.
+대화형으로 폴더 경로만 입력하면, 이 머신에 설치된 앱들이 자동 감지돼 default로 제시된다. 폴더 경로 prompt에서 그냥 Enter만 치면 default `~/Desktop/dotsync_config`를 사용한다.
 
 ```bash
 dotsync init
-# sync folder (absolute path): /Users/you/my-configs
+# sync folder (absolute path) [/Users/you/Desktop/dotsync_config]: ⏎
 #
 # Detected on this machine:
 #   ✓ claude
@@ -43,8 +43,9 @@ dotsync init
 비대화형(스크립트/새 머신 셋업용):
 
 ```bash
+# --dir 생략 시 default ~/Desktop/dotsync_config 사용
 # --apps 생략 시 자동 감지된 전체를 추적
-dotsync init --dir ~/my-configs --yes
+dotsync init --yes
 
 # 명시적으로 지정도 가능
 dotsync init --dir ~/my-configs --apps claude,zsh --btt-preset Master_bt --yes
@@ -133,11 +134,11 @@ dotsync welcome   # prints the ASCII welcome banner with quickstart hints
 
 #### 1. One-time setup — pick your sync folder (apps auto-detected)
 
-Interactive. You provide the folder path; dotsync detects which supported apps are installed on this machine and offers them as the default.
+Interactive. You provide the folder path (or just hit Enter for the default `~/Desktop/dotsync_config`); dotsync detects which supported apps are installed on this machine and offers them as the default.
 
 ```bash
 dotsync init
-# sync folder (absolute path): /Users/you/my-configs
+# sync folder (absolute path) [/Users/you/Desktop/dotsync_config]: ⏎
 #
 # Detected on this machine:
 #   ✓ claude
@@ -153,8 +154,10 @@ dotsync init
 Non-interactive (scripts / new-machine bootstrap):
 
 ```bash
-# --apps omitted → use all auto-detected apps
-dotsync init --dir ~/my-configs --yes
+# Both --dir and --apps can be omitted:
+#   --dir defaults to ~/Desktop/dotsync_config
+#   --apps defaults to all auto-detected apps
+dotsync init --yes
 
 # Or specify explicitly
 dotsync init --dir ~/my-configs --apps claude,zsh --btt-preset Master_bt --yes

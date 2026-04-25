@@ -253,3 +253,43 @@ def test_welcome_subcommand(capsys):
     out = capsys.readouterr().out
     assert "█" in out
     assert "dotsync init" in out
+
+
+def test_init_yes_without_dir_uses_default_desktop_path(fake_home, monkeypatch):
+    _no_btt(monkeypatch, fake_home)
+    (fake_home / ".zshrc").write_text("X")
+
+    rc = main(["init", "--yes"])
+    assert rc == 0
+    default_dir = fake_home / "Desktop" / "dotsync_config"
+    assert default_dir.exists()
+    assert (default_dir / "dotsync.toml").exists()
+
+
+def test_init_interactive_default_dir_on_empty_input(fake_home, monkeypatch):
+    _no_btt(monkeypatch, fake_home)
+    (fake_home / ".zshrc").write_text("X")
+
+    # user just hits Enter for the dir prompt, then Enter for "Track all?"
+    answers = iter(["", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    rc = main(["init"])
+    assert rc == 0
+    default_dir = fake_home / "Desktop" / "dotsync_config"
+    assert (default_dir / "dotsync.toml").exists()
+
+
+def test_init_interactive_custom_dir_overrides_default(fake_home, monkeypatch, tmp_path):
+    _no_btt(monkeypatch, fake_home)
+    (fake_home / ".zshrc").write_text("X")
+    custom = tmp_path / "elsewhere"
+
+    answers = iter([str(custom), ""])  # custom path, then Enter for "Track all?"
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    rc = main(["init"])
+    assert rc == 0
+    assert (custom / "dotsync.toml").exists()
+    # default not used
+    assert not (fake_home / "Desktop" / "dotsync_config").exists()

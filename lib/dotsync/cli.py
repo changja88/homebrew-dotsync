@@ -64,19 +64,24 @@ def cmd_welcome(args) -> int:
     return 0
 
 
+def _default_sync_dir() -> Path:
+    return Path.home() / "Desktop" / "dotsync_config"
+
+
 def cmd_init(args) -> int:
     if not args.quiet:
         print_welcome()
 
-    # 1. resolve sync folder path
+    # 1. resolve sync folder path (default: ~/Desktop/dotsync_config)
+    default_dir = _default_sync_dir()
     if args.yes:
-        if not args.dir:
-            print("--dir required with --yes", file=sys.stderr)
-            return 2
-        dir_path = Path(args.dir).expanduser().resolve()
+        if args.dir:
+            dir_path = Path(args.dir).expanduser().resolve()
+        else:
+            dir_path = default_dir
     else:
-        dir_str = input("sync folder (absolute path): ").strip()
-        dir_path = Path(dir_str).expanduser().resolve()
+        dir_str = input(f"sync folder (absolute path) [{default_dir}]: ").strip()
+        dir_path = Path(dir_str).expanduser().resolve() if dir_str else default_dir
     dir_path.mkdir(parents=True, exist_ok=True)
 
     # 2. if folder already has a dotsync.toml and the user passed no overrides,

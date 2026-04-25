@@ -15,7 +15,7 @@
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-DEMO_DIR="${DEMO_DIR:-/tmp/dotsync-demo}"
+DEFAULT_DEMO_DIR="${HOME}/Desktop/dotsync_config"
 TARBALL=/tmp/dotsync-demo.tar.gz
 
 # Homebrew now requires formulae to live in a tap. We create a throwaway tap
@@ -41,12 +41,7 @@ command -v brew >/dev/null    || { echo "brew not found — install Homebrew fir
 command -v shasum >/dev/null  || { echo "shasum not available"; exit 1; }
 command -v git >/dev/null     || { echo "git not available"; exit 1; }
 
-if [[ -d "$DEMO_DIR" ]]; then
-  printf "${DIM}  $DEMO_DIR already exists — remove it? [y/N]: ${RESET}"
-  read -r yn
-  [[ "$yn" =~ ^[Yy]$ ]] || { echo "aborted"; exit 1; }
-  rm -rf "$DEMO_DIR"
-fi
+DEMO_DIR=""  # determined in step 3
 
 # --- step 1: simulated brew install -----------------------------------------
 step "1/5  brew install (using your current working tree)"
@@ -86,8 +81,19 @@ dotsync welcome
 pause
 
 # --- step 3: init -----------------------------------------------------------
-step "3/5  dotsync init — pick a sync folder, auto-detect apps"
-note "demo uses --apps zsh and --dir $DEMO_DIR  (safe sandbox)"
+step "3/5  dotsync init — pick a sync folder"
+note "for safety, the demo only tracks the 'zsh' app"
+echo
+printf "${DIM}  sync folder absolute path [${DEFAULT_DEMO_DIR}]: ${RESET}"
+read -r dir_input
+DEMO_DIR="${dir_input:-$DEFAULT_DEMO_DIR}"
+
+if [[ -d "$DEMO_DIR" ]]; then
+  printf "${DIM}  $DEMO_DIR already exists — remove and continue? [y/N]: ${RESET}"
+  read -r yn
+  [[ "$yn" =~ ^[Yy]$ ]] || { echo "aborted"; exit 1; }
+  rm -rf "$DEMO_DIR"
+fi
 echo
 dotsync init --dir "$DEMO_DIR" --apps zsh --yes --quiet
 pause
