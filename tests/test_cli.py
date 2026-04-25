@@ -84,6 +84,7 @@ def test_no_config_shows_init_hint(fake_home, monkeypatch, tmp_path, capsys):
 
 
 def test_status_reports_diff(fake_home, monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("NO_COLOR", "1")
     target = tmp_path / "configs"
     (target / "zsh").mkdir(parents=True)
     (target / "zsh" / ".zshrc").write_text("STORED")
@@ -96,6 +97,29 @@ def test_status_reports_diff(fake_home, monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "zsh" in out
     assert "dirty" in out
+    assert "⚠" in out  # design-system glyph for dirty
+
+
+def test_status_shows_direction_hint(fake_home, monkeypatch, tmp_path, capsys):
+    """When local is newer than stored, status surfaces 'local-newer' so the
+    user knows to run `from`."""
+    import os
+    monkeypatch.setenv("NO_COLOR", "1")
+    target = tmp_path / "configs"
+    (target / "zsh").mkdir(parents=True)
+    stored = target / "zsh" / ".zshrc"
+    local = fake_home / ".zshrc"
+    stored.write_text("OLD")
+    local.write_text("NEW")
+    os.utime(stored, (1000, 1000))
+    os.utime(local, (2000, 2000))
+    save_config(Config(dir=target, apps=["zsh"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+
+    rc = main(["status"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "local-newer" in out
 
 
 def test_runtime_error_caught_with_friendly_exit(fake_home, monkeypatch, tmp_path, capsys):

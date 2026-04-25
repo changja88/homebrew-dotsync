@@ -61,3 +61,44 @@ def test_diff_files_missing_when_either_side_absent(tmp_path):
     b = tmp_path / "missing.txt"   # not created
     s = diff_files([(a, b)])
     assert s.state == "missing"
+
+
+def test_diff_files_reports_local_newer_when_local_mtime_greater(tmp_path):
+    """When dirty and local was modified after stored, direction = local-newer."""
+    import os
+    from dotsync.apps.base import diff_files
+    local = tmp_path / "a"
+    stored = tmp_path / "b"
+    stored.write_text("OLD")
+    local.write_text("NEW")
+    # force ordering: stored older than local
+    os.utime(stored, (1000, 1000))
+    os.utime(local, (2000, 2000))
+    result = diff_files([(local, stored)])
+    assert result.state == "dirty"
+    assert result.direction == "local-newer"
+
+
+def test_diff_files_reports_folder_newer_when_stored_mtime_greater(tmp_path):
+    import os
+    from dotsync.apps.base import diff_files
+    local = tmp_path / "a"
+    stored = tmp_path / "b"
+    local.write_text("OLD")
+    stored.write_text("NEW")
+    os.utime(local, (1000, 1000))
+    os.utime(stored, (2000, 2000))
+    result = diff_files([(local, stored)])
+    assert result.state == "dirty"
+    assert result.direction == "folder-newer"
+
+
+def test_diff_files_clean_has_empty_direction(tmp_path):
+    from dotsync.apps.base import diff_files
+    local = tmp_path / "a"
+    stored = tmp_path / "b"
+    local.write_text("SAME")
+    stored.write_text("SAME")
+    result = diff_files([(local, stored)])
+    assert result.state == "clean"
+    assert result.direction == ""

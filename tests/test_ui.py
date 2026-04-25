@@ -101,3 +101,38 @@ def test_format_ask_with_default_renders_brackets():
     out = ui.format_ask("sync folder", "/tmp/default")
     assert "/tmp/default" in out
     assert "[" in out and "]" in out
+
+
+def test_format_status_line_clean(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    from dotsync.ui import format_status_line
+    line = format_status_line("zsh", state="clean", details="", direction="")
+    assert "✓" in line
+    assert "zsh" in line
+    assert "clean" in line
+
+
+def test_format_status_line_dirty_with_direction(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    from dotsync.ui import format_status_line
+    line = format_status_line("zsh", state="dirty", details=".zshrc", direction="local-newer")
+    assert "⚠" in line
+    assert "dirty" in line
+    assert ".zshrc" in line
+    assert "local-newer" in line  # hint visible in NO_COLOR
+
+
+def test_format_status_line_missing(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    from dotsync.ui import format_status_line
+    line = format_status_line("ghostty", state="missing", details="config", direction="")
+    assert "✗" in line
+    assert "missing" in line
+
+
+def test_format_status_line_unknown(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    from dotsync.ui import format_status_line
+    line = format_status_line("bettertouchtool", state="unknown", details="BTT not running", direction="")
+    assert "·" in line or "?" in line  # any dim marker
+    assert "unknown" in line

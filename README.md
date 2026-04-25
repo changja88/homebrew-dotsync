@@ -93,11 +93,16 @@ dotsync to --all            # 직전 로컬 상태는 자동 백업됨
 
 #### 4. 동기화 상태 확인 (파일별 sha256 비교)
 
+상태 라인은 색·심볼로 한눈에 구분되며, 'dirty'면 어느 쪽이 더 최신인지(direction)도 함께 표시됩니다.
+
 ```bash
-dotsync status
-#   claude             clean
-#   ghostty            dirty — config.ghostty
-#   zsh                clean
+$ dotsync status
+▸ status                              ~/dotsync_config
+
+  ✓ zsh              clean
+  ⚠ ghostty          dirty   local-newer  — config
+  ✗ claude           missing
+  · bettertouchtool  unknown — BTT not running
 ```
 
 #### 폴더/앱 목록을 나중에 바꾸고 싶으면
@@ -205,11 +210,16 @@ Each `to` snapshots the about-to-be-overwritten local files into `<sync folder>/
 
 #### 4. Check sync state (per-file sha256 diff)
 
+Status lines use color + glyph; for 'dirty' rows, the direction hint shows which side is newer.
+
 ```bash
-dotsync status
-#   claude             clean
-#   ghostty            dirty — config.ghostty
-#   zsh                clean
+$ dotsync status
+▸ status                              ~/dotsync_config
+
+  ✓ zsh              clean
+  ⚠ ghostty          dirty   local-newer  — config
+  ✗ claude           missing
+  · bettertouchtool  unknown — BTT not running
 ```
 
 #### Change the folder or app list later

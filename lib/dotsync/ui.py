@@ -205,6 +205,28 @@ def format_summary(*, ok: int = 0, warn: int = 0, error: int = 0, duration_ms: i
     ])
 
 
+_STATUS_GLYPH = {
+    "clean": (GREEN, GLYPH_OK),
+    "dirty": (YELLOW, GLYPH_WARN),
+    "missing": (RED, GLYPH_ERROR),
+    "unknown": (DIM_ANSI, GLYPH_DIM),
+}
+
+
+def format_status_line(name: str, *, state: str, details: str = "", direction: str = "") -> str:
+    """One row of `dotsync status`: `  ✓ zsh         clean` (with optional details/direction)."""
+    color, glyph = _STATUS_GLYPH.get(state, (DIM_ANSI, GLYPH_DIM))
+    head = f"  {_wrap(color, glyph)} {name:16s} {_wrap(color, state)}"
+    tail_parts = []
+    if direction:
+        tail_parts.append(_wrap(DIM_ANSI, direction))
+    if details:
+        tail_parts.append(_wrap(DIM_ANSI, "— " + details))
+    if tail_parts:
+        return head + "  " + " ".join(tail_parts)
+    return head
+
+
 # --- side-effect printers (use in production code) -------------------------
 
 def step(msg: str) -> None:

@@ -13,6 +13,7 @@ StatusState = Literal["clean", "dirty", "missing", "unknown"]
 class AppStatus:
     state: StatusState
     details: str = ""
+    direction: str = ""  # "local-newer" | "folder-newer" | "diverged" | ""
 
 
 def _hash(path: Path) -> str:
@@ -22,28 +23,40 @@ def _hash(path: Path) -> str:
 
 
 def diff_files(pairs: Iterable[Tuple[Path, Path]]) -> AppStatus:
-    """Compare (local, stored) file pairs by sha256.
+    """Compare (local, stored) file pairs by sha256, with a mtime-based direction hint.
 
     Returns:
       missing — at least one side absent
-      dirty   — every file present but at least one pair differs
+      dirty   — every file present but at least one pair differs (with direction)
       clean   — every pair byte-identical
     """
     pairs = list(pairs)
     if not pairs:
         return AppStatus(state="unknown")
     missing: list[str] = []
-    differs: list[str] = []
+    differs: list[Tuple[Path, Path, str]] = []  # (local, stored, name)
     for local, stored in pairs:
         if not local.exists() or not stored.exists():
             missing.append(local.name)
             continue
         if _hash(local) != _hash(stored):
-            differs.append(local.name)
+            differs.append((local, stored, local.name))
     if missing:
         return AppStatus(state="missing", details=", ".join(missing))
     if differs:
-        return AppStatus(state="dirty", details=", ".join(differs))
+        local_newer = sum(1 for l, s, _ in differs if l.stat().st_mtime > s.stat().st_mtime)
+        folder_newer = len(differs) - local_newer
+        if local_newer and folder_newer:
+            direction = "diverged"
+        elif local_newer:
+            direction = "local-newer"
+        else:
+            direction = "folder-newer"
+        return AppStatus(
+            state="dirty",
+            details=", ".join(name for _, _, name in differs),
+            direction=direction,
+        )
     return AppStatus(state="clean")
 
 

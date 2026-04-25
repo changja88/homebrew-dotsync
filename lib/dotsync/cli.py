@@ -244,10 +244,17 @@ def cmd_apps(args) -> int:
 
 def cmd_status(args) -> int:
     cfg = load_config()
+    ui.section("status", sub=str(cfg.dir))
+    print()
     for name in cfg.apps:
         app = build_app(name, cfg)
         s = app.status(cfg.dir)
-        print(f"  {name:18s} {s.state}{(' — ' + s.details) if s.details else ''}")
+        print(ui.format_status_line(
+            name,
+            state=s.state,
+            details=s.details,
+            direction=getattr(s, "direction", ""),
+        ))
     return 0
 
 
