@@ -17,8 +17,9 @@ brew install changja88/dotsync/dotsync
 dotsync welcome   # ASCII 환영 배너와 첫 시작 안내를 출력
 ```
 
-Python 3.12+ 가 이미 시스템에 있으면 (Homebrew 의 `python@3.12` 또는 python.org
-공식 설치판) 그것을 그대로 재사용한다 — 중복 설치하지 않는다. 없을 때만 brew 가
+Python 3.12 또는 3.13 이 canonical 경로 (`/opt/homebrew/bin/python3.{12,13}`,
+`/usr/local/bin/python3.{12,13}`, `/Library/Frameworks/Python.framework/Versions/3.{12,13}/...`)
+에 이미 있으면 그것을 그대로 재사용한다 — 중복 설치하지 않는다. 없을 때만 brew 가
 `python@3.12` 를 함께 설치한다.
 
 > 참고: pyenv / uv 처럼 비-canonical 경로에 깔린 Python 은 자동 감지되지 않아
@@ -167,10 +168,11 @@ brew install changja88/dotsync/dotsync
 dotsync welcome   # prints the ASCII welcome banner with quickstart hints
 ```
 
-If Python 3.12+ is already installed at a canonical path (Homebrew's
-`python@3.12` or a python.org official installer), dotsync reuses it —
-no duplicate install. Otherwise Homebrew pulls in `python@3.12` as a
-dependency.
+If Python 3.12 or 3.13 already exists at a canonical path
+(`/opt/homebrew/bin/python3.{12,13}`, `/usr/local/bin/python3.{12,13}`,
+or `/Library/Frameworks/Python.framework/Versions/3.{12,13}/...`),
+dotsync reuses it — no duplicate install. Otherwise Homebrew pulls in
+`python@3.12` as a dependency.
 
 > Note: Pythons installed via pyenv / uv are at non-canonical paths and
 > won't be auto-detected — Homebrew will still install its own
