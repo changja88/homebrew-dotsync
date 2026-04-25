@@ -636,3 +636,158 @@ def test_apps_edit_no_change_when_existing_order_differs(fake_home, monkeypatch,
     assert rc == 0
     mtime_after = (target / "dotsync.toml").stat().st_mtime_ns
     assert mtime_before == mtime_after  # file untouched — same set, different order
+
+
+def test_init_btt_auto_uses_single_discovered_preset(fake_home, tmp_path, monkeypatch, capsys):
+    """When BTT discovery returns exactly 1 preset, init uses it without
+    prompting — the user sees a confirmation, not a question."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    (fake_home / ".zshrc").write_text("X")
+    # Mark BTT as locally installed so init's app detection picks it up
+    bttapp = fake_home / "Applications" / "BetterTouchTool.app"
+    bttapp.mkdir(parents=True)
+    monkeypatch.setattr(
+        "dotsync.apps.bettertouchtool.BetterTouchToolApp.APP_PATH", bttapp
+    )
+    monkeypatch.setattr(
+        "dotsync.apps.bettertouchtool.BetterTouchToolApp.discover_preset_names",
+        classmethod(lambda cls: ["Master_bt"]),
+    )
+
+    target = tmp_path / "i"
+    answers = iter([str(target), "y"])  # folder, then accept detected apps
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    rc = main(["init"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    cfg_text = (target / "dotsync.toml").read_text()
+    assert 'bettertouchtool_preset = "Master_bt"' in cfg_text
+    # Confirmation visible — and the "BetterTouchTool preset name" prompt is NOT shown
+    assert "Master_bt" in out
+    assert "BetterTouchTool preset name" not in out
+
+
+def test_init_btt_asks_when_multiple_discovered(fake_home, tmp_path, monkeypatch, capsys):
+    """Multiple presets → list is shown, prompt asks for one of them, the
+    user-typed name is accepted if it matches."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    (fake_home / ".zshrc").write_text("X")
+    bttapp = fake_home / "Applications" / "BetterTouchTool.app"
+    bttapp.mkdir(parents=True)
+    monkeypatch.setattr(
+        "dotsync.apps.bettertouchtool.BetterTouchToolApp.APP_PATH", bttapp
+    )
+    monkeypatch.setattr(
+        "dotsync.apps.bettertouchtool.BetterTouchToolApp.discover_preset_names",
+        classmethod(lambda cls: ["Master_bt", "Travel", "Work"]),
+    )
+
+    target = tmp_path / "i"
+    # folder, accept detected apps, pick "Work"
+    answers = iter([str(target), "y", "Work"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    rc = main(["init"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    cfg_text = (target / "dotsync.toml").read_text()
+    assert 'bettertouchtool_preset = "Work"' in cfg_text
+    # All three names are shown to the user
+    assert "Master_bt" in out and "Travel" in out and "Work" in out
+
+
+def test_init_btt_multi_rejects_unknown_name(fake_home, tmp_path, monkeypatch, capsys):
+    """If the user types a name that isn't in the discovered list, we
+    error out — no silent acceptance."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    (fake_home / ".zshrc").write_text("X")
+    bttapp = fake_home / "Applications" / "BetterTouchTool.app"
+    bttapp.mkdir(parents=True)
+    monkeypatch.setattr(
+        "dotsync.apps.bettertouchtool.BetterTouchToolApp.APP_PATH", bttapp
+    )
+    monkeypatch.setattr(
+        "dotsync.apps.bettertouchtool.BetterTouchToolApp.discover_preset_names",
+        classmethod(lambda cls: ["Master_bt", "Travel"]),
+    )
+
+    target = tmp_path / "i"
+    answers = iter([str(target), "y", "DoesNotExist"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    rc = main(["init"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "DoesNotExist" in err
+
+
+def test_init_btt_multi_empty_input_uses_first(fake_home, tmp_path, monkeypatch):
+    """Bare Enter at the multi prompt accepts the first listed preset."""
+    (fake_home / ".zshrc").write_text("X")
+    bttapp = fake_home / "Applications" / "BetterTouchTool.app"
+    bttapp.mkdir(parents=True)
+    monkeypatch.setattr(
+        "dotsync.apps.bettertouchtool.BetterTouchToolApp.APP_PATH", bttapp
+    )
+    monkeypatch.setattr(
+        "dotsync.apps.bettertouchtool.BetterTouchToolApp.discover_preset_names",
+        classmethod(lambda cls: ["AAA_first", "ZZZ_last"]),
+    )
+
+    target = tmp_path / "i"
+    answers = iter([str(target), "y", ""])  # bare Enter at preset prompt
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    rc = main(["init"])
+    assert rc == 0
+    cfg_text = (target / "dotsync.toml").read_text()
+    assert 'bettertouchtool_preset = "AAA_first"' in cfg_text
+
+
+def test_init_btt_falls_back_when_discovery_empty(fake_home, tmp_path, monkeypatch, capsys):
+    """No presets discovered (BTT not running, schema drift, etc.) →
+    legacy behavior: prompt with DEFAULT_BTT_PRESET as default."""
+    (fake_home / ".zshrc").write_text("X")
+    bttapp = fake_home / "Applications" / "BetterTouchTool.app"
+    bttapp.mkdir(parents=True)
+    monkeypatch.setattr(
+        "dotsync.apps.bettertouchtool.BetterTouchToolApp.APP_PATH", bttapp
+    )
+    monkeypatch.setattr(
+        "dotsync.apps.bettertouchtool.BetterTouchToolApp.discover_preset_names",
+        classmethod(lambda cls: []),
+    )
+
+    target = tmp_path / "i"
+    answers = iter([str(target), "y", "MyName"])  # folder, apps, preset name
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    rc = main(["init"])
+    assert rc == 0
+    cfg_text = (target / "dotsync.toml").read_text()
+    assert 'bettertouchtool_preset = "MyName"' in cfg_text
+
+
+def test_init_btt_explicit_flag_skips_discovery(fake_home, tmp_path, monkeypatch):
+    """--btt-preset X always wins, even when discovery would return
+    different names. No discovery call is needed."""
+    (fake_home / ".zshrc").write_text("X")
+    bttapp = fake_home / "Applications" / "BetterTouchTool.app"
+    bttapp.mkdir(parents=True)
+    monkeypatch.setattr(
+        "dotsync.apps.bettertouchtool.BetterTouchToolApp.APP_PATH", bttapp
+    )
+
+    def boom(cls):
+        raise AssertionError("discover_preset_names must not be called when --btt-preset is set")
+    monkeypatch.setattr(
+        "dotsync.apps.bettertouchtool.BetterTouchToolApp.discover_preset_names",
+        classmethod(boom),
+    )
+
+    target = tmp_path / "i"
+    rc = main(["init", "--dir", str(target), "--yes", "--btt-preset", "Forced"])
+    assert rc == 0
+    cfg_text = (target / "dotsync.toml").read_text()
+    assert 'bettertouchtool_preset = "Forced"' in cfg_text

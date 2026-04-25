@@ -117,10 +117,33 @@ def cmd_init(args) -> int:
 
     # 4. resolve BTT preset
     btt_preset = args.btt_preset or DEFAULT_BTT_PRESET
-    if not args.yes and "bettertouchtool" in apps:
-        entered = ui.ask("BetterTouchTool preset name", default=btt_preset)
-        if entered:
-            btt_preset = entered
+    if "bettertouchtool" in apps and not args.btt_preset and not args.yes:
+        from .apps.bettertouchtool import BetterTouchToolApp
+        discovered = BetterTouchToolApp.discover_preset_names()
+        if len(discovered) == 1:
+            btt_preset = discovered[0]
+            ui.ok(f"BetterTouchTool preset detected: {btt_preset}")
+        elif len(discovered) >= 2:
+            print()
+            print("multiple BetterTouchTool presets detected:")
+            for name in discovered:
+                print(f"  · {name}")
+            entered = ui.ask(
+                "which preset to track?", default=discovered[0]
+            ).strip()
+            if not entered:
+                btt_preset = discovered[0]
+            elif entered in discovered:
+                btt_preset = entered
+            else:
+                print(f"unknown preset: {entered}", file=sys.stderr)
+                return 2
+        else:
+            # No presets discovered (BTT not running, schema drift, etc.) —
+            # fall back to the legacy free-form prompt.
+            entered = ui.ask("BetterTouchTool preset name", default=btt_preset)
+            if entered:
+                btt_preset = entered
 
     # 5. save + hints
     save_config(Config(dir=dir_path, apps=apps, bettertouchtool_preset=btt_preset))
