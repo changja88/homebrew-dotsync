@@ -99,9 +99,15 @@ note "next: dotsync welcome"
 pause
 
 # --- step 2: welcome --------------------------------------------------------
-step "2/5  dotsync welcome — the first thing a new user runs"
-dotsync welcome
-pause
+# In RAW mode we skip the explicit `dotsync welcome` call because `dotsync init`
+# in step 3 already prints the same banner (without --quiet, which RAW mode
+# also drops). Otherwise a real user would see the banner twice in a row, which
+# is not what they actually experience after running just `init`.
+if [[ "$RAW" != "1" ]]; then
+  step "2/5  dotsync welcome — the first thing a new user runs"
+  dotsync welcome
+  pause
+fi
 
 # --- step 3: init -----------------------------------------------------------
 step "3/5  dotsync init — first command from the quickstart"
