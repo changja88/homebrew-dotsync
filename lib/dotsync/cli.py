@@ -46,7 +46,9 @@ def _build_parser() -> argparse.ArgumentParser:
     cfg_btt.add_argument("preset")
     cfg_sub.add_parser("show", help="print current config")
 
-    sub.add_parser("apps", help="list supported apps")
+    apps_parser = sub.add_parser("apps", help="list or edit tracked apps")
+    apps_sub = apps_parser.add_subparsers(dest="apps_cmd")
+    apps_sub.add_parser("edit", help="interactively edit which apps are tracked")
     sub.add_parser("status", help="report sync state")
 
     sync_from = sub.add_parser("from", help="local → folder")
@@ -270,6 +272,32 @@ def cmd_apps(args) -> int:
     return 0
 
 
+def cmd_apps_edit(args) -> int:
+    """Interactive menu: show current tracked/installed state, prompt for a
+    new comma-separated list, save."""
+    cfg = load_config()
+    # Show current state (same rendering as `dotsync apps`).
+    cmd_apps(args)
+    print()
+
+    current = ",".join(cfg.apps)
+    apps_str = ui.ask(
+        f"apps to track (comma-separated, options: {sorted(SUPPORTED_APPS)})",
+        default=current,
+    )
+    if not apps_str:
+        return 0  # Enter alone = no-op, keep current
+    new_apps = [a.strip() for a in apps_str.split(",") if a.strip()]
+    bad = [a for a in new_apps if a not in SUPPORTED_APPS]
+    if bad:
+        print(f"unknown apps: {bad}", file=sys.stderr)
+        return 2
+    cfg.apps = new_apps
+    save_config(cfg)
+    ui.done(f"apps = {new_apps}")
+    return 0
+
+
 def cmd_status(args) -> int:
     cfg = load_config()
     ui.section("status", sub=str(cfg.dir))
@@ -386,6 +414,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.cmd == "config":
             return cmd_config(args)
         if args.cmd == "apps":
+            if getattr(args, "apps_cmd", None) == "edit":
+                return cmd_apps_edit(args)
             return cmd_apps(args)
         if args.cmd == "status":
             return cmd_status(args)

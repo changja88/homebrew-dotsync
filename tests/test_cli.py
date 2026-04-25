@@ -521,3 +521,54 @@ def test_apps_works_without_config(fake_home, monkeypatch, tmp_path, capsys):
     # Doesn't crash on missing config; still lists apps and zsh's install status
     assert "zsh" in out
     assert "installed" in out
+
+
+def test_apps_edit_updates_config_via_prompt(fake_home, monkeypatch, tmp_path):
+    """Typing a new comma-separated list at the prompt rewrites dotsync.toml."""
+    target = tmp_path / "configs"
+    target.mkdir()
+    save_config(Config(dir=target, apps=["zsh"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": "zsh,claude")
+
+    rc = main(["apps", "edit"])
+    assert rc == 0
+    cfg_text = (target / "dotsync.toml").read_text()
+    assert "claude" in cfg_text
+    assert "zsh" in cfg_text
+
+
+def test_apps_edit_rejects_unknown_app(fake_home, monkeypatch, tmp_path, capsys):
+    """An unknown app name in the prompt makes `apps edit` exit nonzero
+    and report the bad name on stderr — without modifying config."""
+    target = tmp_path / "configs"
+    target.mkdir()
+    save_config(Config(dir=target, apps=["zsh"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": "zsh,nonsense")
+
+    rc = main(["apps", "edit"])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "nonsense" in err
+    # config untouched
+    cfg_text = (target / "dotsync.toml").read_text()
+    assert "nonsense" not in cfg_text
+
+
+def test_apps_edit_empty_input_keeps_current(fake_home, monkeypatch, tmp_path):
+    """Pressing Enter at the prompt is a no-op — current tracked list stays."""
+    target = tmp_path / "configs"
+    target.mkdir()
+    save_config(Config(dir=target, apps=["zsh", "claude"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": "")
+
+    rc = main(["apps", "edit"])
+    assert rc == 0
+    cfg_text = (target / "dotsync.toml").read_text()
+    assert "zsh" in cfg_text
+    assert "claude" in cfg_text
