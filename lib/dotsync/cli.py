@@ -292,7 +292,7 @@ def cmd_apps_edit(args) -> int:
     if new_apps is None:
         ui.dim("cancelled — no change")
         return 0
-    if new_apps == list(cfg.apps):
+    if set(new_apps) == set(cfg.apps):
         ui.dim("no change")
         return 0
     cfg.apps = new_apps

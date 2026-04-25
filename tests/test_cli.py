@@ -614,3 +614,25 @@ def test_apps_edit_no_change_is_silent_noop(fake_home, monkeypatch, tmp_path, ca
     assert rc == 0
     mtime_after = (target / "dotsync.toml").stat().st_mtime_ns
     assert mtime_before == mtime_after  # file untouched
+
+
+def test_apps_edit_no_change_when_existing_order_differs(fake_home, monkeypatch, tmp_path):
+    """The picker returns sorted order; the saved config may not be sorted.
+    Same set in different order is still a no-op — don't rewrite the file."""
+    target = tmp_path / "configs"
+    target.mkdir()
+    # Saved order is reverse-alpha; picker will hand back sorted-alpha.
+    save_config(Config(dir=target, apps=["zsh", "claude"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+
+    mtime_before = (target / "dotsync.toml").stat().st_mtime_ns
+
+    monkeypatch.setattr(
+        "dotsync.ui_picker.pick_apps",
+        lambda items, preselected, title="Pick apps to track": ["claude", "zsh"],
+    )
+
+    rc = main(["apps", "edit"])
+    assert rc == 0
+    mtime_after = (target / "dotsync.toml").stat().st_mtime_ns
+    assert mtime_before == mtime_after  # file untouched — same set, different order
