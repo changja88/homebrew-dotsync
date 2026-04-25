@@ -107,75 +107,116 @@ def test_state_unknown_key_is_noop():
     assert not s.cancelled
 
 
-def _stdin_with(seq: str, monkeypatch):
-    """Mock sys.stdin with the given byte sequence + select.select that
-    always reports stdin readable (so escape-sequence peek doesn't block)."""
-    fake = io.StringIO(seq)
-    fake.fileno = lambda: 0  # any int; select isn't actually called on it
-    monkeypatch.setattr("dotsync.ui_picker.sys.stdin", fake)
+def _stdin_with(seq: bytes, monkeypatch, *, peek_ready: bool = True):
+    """Mock os.read to feed bytes one at a time + sys.stdin.fileno() to
+    return a dummy fd. `peek_ready` controls whether select.select claims
+    the fd has more data (used to differentiate bare ESC from CSI seqs)."""
+
+    if isinstance(seq, str):
+        seq = seq.encode()
+    buf = bytearray(seq)
+
+    def fake_read(fd, n):
+        if not buf:
+            return b""
+        ch = bytes(buf[:1])
+        del buf[0]
+        return ch
+
+    class FakeStdin:
+        def fileno(self):
+            return 0
+
+    monkeypatch.setattr("dotsync.ui_picker.sys.stdin", FakeStdin())
+    monkeypatch.setattr("dotsync.ui_picker.os.read", fake_read)
     monkeypatch.setattr(
         "dotsync.ui_picker.select.select",
-        lambda r, w, x, t: (r, [], []),
+        lambda r, w, x, t: ((r, [], []) if peek_ready else ([], [], [])),
     )
 
 
 def test_read_key_space(monkeypatch):
-    _stdin_with(" ", monkeypatch)
+    _stdin_with(b" ", monkeypatch)
     assert _read_key() == "space"
 
 
 def test_read_key_enter_lf(monkeypatch):
-    _stdin_with("\n", monkeypatch)
+    _stdin_with(b"\n", monkeypatch)
     assert _read_key() == "enter"
 
 
 def test_read_key_enter_cr(monkeypatch):
-    _stdin_with("\r", monkeypatch)
+    _stdin_with(b"\r", monkeypatch)
     assert _read_key() == "enter"
 
 
 def test_read_key_q_cancels(monkeypatch):
-    _stdin_with("q", monkeypatch)
+    _stdin_with(b"q", monkeypatch)
     assert _read_key() == "cancel"
 
 
 def test_read_key_uppercase_q_cancels(monkeypatch):
-    _stdin_with("Q", monkeypatch)
+    _stdin_with(b"Q", monkeypatch)
     assert _read_key() == "cancel"
 
 
 def test_read_key_arrow_up(monkeypatch):
-    _stdin_with("\x1b[A", monkeypatch)
+    _stdin_with(b"\x1b[A", monkeypatch)
     assert _read_key() == "up"
 
 
 def test_read_key_arrow_down(monkeypatch):
-    _stdin_with("\x1b[B", monkeypatch)
+    _stdin_with(b"\x1b[B", monkeypatch)
     assert _read_key() == "down"
 
 
 def test_read_key_bare_escape_cancels(monkeypatch):
     """ESC alone (no `[A`/`[B` follow-up) is treated as cancel."""
-    fake = io.StringIO("\x1b")
-    fake.fileno = lambda: 0
-    monkeypatch.setattr("dotsync.ui_picker.sys.stdin", fake)
-    # select reports nothing readable → no follow-up byte
-    monkeypatch.setattr(
-        "dotsync.ui_picker.select.select",
-        lambda r, w, x, t: ([], [], []),
-    )
+    _stdin_with(b"\x1b", monkeypatch, peek_ready=False)
     assert _read_key() == "cancel"
 
 
 def test_read_key_ctrl_c_raises_keyboardinterrupt(monkeypatch):
-    _stdin_with("\x03", monkeypatch)
+    _stdin_with(b"\x03", monkeypatch)
     with pytest.raises(KeyboardInterrupt):
         _read_key()
 
 
 def test_read_key_unknown_byte_returns_none(monkeypatch):
-    _stdin_with("z", monkeypatch)
+    _stdin_with(b"z", monkeypatch)
     assert _read_key() is None
+
+
+def test_read_key_arrow_works_when_all_bytes_arrive_together(monkeypatch):
+    """Real terminal behavior: a single keystroke delivers ESC [ B as one
+    burst on the fd. The first os.read pulls only ESC; the next two reads
+    must still see [ and B even though select.select might not 'see' them
+    as readable (the kernel may report them after the first read consumes
+    one byte). This test pins that os.read works correctly even if select
+    reports the fd as readable (which it would in cbreak mode for bytes
+    already on the fd)."""
+    buf = bytearray(b"\x1b[B")
+
+    def fake_read(fd, n):
+        if not buf:
+            return b""
+        ch = bytes(buf[:1])
+        del buf[0]
+        return ch
+
+    class FakeStdin:
+        def fileno(self):
+            return 0
+
+    monkeypatch.setattr("dotsync.ui_picker.sys.stdin", FakeStdin())
+    monkeypatch.setattr("dotsync.ui_picker.os.read", fake_read)
+    # select MUST report ready as long as buf has bytes — this mirrors the
+    # real-fd case (bytes on the fd, not slurped into a stdin buffer).
+    monkeypatch.setattr(
+        "dotsync.ui_picker.select.select",
+        lambda r, w, x, t: ((r, [], []) if buf else ([], [], [])),
+    )
+    assert _read_key() == "down"
 
 
 def test_render_first_pass_shows_title_and_all_items(capsys, monkeypatch):

@@ -13,6 +13,7 @@ Design split:
 """
 from __future__ import annotations
 
+import os
 import select
 import sys
 import termios
@@ -71,32 +72,39 @@ def _read_key() -> str | None:
     terminal to cbreak/raw mode. Returns one of:
         'up', 'down', 'space', 'enter', 'cancel', or None (unrecognized).
     Raises KeyboardInterrupt on ctrl+c.
+
+    Uses os.read(fd, 1) instead of sys.stdin.read(1) to bypass Python's
+    text-mode stdin buffer — without this, a multi-byte arrow sequence
+    (\\x1b[A) gets slurped into Python's buffer in one go, leaving the
+    fd empty and causing the subsequent select.select peek to time out
+    (so arrows wrongly read as bare-ESC = cancel).
     """
-    ch = sys.stdin.read(1)
-    if ch == "\x03":            # ctrl+c
+    fd = sys.stdin.fileno()
+    ch = os.read(fd, 1)
+    if ch == b"\x03":           # ctrl+c
         raise KeyboardInterrupt
-    if ch == "\x1b":            # ESC — could start an arrow sequence
+    if ch == b"\x1b":           # ESC — could start an arrow sequence
         # Peek for `[A` / `[B` with a short timeout so a bare ESC press
         # (user wants to cancel) doesn't hang waiting for a 3rd byte.
-        ready, _, _ = select.select([sys.stdin], [], [], 0.05)
+        ready, _, _ = select.select([fd], [], [], 0.05)
         if not ready:
             return "cancel"
-        if sys.stdin.read(1) != "[":
+        if os.read(fd, 1) != b"[":
             return "cancel"
-        ready, _, _ = select.select([sys.stdin], [], [], 0.05)
+        ready, _, _ = select.select([fd], [], [], 0.05)
         if not ready:
             return "cancel"
-        arrow = sys.stdin.read(1)
-        if arrow == "A":
+        arrow = os.read(fd, 1)
+        if arrow == b"A":
             return "up"
-        if arrow == "B":
+        if arrow == b"B":
             return "down"
         return None             # other CSI sequence — ignore
-    if ch == " ":
+    if ch == b" ":
         return "space"
-    if ch in ("\r", "\n"):
+    if ch in (b"\r", b"\n"):
         return "enter"
-    if ch in ("q", "Q"):
+    if ch in (b"q", b"Q"):
         return "cancel"
     return None
 
