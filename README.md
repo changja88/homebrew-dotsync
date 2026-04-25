@@ -111,12 +111,18 @@ $ dotsync status
 
 #### 폴더/앱 목록을 나중에 바꾸고 싶으면
 
+추적 앱은 두 가지 방법으로 바꿀 수 있습니다 — 인터랙티브 메뉴 또는 일괄 교체.
+
 ```bash
+dotsync apps                              # 현재 추적/설치 상태 한눈에 보기
+dotsync apps edit                         # 인터랙티브로 추적 앱 변경 (Enter = 그대로)
 dotsync config show                       # 현재 설정 보기
 dotsync config dir ~/another-folder       # sync 폴더 변경
-dotsync config apps claude,zsh            # 추적 앱 변경
+dotsync config apps claude,zsh            # 추적 앱 일괄 교체 (자동화용)
 dotsync config btt-preset MyPreset        # BTT preset 이름 변경
 ```
+
+`init`의 자동 감지 단계에서 보이는 `[Y/n/edit]` 프롬프트는 `y` = 감지된 앱 모두 추적, `n` = 아무것도 추적 안 함, `edit` = 직접 골라서 입력의 의미입니다.
 
 지원 앱: `claude`, `ghostty`, `bettertouchtool`, `zsh`
 
@@ -232,12 +238,18 @@ $ dotsync status
 
 #### Change the folder or app list later
 
+Two ways to change the tracked-apps list — an interactive menu or a one-shot replacement.
+
 ```bash
+dotsync apps                              # see current tracked/installed state
+dotsync apps edit                         # interactively edit tracked apps (Enter = keep current)
 dotsync config show                       # print current config
 dotsync config dir ~/another-folder       # change sync folder
-dotsync config apps claude,zsh            # change tracked apps
+dotsync config apps claude,zsh            # replace the tracked-apps list (for automation)
 dotsync config btt-preset MyPreset        # change BTT preset name
 ```
+
+In `init`'s auto-detect step, the `[Y/n/edit]` prompt means: `y` to track every detected app, `n` to track none, `edit` to type your own comma-separated list.
 
 Supported apps: `claude`, `ghostty`, `bettertouchtool`, `zsh`
 
