@@ -226,11 +226,15 @@ def test_init_interactive_uses_detected_default_on_enter(fake_home, tmp_path, mo
 
 
 def test_init_interactive_edit_lets_user_pick_apps(fake_home, tmp_path, monkeypatch):
+    """edit branch: in non-TTY (pytest) the picker falls back to per-app
+    y/n. The user keeps ghostty and zsh, drops claude and bettertouchtool."""
     (fake_home / ".zshrc").write_text("X")
     _no_btt(monkeypatch, fake_home)
 
     target = tmp_path / "i"
-    answers = iter([str(target), "edit", "ghostty,zsh"])
+    # Folder, then "edit", then four per-app fallback answers (sorted order:
+    # bettertouchtool, claude, ghostty, zsh).
+    answers = iter([str(target), "edit", "n", "n", "y", "y"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     rc = main(["init"])
@@ -238,6 +242,11 @@ def test_init_interactive_edit_lets_user_pick_apps(fake_home, tmp_path, monkeypa
     cfg_text = (target / "dotsync.toml").read_text()
     assert "ghostty" in cfg_text
     assert "zsh" in cfg_text
+    # The apps array shouldn't contain claude/bettertouchtool. We check for
+    # the quoted form so we don't collide with `bettertouchtool_preset` in
+    # the [options] section, which is always written.
+    assert '"claude"' not in cfg_text
+    assert '"bettertouchtool"' not in cfg_text
 
 
 def test_init_prints_how_to_change_hint(fake_home, tmp_path, monkeypatch, capsys):

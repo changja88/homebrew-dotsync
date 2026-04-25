@@ -167,10 +167,15 @@ def _resolve_apps_for_init(args) -> "list[str] | None":
     if choice in ("n", "no"):
         return []
     if choice in ("edit", "e"):
-        apps_str = ui.ask(
-            f"apps to track (comma-separated, options: {sorted(SUPPORTED_APPS)})"
+        from .ui_picker import pick_apps
+        result = pick_apps(
+            sorted(SUPPORTED_APPS),
+            preselected=set(detected),
         )
-        return [a.strip() for a in apps_str.split(",") if a.strip()]
+        if result is None:
+            print("cancelled — no apps selected", file=sys.stderr)
+            return None
+        return result
     print(f"unknown choice: {choice}", file=sys.stderr)
     return None
 
