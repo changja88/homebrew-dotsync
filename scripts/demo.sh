@@ -44,6 +44,10 @@ command -v brew >/dev/null    || { echo "brew not found — install Homebrew fir
 command -v shasum >/dev/null  || { echo "shasum not available"; exit 1; }
 command -v git >/dev/null     || { echo "git not available"; exit 1; }
 
+# Quiet brew down so its long progress lines don't wrap on narrow terminals.
+export HOMEBREW_NO_AUTO_UPDATE=1
+export HOMEBREW_NO_ENV_HINTS=1
+
 # Idempotent: silently scrub any leftover from a previous run so re-running
 # `make demo` is always safe. (DEMO_DIR is asked about explicitly in step 3.)
 rm -f "$TARBALL"
@@ -76,7 +80,7 @@ awk -v ver="$VERSION" '
 rm -f "$LOCAL_FORMULA.bak"
 
 echo
-brew install --build-from-source "$TAP_REF"
+brew install --quiet --build-from-source "$TAP_REF"
 echo
 note "installed: $(which dotsync)  ($(dotsync --version))"
 note "(Homebrew prints 'Caveats' twice — once during install, once at the end. ignore the duplicate.)"
