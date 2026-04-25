@@ -16,6 +16,22 @@ class Dotsync < Formula
     bin.env_script_all_files(libexec/"bin", PYTHONPATH: libexec)
   end
 
+  def caveats
+    <<~EOS
+      dotsync needs a one-time setup before any sync command works:
+
+        $ dotsync welcome     # quickstart guide
+        $ dotsync init        # pick a folder + auto-detect installed apps
+
+      To use dotsync from any directory, add this to your shell rc:
+
+        export DOTSYNC_DIR="$HOME/your-sync-folder"
+
+      Or just run dotsync from inside that folder — it auto-discovers
+      dotsync.toml by walking up.
+    EOS
+  end
+
   test do
     assert_match "dotsync 0.1.0", shell_output("#{bin}/dotsync --version")
   end
