@@ -109,3 +109,117 @@ def test_runtime_error_caught_with_friendly_exit(fake_home, monkeypatch, tmp_pat
     assert rc != 0
     err = capsys.readouterr().err
     assert "disk full" in err
+
+
+def _no_btt(monkeypatch, fake_home):
+    """Make BTT detection return False regardless of host machine state."""
+    monkeypatch.setattr(
+        "dotsync.apps.bettertouchtool.BetterTouchToolApp.APP_PATH",
+        fake_home / "no-btt.app",
+    )
+
+
+def test_init_yes_without_apps_uses_detected(fake_home, tmp_path, monkeypatch):
+    (fake_home / ".zshrc").write_text("X")
+    (fake_home / ".claude").mkdir()
+    (fake_home / ".claude" / "settings.json").write_text("{}")
+    _no_btt(monkeypatch, fake_home)
+
+    target = tmp_path / "configs"
+    rc = main(["init", "--dir", str(target), "--yes"])
+    assert rc == 0
+    cfg_text = (target / "dotsync.toml").read_text()
+    apps_line = next(l for l in cfg_text.splitlines() if l.startswith("apps = "))
+    assert "zsh" in apps_line
+    assert "claude" in apps_line
+    assert "bettertouchtool" not in apps_line
+    assert "ghostty" not in apps_line
+
+
+def test_init_yes_no_apps_and_no_detected_errors(fake_home, tmp_path, monkeypatch, capsys):
+    _no_btt(monkeypatch, fake_home)
+    target = tmp_path / "configs"
+    rc = main(["init", "--dir", str(target), "--yes"])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "no apps detected" in err.lower() or "no apps" in err.lower()
+
+
+def test_init_yes_with_existing_dotsync_toml_reuses_it(fake_home, tmp_path):
+    target = tmp_path / "existing"
+    target.mkdir()
+    (target / "dotsync.toml").write_text(
+        'apps = ["claude"]\n\n[options]\n'
+        'backup_dir = "~/.local/share/dotsync/backups"\n'
+        'backup_keep = 10\n'
+        'bettertouchtool_preset = "Existing"\n'
+    )
+    rc = main(["init", "--dir", str(target), "--yes"])
+    assert rc == 0
+    pointer = (fake_home / ".dotsync").read_text().strip()
+    assert pointer == str(target)
+    cfg_text = (target / "dotsync.toml").read_text()
+    assert 'apps = ["claude"]' in cfg_text
+    assert "Existing" in cfg_text
+
+
+def test_init_yes_existing_toml_with_explicit_overrides(fake_home, tmp_path):
+    target = tmp_path / "existing"
+    target.mkdir()
+    (target / "dotsync.toml").write_text(
+        'apps = ["claude"]\n\n[options]\nbettertouchtool_preset = "Old"\n'
+    )
+    rc = main([
+        "init", "--dir", str(target),
+        "--apps", "zsh,ghostty",
+        "--btt-preset", "New",
+        "--yes",
+    ])
+    assert rc == 0
+    cfg_text = (target / "dotsync.toml").read_text()
+    assert "zsh" in cfg_text and "ghostty" in cfg_text
+    assert "claude" not in cfg_text  # overridden
+    assert "New" in cfg_text
+
+
+def test_init_interactive_uses_detected_default_on_enter(fake_home, tmp_path, monkeypatch):
+    (fake_home / ".zshrc").write_text("X")
+    (fake_home / ".claude").mkdir()
+    (fake_home / ".claude" / "settings.json").write_text("{}")
+    _no_btt(monkeypatch, fake_home)
+
+    target = tmp_path / "i"
+    answers = iter([str(target), ""])  # folder path, Enter on "Track all?"
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    rc = main(["init"])
+    assert rc == 0
+    cfg_text = (target / "dotsync.toml").read_text()
+    assert "zsh" in cfg_text
+    assert "claude" in cfg_text
+
+
+def test_init_interactive_edit_lets_user_pick_apps(fake_home, tmp_path, monkeypatch):
+    (fake_home / ".zshrc").write_text("X")
+    _no_btt(monkeypatch, fake_home)
+
+    target = tmp_path / "i"
+    answers = iter([str(target), "edit", "ghostty,zsh"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    rc = main(["init"])
+    assert rc == 0
+    cfg_text = (target / "dotsync.toml").read_text()
+    assert "ghostty" in cfg_text
+    assert "zsh" in cfg_text
+
+
+def test_init_prints_how_to_change_hint(fake_home, tmp_path, monkeypatch, capsys):
+    (fake_home / ".zshrc").write_text("X")
+    _no_btt(monkeypatch, fake_home)
+    target = tmp_path / "h"
+    rc = main(["init", "--dir", str(target), "--yes"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "dotsync config apps" in out
+    assert "dotsync config dir" in out

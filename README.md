@@ -18,27 +18,48 @@ brew install changja88/dotsync/dotsync
 
 ### 사용법
 
-#### 1. 처음 한 번 — sync 대상 폴더와 추적할 앱 정하기
+#### 1. 처음 한 번 — sync 대상 폴더 정하기 (앱은 자동 감지됨)
 
-대화형 설정. 폴더 절대 경로와 추적할 앱 목록을 입력받는다.
+대화형으로 폴더 경로만 입력하면, 이 머신에 설치된 앱들이 자동 감지돼 default로 제시된다.
 
 ```bash
 dotsync init
-# sync 폴더 절대 경로: /Users/you/my-configs
-# 추적할 앱 (comma-separated, 후보: ['bettertouchtool', 'claude', 'ghostty', 'zsh']): claude,ghostty,zsh
+# sync folder (absolute path): /Users/you/my-configs
+#
+# Detected on this machine:
+#   ✓ claude
+#   ✓ ghostty
+#   ✓ bettertouchtool
+#   ✓ zsh
+# Track all of these? [Y/n/edit]: ⏎
+# BetterTouchTool preset name [Master_bt]: ⏎
 ```
+
+`Y`(또는 Enter)면 감지된 전부 추적, `n`이면 아무것도 안 추적, `edit`이면 직접 입력.
 
 비대화형(스크립트/새 머신 셋업용):
 
 ```bash
-dotsync init \
-  --dir ~/my-configs \
-  --apps claude,ghostty,bettertouchtool,zsh \
-  --btt-preset Master_bt \
-  --yes
+# --apps 생략 시 자동 감지된 전체를 추적
+dotsync init --dir ~/my-configs --yes
+
+# 명시적으로 지정도 가능
+dotsync init --dir ~/my-configs --apps claude,zsh --btt-preset Master_bt --yes
 ```
 
-설정은 `~/.config/dotsync/config.toml`에 저장된다.
+설정은 두 곳에 저장된다:
+- `<sync 폴더>/dotsync.toml` — 추적 앱, 백업 정책, BTT preset 등 (폴더와 함께 백업/이동된다)
+- `~/.dotsync` — sync 폴더 절대경로 한 줄짜리 pointer
+
+#### 새 머신에서 복원할 때
+
+폴더에 이미 `dotsync.toml`이 있으면 dotsync는 그걸 그대로 채택한다 — 한 줄이면 끝.
+
+```bash
+git clone git@github.com:you/my-configs.git ~/my-configs
+dotsync init --dir ~/my-configs --yes   # 폴더 안 dotsync.toml 그대로 사용, pointer만 갱신
+dotsync to --all
+```
 
 #### 2. 로컬 앱 설정 → 폴더 (스냅샷 뜨기)
 
@@ -95,27 +116,48 @@ brew install changja88/dotsync/dotsync
 
 ### Usage
 
-#### 1. One-time setup — pick your sync folder and which apps to track
+#### 1. One-time setup — pick your sync folder (apps auto-detected)
 
-Interactive. Asks for the absolute folder path and the app list.
+Interactive. You provide the folder path; dotsync detects which supported apps are installed on this machine and offers them as the default.
 
 ```bash
 dotsync init
-# sync 폴더 절대 경로: /Users/you/my-configs
-# 추적할 앱 (comma-separated, 후보: ['bettertouchtool', 'claude', 'ghostty', 'zsh']): claude,ghostty,zsh
+# sync folder (absolute path): /Users/you/my-configs
+#
+# Detected on this machine:
+#   ✓ claude
+#   ✓ ghostty
+#   ✓ bettertouchtool
+#   ✓ zsh
+# Track all of these? [Y/n/edit]: ⏎
+# BetterTouchTool preset name [Master_bt]: ⏎
 ```
+
+`Y` (or Enter) tracks all detected apps, `n` tracks none, `edit` lets you type a custom list.
 
 Non-interactive (scripts / new-machine bootstrap):
 
 ```bash
-dotsync init \
-  --dir ~/my-configs \
-  --apps claude,ghostty,bettertouchtool,zsh \
-  --btt-preset Master_bt \
-  --yes
+# --apps omitted → use all auto-detected apps
+dotsync init --dir ~/my-configs --yes
+
+# Or specify explicitly
+dotsync init --dir ~/my-configs --apps claude,zsh --btt-preset Master_bt --yes
 ```
 
-Settings are stored in `~/.config/dotsync/config.toml`.
+Settings live in two places:
+- `<sync folder>/dotsync.toml` — tracked apps, backup policy, BTT preset (travels with the folder)
+- `~/.dotsync` — single-line pointer to the sync folder's absolute path
+
+#### Restoring on a new machine
+
+If the folder already contains a `dotsync.toml`, `init` adopts it as-is — one line is enough.
+
+```bash
+git clone git@github.com:you/my-configs.git ~/my-configs
+dotsync init --dir ~/my-configs --yes   # reuses existing dotsync.toml, just refreshes pointer
+dotsync to --all
+```
 
 #### 2. Local app configs → folder (take a snapshot)
 

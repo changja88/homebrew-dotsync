@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 from dotsync import __version__, ui
-from dotsync.apps import APP_NAMES, app_descriptions, build_app
+from dotsync.apps import APP_NAMES, app_descriptions, build_app, detect_present
 from dotsync.backup import new_backup_session, rotate_backups
 from dotsync.config import (
     Config,
@@ -16,6 +16,7 @@ from dotsync.config import (
     load_config,
     pointer_path,
     save_config,
+    write_pointer,
 )
 
 
@@ -55,34 +56,101 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def cmd_init(args) -> int:
+    # 1. resolve sync folder path
     if args.yes:
         if not args.dir:
             print("--dir required with --yes", file=sys.stderr)
             return 2
         dir_path = Path(args.dir).expanduser().resolve()
-        apps = [a.strip() for a in (args.apps or "").split(",") if a.strip()]
-        btt_preset = args.btt_preset or DEFAULT_BTT_PRESET
     else:
         dir_str = input("sync folder (absolute path): ").strip()
         dir_path = Path(dir_str).expanduser().resolve()
-        apps_str = input(f"apps to track (comma-separated, options: {sorted(SUPPORTED_APPS)}): ").strip()
-        apps = [a.strip() for a in apps_str.split(",") if a.strip()]
-        btt_preset = args.btt_preset or DEFAULT_BTT_PRESET
-        if "bettertouchtool" in apps:
-            entered = input(f"BetterTouchTool preset name [{btt_preset}]: ").strip()
-            if entered:
-                btt_preset = entered
+    dir_path.mkdir(parents=True, exist_ok=True)
+
+    # 2. if folder already has a dotsync.toml and the user passed no overrides,
+    #    just adopt it and re-point. This is the new-machine restore flow.
+    existing = folder_config_path(dir_path)
+    has_overrides = bool(args.apps) or bool(args.btt_preset)
+    if existing.exists() and not has_overrides:
+        write_pointer(dir_path)
+        ui.done(f"adopted existing config → {existing}")
+        ui.sub(f"pointer  → {pointer_path()}")
+        _print_init_hints()
+        return 0
+
+    # 3. resolve apps list (auto-detect if not specified)
+    apps = _resolve_apps_for_init(args)
+    if apps is None:
+        return 2  # error already printed
 
     bad = [a for a in apps if a not in SUPPORTED_APPS]
     if bad:
         print(f"unknown apps: {bad}", file=sys.stderr)
         return 2
 
-    dir_path.mkdir(parents=True, exist_ok=True)
+    # 4. resolve BTT preset
+    btt_preset = args.btt_preset or DEFAULT_BTT_PRESET
+    if not args.yes and "bettertouchtool" in apps:
+        entered = input(f"BetterTouchTool preset name [{btt_preset}]: ").strip()
+        if entered:
+            btt_preset = entered
+
+    # 5. save + hints
     save_config(Config(dir=dir_path, apps=apps, bettertouchtool_preset=btt_preset))
     ui.done(f"config saved → {folder_config_path(dir_path)}")
     ui.sub(f"pointer  → {pointer_path()}")
+    _print_init_hints()
     return 0
+
+
+def _resolve_apps_for_init(args) -> "list[str] | None":
+    """Determine which apps to track.
+
+    Precedence: explicit --apps > auto-detected (with confirmation if interactive).
+    Returns None on error (after printing to stderr).
+    """
+    if args.apps is not None:
+        return [a.strip() for a in args.apps.split(",") if a.strip()]
+
+    detected = detect_present()
+
+    if args.yes:
+        if not detected:
+            print(
+                "no apps detected on this machine; pass --apps to specify",
+                file=sys.stderr,
+            )
+            return None
+        return detected
+
+    # interactive
+    print()
+    if detected:
+        print("Detected on this machine:")
+        for name in detected:
+            print(f"  ✓ {name}")
+        choice = input("Track all of these? [Y/n/edit]: ").strip().lower()
+    else:
+        print("No apps were auto-detected on this machine.")
+        choice = "edit"
+
+    if choice in ("", "y", "yes"):
+        return detected
+    if choice in ("n", "no"):
+        return []
+    if choice in ("edit", "e"):
+        apps_str = input(
+            f"apps to track (comma-separated, options: {sorted(SUPPORTED_APPS)}): "
+        ).strip()
+        return [a.strip() for a in apps_str.split(",") if a.strip()]
+    print(f"unknown choice: {choice}", file=sys.stderr)
+    return None
+
+
+def _print_init_hints() -> None:
+    print()
+    print("To change tracked apps later:  dotsync config apps <comma,separated>")
+    print("To change sync folder later:   dotsync config dir <new-path>")
 
 
 def cmd_config(args) -> int:
