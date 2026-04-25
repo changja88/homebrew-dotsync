@@ -1,7 +1,7 @@
 class Dotsync < Formula
   desc "Sync app configs with a local folder"
   homepage "https://github.com/changja88/homebrew-dotsync"
-  url "https://github.com/changja88/homebrew-dotsync/archive/refs/tags/v0.1.0.tar.gz"
+  url "https://github.com/changja88/homebrew-dotsync/archive/refs/tags/v0.1.1.tar.gz"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "MIT"
   depends_on "python@3.12"
@@ -28,6 +28,6 @@ class Dotsync < Formula
   end
 
   test do
-    assert_match "dotsync 0.1.0", shell_output("#{bin}/dotsync --version")
+    assert_match "dotsync 0.1.1", shell_output("#{bin}/dotsync --version")
   end
 end
