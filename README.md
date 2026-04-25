@@ -85,7 +85,7 @@ dotsync from claude         # 한 앱만
 dotsync to --all            # 직전 로컬 상태는 자동 백업됨
 ```
 
-`to` 직전 로컬 파일은 `~/.local/share/dotsync/backups/<YYYYMMDD_HHMMSS>/<app>/`에 자동 백업된다.
+`to` 직전 로컬 파일은 `<sync 폴더>/.backups/<YYYYMMDD_HHMMSS>/<app>/`에 자동 백업된다 (사용자 폴더 안에만 쌓이므로 git에 올리고 싶지 않으면 `.gitignore`에 `.backups/` 추가).
 
 #### 4. 동기화 상태 확인 (파일별 sha256 비교)
 
@@ -192,7 +192,7 @@ Then commit the folder to git or let iCloud sync it — that's your backup.
 dotsync to --all            # local state is backed up automatically before overwrite
 ```
 
-Each `to` snapshots the about-to-be-overwritten local files into `~/.local/share/dotsync/backups/<YYYYMMDD_HHMMSS>/<app>/`.
+Each `to` snapshots the about-to-be-overwritten local files into `<sync folder>/.backups/<YYYYMMDD_HHMMSS>/<app>/` (lives inside your sync folder; add `.backups/` to `.gitignore` if you don't want it tracked).
 
 #### 4. Check sync state (per-file sha256 diff)
 
