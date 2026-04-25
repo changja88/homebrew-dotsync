@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import select
 import sys
+import termios
+import tty
 
 from . import ui
 
@@ -22,6 +24,8 @@ from . import ui
 _GLYPH_CURSOR = "▸"
 _CHECK_ON = "[x]"
 _CHECK_OFF = "[ ]"
+_CURSOR_HIDE = "\x1b[?25l"
+_CURSOR_SHOW = "\x1b[?25h"
 
 
 class PickerState:
@@ -142,3 +146,55 @@ def _fallback_per_app(items: list[str], preselected) -> list[str]:
         if keep:
             selected.append(name)
     return selected
+
+
+def _enter_raw_mode():
+    """Switch terminal to cbreak mode and hide the cursor. Returns an
+    opaque token to pass back into _restore_terminal."""
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    tty.setcbreak(fd)
+    sys.stdout.write(_CURSOR_HIDE)
+    sys.stdout.flush()
+    return (fd, old)
+
+
+def _restore_terminal(token) -> None:
+    """Revert what _enter_raw_mode did. Always safe to call."""
+    fd, old = token
+    termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    sys.stdout.write(_CURSOR_SHOW)
+    sys.stdout.flush()
+
+
+def pick_apps(
+    items: list[str],
+    preselected,
+    title: str = "Pick apps to track",
+) -> list[str] | None:
+    """Interactive arrow-key checkbox picker.
+
+    Returns the selected items in input order, or None if the user
+    cancelled (q / esc / ctrl+c). On non-TTY environments (CI, piped
+    stdin, pytest) falls back to per-app y/n prompts and never returns
+    None — fallback can't be cancelled, only answered."""
+    if not _interactive_supported():
+        return _fallback_per_app(items, preselected)
+
+    state = PickerState(items, preselected)
+    token = _enter_raw_mode()
+    try:
+        _render(state, title, first=True)
+        while not state.done and not state.cancelled:
+            try:
+                key = _read_key()
+            except KeyboardInterrupt:
+                state.cancelled = True
+                break
+            if key is not None:
+                state.handle(key)
+            _render(state, title, first=False)
+    finally:
+        _restore_terminal(token)
+    print()  # blank line after picker exits
+    return state.result

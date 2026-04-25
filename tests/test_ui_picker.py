@@ -8,6 +8,7 @@ from dotsync.ui_picker import (
     _interactive_supported,
     _read_key,
     _render,
+    pick_apps,
 )
 
 
@@ -274,3 +275,78 @@ def test_fallback_explicit_n_overrides_preselected(monkeypatch):
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
     result = _fallback_per_app(ITEMS, preselected={"claude", "zsh"})
     assert result == []  # claude said n, ghostty/btt not preselected, zsh said n
+
+
+def test_pick_apps_uses_fallback_when_not_tty(monkeypatch):
+    """Under pytest, isatty() is False → fallback path runs."""
+    answers = iter(["", "n", "", "n"])  # claude=keep, ghostty=skip, btt=keep, zsh=skip
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    result = pick_apps(
+        ["claude", "ghostty", "bettertouchtool", "zsh"],
+        preselected={"claude", "bettertouchtool", "zsh"},
+    )
+    assert result == ["claude", "bettertouchtool"]
+
+
+def test_pick_apps_fallback_returns_empty_list_when_all_skipped(monkeypatch):
+    """All-no answers return [] (untrack everything), not None."""
+    answers = iter(["n", "n", "n", "n"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    result = pick_apps(
+        ["claude", "ghostty", "bettertouchtool", "zsh"],
+        preselected={"claude"},
+    )
+    assert result == []
+
+
+def test_pick_apps_tty_path_drives_state_to_completion(monkeypatch):
+    """Smoke-test the TTY branch: with _interactive_supported faked True,
+    a scripted key sequence produces the expected result. termios setup
+    and rendering are stubbed out — we only exercise the loop."""
+    monkeypatch.setattr("dotsync.ui_picker._interactive_supported", lambda: True)
+    monkeypatch.setattr("dotsync.ui_picker._enter_raw_mode", lambda: object())
+    monkeypatch.setattr("dotsync.ui_picker._restore_terminal", lambda token: None)
+    monkeypatch.setattr("dotsync.ui_picker._render", lambda *a, **kw: None)
+
+    keys = iter(["down", "space", "enter"])
+    monkeypatch.setattr("dotsync.ui_picker._read_key", lambda: next(keys))
+
+    result = pick_apps(
+        ["claude", "ghostty", "bettertouchtool", "zsh"],
+        preselected=set(),
+    )
+    assert result == ["ghostty"]
+
+
+def test_pick_apps_cancel_returns_none(monkeypatch):
+    monkeypatch.setattr("dotsync.ui_picker._interactive_supported", lambda: True)
+    monkeypatch.setattr("dotsync.ui_picker._enter_raw_mode", lambda: object())
+    monkeypatch.setattr("dotsync.ui_picker._restore_terminal", lambda token: None)
+    monkeypatch.setattr("dotsync.ui_picker._render", lambda *a, **kw: None)
+    monkeypatch.setattr("dotsync.ui_picker._read_key", lambda: "cancel")
+
+    result = pick_apps(["claude", "ghostty"], preselected=set())
+    assert result is None
+
+
+def test_pick_apps_keyboard_interrupt_returns_none_and_restores(monkeypatch):
+    """Ctrl+C during the loop must always restore terminal state and
+    return None — never leave the user with a dead terminal."""
+    monkeypatch.setattr("dotsync.ui_picker._interactive_supported", lambda: True)
+
+    sentinel = object()
+    restored = []
+    monkeypatch.setattr("dotsync.ui_picker._enter_raw_mode", lambda: sentinel)
+    monkeypatch.setattr(
+        "dotsync.ui_picker._restore_terminal",
+        lambda token: restored.append(token),
+    )
+    monkeypatch.setattr("dotsync.ui_picker._render", lambda *a, **kw: None)
+
+    def boom():
+        raise KeyboardInterrupt
+    monkeypatch.setattr("dotsync.ui_picker._read_key", boom)
+
+    result = pick_apps(["claude", "ghostty"], preselected=set())
+    assert result is None
+    assert restored == [sentinel]   # terminal was restored exactly once
