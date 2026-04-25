@@ -1,15 +1,25 @@
-"""dotsync config file management at ~/.config/dotsync/config.toml."""
+"""dotsync config persistence.
+
+Layout:
+  ~/.dotsync                       single-line pointer file containing the
+                                   absolute path of the user's sync folder.
+  <sync-folder>/dotsync.toml       real config (apps + options).
+
+The folder doesn't record its own location, so dotsync.toml omits `dir`.
+"""
 from __future__ import annotations
-import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 SUPPORTED_APPS = {"claude", "ghostty", "bettertouchtool", "zsh"}
 DEFAULT_BACKUP_DIR = "~/.local/share/dotsync/backups"
 DEFAULT_BACKUP_KEEP = 10
 DEFAULT_BTT_PRESET = "Master_bt"
+
+POINTER_FILENAME = ".dotsync"
+FOLDER_CONFIG_FILENAME = "dotsync.toml"
 
 
 class ConfigError(Exception):
@@ -25,34 +35,56 @@ class Config:
     bettertouchtool_preset: str = DEFAULT_BTT_PRESET
 
 
-def config_path() -> Path:
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".config"
-    return base / "dotsync" / "config.toml"
+def pointer_path() -> Path:
+    return Path.home() / POINTER_FILENAME
+
+
+def folder_config_path(folder: Path) -> Path:
+    return folder / FOLDER_CONFIG_FILENAME
+
+
+def read_pointer() -> Optional[Path]:
+    p = pointer_path()
+    if not p.exists():
+        return None
+    raw = p.read_text().strip()
+    if not raw:
+        return None
+    return Path(raw)
+
+
+def write_pointer(folder: Path) -> None:
+    pointer_path().write_text(f"{folder}\n")
 
 
 def load_config() -> Config:
-    path = config_path()
-    if not path.exists():
+    folder = read_pointer()
+    if folder is None:
+        raise ConfigError("dotsync is not initialized — run `dotsync init` first.")
+    if not folder.is_absolute():
+        raise ConfigError(f"pointer must be an absolute path, got: {folder}")
+    if not folder.exists():
         raise ConfigError(
-            f"config not found at {path}. Run `dotsync init` first."
+            f"sync folder not found at {folder}. "
+            f"Run `dotsync init --dir <path> --yes` to repoint."
         )
-    with path.open("rb") as f:
+    cfg_file = folder_config_path(folder)
+    if not cfg_file.exists():
+        raise ConfigError(
+            f"dotsync.toml missing in {folder}. "
+            f"Run `dotsync init --dir {folder} --yes` to recreate."
+        )
+    with cfg_file.open("rb") as f:
         data = tomllib.load(f)
-
-    raw_dir = data.get("dir")
-    if not raw_dir:
-        raise ConfigError(f"`dir` missing in {path}")
-    dir_path = Path(raw_dir)
-    if not dir_path.is_absolute():
-        raise ConfigError(f"`dir` must be an absolute path, got: {raw_dir}")
 
     apps = data.get("apps") or []
     if not isinstance(apps, list):
         raise ConfigError(f"`apps` must be a list, got: {type(apps).__name__}")
     for app in apps:
         if app not in SUPPORTED_APPS:
-            raise ConfigError(f"unknown app `{app}` in config (supported: {sorted(SUPPORTED_APPS)})")
+            raise ConfigError(
+                f"unknown app `{app}` in config (supported: {sorted(SUPPORTED_APPS)})"
+            )
 
     options = data.get("options", {}) or {}
     backup_dir_raw = options.get("backup_dir", DEFAULT_BACKUP_DIR)
@@ -61,7 +93,7 @@ def load_config() -> Config:
     btt_preset = str(options.get("bettertouchtool_preset", DEFAULT_BTT_PRESET))
 
     return Config(
-        dir=dir_path,
+        dir=folder,
         apps=apps,
         backup_dir=backup_dir,
         backup_keep=backup_keep,
@@ -70,10 +102,10 @@ def load_config() -> Config:
 
 
 def save_config(cfg: Config) -> None:
-    path = config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """Write the pointer (~/.dotsync) and the folder's dotsync.toml."""
+    cfg.dir.mkdir(parents=True, exist_ok=True)
+    write_pointer(cfg.dir)
     lines = [
-        f'dir = "{cfg.dir}"',
         "apps = [" + ", ".join(f'"{a}"' for a in cfg.apps) + "]",
         "",
         "[options]",
@@ -82,4 +114,4 @@ def save_config(cfg: Config) -> None:
         f'bettertouchtool_preset = "{cfg.bettertouchtool_preset}"',
         "",
     ]
-    path.write_text("\n".join(lines))
+    folder_config_path(cfg.dir).write_text("\n".join(lines))

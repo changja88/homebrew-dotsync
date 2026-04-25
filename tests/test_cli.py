@@ -13,19 +13,19 @@ def test_version_flag(capsys):
     assert "0.1.0" in out
 
 
-def test_init_writes_config_noninteractive(fake_home, monkeypatch, tmp_path):
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+def test_init_writes_config_noninteractive(fake_home, tmp_path):
     target = tmp_path / "myconfigs"
     rc = main(["init", "--dir", str(target), "--apps", "zsh,ghostty", "--yes"])
     assert rc == 0
-    cfg_file = fake_home / ".config" / "dotsync" / "config.toml"
+    cfg_file = target / "dotsync.toml"
+    pointer = fake_home / ".dotsync"
     assert cfg_file.exists()
     assert "zsh" in cfg_file.read_text()
+    assert pointer.read_text().strip() == str(target)
     assert target.exists()
 
 
-def test_init_with_btt_preset_flag(fake_home, monkeypatch, tmp_path):
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+def test_init_with_btt_preset_flag(fake_home, tmp_path):
     target = tmp_path / "myconfigs"
     rc = main([
         "init", "--dir", str(target),
@@ -34,7 +34,7 @@ def test_init_with_btt_preset_flag(fake_home, monkeypatch, tmp_path):
         "--yes",
     ])
     assert rc == 0
-    cfg_text = (fake_home / ".config" / "dotsync" / "config.toml").read_text()
+    cfg_text = (target / "dotsync.toml").read_text()
     assert "MyPreset" in cfg_text
 
 

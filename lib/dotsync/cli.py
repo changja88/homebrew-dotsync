@@ -12,7 +12,9 @@ from dotsync.config import (
     ConfigError,
     DEFAULT_BTT_PRESET,
     SUPPORTED_APPS,
+    folder_config_path,
     load_config,
+    pointer_path,
     save_config,
 )
 
@@ -78,7 +80,8 @@ def cmd_init(args) -> int:
 
     dir_path.mkdir(parents=True, exist_ok=True)
     save_config(Config(dir=dir_path, apps=apps, bettertouchtool_preset=btt_preset))
-    ui.done(f"config saved → {Path.home()}/.config/dotsync/config.toml")
+    ui.done(f"config saved → {folder_config_path(dir_path)}")
+    ui.sub(f"pointer  → {pointer_path()}")
     return 0
 
 
