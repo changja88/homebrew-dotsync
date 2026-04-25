@@ -117,3 +117,28 @@ def _render(state: PickerState, title: str, *, first: bool) -> None:
             check = _CHECK_OFF
         out.write(f"  {cursor_marker} {check} {name}\n")
     out.flush()
+
+
+def _interactive_supported() -> bool:
+    """True only if both stdin and stdout are real TTYs. Pytest captures
+    streams (isatty=False) → fallback path is used during tests."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _fallback_per_app(items: list[str], preselected) -> list[str]:
+    """Sequential y/n prompt for non-TTY environments (CI, pipe, pytest).
+    Default is Y for preselected items, N otherwise — bare Enter accepts
+    the default."""
+    pre = {a for a in preselected if a in items}
+    selected: list[str] = []
+    for name in items:
+        default_yes = name in pre
+        hint = "Y/n" if default_yes else "y/N"
+        ans = ui.ask(f"track {name}?", default=hint).strip().lower()
+        if not ans:
+            keep = default_yes
+        else:
+            keep = ans in ("y", "yes")
+        if keep:
+            selected.append(name)
+    return selected

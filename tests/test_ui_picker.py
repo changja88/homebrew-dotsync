@@ -2,7 +2,13 @@ import io
 
 import pytest
 
-from dotsync.ui_picker import PickerState, _read_key, _render
+from dotsync.ui_picker import (
+    PickerState,
+    _fallback_per_app,
+    _interactive_supported,
+    _read_key,
+    _render,
+)
 
 
 ITEMS = ["claude", "ghostty", "bettertouchtool", "zsh"]
@@ -220,3 +226,51 @@ def test_render_redraw_emits_cursor_up_and_clear(capsys, monkeypatch):
     # Cursor up by (items + 2) and clear-to-end-of-screen
     assert f"\x1b[{len(ITEMS) + 2}A" in out
     assert "\x1b[J" in out
+
+
+def test_interactive_supported_false_when_stdin_not_tty(monkeypatch):
+    class FakeStream:
+        def isatty(self):
+            return False
+    monkeypatch.setattr("dotsync.ui_picker.sys.stdin", FakeStream())
+    monkeypatch.setattr("dotsync.ui_picker.sys.stdout", FakeStream())
+    assert _interactive_supported() is False
+
+
+def test_interactive_supported_true_when_both_are_ttys(monkeypatch):
+    class FakeStream:
+        def isatty(self):
+            return True
+    monkeypatch.setattr("dotsync.ui_picker.sys.stdin", FakeStream())
+    monkeypatch.setattr("dotsync.ui_picker.sys.stdout", FakeStream())
+    assert _interactive_supported() is True
+
+
+def test_fallback_default_yes_for_preselected(monkeypatch):
+    """Bare Enter on a preselected app keeps it tracked."""
+    answers = iter(["", "", "", ""])  # accept defaults for all 4
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    result = _fallback_per_app(ITEMS, preselected={"claude", "zsh"})
+    assert result == ["claude", "zsh"]
+
+
+def test_fallback_default_no_for_unpreselected(monkeypatch):
+    """Bare Enter on an unselected app leaves it untracked."""
+    answers = iter(["", "", "", ""])  # accept defaults for all 4
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    result = _fallback_per_app(ITEMS, preselected=set())
+    assert result == []
+
+
+def test_fallback_explicit_y_overrides_default(monkeypatch):
+    answers = iter(["y", "n", "y", "n"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    result = _fallback_per_app(ITEMS, preselected=set())
+    assert result == ["claude", "bettertouchtool"]
+
+
+def test_fallback_explicit_n_overrides_preselected(monkeypatch):
+    answers = iter(["n", "", "", "n"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    result = _fallback_per_app(ITEMS, preselected={"claude", "zsh"})
+    assert result == []  # claude said n, ghostty/btt not preselected, zsh said n
