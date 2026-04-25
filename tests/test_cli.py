@@ -293,3 +293,15 @@ def test_init_interactive_custom_dir_overrides_default(fake_home, monkeypatch, t
     assert (custom / "dotsync.toml").exists()
     # default not used
     assert not (fake_home / "Desktop" / "dotsync_config").exists()
+
+
+def test_config_error_uses_ui_error_styling(fake_home, monkeypatch, tmp_path, capsys):
+    """ConfigError must be rendered with the design-system error glyph,
+    not raw text. (NO_COLOR keeps it deterministic in tests.)"""
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.chdir(tmp_path)  # cwd has no dotsync.toml
+    rc = main(["status"])
+    assert rc == 3
+    err = capsys.readouterr().err
+    assert "✗" in err  # ui.error glyph
+    assert "dotsync init" in err  # next-action hint preserved

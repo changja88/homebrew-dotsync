@@ -325,7 +325,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.print_help()
         return 2
     except ConfigError as e:
-        print(str(e), file=sys.stderr)
+        ui.error(str(e))
         return 3
     except FileNotFoundError as e:
         ui.error(str(e))
