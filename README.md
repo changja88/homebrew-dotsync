@@ -14,7 +14,10 @@ dotsync는 macOS의 앱 설정(Claude Code, Ghostty, BetterTouchTool, zsh)을 **
 
 ```bash
 brew install changja88/dotsync/dotsync
+dotsync welcome   # ASCII 환영 배너와 첫 시작 안내를 출력
 ```
+
+> **`dotsync init`은 필수다.** sync 폴더를 정하지 않으면 다른 명령은 동작하지 않는다.
 
 ### 사용법
 
@@ -121,7 +124,10 @@ dotsync consolidates your macOS app configs (Claude Code, Ghostty, BetterTouchTo
 
 ```bash
 brew install changja88/dotsync/dotsync
+dotsync welcome   # prints the ASCII welcome banner with quickstart hints
 ```
+
+> **`dotsync init` is required first.** Without picking a sync folder, no other command will work.
 
 ### Usage
 

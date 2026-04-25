@@ -224,3 +224,32 @@ def test_init_prints_how_to_change_hint(fake_home, tmp_path, monkeypatch, capsys
     out = capsys.readouterr().out
     assert "DOTSYNC_DIR" in out
     assert "dotsync config apps" in out
+
+
+def test_init_shows_welcome_by_default(fake_home, tmp_path, monkeypatch, capsys):
+    (fake_home / ".zshrc").write_text("X")
+    _no_btt(monkeypatch, fake_home)
+    target = tmp_path / "w"
+    rc = main(["init", "--dir", str(target), "--yes"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "█" in out  # welcome ASCII logo
+    assert "required" in out.lower()
+
+
+def test_init_quiet_skips_welcome(fake_home, tmp_path, monkeypatch, capsys):
+    (fake_home / ".zshrc").write_text("X")
+    _no_btt(monkeypatch, fake_home)
+    target = tmp_path / "wq"
+    rc = main(["init", "--dir", str(target), "--yes", "--quiet"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "█" not in out
+
+
+def test_welcome_subcommand(capsys):
+    rc = main(["welcome"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "█" in out
+    assert "dotsync init" in out

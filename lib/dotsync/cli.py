@@ -18,6 +18,7 @@ from dotsync.config import (
     load_config,
     save_config,
 )
+from dotsync.welcome import print_welcome
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -30,6 +31,9 @@ def _build_parser() -> argparse.ArgumentParser:
     init.add_argument("--apps", help="comma-separated app names")
     init.add_argument("--btt-preset", default=None, help=f"BetterTouchTool preset name (default: {DEFAULT_BTT_PRESET})")
     init.add_argument("--yes", action="store_true", help="non-interactive: skip prompts")
+    init.add_argument("--quiet", action="store_true", help="skip the welcome banner")
+
+    sub.add_parser("welcome", help="print the welcome banner")
 
     cfg = sub.add_parser("config", help="manage config")
     cfg_sub = cfg.add_subparsers(dest="cfg_cmd", required=True)
@@ -55,7 +59,15 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def cmd_welcome(args) -> int:
+    print_welcome()
+    return 0
+
+
 def cmd_init(args) -> int:
+    if not args.quiet:
+        print_welcome()
+
     # 1. resolve sync folder path
     if args.yes:
         if not args.dir:
@@ -264,6 +276,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.cmd == "init":
             return cmd_init(args)
+        if args.cmd == "welcome":
+            return cmd_welcome(args)
         if args.cmd == "config":
             return cmd_config(args)
         if args.cmd == "apps":
