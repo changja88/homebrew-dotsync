@@ -177,3 +177,124 @@ def test_status_unknown_when_btt_not_running(tmp_path):
         result = BetterTouchToolApp(preset="Master_bt").status(target)
     assert result.state == "unknown"
     assert "running" in result.details.lower() or "btt" in result.details.lower()
+
+
+import sqlite3
+
+
+def _make_btt_db(path: Path, preset_names: list[str]) -> None:
+    """Create a minimal BTT-shaped SQLite DB with the given preset names
+    in the ZNAME3 column of the ZBTTBASEENTITY table. Mirrors the schema
+    fields our discover query relies on; ignores everything else."""
+    conn = sqlite3.connect(str(path))
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE Z_PRIMARYKEY (Z_ENT INTEGER, Z_NAME VARCHAR)")
+    cur.execute("CREATE TABLE ZBTTBASEENTITY (Z_PK INTEGER, Z_ENT INTEGER, ZNAME3 VARCHAR)")
+    cur.execute("INSERT INTO Z_PRIMARYKEY (Z_ENT, Z_NAME) VALUES (?, ?)", (12, "Preset"))
+    cur.execute("INSERT INTO Z_PRIMARYKEY (Z_ENT, Z_NAME) VALUES (?, ?)", (8, "Gesture"))
+    for i, name in enumerate(preset_names, start=1):
+        cur.execute(
+            "INSERT INTO ZBTTBASEENTITY (Z_PK, Z_ENT, ZNAME3) VALUES (?, ?, ?)",
+            (i, 12, name),
+        )
+    # noise: a non-Preset row should not be picked up
+    cur.execute(
+        "INSERT INTO ZBTTBASEENTITY (Z_PK, Z_ENT, ZNAME3) VALUES (?, ?, ?)",
+        (999, 8, "not_a_preset"),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_discover_preset_names_returns_sorted_list(tmp_path, monkeypatch):
+    btt_dir = tmp_path / "btt"
+    btt_dir.mkdir()
+    db = btt_dir / "btt_data_store.version_6_306_build_2026032508"
+    _make_btt_db(db, ["Work", "Master_bt", "Travel"])
+    monkeypatch.setattr(BetterTouchToolApp, "DATA_DIR", btt_dir)
+
+    names = BetterTouchToolApp.discover_preset_names()
+    assert names == ["Master_bt", "Travel", "Work"]
+
+
+def test_discover_preset_names_picks_most_recent_db(tmp_path, monkeypatch):
+    """User has stale DB files from prior BTT versions; we use the latest."""
+    btt_dir = tmp_path / "btt"
+    btt_dir.mkdir()
+    old_db = btt_dir / "btt_data_store.version_6_011_build_2026010801"
+    new_db = btt_dir / "btt_data_store.version_6_306_build_2026032508"
+    _make_btt_db(old_db, ["OldPreset"])
+    _make_btt_db(new_db, ["CurrentPreset"])
+    # Force the old DB to have an older mtime
+    import os
+    os.utime(old_db, (1_700_000_000, 1_700_000_000))
+    os.utime(new_db, (1_800_000_000, 1_800_000_000))
+    monkeypatch.setattr(BetterTouchToolApp, "DATA_DIR", btt_dir)
+
+    assert BetterTouchToolApp.discover_preset_names() == ["CurrentPreset"]
+
+
+def test_discover_preset_names_ignores_wal_and_shm_siblings(tmp_path, monkeypatch):
+    btt_dir = tmp_path / "btt"
+    btt_dir.mkdir()
+    db = btt_dir / "btt_data_store.version_6_306_build_2026032508"
+    _make_btt_db(db, ["MyPreset"])
+    # SQLite write-ahead log siblings — must not be picked as the DB
+    (btt_dir / "btt_data_store.version_6_306_build_2026032508-shm").write_bytes(b"\x00" * 32)
+    (btt_dir / "btt_data_store.version_6_306_build_2026032508-wal").write_bytes(b"\x00" * 32)
+
+    monkeypatch.setattr(BetterTouchToolApp, "DATA_DIR", btt_dir)
+    assert BetterTouchToolApp.discover_preset_names() == ["MyPreset"]
+
+
+def test_discover_preset_names_returns_empty_when_dir_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(BetterTouchToolApp, "DATA_DIR", tmp_path / "does_not_exist")
+    assert BetterTouchToolApp.discover_preset_names() == []
+
+
+def test_discover_preset_names_returns_empty_when_no_db_files(tmp_path, monkeypatch):
+    btt_dir = tmp_path / "btt"
+    btt_dir.mkdir()  # exists but empty
+    monkeypatch.setattr(BetterTouchToolApp, "DATA_DIR", btt_dir)
+    assert BetterTouchToolApp.discover_preset_names() == []
+
+
+def test_discover_preset_names_returns_empty_on_corrupt_db(tmp_path, monkeypatch):
+    btt_dir = tmp_path / "btt"
+    btt_dir.mkdir()
+    bad = btt_dir / "btt_data_store.version_6_306_build_2026032508"
+    bad.write_bytes(b"this is not a sqlite database")
+    monkeypatch.setattr(BetterTouchToolApp, "DATA_DIR", btt_dir)
+    assert BetterTouchToolApp.discover_preset_names() == []
+
+
+def test_discover_preset_names_returns_empty_on_unexpected_schema(tmp_path, monkeypatch):
+    """If the schema lacks Z_PRIMARYKEY or ZBTTBASEENTITY, we don't crash."""
+    btt_dir = tmp_path / "btt"
+    btt_dir.mkdir()
+    db = btt_dir / "btt_data_store.version_6_306_build_2026032508"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE Foo (bar TEXT)")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(BetterTouchToolApp, "DATA_DIR", btt_dir)
+    assert BetterTouchToolApp.discover_preset_names() == []
+
+
+def test_discover_preset_names_filters_null_and_empty(tmp_path, monkeypatch):
+    """ZNAME3 values that are NULL or empty string are not real preset names."""
+    btt_dir = tmp_path / "btt"
+    btt_dir.mkdir()
+    db = btt_dir / "btt_data_store.version_6_306_build_2026032508"
+    conn = sqlite3.connect(str(db))
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE Z_PRIMARYKEY (Z_ENT INTEGER, Z_NAME VARCHAR)")
+    cur.execute("CREATE TABLE ZBTTBASEENTITY (Z_PK INTEGER, Z_ENT INTEGER, ZNAME3 VARCHAR)")
+    cur.execute("INSERT INTO Z_PRIMARYKEY (Z_ENT, Z_NAME) VALUES (?, ?)", (12, "Preset"))
+    cur.execute("INSERT INTO ZBTTBASEENTITY VALUES (1, 12, NULL)")
+    cur.execute("INSERT INTO ZBTTBASEENTITY VALUES (2, 12, '')")
+    cur.execute("INSERT INTO ZBTTBASEENTITY VALUES (3, 12, 'Real')")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(BetterTouchToolApp, "DATA_DIR", btt_dir)
+    assert BetterTouchToolApp.discover_preset_names() == ["Real"]

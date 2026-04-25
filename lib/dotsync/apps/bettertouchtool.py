@@ -1,6 +1,7 @@
 """BetterTouchTool sync via osascript export/import."""
 from __future__ import annotations
 import shutil
+import sqlite3
 import subprocess
 from pathlib import Path
 from dotsync import ui
@@ -13,6 +14,42 @@ class BetterTouchToolApp(App):
 
     # Class attribute so tests can monkeypatch.
     APP_PATH = Path("/Applications/BetterTouchTool.app")
+
+    # Path to BTT's Core Data SQLite store. Class attribute so tests can
+    # monkeypatch with a fixture directory.
+    DATA_DIR = Path.home() / "Library" / "Application Support" / "BetterTouchTool"
+
+    @classmethod
+    def discover_preset_names(cls) -> list[str]:
+        """Best-effort enumeration of preset names from BTT's own SQLite
+        store. Returns a sorted list. Returns [] on any failure (BTT not
+        installed, DB missing, schema drift, db locked, etc.) so callers
+        can fall back to asking the user."""
+        try:
+            data_dir = Path(cls.DATA_DIR)
+            if not data_dir.is_dir():
+                return []
+            # BTT keeps stale DB files from prior versions; ignore SQLite WAL
+            # siblings (-shm/-wal) and pick the most-recently-modified main file.
+            candidates = [
+                p for p in data_dir.glob("btt_data_store.version_*")
+                if not p.name.endswith("-shm") and not p.name.endswith("-wal")
+            ]
+            if not candidates:
+                return []
+            db_path = max(candidates, key=lambda p: p.stat().st_mtime)
+            # Open read-only via URI to avoid creating -shm/-wal of our own.
+            uri = f"file:{db_path}?mode=ro"
+            with sqlite3.connect(uri, uri=True) as conn:
+                rows = conn.execute(
+                    "SELECT ZNAME3 FROM ZBTTBASEENTITY "
+                    "WHERE Z_ENT = (SELECT Z_ENT FROM Z_PRIMARYKEY "
+                    "               WHERE Z_NAME = 'Preset') "
+                    "  AND ZNAME3 IS NOT NULL AND ZNAME3 != ''"
+                ).fetchall()
+            return sorted({row[0] for row in rows})
+        except Exception:
+            return []
 
     @classmethod
     def is_present_locally(cls) -> bool:
