@@ -4,15 +4,32 @@ class Dotsync < Formula
   url "https://github.com/changja88/homebrew-dotsync/archive/refs/tags/v0.1.4.tar.gz"
   sha256 "b923b3afd318e751b2e38d00b24ca2025891e9ee2fb85ff81b63a9c181114cf5"
   license "MIT"
-  depends_on "python@3.12"
+
+  # Reuse an existing Python 3.12+ binary if the user already has one — avoids
+  # a duplicate ~100 MB python@3.12 install when they already use python.org,
+  # pyenv, uv, or any other source. Canonical paths only (no PATH search and
+  # no shell-out at formula load time).
+  def self.external_python
+    [
+      "/opt/homebrew/bin/python3.12",
+      "/opt/homebrew/bin/python3.13",
+      "/usr/local/bin/python3.12",
+      "/usr/local/bin/python3.13",
+      "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12",
+      "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13",
+    ].find { |p| File.executable?(p) }
+  end
+
+  depends_on "python@3.12" if external_python.nil?
 
   def install
     libexec.install "lib/dotsync"
-    # Install the entry script and pin its shebang to python@3.12 so users
-    # don't accidentally run dotsync under an older system python3.
     bin.install "bin/dotsync"
-    py = Formula["python@3.12"].opt_bin/"python3.12"
-    inreplace bin/"dotsync", %r{^#!.*python.*$}, "#!#{py}"
+    # Prefer an already-installed Python 3.12+ over brew's python@3.12; pin
+    # the shebang so dotsync runs with a known version regardless of the
+    # user's `python3` resolution.
+    py = self.class.external_python || (Formula["python@3.12"].opt_bin/"python3.12").to_s
+    inreplace bin/"dotsync", /^#!.*python.*$/, "#!#{py}"
     bin.env_script_all_files(libexec/"bin", PYTHONPATH: libexec)
   end
 
