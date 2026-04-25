@@ -19,7 +19,7 @@ def format_welcome(version: str = __version__) -> str:
     def c(color: str, text: str) -> str:
         return ui._wrap(color, text)
 
-    primary = ui.CYAN
+    primary = ui.PRIMARY
     dim = ui.DIM_ANSI
     bold = ui.BOLD
 

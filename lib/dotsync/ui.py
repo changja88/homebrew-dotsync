@@ -21,8 +21,10 @@ import sys
 
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
-CYAN = "\033[36m"
 RED = "\033[31m"
+PURPLE = "\033[38;2;167;139;250m"   # Tailwind violet-400 (truecolor)
+PRIMARY = PURPLE                    # brand / heading / step bullets
+CYAN = "\033[36m"                   # legacy; prefer PRIMARY for new code
 DIM_ANSI = "\033[2m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
@@ -96,7 +98,7 @@ def _box_bottom(width: int) -> str:
 # --- format_* (return strings; testable) ------------------------------------
 
 def format_step(msg: str) -> str:
-    return f"{_wrap(CYAN, GLYPH_SUBSTEP)} {msg}"
+    return f"{_wrap(PRIMARY, GLYPH_SUBSTEP)} {msg}"
 
 
 def format_sub(msg: str) -> str:
@@ -144,7 +146,7 @@ def format_section(name: str, index: int = None, total: int = None, sub: str = "
         ▸ [1/4] claude               claude code
         ▸ ghostty
     """
-    bullet = _wrap(CYAN, GLYPH_STEP)
+    bullet = _wrap(PRIMARY, GLYPH_STEP)
     progress = ""
     if index is not None and total is not None:
         progress = _wrap(DIM_ANSI, f"[{index}/{total}] ")
