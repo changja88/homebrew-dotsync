@@ -245,8 +245,28 @@ def cmd_config(args) -> int:
 
 
 def cmd_apps(args) -> int:
+    try:
+        cfg = load_config()
+        tracked = set(cfg.apps)
+    except ConfigError:
+        tracked = set()
+    detected = set(detect_present())
+
+    ui.section("apps", sub="supported · tracked · installed")
+    print()
     for name, desc in app_descriptions().items():
-        print(f"  {name:18s} {desc}")
+        in_t, in_d = name in tracked, name in detected
+        if in_t and in_d:
+            color, glyph, status = ui.GREEN, ui.GLYPH_OK, "tracked · installed"
+        elif in_t and not in_d:
+            color, glyph, status = ui.RED, ui.GLYPH_ERROR, "tracked (not installed)"
+        elif in_d and not in_t:
+            color, glyph, status = ui.DIM_ANSI, ui.GLYPH_DIM, "installed (not tracked)"
+        else:
+            color, glyph, status = ui.DIM_ANSI, ui.GLYPH_DIM, "—"
+        head = f"  {ui._wrap(color, glyph)} {name:16s} {ui._wrap(color, status)}"
+        tail = f"  {ui._wrap(ui.DIM_ANSI, '— ' + desc)}"
+        print(head + "  " + tail)
     return 0
 
 

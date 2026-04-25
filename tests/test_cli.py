@@ -479,3 +479,45 @@ def test_init_interactive_explains_edit_option(fake_home, tmp_path, monkeypatch,
     out = capsys.readouterr().out
     # The hint must explicitly describe the 'edit' choice.
     assert "edit" in out and "pick" in out.lower()
+
+
+def test_apps_shows_tracked_and_installed_status(fake_home, monkeypatch, tmp_path, capsys):
+    """`dotsync apps` reports each supported app's (tracked, installed) state
+    so users can see what they manage and what their machine has."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    target = tmp_path / "configs"
+    target.mkdir()
+    save_config(Config(dir=target, apps=["zsh", "claude"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+
+    # Locally: zsh installed, claude not, ghostty/btt not
+    (fake_home / ".zshrc").write_text("X")
+    _no_btt(monkeypatch, fake_home)
+
+    rc = main(["apps"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # zsh is both tracked and installed (the canonical "all good" row)
+    assert "zsh" in out
+    # the words tracked AND installed both appear somewhere
+    assert "tracked" in out
+    assert "installed" in out
+    # claude is tracked but not present locally — must be flagged
+    assert "claude" in out
+    assert "not installed" in out
+
+
+def test_apps_works_without_config(fake_home, monkeypatch, tmp_path, capsys):
+    """`dotsync apps` should still work when dotsync isn't initialized —
+    just shows the catalog with installed status and tracked = none."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.chdir(tmp_path)  # cwd has no dotsync.toml, no DOTSYNC_DIR
+    (fake_home / ".zshrc").write_text("X")
+    _no_btt(monkeypatch, fake_home)
+
+    rc = main(["apps"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # Doesn't crash on missing config; still lists apps and zsh's install status
+    assert "zsh" in out
+    assert "installed" in out
