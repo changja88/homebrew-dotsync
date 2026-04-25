@@ -24,7 +24,7 @@ from dotsync.welcome import print_welcome
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="dotsync", description="Sync app configs with a folder.")
     p.add_argument("--version", action="version", version=f"dotsync {__version__}")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd")
 
     init = sub.add_parser("init", help="initialize config")
     init.add_argument("--dir", help="absolute path to sync folder")
@@ -308,6 +308,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.cmd is None:
+            print_welcome()
+            return 0
         if args.cmd == "init":
             return cmd_init(args)
         if args.cmd == "welcome":

@@ -305,3 +305,13 @@ def test_config_error_uses_ui_error_styling(fake_home, monkeypatch, tmp_path, ca
     err = capsys.readouterr().err
     assert "✗" in err  # ui.error glyph
     assert "dotsync init" in err  # next-action hint preserved
+
+
+def test_no_args_shows_welcome(capsys):
+    """`dotsync` with no subcommand should print the welcome banner
+    (quickstart guidance) and exit 0, not raise argparse error."""
+    rc = main([])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "██████╗" in out  # ASCII logo present (block chars)
+    assert "Quickstart" in out
