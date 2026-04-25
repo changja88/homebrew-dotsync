@@ -3,7 +3,7 @@
 #
 # Steps:
 #   1. Read current version from pyproject.toml
-#   2. Ask: major / minor / patch (1 / 2 / 3)
+#   2. Ask: patch / minor / major (1 / 2 / 3 — patch first since it's the most common)
 #   3. Bump version in pyproject.toml, lib/dotsync/__init__.py, Formula/dotsync.rb
 #   4. Reset Formula sha256 to placeholder
 #   5. Commit, push main, tag, push tag
@@ -35,16 +35,16 @@ step "Current version: $CURRENT"
 # 2. ask bump kind -----------------------------------------------------------
 echo
 echo "Which part to bump?"
-echo "  1) major  ($(echo "$CURRENT" | awk -F. '{printf "%d.0.0", $1+1}'))"
+echo "  1) patch  ($(echo "$CURRENT" | awk -F. '{printf "%d.%d.%d", $1, $2, $3+1}'))"
 echo "  2) minor  ($(echo "$CURRENT" | awk -F. '{printf "%d.%d.0", $1, $2+1}'))"
-echo "  3) patch  ($(echo "$CURRENT" | awk -F. '{printf "%d.%d.%d", $1, $2, $3+1}'))"
+echo "  3) major  ($(echo "$CURRENT" | awk -F. '{printf "%d.0.0", $1+1}'))"
 read -rp "Choice [1/2/3]: " choice
 
 IFS='.' read -r MAJ MIN PAT <<< "$CURRENT"
 case "$choice" in
-  1) MAJ=$((MAJ+1)); MIN=0; PAT=0 ;;
+  1) PAT=$((PAT+1)) ;;
   2) MIN=$((MIN+1)); PAT=0 ;;
-  3) PAT=$((PAT+1)) ;;
+  3) MAJ=$((MAJ+1)); MIN=0; PAT=0 ;;
   *) die "Invalid choice: $choice" ;;
 esac
 NEW="${MAJ}.${MIN}.${PAT}"
