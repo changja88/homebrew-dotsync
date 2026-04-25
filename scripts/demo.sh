@@ -35,7 +35,7 @@ RESET='\033[0m'
 
 step()  { echo; printf "${PURPLE}▶${RESET} ${BOLD}%s${RESET}\n" "$*"; echo; }
 note()  { printf "${DIM}  %s${RESET}\n" "$*"; }
-pause() { printf "${DIM}  press enter to continue...${RESET}"; read -r _; }
+pause() { printf "\n${PURPLE}${BOLD}↵${RESET} ${BOLD}press enter${RESET} ${DIM}to continue${RESET} ${PURPLE}›${RESET} "; read -r _; }
 ask()   { printf "${PURPLE}${BOLD}?${RESET} %s ${DIM}[%s]${RESET} ${PURPLE}›${RESET} " "$1" "$2"; }
 ask_yn(){ printf "${PURPLE}${BOLD}?${RESET} %s ${DIM}[%s]${RESET} ${PURPLE}›${RESET} " "$1" "$2"; }
 
@@ -94,22 +94,27 @@ pause
 
 # --- step 3: init -----------------------------------------------------------
 step "3/5  dotsync init — first command from the quickstart"
-note "demo runs it for you, locked to --apps zsh for safety."
-note "you only need to choose where the sync folder should live."
+note "the prompts you see next come from dotsync itself."
+note "(demo locks --apps to 'zsh' for safety; everything else is yours.)"
 echo
-ask "sync folder absolute path" "$DEFAULT_DEMO_DIR"
-read -r dir_input
-DEMO_DIR="${dir_input:-$DEFAULT_DEMO_DIR}"
 
-if [[ -d "$DEMO_DIR" ]]; then
-  ask_yn "$DEMO_DIR already exists — remove and continue?" "y/N"
-  read -r yn
-  [[ "$yn" =~ ^[Yy]$ ]] || { echo "aborted"; exit 1; }
-  rm -rf "$DEMO_DIR"
+# Capture init output so we can discover which folder the user chose
+# (no ~/.dotsync pointer exists; we have to parse it out).
+INIT_LOG=$(mktemp)
+dotsync init --apps zsh --quiet 2>&1 | tee "$INIT_LOG"
+# Strip ANSI escapes, then grab the folder from the "✔ config saved → .../dotsync.toml" line.
+DEMO_DIR=$(perl -pe 's/\033\[[0-9;]*m//g' "$INIT_LOG" \
+  | grep '✔ config saved' \
+  | head -1 \
+  | sed -E 's|.*→[[:space:]]*(.*)/dotsync\.toml.*|\1|')
+rm -f "$INIT_LOG"
+
+if [[ -z "$DEMO_DIR" || ! -d "$DEMO_DIR" ]]; then
+  echo
+  echo "couldn't determine the sync folder from dotsync init output; aborting"
+  exit 1
 fi
-echo
-dotsync init --dir "$DEMO_DIR" --apps zsh --yes --quiet
-echo
+
 note "next: dotsync from --all (snapshots local app configs into the folder)"
 pause
 
