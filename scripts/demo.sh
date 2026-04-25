@@ -56,11 +56,19 @@ git -C "$REPO" archive --format=tar.gz \
 SHA=$(shasum -a 256 "$TARBALL" | awk '{print $1}')
 note "sha256: $SHA"
 
+VERSION=$(grep -E '^__version__' "$REPO/lib/dotsync/__init__.py" | head -1 | cut -d'"' -f2)
+note "version: $VERSION"
+
 note "creating throwaway tap at $TAP_DIR"
 mkdir -p "${TAP_DIR}/Formula"
 cp "$REPO/Formula/dotsync.rb" "$LOCAL_FORMULA"
 sed -i.bak -E "s|url \".*\"|url \"file://$TARBALL\"|" "$LOCAL_FORMULA"
 sed -i.bak -E "s|sha256 \"[a-f0-9]{64}\"|sha256 \"$SHA\"|" "$LOCAL_FORMULA"
+# Homebrew can't infer version from a file:// URL → inject `version "..."` after url
+awk -v ver="$VERSION" '
+  /^  url "file:/ { print; print "  version \"" ver "\""; next }
+  { print }
+' "$LOCAL_FORMULA" > "${LOCAL_FORMULA}.tmp" && mv "${LOCAL_FORMULA}.tmp" "$LOCAL_FORMULA"
 rm -f "$LOCAL_FORMULA.bak"
 
 # uninstall any leftover from a previous demo run (silent if not installed)
