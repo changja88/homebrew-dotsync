@@ -84,3 +84,7 @@ tmp/
 
 # --- Local design / planning docs (kept local, not pushed) --------------
 docs/
+
+# --- dotsync's own dogfooding (keep developer's local sync state out of git)
+dotsync.toml
+.backups/
