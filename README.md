@@ -42,7 +42,7 @@ dotsync init
 #   ✓ bettertouchtool
 #   ✓ zsh
 # Track all of these? [Y/n/edit]: ⏎
-# BetterTouchTool preset name [Master_bt]: ⏎
+# ✓ BetterTouchTool preset detected: Master_bt
 ```
 
 `Y`(또는 Enter)면 감지된 전부 추적, `n`이면 아무것도 안 추적, `edit`이면 화살표 키 picker 로 직접 고른다 (키 안내는 아래 `apps edit` 설명 참고).
@@ -195,7 +195,7 @@ dotsync init
 #   ✓ bettertouchtool
 #   ✓ zsh
 # Track all of these? [Y/n/edit]: ⏎
-# BetterTouchTool preset name [Master_bt]: ⏎
+# ✓ BetterTouchTool preset detected: Master_bt
 ```
 
 `Y` (or Enter) tracks all detected apps, `n` tracks none, `edit` opens an arrow-key picker so you can pick a custom set (key bindings are described under `apps edit` below).
