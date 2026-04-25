@@ -27,8 +27,7 @@ class ClaudeApp(App):
         return target_dir / self.name
 
     def sync_from(self, target_dir: Path) -> None:
-        ui.step(f"sync: local → folder [{self.name}]")
-        ui.sub(f"source: {self._claude_dir()}")
+        ui.dim(f"source → {self._claude_dir()}")
 
         cdir = self._claude_dir()
         stored = self._stored(target_dir)
@@ -56,7 +55,6 @@ class ClaudeApp(App):
                 ui.ok(f"plugins/{plugin_name}/config.json")
 
     def sync_to(self, target_dir: Path, backup_dir: Path) -> None:
-        ui.step(f"sync: folder → local [{self.name}]")
         stored = self._stored(target_dir)
         if not (stored / "settings.json").exists():
             raise FileNotFoundError(f"{stored / 'settings.json'} not found (claude/settings.json missing)")
@@ -79,7 +77,7 @@ class ClaudeApp(App):
                 dst = bdir / rel
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
-        ui.sub(f"backup: {bdir}")
+        ui.dim(f"backup → {bdir}")
 
         shutil.copy2(stored / "settings.json", cdir / "settings.json")
         ui.ok("settings.json")
@@ -110,12 +108,12 @@ class ClaudeApp(App):
             shutil.copy2(src, local_cfg)
             ui.ok(f"plugins/{plugin_name}/config.json")
 
-        ui.step("restore marketplaces · plugins")
+        ui.divider("restore marketplaces · plugins")
         self._restore_plugins(stored)
 
         self._enforce_disabled(stored / "settings.json")
 
-        ui.done("done. restart Claude Code.")
+        ui.dim("hint: restart Claude Code to pick up new plugins")
 
     def status(self, target_dir: Path) -> AppStatus:
         stored = self._stored(target_dir)

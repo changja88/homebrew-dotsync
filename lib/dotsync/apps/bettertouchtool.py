@@ -38,8 +38,7 @@ class BetterTouchToolApp(App):
             )
 
     def sync_from(self, target_dir: Path) -> None:
-        ui.step(f"sync: local → folder [{self.name}]")
-        ui.sub(f"preset: {self.preset}")
+        ui.dim(f"preset: {self.preset}")
         dst = self._stored(target_dir)
         dst.parent.mkdir(parents=True, exist_ok=True)
         script = (
@@ -52,8 +51,7 @@ class BetterTouchToolApp(App):
         ui.ok(f"presets/{self.preset}.bttpreset")
 
     def sync_to(self, target_dir: Path, backup_dir: Path) -> None:
-        ui.step(f"sync: folder → local [{self.name}]")
-        ui.sub(f"preset: {self.preset}")
+        ui.dim(f"preset: {self.preset}")
         src = self._stored(target_dir)
         if not src.exists():
             raise FileNotFoundError(f"{src} not found (bettertouchtool/presets/.bttpreset missing)")
@@ -66,7 +64,7 @@ class BetterTouchToolApp(App):
         )
         try:
             self._osascript(export_script)
-            ui.sub(f"backup: {backup_target}")
+            ui.dim(f"backup → {backup_target}")
         except RuntimeError:
             ui.warn("existing preset backup failed (continuing anyway)")
 
@@ -75,4 +73,4 @@ class BetterTouchToolApp(App):
         )
         self._osascript(import_script)
         ui.ok(f"presets/{self.preset}.bttpreset → BTT")
-        ui.done("check BetterTouchTool to confirm the preset is active.")
+        ui.dim("hint: check BetterTouchTool to confirm the preset is active")

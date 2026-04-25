@@ -2,6 +2,7 @@
 from __future__ import annotations
 import argparse
 import sys
+import time
 from pathlib import Path
 from typing import Sequence
 from dotsync import __version__, ui
@@ -219,8 +220,18 @@ def cmd_from(args) -> int:
     if not apps:
         return 2
     cfg.dir.mkdir(parents=True, exist_ok=True)
-    for name in apps:
-        build_app(name, cfg).sync_from(cfg.dir)
+
+    ui.banner("dotsync from", f"{len(apps)} app{'s' if len(apps) != 1 else ''} · {cfg.dir}")
+    print()
+    start = time.monotonic()
+    ok_count = 0
+    for i, name in enumerate(apps, 1):
+        app = build_app(name, cfg)
+        ui.section(name, index=i, total=len(apps), sub=app.description)
+        app.sync_from(cfg.dir)
+        ok_count += 1
+        print()
+    ui.summary(ok=ok_count, duration_ms=int((time.monotonic() - start) * 1000))
     return 0
 
 
@@ -231,9 +242,19 @@ def cmd_to(args) -> int:
         return 2
     cfg.dir.mkdir(parents=True, exist_ok=True)
     session = new_backup_session(cfg.backup_dir)
-    for name in apps:
-        build_app(name, cfg).sync_to(cfg.dir, session)
+
+    ui.banner("dotsync to", f"{len(apps)} app{'s' if len(apps) != 1 else ''} · {cfg.dir}")
+    print()
+    start = time.monotonic()
+    ok_count = 0
+    for i, name in enumerate(apps, 1):
+        app = build_app(name, cfg)
+        ui.section(name, index=i, total=len(apps), sub=app.description)
+        app.sync_to(cfg.dir, session)
+        ok_count += 1
+        print()
     rotate_backups(cfg.backup_dir, cfg.backup_keep)
+    ui.summary(ok=ok_count, duration_ms=int((time.monotonic() - start) * 1000))
     return 0
 
 
