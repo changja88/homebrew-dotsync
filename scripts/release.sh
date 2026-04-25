@@ -30,15 +30,14 @@ git diff --quiet && git diff --cached --quiet || die "Uncommitted changes — co
 # 1. current version ---------------------------------------------------------
 CURRENT=$(grep -E '^version = "[0-9]+\.[0-9]+\.[0-9]+"' pyproject.toml | head -1 | cut -d'"' -f2)
 [[ -n "$CURRENT" ]] || die "Could not parse current version from pyproject.toml"
-step "Current version: $CURRENT"
+step "현재 버전: v$CURRENT"
 
 # 2. ask bump kind -----------------------------------------------------------
 echo
-echo "Which part to bump?"
-echo "  1) patch  ($(echo "$CURRENT" | awk -F. '{printf "%d.%d.%d", $1, $2, $3+1}'))"
-echo "  2) minor  ($(echo "$CURRENT" | awk -F. '{printf "%d.%d.0", $1, $2+1}'))"
-echo "  3) major  ($(echo "$CURRENT" | awk -F. '{printf "%d.0.0", $1+1}'))"
-read -rp "Choice [1/2/3]: " choice
+echo "1) patch  (v$(echo "$CURRENT" | awk -F. '{printf "%d.%d.%d", $1, $2, $3+1}')) — 버그 수정, 성능 개선"
+echo "2) minor  (v$(echo "$CURRENT" | awk -F. '{printf "%d.%d.0", $1, $2+1}')) — 새 기능 추가"
+echo "3) major  (v$(echo "$CURRENT" | awk -F. '{printf "%d.0.0", $1+1}')) — 핵심 아키텍처 변경"
+read -rp "선택 [1/2/3]: " choice
 
 IFS='.' read -r MAJ MIN PAT <<< "$CURRENT"
 case "$choice" in
