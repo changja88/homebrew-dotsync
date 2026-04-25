@@ -20,27 +20,27 @@ class GhosttyApp(App):
         return target_dir / self.name / "config.ghostty"
 
     def sync_from(self, target_dir: Path) -> None:
-        ui.step(f"동기화: 로컬 → 폴더 [{self.name}]")
+        ui.step(f"sync: local → folder [{self.name}]")
         src = self._local()
         if not src.exists():
-            raise FileNotFoundError(f"{src} 없음 (config.ghostty 미존재)")
-        ui.sub(f"소스: {src}")
+            raise FileNotFoundError(f"{src} not found (config.ghostty missing)")
+        ui.sub(f"source: {src}")
         dst = self._stored(target_dir)
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
         ui.ok("config.ghostty")
 
     def sync_to(self, target_dir: Path, backup_dir: Path) -> None:
-        ui.step(f"동기화: 폴더 → 로컬 [{self.name}]")
+        ui.step(f"sync: folder → local [{self.name}]")
         src = self._stored(target_dir)
         if not src.exists():
-            raise FileNotFoundError(f"{src} 없음 (ghostty/config.ghostty 미존재)")
+            raise FileNotFoundError(f"{src} not found (ghostty/config.ghostty missing)")
         local = self._local()
         local.parent.mkdir(parents=True, exist_ok=True)
         if local.exists():
             (backup_dir / self.name).mkdir(parents=True, exist_ok=True)
             shutil.copy2(local, backup_dir / self.name / "config.ghostty")
-            ui.sub(f"백업: {backup_dir / self.name / 'config.ghostty'}")
+            ui.sub(f"backup: {backup_dir / self.name / 'config.ghostty'}")
         shutil.copy2(src, local)
         ui.ok("config.ghostty")
 

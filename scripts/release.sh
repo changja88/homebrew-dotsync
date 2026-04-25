@@ -30,15 +30,15 @@ git diff --quiet && git diff --cached --quiet || die "Uncommitted changes — co
 # 1. current version ---------------------------------------------------------
 CURRENT=$(grep -E '^version = "[0-9]+\.[0-9]+\.[0-9]+"' pyproject.toml | head -1 | cut -d'"' -f2)
 [[ -n "$CURRENT" ]] || die "Could not parse current version from pyproject.toml"
-step "현재 버전: $CURRENT"
+step "Current version: $CURRENT"
 
 # 2. ask bump kind -----------------------------------------------------------
 echo
-echo "어떤 부분을 올릴까요?"
+echo "Which part to bump?"
 echo "  1) major  ($(echo "$CURRENT" | awk -F. '{printf "%d.0.0", $1+1}'))"
 echo "  2) minor  ($(echo "$CURRENT" | awk -F. '{printf "%d.%d.0", $1, $2+1}'))"
 echo "  3) patch  ($(echo "$CURRENT" | awk -F. '{printf "%d.%d.%d", $1, $2, $3+1}'))"
-read -rp "선택 [1/2/3]: " choice
+read -rp "Choice [1/2/3]: " choice
 
 IFS='.' read -r MAJ MIN PAT <<< "$CURRENT"
 case "$choice" in
@@ -49,12 +49,12 @@ case "$choice" in
 esac
 NEW="${MAJ}.${MIN}.${PAT}"
 
-step "새 버전: v$NEW"
-read -rp "진행할까요? [y/N]: " confirm
-[[ "$confirm" =~ ^[Yy]$ ]] || die "취소됨"
+step "New version: v$NEW"
+read -rp "Proceed? [y/N]: " confirm
+[[ "$confirm" =~ ^[Yy]$ ]] || die "Cancelled"
 
 # 3. bump version strings ----------------------------------------------------
-step "버전 문자열 갱신"
+step "Bumping version strings"
 # pyproject.toml
 sed -i.bak -E "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"$NEW\"/" pyproject.toml
 # lib/dotsync/__init__.py
@@ -65,44 +65,44 @@ sed -i.bak -E "s/dotsync [0-9]+\.[0-9]+\.[0-9]+/dotsync $NEW/" Formula/dotsync.r
 # reset sha256 to placeholder (filled in step 7)
 sed -i.bak -E "s/sha256 \"[a-f0-9]{64}\"/sha256 \"0000000000000000000000000000000000000000000000000000000000000000\"/" Formula/dotsync.rb
 rm -f pyproject.toml.bak lib/dotsync/__init__.py.bak Formula/dotsync.rb.bak
-ok "pyproject.toml, lib/dotsync/__init__.py, Formula/dotsync.rb 갱신"
+ok "pyproject.toml, lib/dotsync/__init__.py, Formula/dotsync.rb updated"
 
 # 4. tests must pass before tagging ------------------------------------------
-step "테스트 실행"
+step "Running tests"
 PY="${PYTHON:-.venv/bin/python3}"
-"$PY" -m pytest -q || die "테스트 실패 — 릴리스 중단. 변경사항은 그대로 두고 종료합니다."
-ok "전체 테스트 통과"
+"$PY" -m pytest -q || die "Tests failed — aborting release. Changes left in place."
+ok "All tests passed"
 
 # 5. commit + tag + push -----------------------------------------------------
-step "커밋 + 태그 + 푸시"
+step "Commit + tag + push"
 git add pyproject.toml lib/dotsync/__init__.py Formula/dotsync.rb
 git commit -m "chore: bump version to $NEW"
 git push origin main
 git tag -a "v$NEW" -m "v$NEW"
 git push origin "v$NEW"
-ok "main + v$NEW 푸시 완료"
+ok "main + v$NEW pushed"
 
 # 6. GitHub release ----------------------------------------------------------
-step "GitHub release 생성"
+step "Creating GitHub release"
 gh release create "v$NEW" --title "v$NEW" --notes "Release v$NEW"
-ok "release v$NEW 생성"
+ok "release v$NEW created"
 
 # 7. compute sha256 of the release tarball -----------------------------------
-step "tarball sha256 계산"
+step "Computing tarball sha256"
 TARBALL_URL="https://github.com/changja88/homebrew-dotsync/archive/refs/tags/v${NEW}.tar.gz"
 SHA=$(curl -sL "$TARBALL_URL" | shasum -a 256 | awk '{print $1}')
-[[ "${#SHA}" == 64 ]] || die "sha256 길이 비정상: $SHA"
+[[ "${#SHA}" == 64 ]] || die "sha256 length unexpected: $SHA"
 ok "sha256: $SHA"
 
 # 8. patch formula + commit + push -------------------------------------------
-step "Formula sha256 패치 + 푸시"
+step "Patching Formula sha256 + push"
 sed -i.bak -E "s/sha256 \"[a-f0-9]{64}\"/sha256 \"$SHA\"/" Formula/dotsync.rb
 rm -f Formula/dotsync.rb.bak
 git add Formula/dotsync.rb
 git commit -m "chore: real sha256 for v$NEW"
 git push origin main
-ok "Formula 푸시 완료"
+ok "Formula pushed"
 
 echo
-printf "${GREEN}✔ 릴리스 완료: v$NEW${RESET}\n"
-echo "검증:  brew install changja88/dotsync/dotsync && dotsync --version"
+printf "${GREEN}✔ Release complete: v$NEW${RESET}\n"
+echo "Verify: brew install changja88/dotsync/dotsync && dotsync --version"

@@ -31,7 +31,7 @@ class BetterTouchToolApp(App):
             )
 
     def sync_from(self, target_dir: Path) -> None:
-        ui.step(f"동기화: 로컬 → 폴더 [{self.name}]")
+        ui.step(f"sync: local → folder [{self.name}]")
         ui.sub(f"preset: {self.preset}")
         dst = self._stored(target_dir)
         dst.parent.mkdir(parents=True, exist_ok=True)
@@ -41,15 +41,15 @@ class BetterTouchToolApp(App):
         )
         self._osascript(script)
         if not dst.exists():
-            raise RuntimeError(f"BTT export 파일이 생성되지 않음: {dst}")
+            raise RuntimeError(f"BTT export file was not created: {dst}")
         ui.ok(f"presets/{self.preset}.bttpreset")
 
     def sync_to(self, target_dir: Path, backup_dir: Path) -> None:
-        ui.step(f"동기화: 폴더 → 로컬 [{self.name}]")
+        ui.step(f"sync: folder → local [{self.name}]")
         ui.sub(f"preset: {self.preset}")
         src = self._stored(target_dir)
         if not src.exists():
-            raise FileNotFoundError(f"{src} 없음 (bettertouchtool/presets/.bttpreset 미존재)")
+            raise FileNotFoundError(f"{src} not found (bettertouchtool/presets/.bttpreset missing)")
         # backup current preset by re-exporting from BTT
         backup_target = backup_dir / self.name / f"{self.preset}.bttpreset"
         backup_target.parent.mkdir(parents=True, exist_ok=True)
@@ -59,13 +59,13 @@ class BetterTouchToolApp(App):
         )
         try:
             self._osascript(export_script)
-            ui.sub(f"백업: {backup_target}")
+            ui.sub(f"backup: {backup_target}")
         except RuntimeError:
-            ui.warn("기존 preset 백업 실패 (무시하고 진행)")
+            ui.warn("existing preset backup failed (continuing anyway)")
 
         import_script = (
             f'tell application "BetterTouchTool" to import_preset "{src}"'
         )
         self._osascript(import_script)
         ui.ok(f"presets/{self.preset}.bttpreset → BTT")
-        ui.done("BTT에서 preset이 활성화되었는지 확인하세요.")
+        ui.done("check BetterTouchTool to confirm the preset is active.")

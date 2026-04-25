@@ -23,8 +23,8 @@ class ClaudeApp(App):
         return target_dir / self.name
 
     def sync_from(self, target_dir: Path) -> None:
-        ui.step(f"동기화: 로컬 → 폴더 [{self.name}]")
-        ui.sub(f"소스: {self._claude_dir()}")
+        ui.step(f"sync: local → folder [{self.name}]")
+        ui.sub(f"source: {self._claude_dir()}")
 
         cdir = self._claude_dir()
         stored = self._stored(target_dir)
@@ -52,10 +52,10 @@ class ClaudeApp(App):
                 ui.ok(f"plugins/{plugin_name}/config.json")
 
     def sync_to(self, target_dir: Path, backup_dir: Path) -> None:
-        ui.step(f"동기화: 폴더 → 로컬 [{self.name}]")
+        ui.step(f"sync: folder → local [{self.name}]")
         stored = self._stored(target_dir)
         if not (stored / "settings.json").exists():
-            raise FileNotFoundError(f"{stored / 'settings.json'} 없음 (claude/settings.json 미존재)")
+            raise FileNotFoundError(f"{stored / 'settings.json'} not found (claude/settings.json missing)")
 
         cdir = self._claude_dir()
         cdir.mkdir(parents=True, exist_ok=True)
@@ -75,7 +75,7 @@ class ClaudeApp(App):
                 dst = bdir / rel
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
-        ui.sub(f"백업: {bdir}")
+        ui.sub(f"backup: {bdir}")
 
         shutil.copy2(stored / "settings.json", cdir / "settings.json")
         ui.ok("settings.json")
@@ -106,12 +106,12 @@ class ClaudeApp(App):
             shutil.copy2(src, local_cfg)
             ui.ok(f"plugins/{plugin_name}/config.json")
 
-        ui.step("marketplace · 플러그인 복원")
+        ui.step("restore marketplaces · plugins")
         self._restore_plugins(stored)
 
         self._enforce_disabled(stored / "settings.json")
 
-        ui.done("완료. Claude Code를 재시작하세요.")
+        ui.done("done. restart Claude Code.")
 
     def status(self, target_dir: Path) -> AppStatus:
         stored = self._stored(target_dir)
@@ -151,7 +151,7 @@ class ClaudeApp(App):
             source = (mp_meta.get("source") or {})
             spec = self._marketplace_spec(source)
             if not spec:
-                ui.warn(f"marketplace `{mp_name}` 출처 정보 없음 — 건너뜀")
+                ui.warn(f"marketplace `{mp_name}` source unknown — skipping")
                 continue
             self._run_claude_cli(
                 ["plugin", "marketplace", "add", "--scope", "user", spec],
@@ -161,7 +161,7 @@ class ClaudeApp(App):
         for plugin_id, entries in plugins.items():
             entries = entries if isinstance(entries, list) else []
             if any(Path(e.get("installPath", "")).is_dir() for e in entries):
-                ui.sub(f"plugin install {plugin_id} (cache 존재, 스킵)")
+                ui.sub(f"plugin install {plugin_id} (cache present, skipped)")
                 continue
             self._run_claude_cli(
                 ["plugin", "install", "--scope", "user", plugin_id],
@@ -204,12 +204,12 @@ class ClaudeApp(App):
         if result.returncode == 0:
             combined = ((result.stdout or "") + (result.stderr or "")).lower()
             if tolerate_already and "already" in combined:
-                ui.sub(f"{desc} (이미 등록됨)")
+                ui.sub(f"{desc} (already present)")
             else:
                 ui.ok(desc)
             return
         stderr = (result.stderr or "").strip()
         if tolerate_already and "already" in stderr.lower():
-            ui.sub(f"{desc} (이미 등록됨)")
+            ui.sub(f"{desc} (already present)")
         else:
-            ui.warn(f"{desc} 실패: {stderr or 'unknown'}")
+            ui.warn(f"{desc} failed: {stderr or 'unknown'}")

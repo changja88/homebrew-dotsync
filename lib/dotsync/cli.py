@@ -61,13 +61,13 @@ def cmd_init(args) -> int:
         apps = [a.strip() for a in (args.apps or "").split(",") if a.strip()]
         btt_preset = args.btt_preset or DEFAULT_BTT_PRESET
     else:
-        dir_str = input("sync 폴더 절대 경로: ").strip()
+        dir_str = input("sync folder (absolute path): ").strip()
         dir_path = Path(dir_str).expanduser().resolve()
-        apps_str = input(f"추적할 앱 (comma-separated, 후보: {sorted(SUPPORTED_APPS)}): ").strip()
+        apps_str = input(f"apps to track (comma-separated, options: {sorted(SUPPORTED_APPS)}): ").strip()
         apps = [a.strip() for a in apps_str.split(",") if a.strip()]
         btt_preset = args.btt_preset or DEFAULT_BTT_PRESET
         if "bettertouchtool" in apps:
-            entered = input(f"BetterTouchTool preset 이름 [{btt_preset}]: ").strip()
+            entered = input(f"BetterTouchTool preset name [{btt_preset}]: ").strip()
             if entered:
                 btt_preset = entered
 
@@ -78,7 +78,7 @@ def cmd_init(args) -> int:
 
     dir_path.mkdir(parents=True, exist_ok=True)
     save_config(Config(dir=dir_path, apps=apps, bettertouchtool_preset=btt_preset))
-    ui.done(f"config 저장 → {Path.home()}/.config/dotsync/config.toml")
+    ui.done(f"config saved → {Path.home()}/.config/dotsync/config.toml")
     return 0
 
 
