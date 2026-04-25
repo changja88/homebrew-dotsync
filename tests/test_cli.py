@@ -461,3 +461,21 @@ def test_init_no_hints_also_suppresses_adopt_branch_hints(fake_home, tmp_path, c
     out = capsys.readouterr().out
     assert "next steps" not in out
     assert "adopted existing config" in out
+
+
+def test_init_interactive_explains_edit_option(fake_home, tmp_path, monkeypatch, capsys):
+    """The 'Track all of these?' prompt must include a dim hint that names
+    what each of y/n/edit does, so first-time users don't have to guess."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    (fake_home / ".zshrc").write_text("X")
+    _no_btt(monkeypatch, fake_home)
+
+    target = tmp_path / "i"
+    answers = iter([str(target), "y"])  # folder, then accept default
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    rc = main(["init"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # The hint must explicitly describe the 'edit' choice.
+    assert "edit" in out and "pick" in out.lower()

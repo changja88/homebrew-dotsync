@@ -154,6 +154,7 @@ def _resolve_apps_for_init(args) -> "list[str] | None":
         print("Detected on this machine:")
         for name in detected:
             print(f"  {ui._wrap(ui.GREEN, ui.GLYPH_OK)} {name}")
+        ui.dim("y = keep all · n = track none · edit = pick from a list")
         choice = ui.ask("Track all of these?", default="Y/n/edit").lower()
     else:
         print("No apps were auto-detected on this machine.")
