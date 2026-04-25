@@ -416,3 +416,21 @@ def test_to_with_yes_skips_prompt_and_applies(fake_home, monkeypatch, tmp_path):
     rc = main(["to", "--all", "--yes"])
     assert rc == 0
     assert (fake_home / ".zshrc").read_text() == "FROM_FOLDER"
+
+
+def test_to_bare_enter_aborts(fake_home, monkeypatch, tmp_path):
+    """Bare Enter (empty input) must abort, since the prompt is destructive
+    and `default="y/N"` is only a display hint, not a return default."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    target = tmp_path / "configs"
+    (target / "zsh").mkdir(parents=True)
+    (target / "zsh" / ".zshrc").write_text("FROM_FOLDER")
+    (fake_home / ".zshrc").write_text("LOCAL_ORIG")
+    save_config(Config(dir=target, apps=["zsh"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": "")
+
+    rc = main(["to", "--all"])
+    assert rc == 0
+    assert (fake_home / ".zshrc").read_text() == "LOCAL_ORIG"
