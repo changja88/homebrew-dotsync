@@ -102,3 +102,19 @@ def test_diff_files_clean_has_empty_direction(tmp_path):
     result = diff_files([(local, stored)])
     assert result.state == "clean"
     assert result.direction == ""
+
+
+def test_diff_files_reports_diverged_when_some_local_newer_some_stored_newer(tmp_path):
+    """When the differs set contains both local-newer and folder-newer pairs,
+    direction = diverged so the user knows neither side is fully ahead."""
+    import os
+    from dotsync.apps.base import diff_files
+    a_local, a_stored = tmp_path / "a_local", tmp_path / "a_stored"
+    b_local, b_stored = tmp_path / "b_local", tmp_path / "b_stored"
+    a_local.write_text("Lnew"); a_stored.write_text("Lold")
+    b_local.write_text("Bold"); b_stored.write_text("Bnew")
+    os.utime(a_local, (2000, 2000)); os.utime(a_stored, (1000, 1000))   # local-newer
+    os.utime(b_local, (1000, 1000)); os.utime(b_stored, (2000, 2000))   # folder-newer
+    result = diff_files([(a_local, a_stored), (b_local, b_stored)])
+    assert result.state == "dirty"
+    assert result.direction == "diverged"
