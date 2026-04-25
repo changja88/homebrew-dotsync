@@ -79,6 +79,8 @@ echo
 brew install --build-from-source "$TAP_REF"
 echo
 note "installed: $(which dotsync)  ($(dotsync --version))"
+note "(Homebrew prints 'Caveats' twice — once during install, once at the end. ignore the duplicate.)"
+note "next: dotsync welcome"
 pause
 
 # --- step 2: welcome --------------------------------------------------------
@@ -88,7 +90,8 @@ pause
 
 # --- step 3: init -----------------------------------------------------------
 step "3/5  dotsync init — first command from the quickstart"
-note "demo runs it for you, locked to --apps zsh for safety"
+note "demo runs it for you, locked to --apps zsh for safety."
+note "you only need to choose where the sync folder should live."
 echo
 ask "sync folder absolute path" "$DEFAULT_DEMO_DIR"
 read -r dir_input
@@ -102,21 +105,24 @@ if [[ -d "$DEMO_DIR" ]]; then
 fi
 echo
 dotsync init --dir "$DEMO_DIR" --apps zsh --yes --quiet
+echo
+note "next: dotsync from --all (snapshots local app configs into the folder)"
 pause
 
 # --- step 4: from -----------------------------------------------------------
-step "4/5  dotsync from --all — pull current local configs into the folder"
+step "4/5  dotsync from --all — snapshot local configs into the folder"
 echo
 DOTSYNC_DIR="$DEMO_DIR" dotsync from --all
+note "next: dotsync status (compares local vs folder, file by file)"
 pause
 
 # --- step 5: status ---------------------------------------------------------
-step "5/5  dotsync status — sha256 diff per file"
+step "5/5  dotsync status — sha256 diff per tracked file"
 echo
 DOTSYNC_DIR="$DEMO_DIR" dotsync status
 echo
-note "skipping 'dotsync to --all' — it would overwrite your real local files"
-note "to try it on a sandbox, modify $DEMO_DIR/zsh/.zshrc then rerun: dotsync to --all"
+note "skipping 'dotsync to --all' — that would overwrite your real local files."
+note "to try 'to' safely: edit $DEMO_DIR/zsh/.zshrc, then run dotsync to --all"
 pause
 
 # --- cleanup ----------------------------------------------------------------

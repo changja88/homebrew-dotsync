@@ -18,17 +18,12 @@ class Dotsync < Formula
 
   def caveats
     <<~EOS
-      dotsync needs a one-time setup before any sync command works:
+      Get started:
+        dotsync welcome   # quickstart guide
+        dotsync init      # pick a sync folder + auto-detect apps
 
-        $ dotsync welcome     # quickstart guide
-        $ dotsync init        # pick a folder + auto-detect installed apps
-
-      To use dotsync from any directory, add this to your shell rc:
-
-        export DOTSYNC_DIR="$HOME/your-sync-folder"
-
-      Or just run dotsync from inside that folder — it auto-discovers
-      dotsync.toml by walking up.
+      `dotsync init` will print the exact `export DOTSYNC_DIR=...` line to
+      add to your shell rc so dotsync works from any directory.
     EOS
   end
 

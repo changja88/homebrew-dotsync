@@ -80,6 +80,10 @@ def cmd_init(args) -> int:
         else:
             dir_path = default_dir
     else:
+        print()
+        print(f"  {ui._wrap(ui.DIM_ANSI, 'Where should dotsync keep your synced configs?')}")
+        print(f"  {ui._wrap(ui.DIM_ANSI, 'Press Enter to use the default, or paste an absolute path of your own.')}")
+        print()
         dir_str = ui.ask("sync folder (absolute path)", default=str(default_dir))
         dir_path = Path(dir_str).expanduser().resolve() if dir_str else default_dir
     dir_path.mkdir(parents=True, exist_ok=True)
@@ -162,12 +166,37 @@ def _resolve_apps_for_init(args) -> "list[str] | None":
 
 
 def _print_init_hints(folder: Path) -> None:
+    """Friendly post-init guidance, styled with the design system."""
+    bullet = ui._wrap(ui.PRIMARY, "▸")
+    bold = lambda s: ui._wrap(ui.BOLD, s)
+    dim = lambda s: ui._wrap(ui.DIM_ANSI, s)
+
     print()
-    print("To use dotsync from anywhere on this machine, add this to your shell rc:")
-    print(f'  export {ENV_VAR}="{folder}"')
-    print("Or simply run dotsync from inside the folder — it auto-discovers dotsync.toml.")
+    ui.divider("next steps")
     print()
-    print("To change tracked apps later:  dotsync config apps <comma,separated>")
+
+    # 1. shell rc — the most important follow-up
+    print(f"  {bullet} {bold('Run dotsync from any directory.')}")
+    print(f"    {dim('Add this one line to your shell rc (~/.zshrc, ~/.bashrc, ...):')}")
+    print()
+    print(f"      {bold(f'export {ENV_VAR}=\"{folder}\"')}")
+    print()
+    print(f"    {dim('Or just `cd` into the folder before running dotsync — it')}")
+    print(f"    {dim('auto-discovers dotsync.toml by walking up.')}")
+    print()
+
+    # 2. snapshot
+    print(f"  {bullet} {bold('Take a snapshot of your current local configs:')}")
+    print()
+    print(f"      {bold('dotsync from --all')}")
+    print()
+
+    # 3. change tracked apps
+    print(f"  {bullet} {bold('Change which apps are tracked, any time:')}")
+    print(f"    {dim('(comma-separated list of: claude, ghostty, bettertouchtool, zsh)')}")
+    print()
+    print(f"      {bold('dotsync config apps zsh,claude')}")
+    print()
 
 
 def cmd_config(args) -> int:
