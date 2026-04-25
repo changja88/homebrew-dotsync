@@ -74,3 +74,25 @@ class BetterTouchToolApp(App):
         self._osascript(import_script)
         ui.ok(f"presets/{self.preset}.bttpreset → BTT")
         ui.dim("hint: check BetterTouchTool to confirm the preset is active")
+
+    def status(self, target_dir: Path) -> "AppStatus":
+        from dotsync.apps.base import AppStatus, _hash
+        import tempfile
+        stored = self._stored(target_dir)
+        if not stored.exists():
+            return AppStatus(state="missing", details=f"{self.preset}.bttpreset")
+        with tempfile.TemporaryDirectory() as td:
+            live = Path(td) / "live.bttpreset"
+            export_script = (
+                f'tell application "BetterTouchTool" to export_preset '
+                f'"{self.preset}" outputPath "{live}" compress false includeSettings true'
+            )
+            try:
+                self._osascript(export_script)
+            except RuntimeError:
+                return AppStatus(state="unknown", details="BTT not running — cannot diff live preset")
+            if not live.exists():
+                return AppStatus(state="unknown", details="BTT export produced no file")
+            if _hash(live) == _hash(stored):
+                return AppStatus(state="clean")
+            return AppStatus(state="dirty", details=f"{self.preset}.bttpreset")
