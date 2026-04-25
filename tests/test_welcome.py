@@ -11,10 +11,20 @@ def test_format_welcome_includes_version():
     assert "9.9.9" in out
 
 
-def test_format_welcome_emphasizes_init_required():
+def test_format_welcome_marks_init_as_starting_point():
+    """Welcome should signal that `init` is where the user starts.
+
+    We changed away from a hard 'required' wording so it doesn't clash with
+    the `make demo` flow that runs init for you. The key signal is now:
+    init is listed first AND has a 'start here' hint.
+    """
     out = format_welcome("0.1.0")
-    assert "init" in out
-    assert "required" in out.lower()
+    assert "Quickstart" in out
+    init_pos = out.find("dotsync init")
+    from_pos = out.find("dotsync from")
+    to_pos = out.find("dotsync to")
+    assert 0 <= init_pos < from_pos < to_pos
+    assert "start here" in out.lower()
 
 
 def test_format_welcome_lists_basic_commands():

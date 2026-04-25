@@ -87,8 +87,8 @@ dotsync welcome
 pause
 
 # --- step 3: init -----------------------------------------------------------
-step "3/5  dotsync init — pick a sync folder"
-note "for safety, the demo only tracks the 'zsh' app"
+step "3/5  dotsync init — first command from the quickstart"
+note "demo runs it for you, locked to --apps zsh for safety"
 echo
 ask "sync folder absolute path" "$DEFAULT_DEMO_DIR"
 read -r dir_input

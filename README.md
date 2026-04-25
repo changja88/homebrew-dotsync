@@ -17,7 +17,7 @@ brew install changja88/dotsync/dotsync
 dotsync welcome   # ASCII 환영 배너와 첫 시작 안내를 출력
 ```
 
-> **`dotsync init`은 필수다.** sync 폴더를 정하지 않으면 다른 명령은 동작하지 않는다.
+> 첫 단계는 항상 **`dotsync init`** — sync 폴더를 정한다. 그 다음 `from` / `to`가 동작한다.
 
 ### 사용법
 
@@ -128,7 +128,7 @@ brew install changja88/dotsync/dotsync
 dotsync welcome   # prints the ASCII welcome banner with quickstart hints
 ```
 
-> **`dotsync init` is required first.** Without picking a sync folder, no other command will work.
+> Always start with **`dotsync init`** — it picks the sync folder. After that, `from` / `to` work from anywhere.
 
 ### Usage
 

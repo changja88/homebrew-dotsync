@@ -233,8 +233,8 @@ def test_init_shows_welcome_by_default(fake_home, tmp_path, monkeypatch, capsys)
     rc = main(["init", "--dir", str(target), "--yes"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "█" in out  # welcome ASCII logo
-    assert "required" in out.lower()
+    assert "█" in out             # welcome ASCII logo
+    assert "Quickstart" in out
 
 
 def test_init_quiet_skips_welcome(fake_home, tmp_path, monkeypatch, capsys):

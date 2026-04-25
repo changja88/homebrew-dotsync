@@ -33,11 +33,11 @@ def format_welcome(version: str = __version__) -> str:
         f"   {c(dim, 'v' + version)}  {c(dim, '·')}  "
         f"{c(dim, 'brew install changja88/dotsync/dotsync')}",
         "",
-        f"   {c(primary, '▶')}  {c(bold, '`dotsync init`')} "
-        f"{c(dim, 'is required first — it picks the sync folder.')}",
+        f"   {c(primary, '▶')}  {c(bold, 'Quickstart')} "
+        f"{c(dim, '— in this order:')}",
         "",
         f"       {c(bold, 'dotsync init')}            "
-        f"{c(dim, '# pick a folder, auto-detect apps')}",
+        f"{c(dim, '# start here: pick a sync folder + auto-detect apps')}",
         f"       {c(bold, 'dotsync from --all')}      "
         f"{c(dim, '# local apps → folder')}",
         f"       {c(bold, 'dotsync to --all')}        "
