@@ -13,9 +13,12 @@ PYTHON ?= .venv/bin/python3
 
 help:
 	@echo "Targets:"
-	@echo "  test       Run pytest"
-	@echo "  demo       Step-by-step walkthrough of the first-time install + use"
-	@echo "  release    Interactive release: bumps version, tags, pushes, patches sha256"
+	@echo "  test         Run pytest"
+	@echo "  demo         Step-by-step walkthrough of the first-time install + use"
+	@echo "  demo RAW=1   Same flow without the demo's wrapper (step headers, notes,"
+	@echo "               press-enter pauses, cleanup prompts) — shows what an actual"
+	@echo "               end user sees after 'brew install changja88/dotsync/dotsync'"
+	@echo "  release      Interactive release: bumps version, tags, pushes, patches sha256"
 
 test:
 	@$(PYTHON) -m pytest

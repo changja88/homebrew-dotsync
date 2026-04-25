@@ -33,9 +33,20 @@ DIM='\033[2m'
 BOLD='\033[1m'
 RESET='\033[0m'
 
-step()  { echo; printf "${PURPLE}▶${RESET} ${BOLD}%s${RESET}\n" "$*"; echo; }
-note()  { printf "${DIM}  %s${RESET}\n" "$*"; }
-pause() { printf "\n${PURPLE}${BOLD}↵${RESET} ${BOLD}press enter${RESET} ${DIM}to continue${RESET} ${PURPLE}›${RESET} "; read -r _; }
+# RAW=1 strips the demo's own wrapper (step headers, dim notes, press-enter
+# pauses, cleanup prompts) so what's left is exactly what an end user sees
+# after `brew install changja88/dotsync/dotsync`.
+RAW="${RAW:-0}"
+
+if [[ "$RAW" == "1" ]]; then
+  step()  { :; }
+  note()  { :; }
+  pause() { :; }
+else
+  step()  { echo; printf "${PURPLE}▶${RESET} ${BOLD}%s${RESET}\n" "$*"; echo; }
+  note()  { printf "${DIM}  %s${RESET}\n" "$*"; }
+  pause() { printf "\n${PURPLE}${BOLD}↵${RESET} ${BOLD}press enter${RESET} ${DIM}to continue${RESET} ${PURPLE}›${RESET} "; read -r _; }
+fi
 ask()   { printf "${PURPLE}${BOLD}?${RESET} %s ${DIM}[%s]${RESET} ${PURPLE}›${RESET} " "$1" "$2"; }
 ask_yn(){ printf "${PURPLE}${BOLD}?${RESET} %s ${DIM}[%s]${RESET} ${PURPLE}›${RESET} " "$1" "$2"; }
 
@@ -100,8 +111,12 @@ echo
 
 # Capture init output so we can discover which folder the user chose
 # (no ~/.dotsync pointer exists; we have to parse it out).
+# In RAW mode we drop --quiet so the user sees `init`'s built-in welcome banner
+# the way a real first-time user would.
 INIT_LOG=$(mktemp)
-dotsync init --apps zsh --quiet 2>&1 | tee "$INIT_LOG"
+INIT_FLAGS="--apps zsh"  # --apps locks to zsh for safety in both modes
+[[ "$RAW" != "1" ]] && INIT_FLAGS="$INIT_FLAGS --quiet"
+dotsync init $INIT_FLAGS 2>&1 | tee "$INIT_LOG"
 # Strip ANSI escapes, then grab the folder from the "✔ config saved → .../dotsync.toml" line.
 DEMO_DIR=$(perl -pe 's/\033\[[0-9;]*m//g' "$INIT_LOG" \
   | grep '✔ config saved' \
@@ -135,19 +150,27 @@ note "to try 'to' safely: edit $DEMO_DIR/zsh/.zshrc, then run dotsync to --all"
 pause
 
 # --- cleanup ----------------------------------------------------------------
-step "cleanup"
-ask_yn "uninstall dotsync?" "Y/n"
-read -r yn
-if [[ ! "$yn" =~ ^[Nn]$ ]]; then
-  brew uninstall dotsync
-fi
-ask_yn "remove demo folder $DEMO_DIR?" "Y/n"
-read -r yn
-if [[ ! "$yn" =~ ^[Nn]$ ]]; then
-  rm -rf "$DEMO_DIR"
-fi
-note "removing throwaway tap and tarball"
-rm -rf "$TAP_DIR" "$TARBALL"
+if [[ "$RAW" == "1" ]]; then
+  # RAW mode: auto-cleanup silently. The simulated brew install MUST be undone
+  # (the throwaway tap would leave brew in a weird state), and the demo folder
+  # was created by `dotsync init` during this run so it's a demo artifact too.
+  brew uninstall dotsync >/dev/null 2>&1 || true
+  rm -rf "$DEMO_DIR" "$TAP_DIR" "$TARBALL"
+else
+  step "cleanup"
+  ask_yn "uninstall dotsync?" "Y/n"
+  read -r yn
+  if [[ ! "$yn" =~ ^[Nn]$ ]]; then
+    brew uninstall dotsync
+  fi
+  ask_yn "remove demo folder $DEMO_DIR?" "Y/n"
+  read -r yn
+  if [[ ! "$yn" =~ ^[Nn]$ ]]; then
+    rm -rf "$DEMO_DIR"
+  fi
+  note "removing throwaway tap and tarball"
+  rm -rf "$TAP_DIR" "$TARBALL"
 
-echo
-printf "${GREEN}✔${RESET} ${BOLD}demo complete${RESET}\n"
+  echo
+  printf "${GREEN}✔${RESET} ${BOLD}demo complete${RESET}\n"
+fi
