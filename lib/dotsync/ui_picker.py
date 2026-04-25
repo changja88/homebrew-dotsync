@@ -13,6 +13,9 @@ Design split:
 """
 from __future__ import annotations
 
+import select
+import sys
+
 
 class PickerState:
     """Pure logic for the picker. Inputs are abstract event strings.
@@ -50,3 +53,38 @@ class PickerState:
         if self.cancelled:
             return None
         return [a for a in self.items if a in self.selected]
+
+
+def _read_key() -> str | None:
+    """Read a single keystroke event. Caller must already have set the
+    terminal to cbreak/raw mode. Returns one of:
+        'up', 'down', 'space', 'enter', 'cancel', or None (unrecognized).
+    Raises KeyboardInterrupt on ctrl+c.
+    """
+    ch = sys.stdin.read(1)
+    if ch == "\x03":            # ctrl+c
+        raise KeyboardInterrupt
+    if ch == "\x1b":            # ESC — could start an arrow sequence
+        # Peek for `[A` / `[B` with a short timeout so a bare ESC press
+        # (user wants to cancel) doesn't hang waiting for a 3rd byte.
+        ready, _, _ = select.select([sys.stdin], [], [], 0.05)
+        if not ready:
+            return "cancel"
+        if sys.stdin.read(1) != "[":
+            return "cancel"
+        ready, _, _ = select.select([sys.stdin], [], [], 0.05)
+        if not ready:
+            return "cancel"
+        arrow = sys.stdin.read(1)
+        if arrow == "A":
+            return "up"
+        if arrow == "B":
+            return "down"
+        return None             # other CSI sequence — ignore
+    if ch == " ":
+        return "space"
+    if ch in ("\r", "\n"):
+        return "enter"
+    if ch in ("q", "Q"):
+        return "cancel"
+    return None

@@ -1,4 +1,8 @@
-from dotsync.ui_picker import PickerState
+import io
+
+import pytest
+
+from dotsync.ui_picker import PickerState, _read_key
 
 
 ITEMS = ["claude", "ghostty", "bettertouchtool", "zsh"]
@@ -94,3 +98,74 @@ def test_state_unknown_key_is_noop():
     assert s.selected == set()
     assert not s.done
     assert not s.cancelled
+
+
+def _stdin_with(seq: str, monkeypatch):
+    """Mock sys.stdin with the given byte sequence + select.select that
+    always reports stdin readable (so escape-sequence peek doesn't block)."""
+    fake = io.StringIO(seq)
+    fake.fileno = lambda: 0  # any int; select isn't actually called on it
+    monkeypatch.setattr("dotsync.ui_picker.sys.stdin", fake)
+    monkeypatch.setattr(
+        "dotsync.ui_picker.select.select",
+        lambda r, w, x, t: (r, [], []),
+    )
+
+
+def test_read_key_space(monkeypatch):
+    _stdin_with(" ", monkeypatch)
+    assert _read_key() == "space"
+
+
+def test_read_key_enter_lf(monkeypatch):
+    _stdin_with("\n", monkeypatch)
+    assert _read_key() == "enter"
+
+
+def test_read_key_enter_cr(monkeypatch):
+    _stdin_with("\r", monkeypatch)
+    assert _read_key() == "enter"
+
+
+def test_read_key_q_cancels(monkeypatch):
+    _stdin_with("q", monkeypatch)
+    assert _read_key() == "cancel"
+
+
+def test_read_key_uppercase_q_cancels(monkeypatch):
+    _stdin_with("Q", monkeypatch)
+    assert _read_key() == "cancel"
+
+
+def test_read_key_arrow_up(monkeypatch):
+    _stdin_with("\x1b[A", monkeypatch)
+    assert _read_key() == "up"
+
+
+def test_read_key_arrow_down(monkeypatch):
+    _stdin_with("\x1b[B", monkeypatch)
+    assert _read_key() == "down"
+
+
+def test_read_key_bare_escape_cancels(monkeypatch):
+    """ESC alone (no `[A`/`[B` follow-up) is treated as cancel."""
+    fake = io.StringIO("\x1b")
+    fake.fileno = lambda: 0
+    monkeypatch.setattr("dotsync.ui_picker.sys.stdin", fake)
+    # select reports nothing readable → no follow-up byte
+    monkeypatch.setattr(
+        "dotsync.ui_picker.select.select",
+        lambda r, w, x, t: ([], [], []),
+    )
+    assert _read_key() == "cancel"
+
+
+def test_read_key_ctrl_c_raises_keyboardinterrupt(monkeypatch):
+    _stdin_with("\x03", monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        _read_key()
+
+
+def test_read_key_unknown_byte_returns_none(monkeypatch):
+    _stdin_with("z", monkeypatch)
+    assert _read_key() is None
