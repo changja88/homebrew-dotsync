@@ -117,11 +117,16 @@ echo
 
 # Capture init output so we can discover which folder the user chose
 # (no ~/.dotsync pointer exists; we have to parse it out).
-# In RAW mode we drop --quiet so the user sees `init`'s built-in welcome banner
-# the way a real first-time user would.
+# RAW mode mirrors a real first-time user: drops --quiet (so `init` prints
+# its own welcome banner) and adds --no-hints (so the screen ends right after
+# the user picks a sync folder, not 11 lines of "next steps" guidance).
 INIT_LOG=$(mktemp)
 INIT_FLAGS="--apps zsh"  # --apps locks to zsh for safety in both modes
-[[ "$RAW" != "1" ]] && INIT_FLAGS="$INIT_FLAGS --quiet"
+if [[ "$RAW" == "1" ]]; then
+  INIT_FLAGS="$INIT_FLAGS --no-hints"
+else
+  INIT_FLAGS="$INIT_FLAGS --quiet"
+fi
 dotsync init $INIT_FLAGS 2>&1 | tee "$INIT_LOG"
 # Strip ANSI escapes, then grab the folder from the "✔ config saved → .../dotsync.toml" line.
 DEMO_DIR=$(perl -pe 's/\033\[[0-9;]*m//g' "$INIT_LOG" \
@@ -138,6 +143,15 @@ fi
 
 note "next: dotsync from --all (snapshots local app configs into the folder)"
 pause
+
+# RAW mode ends here — the install + sync-folder-picking flow is what an end
+# user sees and was the focus of the demo. `from` and `status` follow but
+# they're separate user actions, not part of the install path.
+if [[ "$RAW" == "1" ]]; then
+  brew uninstall dotsync >/dev/null 2>&1 || true
+  rm -rf "$DEMO_DIR" "$TAP_DIR" "$TARBALL"
+  exit 0
+fi
 
 # --- step 4: from -----------------------------------------------------------
 step "4/5  dotsync from --all — snapshot local configs into the folder"

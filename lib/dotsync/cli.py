@@ -32,6 +32,7 @@ def _build_parser() -> argparse.ArgumentParser:
     init.add_argument("--btt-preset", default=None, help=f"BetterTouchTool preset name (default: {DEFAULT_BTT_PRESET})")
     init.add_argument("--yes", action="store_true", help="non-interactive: skip prompts")
     init.add_argument("--quiet", action="store_true", help="skip the welcome banner")
+    init.add_argument("--no-hints", action="store_true", help="skip the post-init 'next steps' block")
 
     sub.add_parser("welcome", help="print the welcome banner")
 
@@ -98,7 +99,8 @@ def cmd_init(args) -> int:
     has_overrides = bool(args.apps) or bool(args.btt_preset)
     if existing.exists() and not has_overrides:
         ui.done(f"adopted existing config → {existing}")
-        _print_init_hints(dir_path)
+        if not args.no_hints:
+            _print_init_hints(dir_path)
         return 0
 
     # 3. resolve apps list (auto-detect if not specified)
@@ -121,7 +123,8 @@ def cmd_init(args) -> int:
     # 5. save + hints
     save_config(Config(dir=dir_path, apps=apps, bettertouchtool_preset=btt_preset))
     ui.done(f"config saved → {folder_config_path(dir_path)}")
-    _print_init_hints(dir_path)
+    if not args.no_hints:
+        _print_init_hints(dir_path)
     return 0
 
 

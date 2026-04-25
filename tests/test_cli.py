@@ -434,3 +434,29 @@ def test_to_bare_enter_aborts(fake_home, monkeypatch, tmp_path):
     rc = main(["to", "--all"])
     assert rc == 0
     assert (fake_home / ".zshrc").read_text() == "LOCAL_ORIG"
+
+
+def test_init_no_hints_skips_next_steps_block(fake_home, tmp_path, capsys):
+    """--no-hints suppresses the 'next steps' guidance block (used by demo
+    RAW mode to keep the install screen minimal)."""
+    target = tmp_path / "configs"
+    rc = main(["init", "--dir", str(target), "--apps", "zsh", "--yes",
+               "--quiet", "--no-hints"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "next steps" not in out
+    assert "config saved" in out  # the saved line is still shown
+
+
+def test_init_no_hints_also_suppresses_adopt_branch_hints(fake_home, tmp_path, capsys):
+    target = tmp_path / "existing"
+    target.mkdir()
+    (target / "dotsync.toml").write_text(
+        'apps = ["zsh"]\n\n[options]\nbackup_keep = 10\n'
+        'bettertouchtool_preset = "Master_bt"\n'
+    )
+    rc = main(["init", "--dir", str(target), "--yes", "--quiet", "--no-hints"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "next steps" not in out
+    assert "adopted existing config" in out
