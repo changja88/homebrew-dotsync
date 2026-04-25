@@ -13,6 +13,10 @@ class ClaudeApp(App):
     name = "claude"
     description = "Claude Code (settings + plugins + MCP servers)"
 
+    @classmethod
+    def is_present_locally(cls) -> bool:
+        return (Path.home() / ".claude" / "settings.json").exists()
+
     def _claude_dir(self) -> Path:
         return Path.home() / ".claude"
 

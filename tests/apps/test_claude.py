@@ -219,3 +219,13 @@ def test_status_dirty_when_settings_differ(fake_home, tmp_path):
 
     s = ClaudeApp().status(target)
     assert s.state == "dirty"
+
+
+def test_is_present_locally_true_when_claude_dir_exists(fake_home):
+    (fake_home / ".claude").mkdir()
+    (fake_home / ".claude" / "settings.json").write_text("{}")
+    assert ClaudeApp.is_present_locally() is True
+
+
+def test_is_present_locally_false_when_no_claude_dir(fake_home):
+    assert ClaudeApp.is_present_locally() is False

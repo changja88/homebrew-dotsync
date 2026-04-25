@@ -40,3 +40,20 @@ def build_app(name: str, cfg) -> App:
     if name == "zsh":
         return ZshApp()
     raise KeyError(name)  # unreachable
+
+
+_APP_CLASSES = {
+    "claude": ClaudeApp,
+    "ghostty": GhosttyApp,
+    "bettertouchtool": BetterTouchToolApp,
+    "zsh": ZshApp,
+}
+
+
+def detect_present() -> list[str]:
+    """Return the names of apps whose local install is detected on this machine.
+
+    Order is stable: matches the order in `APP_NAMES` (claude, ghostty, bettertouchtool, zsh).
+    """
+    return [name for name in ["claude", "ghostty", "bettertouchtool", "zsh"]
+            if _APP_CLASSES[name].is_present_locally()]

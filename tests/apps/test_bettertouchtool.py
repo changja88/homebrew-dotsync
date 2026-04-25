@@ -79,3 +79,21 @@ def test_sync_to_missing_preset_raises(tmp_path):
     backup.mkdir()
     with pytest.raises(FileNotFoundError, match="bttpreset"):
         BetterTouchToolApp(preset="Master_bt").sync_to(target, backup)
+
+
+def test_is_present_locally_true_when_btt_app_exists(monkeypatch, tmp_path):
+    fake_apps = tmp_path / "Applications"
+    (fake_apps / "BetterTouchTool.app").mkdir(parents=True)
+    monkeypatch.setattr(
+        "dotsync.apps.bettertouchtool.BetterTouchToolApp.APP_PATH",
+        fake_apps / "BetterTouchTool.app",
+    )
+    assert BetterTouchToolApp.is_present_locally() is True
+
+
+def test_is_present_locally_false_when_btt_app_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "dotsync.apps.bettertouchtool.BetterTouchToolApp.APP_PATH",
+        tmp_path / "nope" / "BetterTouchTool.app",
+    )
+    assert BetterTouchToolApp.is_present_locally() is False

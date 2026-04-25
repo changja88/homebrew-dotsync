@@ -10,6 +10,10 @@ class ZshApp(App):
     name = "zsh"
     description = "Zsh shell config (~/.zshrc)"
 
+    @classmethod
+    def is_present_locally(cls) -> bool:
+        return (Path.home() / ".zshrc").exists()
+
     def _local(self) -> Path:
         return Path.home() / ".zshrc"
 

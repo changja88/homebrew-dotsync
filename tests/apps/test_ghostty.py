@@ -70,3 +70,13 @@ def test_status_dirty(fake_home, tmp_path):
     (target / "ghostty").mkdir(parents=True)
     (target / "ghostty" / "config.ghostty").write_text("NEW")
     assert GhosttyApp().status(target).state == "dirty"
+
+
+def test_is_present_locally_true_when_config_exists(fake_home):
+    gdir = _ghostty_dir(fake_home); gdir.mkdir(parents=True)
+    (gdir / "config.ghostty").write_text("X")
+    assert GhosttyApp.is_present_locally() is True
+
+
+def test_is_present_locally_false_when_no_config(fake_home):
+    assert GhosttyApp.is_present_locally() is False

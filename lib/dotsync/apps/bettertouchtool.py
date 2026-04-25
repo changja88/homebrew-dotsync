@@ -11,6 +11,13 @@ class BetterTouchToolApp(App):
     name = "bettertouchtool"
     description = "BetterTouchTool preset (.bttpreset, name configurable)"
 
+    # Class attribute so tests can monkeypatch.
+    APP_PATH = Path("/Applications/BetterTouchTool.app")
+
+    @classmethod
+    def is_present_locally(cls) -> bool:
+        return Path(cls.APP_PATH).exists()
+
     def __init__(self, preset: str = "Master_bt"):
         self.preset = preset
 

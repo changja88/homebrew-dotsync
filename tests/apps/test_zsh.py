@@ -63,3 +63,12 @@ def test_status_missing_when_either_absent(fake_home, tmp_path):
     target = tmp_path / "configs"
     target.mkdir()
     assert ZshApp().status(target).state == "missing"
+
+
+def test_is_present_locally_true_when_zshrc_exists(fake_home):
+    (fake_home / ".zshrc").write_text("X")
+    assert ZshApp.is_present_locally() is True
+
+
+def test_is_present_locally_false_when_no_zshrc(fake_home):
+    assert ZshApp.is_present_locally() is False
