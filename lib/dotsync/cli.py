@@ -271,14 +271,19 @@ def cmd_from(args) -> int:
     print()
     start = time.monotonic()
     ok_count = 0
+    err_count = 0
     for i, name in enumerate(apps, 1):
         app = build_app(name, cfg)
         ui.section(name, index=i, total=len(apps), sub=app.description)
-        app.sync_from(cfg.dir)
-        ok_count += 1
+        try:
+            app.sync_from(cfg.dir)
+            ok_count += 1
+        except (FileNotFoundError, RuntimeError) as e:
+            ui.error(str(e))
+            err_count += 1
         print()
-    ui.summary(ok=ok_count, duration_ms=int((time.monotonic() - start) * 1000))
-    return 0
+    ui.summary(ok=ok_count, error=err_count, duration_ms=int((time.monotonic() - start) * 1000))
+    return 0 if err_count == 0 else 6
 
 
 def cmd_to(args) -> int:
@@ -290,18 +295,24 @@ def cmd_to(args) -> int:
     session = new_backup_session(cfg.backup_dir)
 
     ui.banner("dotsync to", f"{len(apps)} app{'s' if len(apps) != 1 else ''} · {cfg.dir}")
+    ui.kv("backup", str(session))
     print()
     start = time.monotonic()
     ok_count = 0
+    err_count = 0
     for i, name in enumerate(apps, 1):
         app = build_app(name, cfg)
         ui.section(name, index=i, total=len(apps), sub=app.description)
-        app.sync_to(cfg.dir, session)
-        ok_count += 1
+        try:
+            app.sync_to(cfg.dir, session)
+            ok_count += 1
+        except (FileNotFoundError, RuntimeError) as e:
+            ui.error(str(e))
+            err_count += 1
         print()
     rotate_backups(cfg.backup_dir, cfg.backup_keep)
-    ui.summary(ok=ok_count, duration_ms=int((time.monotonic() - start) * 1000))
-    return 0
+    ui.summary(ok=ok_count, error=err_count, duration_ms=int((time.monotonic() - start) * 1000))
+    return 0 if err_count == 0 else 6
 
 
 def main(argv: Sequence[str] | None = None) -> int:

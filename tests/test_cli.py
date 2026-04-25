@@ -315,3 +315,25 @@ def test_no_args_shows_welcome(capsys):
     out = capsys.readouterr().out
     assert "██████╗" in out  # ASCII logo present (block chars)
     assert "Quickstart" in out
+
+
+def test_from_continues_after_one_app_fails(fake_home, monkeypatch, tmp_path, capsys):
+    """If one app raises during `from --all`, others should still run
+    and the summary should report 1 ok / 1 error."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    target = tmp_path / "configs"
+    target.mkdir()
+    save_config(Config(dir=target, apps=["zsh", "ghostty"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+    (fake_home / ".zshrc").write_text("Z")
+    # ghostty source missing → its sync_from raises FileNotFoundError
+
+    rc = main(["from", "--all"])
+    out = capsys.readouterr().out
+    # zsh succeeded (file copied)
+    assert (target / "zsh" / ".zshrc").read_text() == "Z"
+    # summary line shows 1 ok and 1 error
+    assert "1 ok" in out
+    assert "1 error" in out
+    # exit code reflects partial failure
+    assert rc != 0
