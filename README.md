@@ -17,6 +17,13 @@ brew install changja88/dotsync/dotsync
 dotsync welcome   # ASCII 환영 배너와 첫 시작 안내를 출력
 ```
 
+Python 3.12+ 가 이미 시스템에 있으면 (Homebrew 의 `python@3.12` 또는 python.org
+공식 설치판) 그것을 그대로 재사용한다 — 중복 설치하지 않는다. 없을 때만 brew 가
+`python@3.12` 를 함께 설치한다.
+
+> 참고: pyenv / uv 처럼 비-canonical 경로에 깔린 Python 은 자동 감지되지 않아
+> brew 가 자기 `python@3.12` 를 설치한다. 동작은 정상이지만 중복 설치는 발생.
+
 > 첫 단계는 항상 **`dotsync init`** — sync 폴더를 정한다. 그 다음 `from` / `to`가 동작한다.
 
 ### 사용법
@@ -39,6 +46,15 @@ dotsync init
 ```
 
 `Y`(또는 Enter)면 감지된 전부 추적, `n`이면 아무것도 안 추적, `edit`이면 화살표 키 picker 로 직접 고른다 (키 안내는 아래 `apps edit` 설명 참고).
+
+`dotsync init` 은 BTT 의 내부 SQLite store 를 읽어 현재 등록된 preset 이름을
+자동 감지한다.
+
+- preset 1개만 있으면 자동으로 채택 (질문 없음)
+- 여러 개면 목록을 보여주고 첫 번째를 default 로 1개를 고르게 한다
+- 감지 실패 시 (BTT 미설치, 스키마 변경 등) 기존처럼 `Master_bt` 를 default 로 묻는다
+
+`--btt-preset <name>` 또는 `--yes` 가 주어지면 자동 감지를 건너뛴다.
 
 비대화형(스크립트/새 머신 셋업용):
 
@@ -151,6 +167,16 @@ brew install changja88/dotsync/dotsync
 dotsync welcome   # prints the ASCII welcome banner with quickstart hints
 ```
 
+If Python 3.12+ is already installed at a canonical path (Homebrew's
+`python@3.12` or a python.org official installer), dotsync reuses it —
+no duplicate install. Otherwise Homebrew pulls in `python@3.12` as a
+dependency.
+
+> Note: Pythons installed via pyenv / uv are at non-canonical paths and
+> won't be auto-detected — Homebrew will still install its own
+> `python@3.12`. Functionality is unaffected, but the duplicate install
+> is not avoided.
+
 > Always start with **`dotsync init`** — it picks the sync folder. After that, `from` / `to` work from anywhere.
 
 ### Usage
@@ -173,6 +199,16 @@ dotsync init
 ```
 
 `Y` (or Enter) tracks all detected apps, `n` tracks none, `edit` opens an arrow-key picker so you can pick a custom set (key bindings are described under `apps edit` below).
+
+`dotsync init` reads BetterTouchTool's internal SQLite store to auto-detect
+the registered preset name(s).
+
+- Exactly one preset → adopted automatically (no prompt)
+- Multiple → shown as a list; pick one (first is the default)
+- Discovery fails (BTT not installed, schema drift, …) → legacy prompt with
+  `Master_bt` as the default
+
+`--btt-preset <name>` or `--yes` skips discovery.
 
 Non-interactive (scripts / new-machine bootstrap):
 
