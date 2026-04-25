@@ -11,12 +11,11 @@ from dotsync.config import (
     Config,
     ConfigError,
     DEFAULT_BTT_PRESET,
+    ENV_VAR,
     SUPPORTED_APPS,
     folder_config_path,
     load_config,
-    pointer_path,
     save_config,
-    write_pointer,
 )
 
 
@@ -68,14 +67,12 @@ def cmd_init(args) -> int:
     dir_path.mkdir(parents=True, exist_ok=True)
 
     # 2. if folder already has a dotsync.toml and the user passed no overrides,
-    #    just adopt it and re-point. This is the new-machine restore flow.
+    #    just adopt it. This is the new-machine restore flow.
     existing = folder_config_path(dir_path)
     has_overrides = bool(args.apps) or bool(args.btt_preset)
     if existing.exists() and not has_overrides:
-        write_pointer(dir_path)
         ui.done(f"adopted existing config → {existing}")
-        ui.sub(f"pointer  → {pointer_path()}")
-        _print_init_hints()
+        _print_init_hints(dir_path)
         return 0
 
     # 3. resolve apps list (auto-detect if not specified)
@@ -98,8 +95,7 @@ def cmd_init(args) -> int:
     # 5. save + hints
     save_config(Config(dir=dir_path, apps=apps, bettertouchtool_preset=btt_preset))
     ui.done(f"config saved → {folder_config_path(dir_path)}")
-    ui.sub(f"pointer  → {pointer_path()}")
-    _print_init_hints()
+    _print_init_hints(dir_path)
     return 0
 
 
@@ -147,10 +143,13 @@ def _resolve_apps_for_init(args) -> "list[str] | None":
     return None
 
 
-def _print_init_hints() -> None:
+def _print_init_hints(folder: Path) -> None:
+    print()
+    print("To use dotsync from anywhere on this machine, add this to your shell rc:")
+    print(f'  export {ENV_VAR}="{folder}"')
+    print("Or simply run dotsync from inside the folder — it auto-discovers dotsync.toml.")
     print()
     print("To change tracked apps later:  dotsync config apps <comma,separated>")
-    print("To change sync folder later:   dotsync config dir <new-path>")
 
 
 def cmd_config(args) -> int:

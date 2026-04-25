@@ -1,6 +1,12 @@
-import os
 from pathlib import Path
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolate_env(monkeypatch):
+    """Auto-applied: scrub env vars that affect dotsync's behavior."""
+    monkeypatch.delenv("DOTSYNC_DIR", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
 
 
 @pytest.fixture

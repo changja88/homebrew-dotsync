@@ -47,17 +47,26 @@ dotsync init --dir ~/my-configs --yes
 dotsync init --dir ~/my-configs --apps claude,zsh --btt-preset Master_bt --yes
 ```
 
-설정은 두 곳에 저장된다:
-- `<sync 폴더>/dotsync.toml` — 추적 앱, 백업 정책, BTT preset 등 (폴더와 함께 백업/이동된다)
-- `~/.dotsync` — sync 폴더 절대경로 한 줄짜리 pointer
+**dotsync는 사용자가 지정한 sync 폴더 외에는 컴퓨터 어디에도 파일/디렉토리를 만들지 않는다.** 모든 설정은 `<sync 폴더>/dotsync.toml`에만 저장되고, 백업도 `<sync 폴더>/.backups/`에 쌓인다.
+
+#### dotsync는 sync 폴더를 어떻게 찾나?
+
+두 가지 중 하나면 된다.
+
+1. 환경변수 `DOTSYNC_DIR`이 절대경로로 설정돼 있으면 그것을 사용한다. `init` 종료 시 안내 메시지가 셸 rc에 추가할 한 줄을 알려준다:
+   ```bash
+   export DOTSYNC_DIR="/Users/you/my-configs"
+   ```
+2. 또는 sync 폴더 안(또는 그 하위 어디)에서 dotsync 명령을 실행하면 자동으로 `dotsync.toml`을 위로 거슬러 올라가며 찾는다 (git 방식).
 
 #### 새 머신에서 복원할 때
 
-폴더에 이미 `dotsync.toml`이 있으면 dotsync는 그걸 그대로 채택한다 — 한 줄이면 끝.
+폴더에 이미 `dotsync.toml`이 있으면 dotsync는 그걸 그대로 채택한다.
 
 ```bash
 git clone git@github.com:you/my-configs.git ~/my-configs
-dotsync init --dir ~/my-configs --yes   # 폴더 안 dotsync.toml 그대로 사용, pointer만 갱신
+export DOTSYNC_DIR="$HOME/my-configs"   # 한 번만 (.zshrc 등에 추가)
+dotsync init --dir ~/my-configs --yes   # 폴더 안 dotsync.toml 그대로 사용
 dotsync to --all
 ```
 
@@ -145,17 +154,26 @@ dotsync init --dir ~/my-configs --yes
 dotsync init --dir ~/my-configs --apps claude,zsh --btt-preset Master_bt --yes
 ```
 
-Settings live in two places:
-- `<sync folder>/dotsync.toml` — tracked apps, backup policy, BTT preset (travels with the folder)
-- `~/.dotsync` — single-line pointer to the sync folder's absolute path
+**dotsync creates no files or directories anywhere on your machine outside the sync folder you chose.** All settings live in `<sync folder>/dotsync.toml`, and backups accumulate in `<sync folder>/.backups/`.
+
+#### How does dotsync find the sync folder?
+
+Either of these works:
+
+1. The `DOTSYNC_DIR` environment variable holds an absolute path. `init` prints the line to add to your shell rc:
+   ```bash
+   export DOTSYNC_DIR="/Users/you/my-configs"
+   ```
+2. Or, run `dotsync` from inside the sync folder (or any subdirectory) — it walks upward looking for `dotsync.toml` (git-style).
 
 #### Restoring on a new machine
 
-If the folder already contains a `dotsync.toml`, `init` adopts it as-is — one line is enough.
+If the folder already contains a `dotsync.toml`, `init` adopts it as-is.
 
 ```bash
 git clone git@github.com:you/my-configs.git ~/my-configs
-dotsync init --dir ~/my-configs --yes   # reuses existing dotsync.toml, just refreshes pointer
+export DOTSYNC_DIR="$HOME/my-configs"   # once (add to your shell rc)
+dotsync init --dir ~/my-configs --yes   # reuses existing dotsync.toml as-is
 dotsync to --all
 ```
 

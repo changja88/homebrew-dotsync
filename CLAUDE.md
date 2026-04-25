@@ -13,9 +13,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 CLI는 **단일 패키지 + plugin 스타일 앱 레지스트리** 구조를 따른다.
 
-- `lib/dotsync/cli.py` — argparse dispatch (`init`, `config`, `from`, `to`, `status`, `apps`). `init`은 설치된 앱을 `detect_present()`로 자동 감지해 default로 제시하고, 사용자가 지정한 폴더에 `dotsync.toml`이 이미 있으면 그것을 채택한다.
-- `lib/dotsync/config.py` — config는 두 곳에 분산: `~/.dotsync`는 sync 폴더 절대경로를 담은 한 줄짜리 pointer, `<sync_folder>/dotsync.toml`이 실제 config(`apps`, `backup_dir`, `backup_keep`, `bettertouchtool_preset`). 폴더 자기 위치는 폴더 안에 적지 않음(`dir` 필드 없음 — pointer가 갖는다). stdlib `tomllib` 사용.
-- `lib/dotsync/backup.py` — `to` 직전 스냅샷을 `~/.local/share/dotsync/backups/<YYYYMMDD_HHMMSS>/<app>/`에 저장, `backup_keep` 기준으로 회전.
+- `lib/dotsync/cli.py` — argparse dispatch (`init`, `config`, `from`, `to`, `status`, `apps`). `init`은 설치된 앱을 `detect_present()`로 자동 감지해 default로 제시하고, 사용자가 지정한 폴더에 `dotsync.toml`이 이미 있으면 그것을 채택한다. 종료 시 `export DOTSYNC_DIR=...` 한 줄을 안내한다 (셸 rc는 자동으로 건드리지 않는다).
+- `lib/dotsync/config.py` — **dotsync는 사용자가 지정한 sync 폴더 외에는 어디에도 파일/디렉토리를 만들지 않는다.** 실제 config는 `<sync_folder>/dotsync.toml`에만 존재한다. sync 폴더 위치는 (1) `$DOTSYNC_DIR` 환경변수 (절대경로), (2) cwd에서 위로 거슬러 올라가며 `dotsync.toml` 검색(git 방식) 중 하나로 발견한다. 폴더가 자기 위치를 자기에게 적을 필요 없으므로 dotsync.toml에 `dir` 필드 없음. stdlib `tomllib` 사용.
+- `lib/dotsync/backup.py` — `to` 직전 스냅샷을 `<sync_folder>/.backups/<YYYYMMDD_HHMMSS>/<app>/`(default)에 저장, `backup_keep` 기준으로 회전. 사용자 폴더 외부에는 절대 쓰지 않는다.
 - `lib/dotsync/ui.py` — ANSI 컬러 출력 (`NO_COLOR` 환경변수 존중). 출력 톤(`▶ ↳ ✓ ⚠ ✗ ✔`)은 기존 Make 스타일과 동일.
 - `lib/dotsync/apps/base.py` — `App` 추상 클래스 + `AppStatus` + `diff_files(pairs)` 헬퍼 (sha256 기반 비교).
 - `lib/dotsync/apps/{claude,ghostty,bettertouchtool,zsh}.py` — 구체 앱 모듈. 각 앱은 `is_present_locally()` classmethod를 제공해 init 자동 감지에 참여한다.
