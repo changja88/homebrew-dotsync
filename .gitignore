@@ -81,3 +81,6 @@ Desktop.ini
 *.log
 tmp/
 .tmp/
+
+# --- Local design / planning docs (kept local, not pushed) --------------
+docs/
