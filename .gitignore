@@ -1,11 +1,83 @@
+# --- Python -------------------------------------------------------------
 __pycache__/
 *.py[cod]
-*.egg-info/
-.pytest_cache/
-.venv/
-venv/
-.idea/
-.vscode/
-.DS_Store
+*$py.class
+*.so
+.Python
+
+# Distribution / packaging
 build/
 dist/
+*.egg
+*.egg-info/
+.eggs/
+develop-eggs/
+downloads/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+MANIFEST
+.installed.cfg
+pip-wheel-metadata/
+pip-log.txt
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# --- Testing / coverage / type checkers ---------------------------------
+.pytest_cache/
+.cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+.mypy_cache/
+.pyre/
+.pytype/
+.ruff_cache/
+.pyright/
+nosetests.xml
+*.cover
+
+# --- Editors / IDEs ------------------------------------------------------
+.idea/
+.vscode/
+.fleet/
+.zed/
+*.swp
+*.swo
+*~
+
+# --- macOS ---------------------------------------------------------------
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+Icon
+
+# --- Other OS (cross-platform safety net) -------------------------------
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- Env files (never commit secrets) -----------------------------------
+.env
+.env.*
+!.env.example
+.envrc
+.python-version
+
+# --- Logs / temp ---------------------------------------------------------
+*.log
+tmp/
+.tmp/
