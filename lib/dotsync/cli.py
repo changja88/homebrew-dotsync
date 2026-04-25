@@ -55,6 +55,10 @@ def _build_parser() -> argparse.ArgumentParser:
     sync_to = sub.add_parser("to", help="folder → local")
     sync_to.add_argument("app", nargs="?", help="app name or omit with --all")
     sync_to.add_argument("--all", action="store_true")
+    sync_to.add_argument("--dry-run", action="store_true",
+                         help="print what would change and exit without modifying anything")
+    sync_to.add_argument("--yes", action="store_true",
+                         help="skip the confirmation prompt")
 
     return p
 
@@ -299,9 +303,31 @@ def cmd_to(args) -> int:
     if not apps:
         return 2
     cfg.dir.mkdir(parents=True, exist_ok=True)
-    session = new_backup_session(cfg.backup_dir)
 
     ui.banner("dotsync to", f"{len(apps)} app{'s' if len(apps) != 1 else ''} · {cfg.dir}")
+    print()
+    ui.section("preview", sub="what would change on this machine")
+    print()
+    for name in apps:
+        app = build_app(name, cfg)
+        s = app.status(cfg.dir)
+        print(ui.format_status_line(
+            name, state=s.state, details=s.details,
+            direction=getattr(s, "direction", ""),
+        ))
+    print()
+
+    if args.dry_run:
+        ui.dim("dry-run: no files will be modified")
+        return 0
+
+    if not args.yes:
+        answer = ui.ask("Apply these changes to your local machine?", default="y/N").lower()
+        if answer not in ("y", "yes"):
+            ui.dim("aborted")
+            return 0
+
+    session = new_backup_session(cfg.backup_dir)
     ui.kv("backup", str(session))
     print()
     start = time.monotonic()

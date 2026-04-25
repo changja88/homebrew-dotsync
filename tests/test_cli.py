@@ -70,7 +70,7 @@ def test_to_all_iterates_registered_apps(fake_home, monkeypatch, tmp_path):
     save_config(Config(dir=target, apps=["zsh"]))
     monkeypatch.setenv("DOTSYNC_DIR", str(target))
 
-    rc = main(["to", "--all"])
+    rc = main(["to", "--all", "--yes"])
     assert rc == 0
     assert (fake_home / ".zshrc").read_text() == "Z"
 
@@ -130,7 +130,7 @@ def test_runtime_error_caught_with_friendly_exit(fake_home, monkeypatch, tmp_pat
     monkeypatch.setenv("DOTSYNC_DIR", str(target))
 
     with patch("dotsync.apps.zsh.shutil.copy2", side_effect=RuntimeError("disk full")):
-        rc = main(["to", "zsh"])
+        rc = main(["to", "zsh", "--yes"])
     assert rc != 0
     err = capsys.readouterr().err
     assert "disk full" in err
@@ -361,3 +361,58 @@ def test_from_continues_after_one_app_fails(fake_home, monkeypatch, tmp_path, ca
     assert "1 error" in out
     # exit code reflects partial failure
     assert rc != 0
+
+
+def test_to_dry_run_does_not_change_local_or_create_backup(fake_home, monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("NO_COLOR", "1")
+    target = tmp_path / "configs"
+    (target / "zsh").mkdir(parents=True)
+    (target / "zsh" / ".zshrc").write_text("FROM_FOLDER")
+    (fake_home / ".zshrc").write_text("LOCAL_ORIG")
+    save_config(Config(dir=target, apps=["zsh"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+
+    rc = main(["to", "--all", "--dry-run"])
+    assert rc == 0
+    # local untouched
+    assert (fake_home / ".zshrc").read_text() == "LOCAL_ORIG"
+    # no backup directory created (other than maybe the parent .backups root)
+    backups_root = target / ".backups"
+    assert not backups_root.exists() or not any(backups_root.iterdir())
+    out = capsys.readouterr().out
+    assert "dry-run" in out.lower()
+    # preview should still show what would change
+    assert "zsh" in out
+
+
+def test_to_prompts_confirmation_by_default(fake_home, monkeypatch, tmp_path):
+    """Without --yes or --dry-run, `to` must ask before overwriting."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    target = tmp_path / "configs"
+    (target / "zsh").mkdir(parents=True)
+    (target / "zsh" / ".zshrc").write_text("FROM_FOLDER")
+    (fake_home / ".zshrc").write_text("LOCAL_ORIG")
+    save_config(Config(dir=target, apps=["zsh"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+
+    answers = iter(["n"])  # decline
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    rc = main(["to", "--all"])
+    assert rc == 0
+    # decline → local untouched
+    assert (fake_home / ".zshrc").read_text() == "LOCAL_ORIG"
+
+
+def test_to_with_yes_skips_prompt_and_applies(fake_home, monkeypatch, tmp_path):
+    monkeypatch.setenv("NO_COLOR", "1")
+    target = tmp_path / "configs"
+    (target / "zsh").mkdir(parents=True)
+    (target / "zsh" / ".zshrc").write_text("FROM_FOLDER")
+    (fake_home / ".zshrc").write_text("LOCAL_ORIG")
+    save_config(Config(dir=target, apps=["zsh"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+
+    rc = main(["to", "--all", "--yes"])
+    assert rc == 0
+    assert (fake_home / ".zshrc").read_text() == "FROM_FOLDER"

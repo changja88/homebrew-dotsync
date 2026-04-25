@@ -85,8 +85,12 @@ dotsync from claude         # 한 앱만
 
 #### 3. 폴더 → 로컬 앱 (다른 머신에서 복원하기)
 
+`dotsync to`는 로컬을 덮어쓰기 전에 **확인 프롬프트**를 띄웁니다. 변경사항을 미리 확인만 하고 싶다면 `--dry-run`, 자동화에서 프롬프트를 건너뛰려면 `--yes`를 사용하세요. 백업 세션 경로는 실행 중에 출력됩니다.
+
 ```bash
-dotsync to --all            # 직전 로컬 상태는 자동 백업됨
+dotsync to --all --dry-run     # preview only
+dotsync to --all                # interactive (asks Y/n)
+dotsync to --all --yes          # automation (no prompt)
 ```
 
 `to` 직전 로컬 파일은 `<sync 폴더>/.backups/<YYYYMMDD_HHMMSS>/<app>/`에 자동 백업된다 (사용자 폴더 안에만 쌓이므로 git에 올리고 싶지 않으면 `.gitignore`에 `.backups/` 추가).
@@ -202,8 +206,12 @@ Then commit the folder to git or let iCloud sync it — that's your backup.
 
 #### 3. Folder → local apps (restore on another machine)
 
+`dotsync to` prompts for confirmation before overwriting your local configs. Use `--dry-run` to preview, `--yes` to skip the prompt in automation. The backup session path is printed at run time.
+
 ```bash
-dotsync to --all            # local state is backed up automatically before overwrite
+dotsync to --all --dry-run     # preview only
+dotsync to --all                # interactive (asks Y/n)
+dotsync to --all --yes          # automation (no prompt)
 ```
 
 Each `to` snapshots the about-to-be-overwritten local files into `<sync folder>/.backups/<YYYYMMDD_HHMMSS>/<app>/` (lives inside your sync folder; add `.backups/` to `.gitignore` if you don't want it tracked).
