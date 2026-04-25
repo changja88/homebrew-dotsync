@@ -1,0 +1,7 @@
+#!/usr/bin/env python3
+"""dotsync entry point — invoked by Homebrew-installed wrapper."""
+import sys
+from dotsync.cli import main
+
+if __name__ == "__main__":
+    sys.exit(main())
