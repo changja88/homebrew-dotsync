@@ -532,49 +532,38 @@ def test_apps_works_without_config(fake_home, monkeypatch, tmp_path, capsys):
     assert "installed" in out
 
 
-def test_apps_edit_updates_config_via_prompt(fake_home, monkeypatch, tmp_path):
-    """Typing a new comma-separated list at the prompt rewrites dotsync.toml."""
+def test_apps_edit_updates_config_via_picker(fake_home, monkeypatch, tmp_path):
+    """Picker (in fallback mode under pytest) lets the user track a new
+    set of apps. Sorted order: bettertouchtool, claude, ghostty, zsh."""
     target = tmp_path / "configs"
     target.mkdir()
     save_config(Config(dir=target, apps=["zsh"]))
     monkeypatch.setenv("DOTSYNC_DIR", str(target))
 
-    monkeypatch.setattr("builtins.input", lambda prompt="": "zsh,claude")
+    # btt=n, claude=y, ghostty=n, zsh=y (default Y because preselected)
+    answers = iter(["n", "y", "n", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     rc = main(["apps", "edit"])
     assert rc == 0
     cfg_text = (target / "dotsync.toml").read_text()
     assert "claude" in cfg_text
     assert "zsh" in cfg_text
+    # Negative checks use quoted form: `bettertouchtool_preset` always
+    # appears in [options], so the bare substring would falsely match.
+    assert '"ghostty"' not in cfg_text
+    assert '"bettertouchtool"' not in cfg_text
 
 
-def test_apps_edit_rejects_unknown_app(fake_home, monkeypatch, tmp_path, capsys):
-    """An unknown app name in the prompt makes `apps edit` exit nonzero
-    and report the bad name on stderr — without modifying config."""
-    target = tmp_path / "configs"
-    target.mkdir()
-    save_config(Config(dir=target, apps=["zsh"]))
-    monkeypatch.setenv("DOTSYNC_DIR", str(target))
-
-    monkeypatch.setattr("builtins.input", lambda prompt="": "zsh,nonsense")
-
-    rc = main(["apps", "edit"])
-    assert rc != 0
-    err = capsys.readouterr().err
-    assert "nonsense" in err
-    # config untouched
-    cfg_text = (target / "dotsync.toml").read_text()
-    assert "nonsense" not in cfg_text
-
-
-def test_apps_edit_empty_input_keeps_current(fake_home, monkeypatch, tmp_path):
-    """Pressing Enter at the prompt is a no-op — current tracked list stays."""
+def test_apps_edit_keeps_defaults_when_user_just_hits_enter(fake_home, monkeypatch, tmp_path):
+    """Bare Enter on every fallback prompt accepts the current set."""
     target = tmp_path / "configs"
     target.mkdir()
     save_config(Config(dir=target, apps=["zsh", "claude"]))
     monkeypatch.setenv("DOTSYNC_DIR", str(target))
 
-    monkeypatch.setattr("builtins.input", lambda prompt="": "")
+    answers = iter(["", "", "", ""])  # accept default for all 4
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     rc = main(["apps", "edit"])
     assert rc == 0
@@ -583,18 +572,45 @@ def test_apps_edit_empty_input_keeps_current(fake_home, monkeypatch, tmp_path):
     assert "claude" in cfg_text
 
 
-def test_apps_edit_comma_only_input_keeps_current(fake_home, monkeypatch, tmp_path):
-    """Input that filters to no app names (e.g. just `,`) is a no-op —
-    not a silent 'untrack everything' destructive op."""
+def test_apps_edit_cancel_keeps_current(fake_home, monkeypatch, tmp_path, capsys):
+    """When the picker returns None (cancel), config is unchanged and
+    a 'cancelled' notice is shown."""
     target = tmp_path / "configs"
     target.mkdir()
     save_config(Config(dir=target, apps=["zsh", "claude"]))
     monkeypatch.setenv("DOTSYNC_DIR", str(target))
 
-    monkeypatch.setattr("builtins.input", lambda prompt="": ",")
+    # Force pick_apps to return None to simulate cancel (fallback can't
+    # cancel — it only ever returns a list — so we patch directly).
+    monkeypatch.setattr(
+        "dotsync.ui_picker.pick_apps",
+        lambda items, preselected, title="Pick apps to track": None,
+    )
 
     rc = main(["apps", "edit"])
     assert rc == 0
     cfg_text = (target / "dotsync.toml").read_text()
+    # Untouched
     assert "zsh" in cfg_text
     assert "claude" in cfg_text
+
+
+def test_apps_edit_no_change_is_silent_noop(fake_home, monkeypatch, tmp_path, capsys):
+    """If picker returns the same list as already saved, config file is
+    not rewritten."""
+    target = tmp_path / "configs"
+    target.mkdir()
+    save_config(Config(dir=target, apps=["claude", "zsh"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+
+    mtime_before = (target / "dotsync.toml").stat().st_mtime_ns
+
+    monkeypatch.setattr(
+        "dotsync.ui_picker.pick_apps",
+        lambda items, preselected, title="Pick apps to track": ["claude", "zsh"],
+    )
+
+    rc = main(["apps", "edit"])
+    assert rc == 0
+    mtime_after = (target / "dotsync.toml").stat().st_mtime_ns
+    assert mtime_before == mtime_after  # file untouched

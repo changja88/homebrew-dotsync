@@ -278,28 +278,23 @@ def cmd_apps(args) -> int:
 
 
 def cmd_apps_edit(args) -> int:
-    """Interactive menu: show current tracked/installed state, prompt for a
-    new comma-separated list, save."""
+    """Interactive menu: show current tracked/installed state, then run
+    the arrow-key picker (fallback: per-app y/n) to pick a new tracked set."""
+    from .ui_picker import pick_apps
     cfg = load_config()
-    # Show current state (same rendering as `dotsync apps`).
-    cmd_apps(args)
+    cmd_apps(args)               # show current state, same as `dotsync apps`
     print()
 
-    current = ",".join(cfg.apps)
-    options = ", ".join(sorted(SUPPORTED_APPS))
-    apps_str = ui.ask(
-        f"apps to track (comma-separated, options: {options})",
-        default=current,
+    new_apps = pick_apps(
+        sorted(SUPPORTED_APPS),
+        preselected=set(cfg.apps),
     )
-    if not apps_str:
-        return 0  # Enter alone = no-op, keep current
-    new_apps = [a.strip() for a in apps_str.split(",") if a.strip()]
-    if not new_apps:
-        return 0  # input that filters to nothing (e.g. ",") = no-op
-    bad = [a for a in new_apps if a not in SUPPORTED_APPS]
-    if bad:
-        ui.error(f"unknown apps: {bad}")
-        return 2
+    if new_apps is None:
+        ui.dim("cancelled — no change")
+        return 0
+    if new_apps == list(cfg.apps):
+        ui.dim("no change")
+        return 0
     cfg.apps = new_apps
     save_config(cfg)
     ui.done(f"apps = {new_apps}")
