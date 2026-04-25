@@ -572,3 +572,20 @@ def test_apps_edit_empty_input_keeps_current(fake_home, monkeypatch, tmp_path):
     cfg_text = (target / "dotsync.toml").read_text()
     assert "zsh" in cfg_text
     assert "claude" in cfg_text
+
+
+def test_apps_edit_comma_only_input_keeps_current(fake_home, monkeypatch, tmp_path):
+    """Input that filters to no app names (e.g. just `,`) is a no-op —
+    not a silent 'untrack everything' destructive op."""
+    target = tmp_path / "configs"
+    target.mkdir()
+    save_config(Config(dir=target, apps=["zsh", "claude"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+
+    monkeypatch.setattr("builtins.input", lambda prompt="": ",")
+
+    rc = main(["apps", "edit"])
+    assert rc == 0
+    cfg_text = (target / "dotsync.toml").read_text()
+    assert "zsh" in cfg_text
+    assert "claude" in cfg_text

@@ -281,16 +281,19 @@ def cmd_apps_edit(args) -> int:
     print()
 
     current = ",".join(cfg.apps)
+    options = ", ".join(sorted(SUPPORTED_APPS))
     apps_str = ui.ask(
-        f"apps to track (comma-separated, options: {sorted(SUPPORTED_APPS)})",
+        f"apps to track (comma-separated, options: {options})",
         default=current,
     )
     if not apps_str:
         return 0  # Enter alone = no-op, keep current
     new_apps = [a.strip() for a in apps_str.split(",") if a.strip()]
+    if not new_apps:
+        return 0  # input that filters to nothing (e.g. ",") = no-op
     bad = [a for a in new_apps if a not in SUPPORTED_APPS]
     if bad:
-        print(f"unknown apps: {bad}", file=sys.stderr)
+        ui.error(f"unknown apps: {bad}")
         return 2
     cfg.apps = new_apps
     save_config(cfg)
