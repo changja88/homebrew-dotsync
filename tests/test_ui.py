@@ -33,3 +33,58 @@ def test_no_color_disables_ansi(monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
     out = ui.format_step("test")
     assert "\033[" not in out
+
+
+def test_format_banner_includes_title_and_box():
+    out = ui.format_banner("dotsync to")
+    assert "dotsync to" in out
+    assert "╭" in out and "╰" in out
+    assert "│" in out
+
+
+def test_format_banner_with_subtitle():
+    out = ui.format_banner("dotsync to", "4 apps · /Users/x/cfg")
+    assert "4 apps" in out
+    assert "/Users/x/cfg" in out
+
+
+def test_format_section_with_progress():
+    out = ui.format_section("claude", index=1, total=4, sub="claude code")
+    assert "[1/4]" in out
+    assert "claude" in out
+    assert "claude code" in out
+
+
+def test_format_section_without_progress():
+    out = ui.format_section("zsh")
+    assert "zsh" in out
+    assert "[" not in out
+
+
+def test_format_dim_includes_message():
+    out = ui.format_dim("backup → /tmp/x")
+    assert "backup → /tmp/x" in out
+
+
+def test_format_kv_outputs_key_and_value():
+    out = ui.format_kv("apps", "zsh, claude")
+    assert "apps" in out
+    assert "zsh, claude" in out
+
+
+def test_format_summary_shows_count_and_duration():
+    out = ui.format_summary(ok=4, warn=0, error=0, duration_ms=1400)
+    assert "4" in out
+    assert "1.4s" in out
+    assert "╭" in out and "╰" in out
+
+
+def test_format_divider_with_label():
+    out = ui.format_divider("restore")
+    assert "restore" in out
+    assert "─" in out
+
+
+def test_format_divider_without_label():
+    out = ui.format_divider()
+    assert "─" in out
