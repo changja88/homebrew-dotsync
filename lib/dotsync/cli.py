@@ -117,6 +117,8 @@ def cmd_init(args) -> int:
 
     # 4. resolve BTT preset
     btt_preset = args.btt_preset or DEFAULT_BTT_PRESET
+    # --yes is "non-interactive, accept defaults" — skip discovery entirely so
+    # scripts get a deterministic DEFAULT_BTT_PRESET regardless of machine state.
     if "bettertouchtool" in apps and not args.btt_preset and not args.yes:
         from .apps.bettertouchtool import BetterTouchToolApp
         discovered = BetterTouchToolApp.discover_preset_names()
@@ -125,9 +127,9 @@ def cmd_init(args) -> int:
             ui.ok(f"BetterTouchTool preset detected: {btt_preset}")
         elif len(discovered) >= 2:
             print()
-            print("multiple BetterTouchTool presets detected:")
+            ui.dim("multiple BetterTouchTool presets detected:")
             for name in discovered:
-                print(f"  · {name}")
+                ui.dim(name)
             entered = ui.ask(
                 "which preset to track?", default=discovered[0]
             ).strip()

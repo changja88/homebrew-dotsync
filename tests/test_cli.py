@@ -720,6 +720,7 @@ def test_init_btt_multi_rejects_unknown_name(fake_home, tmp_path, monkeypatch, c
     assert rc == 2
     err = capsys.readouterr().err
     assert "DoesNotExist" in err
+    assert "unknown preset" in err
 
 
 def test_init_btt_multi_empty_input_uses_first(fake_home, tmp_path, monkeypatch):
@@ -791,3 +792,26 @@ def test_init_btt_explicit_flag_skips_discovery(fake_home, tmp_path, monkeypatch
     assert rc == 0
     cfg_text = (target / "dotsync.toml").read_text()
     assert 'bettertouchtool_preset = "Forced"' in cfg_text
+
+
+def test_init_btt_yes_without_flag_uses_default_skips_discovery(fake_home, tmp_path, monkeypatch):
+    """--yes without --btt-preset must not consult discovery; DEFAULT_BTT_PRESET wins.
+    This pins the deliberate choice that --yes mode is deterministic regardless of
+    what BTT happens to have configured on the machine."""
+    (fake_home / ".zshrc").write_text("X")
+    bttapp = fake_home / "Applications" / "BetterTouchTool.app"
+    bttapp.mkdir(parents=True)
+    monkeypatch.setattr(
+        "dotsync.apps.bettertouchtool.BetterTouchToolApp.APP_PATH", bttapp
+    )
+    def boom(cls):
+        raise AssertionError("discovery must not run under --yes")
+    monkeypatch.setattr(
+        "dotsync.apps.bettertouchtool.BetterTouchToolApp.discover_preset_names",
+        classmethod(boom),
+    )
+    target = tmp_path / "i"
+    rc = main(["init", "--dir", str(target), "--yes"])
+    assert rc == 0
+    cfg_text = (target / "dotsync.toml").read_text()
+    assert 'bettertouchtool_preset = "Master_bt"' in cfg_text
