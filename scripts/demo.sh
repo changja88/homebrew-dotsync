@@ -17,7 +17,14 @@ set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 DEMO_DIR="${DEMO_DIR:-/tmp/dotsync-demo}"
 TARBALL=/tmp/dotsync-demo.tar.gz
-LOCAL_FORMULA=/tmp/dotsync-demo.rb
+
+# Homebrew now requires formulae to live in a tap. We create a throwaway tap
+# under brew's tap directory and clean it up at the end.
+TAP_USER="local"
+TAP_NAME="dotsync-demo"
+TAP_DIR="$(brew --repository)/Library/Taps/${TAP_USER}/homebrew-${TAP_NAME}"
+TAP_REF="${TAP_USER}/${TAP_NAME}/dotsync"
+LOCAL_FORMULA="${TAP_DIR}/Formula/dotsync.rb"
 
 # colors (subset of ui.py PRIMARY/DIM/BOLD)
 PURPLE='\033[38;2;167;139;250m'
@@ -49,6 +56,8 @@ git -C "$REPO" archive --format=tar.gz \
 SHA=$(shasum -a 256 "$TARBALL" | awk '{print $1}')
 note "sha256: $SHA"
 
+note "creating throwaway tap at $TAP_DIR"
+mkdir -p "${TAP_DIR}/Formula"
 cp "$REPO/Formula/dotsync.rb" "$LOCAL_FORMULA"
 sed -i.bak -E "s|url \".*\"|url \"file://$TARBALL\"|" "$LOCAL_FORMULA"
 sed -i.bak -E "s|sha256 \"[a-f0-9]{64}\"|sha256 \"$SHA\"|" "$LOCAL_FORMULA"
@@ -58,7 +67,7 @@ rm -f "$LOCAL_FORMULA.bak"
 brew uninstall dotsync >/dev/null 2>&1 || true
 
 echo
-brew install --build-from-source "$LOCAL_FORMULA"
+brew install --build-from-source "$TAP_REF"
 echo
 note "installed: $(which dotsync)  ($(dotsync --version))"
 pause
@@ -102,7 +111,8 @@ read -r yn
 if [[ ! "$yn" =~ ^[Nn]$ ]]; then
   rm -rf "$DEMO_DIR"
 fi
-rm -f "$TARBALL" "$LOCAL_FORMULA"
+note "removing throwaway tap and tarball"
+rm -rf "$TAP_DIR" "$TARBALL"
 
 echo
 printf "${PURPLE}✔${RESET} demo complete\n"
