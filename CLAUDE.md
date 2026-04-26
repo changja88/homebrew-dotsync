@@ -17,16 +17,19 @@ CLI는 **단일 패키지 + plugin 스타일 앱 레지스트리** 구조를 따
 - `lib/dotsync/config.py` — **dotsync는 사용자가 지정한 sync 폴더 외에는 어디에도 파일/디렉토리를 만들지 않는다.** 실제 config는 `<sync_folder>/dotsync.toml`에만 존재한다. sync 폴더 위치는 (1) `$DOTSYNC_DIR` 환경변수 (절대경로), (2) cwd에서 위로 거슬러 올라가며 `dotsync.toml` 검색(git 방식) 중 하나로 발견한다. 폴더가 자기 위치를 자기에게 적을 필요 없으므로 dotsync.toml에 `dir` 필드 없음. stdlib `tomllib` 사용.
 - `lib/dotsync/backup.py` — `to` 직전 스냅샷을 `<sync_folder>/.backups/<YYYYMMDD_HHMMSS>/<app>/`(default)에 저장, `backup_keep` 기준으로 회전. 사용자 폴더 외부에는 절대 쓰지 않는다.
 - `lib/dotsync/ui.py` — ANSI 컬러 출력 (`NO_COLOR` 환경변수 존중). 출력 톤(`▶ ↳ ✓ ⚠ ✗ ✔`)은 기존 Make 스타일과 동일.
-- `lib/dotsync/apps/base.py` — `App` 추상 클래스 + `AppStatus` + `diff_files(pairs)` 헬퍼 (sha256 기반 비교).
-- `lib/dotsync/apps/{claude,ghostty,bettertouchtool,zsh}.py` — 구체 앱 모듈. 각 앱은 `is_present_locally()` classmethod를 제공해 init 자동 감지에 참여한다.
-- `lib/dotsync/apps/__init__.py` — `APP_NAMES` + `build_app(name, cfg)` factory + `detect_present()` 헬퍼. config 의존(BTT preset)을 위해 정적 REGISTRY 대신 factory 사용.
+- `lib/dotsync/apps/base.py` — `App` ABC + `AppStatus` + `FilePair` + `diff_files(pairs)` 헬퍼. App에는 (a) 선언적 `tracked_files(target_dir)`을 walk하는 default `sync_from`/`sync_to`/`status` 구현, (b) `_run_external(cmd, *, desc, fail_mode)` 외부 프로세스 헬퍼, (c) `warnings` 누적 채널이 있다. 단순 파일 sync 앱은 `tracked_files()`만 선언하면 끝.
+- `lib/dotsync/apps/{claude,ghostty,bettertouchtool,zsh}.py` — 구체 앱 모듈. 각 앱은 `is_present_locally()`로 init 자동 감지에 참여하고, 자기 옵션을 읽는 `from_config(cls, cfg)`을 가질 수 있다. CLI 통합은 `extra_init_args`/`picker_annotation`/`resolve_options`/`extra_config_subcommands`/`handle_config_subcommand` 5개 hook으로 자기 모듈 안에서 선언한다 (cli.py가 BTT 같은 특정 앱을 모름).
+- `lib/dotsync/apps/__init__.py` — 단일 `APP_CLASSES` 튜플이 모든 등록의 source of truth. `APP_NAMES`, `app_descriptions()`, `build_app()`, `detect_present()`가 전부 여기서 derive. 새 앱 추가는 `APP_CLASSES`에 한 줄. config 의존은 각 App의 `from_config(cls, cfg)` classmethod로 다형성 처리.
 
 설계에 새겨진 횡단 규칙:
 
-- **런타임은 stdlib only.** 허용: `tomllib`, `argparse`, `shutil`, `pathlib`, `subprocess`, `json`, `dataclasses`, `abc`, `hashlib`. 외부 의존성 금지 — Homebrew formula를 단순하게 유지(`depends_on "python@3.12"` 하나)하고 vendoring을 피하기 위함.
+- **런타임은 stdlib only.** 허용: `tomllib`, `argparse`, `shutil`, `pathlib`, `subprocess`, `json`, `dataclasses`, `abc`, `hashlib`, `re`, `sqlite3`. 외부 의존성 금지 — Homebrew formula를 단순하게 유지(`depends_on "python@3.12"` 하나)하고 vendoring을 피하기 위함.
 - **macOS 전용.** BTT sync는 `osascript`로 BTT 앱을 제어하고, Ghostty/zsh/Claude 경로도 macOS 관례를 가정한다. v0.1에서 Linux 분기 추가하지 말 것.
 - **dotsync 자체는 네트워크 호출 없음.** Claude 앱 모듈이 `claude plugin install --scope user`을 shell-out하거나(marketplace fetch), BTT가 `osascript`을 호출하는 것이 유일한 외부 프로세스.
 - **`from` = local → folder, `to` = folder → local.** `to` 전에는 항상 백업. `from` 전에는 백업하지 않음 — 사용자 sync 폴더는 사용자의 git 책임.
+- **App ABC는 `tracked_files(target_dir) -> list[FilePair]`를 선언적 모델로 제공.** 단일/다중 파일 sync는 base의 default `sync_from`/`sync_to`/`status`가 알아서 처리(fail-fast 누락 체크 + 백업 후 덮어쓰기 포함). 외부 프로세스/복합 동작이 필요한 앱(claude, BTT)만 sync 메서드를 override한다.
+- **외부 프로세스 호출은 `self._run_external(cmd, desc=..., fail_mode="warn"|"raise")`로 통일.** `warn` 모드 실패는 `self.warnings`에 누적되어 cli summary가 surface한다. Claude의 `claude` CLI 부재 같은 부분 실패는 더이상 sync 전체를 죽이지 않는다.
+- **앱별 옵션은 `cfg.app_options[<app_name>]` 딕셔너리.** 코어 Config dataclass는 앱별 키를 모른다. 각 앱이 자기 옵션 schema를 자기 `from_config`에서 책임진다. (`Config.bettertouchtool_presets` 필드는 legacy 호환을 위한 임시 bridge — TODO 마킹돼 있음.)
 - **Claude 앱 모듈의 데이터 구조.** `installed_plugins.json`은 `{"version": 2, "plugins": {"<id>@<mp>": [{"installPath": ...}]}}` (값이 list), `known_marketplaces.json`은 top-level이 marketplace 이름 dict (no wrapping), `source.source`는 `github`(→repo)/`directory`(→path)가 주. `claude` CLI 호출은 모두 `--scope user`. `settings.json`의 `enabledPlugins`에서 false인 항목은 install 후 다시 `claude plugin disable --scope user`로 비활성화한다.
 
 ## 구현 규율
@@ -42,6 +45,10 @@ CLI는 **단일 패키지 + plugin 스타일 앱 레지스트리** 구조를 따
 테스트 없이 구현부터 쓰지 말 것. 기존 테스트가 동작 명세이므로, 거기서 조용히 벗어나면 그건 버그다.
 
 **문서 동기화.** 새 기능을 추가하거나 사용자에게 보이는 동작(CLI 명령어/옵션, 출력, 지원 앱 목록, 설정 항목 등)이 바뀌면 같은 commit에서 `README.md`의 사용법 섹션을 함께 갱신한다. README는 한국어와 English 두 섹션이 동등하게 유지돼야 한다 — 한쪽만 고치고 다른 쪽을 두지 말 것.
+
+## 새 앱 추가
+
+새 앱을 추가하는 4단계 절차는 `docs/adding-an-app.md`에 정리돼 있다. 단순 파일 기반 앱은 모듈 1개 + `apps/__init__.py`의 `APP_CLASSES`에 한 줄 추가로 끝난다. 복잡한 앱(외부 프로세스, 자체 CLI 옵션, 다중 파일)은 같은 자리에서 base의 hook을 override해서 확장한다.
 
 ## 명령어
 
