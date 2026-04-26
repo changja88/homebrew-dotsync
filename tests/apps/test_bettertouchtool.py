@@ -500,3 +500,100 @@ def test_discover_preset_names_filters_null_and_empty(tmp_path, monkeypatch):
     conn.close()
     monkeypatch.setattr(BetterTouchToolApp, "DATA_DIR", btt_dir)
     assert BetterTouchToolApp.discover_preset_names() == ["Real"]
+
+
+def test_btt_from_config_reads_presets(tmp_path):
+    from dotsync.apps.bettertouchtool import BetterTouchToolApp
+    from dotsync.config import Config
+
+    cfg = Config(
+        dir=tmp_path,
+        apps=["bettertouchtool"],
+        bettertouchtool_presets=["Alpha", "Beta"],
+    )
+    app = BetterTouchToolApp.from_config(cfg)
+    assert app.presets == ["Alpha", "Beta"]
+
+
+def test_btt_from_config_falls_back_to_default_when_unset(tmp_path):
+    from dotsync.apps.bettertouchtool import BetterTouchToolApp
+    from dotsync.config import Config, DEFAULT_BTT_PRESETS
+
+    cfg = Config(dir=tmp_path, apps=[])  # bettertouchtool_presets defaults
+    app = BetterTouchToolApp.from_config(cfg)
+    assert app.presets == list(DEFAULT_BTT_PRESETS)
+
+
+def test_btt_from_config_reads_app_options(tmp_path):
+    """BTT prefers app_options['bettertouchtool']['presets'] when present."""
+    from dotsync.apps.bettertouchtool import BetterTouchToolApp
+    from dotsync.config import Config
+
+    cfg = Config(
+        dir=tmp_path,
+        apps=["bettertouchtool"],
+        app_options={"bettertouchtool": {"presets": ["FromOptions1", "FromOptions2"]}},
+    )
+    app = BetterTouchToolApp.from_config(cfg)
+    assert app.presets == ["FromOptions1", "FromOptions2"]
+
+
+def test_btt_from_config_falls_back_to_legacy_field_when_app_options_empty(tmp_path):
+    """Existing dotsync.toml with bettertouchtool_presets only (no [options.bettertouchtool])
+    must keep working without manual migration."""
+    from dotsync.apps.bettertouchtool import BetterTouchToolApp
+    from dotsync.config import Config
+
+    cfg = Config(
+        dir=tmp_path,
+        apps=["bettertouchtool"],
+        bettertouchtool_presets=["Legacy"],  # no app_options
+    )
+    app = BetterTouchToolApp.from_config(cfg)
+    assert app.presets == ["Legacy"]
+
+
+def test_btt_extra_init_args_registers_presets_flag():
+    import argparse
+    from dotsync.apps.bettertouchtool import BetterTouchToolApp
+    parser = argparse.ArgumentParser()
+    BetterTouchToolApp.extra_init_args(parser)
+    args = parser.parse_args(["--btt-presets", "Foo,Bar"])
+    assert args.btt_presets == "Foo,Bar"
+
+
+def test_btt_picker_annotation_when_detected(monkeypatch):
+    from dotsync.apps.bettertouchtool import BetterTouchToolApp
+    monkeypatch.setattr(BetterTouchToolApp, "discover_preset_names", classmethod(lambda cls: ["A", "B", "C"]))
+    assert BetterTouchToolApp.picker_annotation(detected=True) == "3 presets"
+
+
+def test_btt_picker_annotation_one_preset_singular(monkeypatch):
+    from dotsync.apps.bettertouchtool import BetterTouchToolApp
+    monkeypatch.setattr(BetterTouchToolApp, "discover_preset_names", classmethod(lambda cls: ["Only"]))
+    assert BetterTouchToolApp.picker_annotation(detected=True) == "1 preset"
+
+
+def test_btt_picker_annotation_none_when_not_detected():
+    from dotsync.apps.bettertouchtool import BetterTouchToolApp
+    assert BetterTouchToolApp.picker_annotation(detected=False) is None
+
+
+def test_btt_resolve_options_explicit_flag(tmp_path, monkeypatch):
+    import argparse
+    from dotsync.apps.bettertouchtool import BetterTouchToolApp
+    args = argparse.Namespace(btt_presets="X,Y", yes=False)
+    opts = BetterTouchToolApp.resolve_options(
+        args, prev_apps=[], new_apps=["bettertouchtool"], interactive=False,
+    )
+    assert opts == {"presets": ["X", "Y"]}
+
+
+def test_btt_resolve_options_returns_none_when_btt_not_in_new_apps():
+    import argparse
+    from dotsync.apps.bettertouchtool import BetterTouchToolApp
+    args = argparse.Namespace(btt_presets=None, yes=False)
+    opts = BetterTouchToolApp.resolve_options(
+        args, prev_apps=[], new_apps=["zsh"], interactive=False,
+    )
+    assert opts is None  # don't touch app_options if BTT isn't tracked

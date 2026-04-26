@@ -23,7 +23,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-SUPPORTED_APPS = {"claude", "ghostty", "bettertouchtool", "zsh"}
 DEFAULT_BACKUP_KEEP = 10
 # BetterTouchTool can sync multiple presets at once. The default list ships
 # with one entry to match BTT's stock starter preset; new installs without
@@ -33,6 +32,13 @@ DEFAULT_BTT_PRESETS: tuple[str, ...] = ("Master_bt",)
 ENV_VAR = "DOTSYNC_DIR"
 FOLDER_CONFIG_FILENAME = "dotsync.toml"
 DEFAULT_BACKUP_SUBDIR = ".backups"
+
+
+def supported_apps() -> set[str]:
+    """Return the set of registered app names. Lazy import keeps this module
+    importable without firing apps/__init__.py at top of file."""
+    from dotsync.apps import APP_NAMES
+    return set(APP_NAMES)
 
 
 class ConfigError(Exception):
@@ -53,7 +59,14 @@ class Config:
     apps: List[str]
     backup_dir: Optional[Path] = None
     backup_keep: int = DEFAULT_BACKUP_KEEP
+    # TODO: remove `bettertouchtool_presets` once one release has passed with
+    # `app_options` as the canonical home. BTT now reads from
+    # `cfg.app_options["bettertouchtool"]["presets"]` via from_config(); this
+    # field exists only as a legacy fallback for dotsync.toml files saved
+    # before Phase 6/7. When removed, also drop the legacy fallback in
+    # BetterTouchToolApp.from_config and the legacy migration in _read_btt_presets.
     bettertouchtool_presets: List[str] = field(default_factory=lambda: list(DEFAULT_BTT_PRESETS))
+    app_options: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.backup_dir is None:
@@ -102,15 +115,19 @@ def load_config() -> Config:
             f"Run `dotsync init --dir {folder} --yes` to create it."
         )
     with cfg_file.open("rb") as f:
-        data = tomllib.load(f)
+        try:
+            data = tomllib.load(f)
+        except tomllib.TOMLDecodeError as e:
+            raise ConfigError(f"dotsync.toml at {cfg_file} is malformed: {e}") from e
 
     apps = data.get("apps") or []
     if not isinstance(apps, list):
         raise ConfigError(f"`apps` must be a list, got: {type(apps).__name__}")
+    known = supported_apps()
     for app in apps:
-        if app not in SUPPORTED_APPS:
+        if app not in known:
             raise ConfigError(
-                f"unknown app `{app}` in config (supported: {sorted(SUPPORTED_APPS)})"
+                f"unknown app `{app}` in config (supported: {sorted(known)})"
             )
 
     options = data.get("options", {}) or {}
@@ -123,6 +140,8 @@ def load_config() -> Config:
         backup_dir = default_backup_dir(folder)
     backup_keep = int(options.get("backup_keep", DEFAULT_BACKUP_KEEP))
     btt_presets = _read_btt_presets(options)
+    # tomllib materializes [options.x] as nested dict values within `options`.
+    app_options = {k: v for k, v in options.items() if isinstance(v, dict)}
 
     return Config(
         dir=folder,
@@ -130,7 +149,22 @@ def load_config() -> Config:
         backup_dir=backup_dir,
         backup_keep=backup_keep,
         bettertouchtool_presets=btt_presets,
+        app_options=app_options,
     )
+
+
+def _toml_value(v) -> str:
+    """Minimal TOML value serializer for app_options (str | int | float | bool | list of those)."""
+    if isinstance(v, bool):
+        # bool MUST come before int — bool is a subclass of int in Python.
+        return "true" if v else "false"
+    if isinstance(v, str):
+        return f'"{v}"'
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, list):
+        return "[" + ", ".join(_toml_value(x) for x in v) + "]"
+    raise TypeError(f"unsupported app_options value type: {type(v).__name__}")
 
 
 def _read_btt_presets(options: dict) -> List[str]:
@@ -173,5 +207,13 @@ def save_config(cfg: Config) -> None:
     presets_repr = ", ".join(f'"{p}"' for p in cfg.bettertouchtool_presets)
     lines.append(f"bettertouchtool_presets = [{presets_repr}]")
     lines.append("")
+
+    for app_name, opts in cfg.app_options.items():
+        if not opts:
+            continue
+        lines.append(f"[options.{app_name}]")
+        for key, val in opts.items():
+            lines.append(f"{key} = {_toml_value(val)}")
+        lines.append("")
 
     folder_config_path(cfg.dir).write_text("\n".join(lines))

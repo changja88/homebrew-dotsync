@@ -57,7 +57,9 @@ def test_sync_from_copies_all_files(fake_home, tmp_path):
     assert json.loads((cdir / "plugins" / "superpowers" / "config.json").read_text()) == {"foo": "bar"}
 
 
-def test_sync_to_restores_files_and_merges_mcp(fake_home, tmp_path):
+def test_sync_to_replaces_mcp_servers_in_claude_json(fake_home, tmp_path):
+    """sync_to overwrites .claude.json's mcpServers wholesale — pre-existing
+    entries that aren't in the stored mcp-servers.json are dropped."""
     _make_local(fake_home, mcp={"existing": {"command": "old"}}, settings={"theme": "old"})
     target = tmp_path / "configs"
     cdir = target / "claude"
@@ -78,6 +80,8 @@ def test_sync_to_restores_files_and_merges_mcp(fake_home, tmp_path):
     assert json.loads((fake_home / ".claude" / "settings.json").read_text())["theme"] == "new"
     cj = json.loads((fake_home / ".claude.json").read_text())
     assert cj["mcpServers"] == {"new-mcp": {"command": "x"}}
+    # The pre-existing "existing" key MUST be gone — current behavior is replace, not merge.
+    assert "existing" not in cj["mcpServers"]
     assert json.loads((backup / "claude" / "settings.json").read_text())["theme"] == "old"
 
 
@@ -229,3 +233,106 @@ def test_is_present_locally_true_when_claude_dir_exists(fake_home):
 
 def test_is_present_locally_false_when_no_claude_dir(fake_home):
     assert ClaudeApp.is_present_locally() is False
+
+
+def test_sync_to_tolerates_v1_plugin_entries_dict(fake_home, tmp_path):
+    """Sync folders saved before the v2 schema may have plugins values that are
+    dicts (single entry) rather than lists. sync_to must not crash, and must
+    treat such plugins as 'no installPath provided' so the install path runs."""
+    _make_local(fake_home)
+    target = tmp_path / "configs"
+    cdir = target / "claude"
+    (cdir / "plugins").mkdir(parents=True)
+    (cdir / "settings.json").write_text("{}")
+    (cdir / "mcp-servers.json").write_text("{}")
+    (cdir / "plugins" / "installed_plugins.json").write_text(json.dumps({
+        "version": 1,
+        "plugins": {"legacy@official": {"installPath": "/p/legacy/1.0.0"}},  # v1: value is dict, not list
+    }))
+    (cdir / "plugins" / "known_marketplaces.json").write_text(json.dumps({
+        "official": {"source": {"source": "github", "repo": "anthropics/sp"}}
+    }))
+    backup = tmp_path / "backup"; backup.mkdir()
+
+    with patch("dotsync.apps.claude.subprocess.run") as run:
+        run.return_value.returncode = 0
+        run.return_value.stdout = ""
+        run.return_value.stderr = ""
+        ClaudeApp().sync_to(target, backup)  # must not raise
+
+    cmds = [" ".join(c.args[0]) for c in run.call_args_list]
+    # marketplace add still happens; plugin install also runs because we
+    # cannot read installPath out of a non-list value.
+    assert any("marketplace add --scope user anthropics/sp" in c for c in cmds)
+    assert any("plugin install --scope user legacy@official" in c for c in cmds)
+
+
+def test_sync_to_corrupted_mcp_servers_json_raises_runtime_error(fake_home, tmp_path):
+    """When mcp-servers.json is hand-corrupted, surface a friendly RuntimeError
+    so cli.py:507's friendly handler catches it instead of a raw traceback."""
+    _make_local(fake_home)
+    target = tmp_path / "configs"
+    cdir = target / "claude"
+    (cdir / "plugins").mkdir(parents=True)
+    (cdir / "settings.json").write_text("{}")
+    (cdir / "mcp-servers.json").write_text("{not valid json")  # corrupted
+    (cdir / "plugins" / "installed_plugins.json").write_text(json.dumps({"version": 2, "plugins": {}}))
+    (cdir / "plugins" / "known_marketplaces.json").write_text(json.dumps({}))
+    backup = tmp_path / "backup"; backup.mkdir()
+
+    with pytest.raises(RuntimeError, match="mcp-servers.json"):
+        ClaudeApp().sync_to(target, backup)
+
+
+def test_sync_to_treats_string_false_as_truthy_in_enabled_plugins(fake_home, tmp_path):
+    """Today's contract: enabledPlugins values are interpreted as Python truthy.
+    A literal string "false" (hand-edited) counts as enabled and is NOT disabled.
+    Pin this so any future fix (proper bool check) is a deliberate change."""
+    _make_local(fake_home)
+    target = tmp_path / "configs"
+    cdir = target / "claude"
+    (cdir / "plugins").mkdir(parents=True)
+    (cdir / "settings.json").write_text(json.dumps({
+        "enabledPlugins": {"truthy-str@mp": "false", "real-bool@mp": False}
+    }))
+    (cdir / "mcp-servers.json").write_text("{}")
+    (cdir / "plugins" / "installed_plugins.json").write_text(json.dumps({"version": 2, "plugins": {}}))
+    (cdir / "plugins" / "known_marketplaces.json").write_text(json.dumps({}))
+    backup = tmp_path / "backup"; backup.mkdir()
+
+    with patch("dotsync.apps.claude.subprocess.run") as run:
+        run.return_value.returncode = 0
+        run.return_value.stdout = ""
+        run.return_value.stderr = ""
+        ClaudeApp().sync_to(target, backup)
+
+    cmds = [" ".join(c.args[0]) for c in run.call_args_list]
+    disable_cmds = [c for c in cmds if "plugin disable" in c]
+    # Real bool False → disabled. String "false" (truthy) → not disabled.
+    assert any("real-bool@mp" in c for c in disable_cmds)
+    assert not any("truthy-str@mp" in c for c in disable_cmds)
+
+
+def test_sync_to_warns_instead_of_raising_when_claude_cli_missing(fake_home, tmp_path):
+    """When `claude` is not in PATH, plugin restoration is skipped with a
+    warning — settings.json copy must still complete."""
+    _make_local(fake_home)
+    target = tmp_path / "configs"
+    cdir = target / "claude"
+    (cdir / "plugins").mkdir(parents=True)
+    (cdir / "settings.json").write_text(json.dumps({"theme": "x"}))
+    (cdir / "mcp-servers.json").write_text("{}")
+    (cdir / "plugins" / "installed_plugins.json").write_text(json.dumps({
+        "version": 2, "plugins": {"sp@official": [_plugin_entry("/nope")]}
+    }))
+    (cdir / "plugins" / "known_marketplaces.json").write_text(json.dumps({
+        "official": {"source": {"source": "github", "repo": "anthropics/sp"}}
+    }))
+    backup = tmp_path / "backup"; backup.mkdir()
+
+    with patch("dotsync.apps.claude.subprocess.run", side_effect=FileNotFoundError("claude")):
+        app = ClaudeApp()
+        app.sync_to(target, backup)  # must not raise
+
+    assert (fake_home / ".claude" / "settings.json").read_text()  # got copied
+    assert any("claude" in w.lower() for w in app.warnings)

@@ -89,8 +89,14 @@ class ClaudeApp(App):
         ui.ok("plugins/known_marketplaces.json")
 
         claude_json_path = self._claude_json()
-        cj = json.loads(claude_json_path.read_text()) if claude_json_path.exists() else {}
-        cj["mcpServers"] = json.loads((stored / "mcp-servers.json").read_text())
+        try:
+            cj = json.loads(claude_json_path.read_text()) if claude_json_path.exists() else {}
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"~/.claude.json is corrupted: {e}") from e
+        try:
+            cj["mcpServers"] = json.loads((stored / "mcp-servers.json").read_text())
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"{stored / 'mcp-servers.json'} is corrupted: {e}") from e
         claude_json_path.write_text(json.dumps(cj, indent=2, ensure_ascii=False))
         ui.ok("mcp-servers.json → ~/.claude.json")
 
@@ -200,9 +206,13 @@ class ClaudeApp(App):
             return source.get("path")
         return None
 
-    @staticmethod
-    def _run_claude_cli(args: list[str], desc: str, tolerate_already: bool = True) -> None:
-        result = subprocess.run(["claude", *args], capture_output=True, text=True)
+    def _run_claude_cli(self, args: list[str], desc: str, tolerate_already: bool = True) -> None:
+        try:
+            result = self._run_external(["claude", *args], desc=desc, fail_mode="warn")
+        except FileNotFoundError:
+            self.warnings.append(f"{desc} skipped: `claude` CLI not installed")
+            ui.warn(f"{desc} skipped: `claude` CLI not installed")
+            return
         if result.returncode == 0:
             combined = ((result.stdout or "") + (result.stderr or "")).lower()
             if tolerate_already and "already" in combined:
@@ -213,5 +223,8 @@ class ClaudeApp(App):
         stderr = (result.stderr or "").strip()
         if tolerate_already and "already" in stderr.lower():
             ui.sub(f"{desc} (already present)")
+            # Drop the auto-appended warning since "already" is success-equivalent.
+            if self.warnings and desc in self.warnings[-1]:
+                self.warnings.pop()
         else:
             ui.warn(f"{desc} failed: {stderr or 'unknown'}")

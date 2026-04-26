@@ -3,8 +3,16 @@ from dotsync.apps import APP_NAMES, build_app
 from dotsync.config import Config
 
 
-def test_app_names_are_supported_set():
-    assert APP_NAMES == frozenset({"claude", "ghostty", "bettertouchtool", "zsh"})
+def test_app_names_derive_from_app_classes():
+    """APP_NAMES is derived from APP_CLASSES, not a separate literal — adding
+    a new app only requires appending to APP_CLASSES."""
+    from dotsync.apps import APP_NAMES, APP_CLASSES
+    assert APP_NAMES == frozenset(c.name for c in APP_CLASSES)
+
+
+def test_app_descriptions_derive_from_app_classes():
+    from dotsync.apps import app_descriptions, APP_CLASSES
+    assert app_descriptions() == {c.name: c.description for c in APP_CLASSES}
 
 
 def test_build_app_returns_instance(tmp_path):
@@ -29,12 +37,6 @@ def test_build_app_bettertouchtool_uses_config_presets(tmp_path):
     assert app.presets == ["MyPreset", "Other"]
 
 
-def test_supported_apps_matches_registry():
-    """SUPPORTED_APPS in config.py and APP_NAMES here must stay in sync."""
-    from dotsync.config import SUPPORTED_APPS
-    assert SUPPORTED_APPS == set(APP_NAMES)
-
-
 def test_detect_present_returns_only_locally_installed(fake_home, monkeypatch):
     """detect_present() asks each app's is_present_locally() classmethod."""
     from dotsync.apps import detect_present
@@ -54,3 +56,24 @@ def test_detect_present_returns_only_locally_installed(fake_home, monkeypatch):
     assert "claude" in detected
     assert "ghostty" not in detected
     assert "bettertouchtool" not in detected
+
+
+def test_build_app_uses_from_config_polymorphism(tmp_path, monkeypatch):
+    """build_app must call cls.from_config(cfg), not have its own if-elif."""
+    from dotsync.apps import build_app
+    from dotsync.apps.bettertouchtool import BetterTouchToolApp
+
+    calls = []
+    original = BetterTouchToolApp.from_config
+
+    @classmethod
+    def spy(cls, cfg):
+        calls.append(cfg)
+        return original.__func__(cls, cfg)
+
+    monkeypatch.setattr(BetterTouchToolApp, "from_config", spy)
+    cfg = Config(dir=tmp_path, apps=["bettertouchtool"], bettertouchtool_presets=["X"])
+    app = build_app("bettertouchtool", cfg)
+
+    assert len(calls) == 1 and calls[0] is cfg
+    assert app.presets == ["X"]

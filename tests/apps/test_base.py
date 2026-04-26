@@ -2,9 +2,12 @@ import pytest
 from dotsync.apps.base import App, AppStatus, diff_files
 
 
-def test_app_is_abstract():
-    with pytest.raises(TypeError):
-        App()
+def test_app_base_has_no_tracked_files_and_raises_not_implemented(tmp_path):
+    """App() can be instantiated (no abstract methods), but calling sync_from
+    or sync_to on a bare App with no tracked_files raises NotImplementedError."""
+    app = App()
+    with pytest.raises(NotImplementedError):
+        app.sync_from(tmp_path)
 
 
 def test_concrete_subclass_works(tmp_path):
@@ -151,3 +154,183 @@ def test_diff_files_reports_diverged_when_some_local_newer_some_stored_newer(tmp
     result = diff_files([(a_local, a_stored), (b_local, b_stored)])
     assert result.state == "dirty"
     assert result.direction == "diverged"
+
+
+def test_app_from_config_default_returns_instance_with_no_args(tmp_path):
+    """App.from_config(cfg) defaults to no-arg construction. Apps with config
+    deps (BTT) override this classmethod."""
+    from dotsync.apps.base import App
+    from dotsync.config import Config
+
+    class _Toy(App):
+        name = "toy"
+        def sync_from(self, target_dir): pass
+        def sync_to(self, target_dir, backup_dir): pass
+
+    cfg = Config(dir=tmp_path, apps=["toy"])
+    instance = _Toy.from_config(cfg)
+    assert isinstance(instance, _Toy)
+    assert instance.name == "toy"
+
+
+def test_app_tracked_files_default_returns_empty(tmp_path):
+    from dotsync.apps.base import App
+
+    class _Toy(App):
+        name = "toy"
+        def sync_from(self, target_dir): pass
+        def sync_to(self, target_dir, backup_dir): pass
+
+    assert _Toy().tracked_files(tmp_path) == []
+
+
+def test_file_pair_is_a_dataclass_with_local_stored_label(tmp_path):
+    from dotsync.apps.base import FilePair
+    pair = FilePair(local=tmp_path / "a", stored=tmp_path / "b", label="x")
+    assert pair.local == tmp_path / "a"
+    assert pair.stored == tmp_path / "b"
+    assert pair.label == "x"
+
+
+def test_default_sync_from_copies_each_tracked_file(tmp_path):
+    from dotsync.apps.base import App, FilePair
+    home = tmp_path / "home"; home.mkdir()
+    (home / "src.txt").write_text("ALPHA")
+
+    class _Toy(App):
+        name = "toy"
+        def tracked_files(self, target_dir):
+            return [FilePair(home / "src.txt", target_dir / "toy" / "dst.txt", "dst.txt")]
+
+    target = tmp_path / "sync"; target.mkdir()
+    _Toy().sync_from(target)
+    assert (target / "toy" / "dst.txt").read_text() == "ALPHA"
+
+
+def test_default_sync_from_raises_when_local_missing(tmp_path):
+    from dotsync.apps.base import App, FilePair
+
+    class _Toy(App):
+        name = "toy"
+        def tracked_files(self, target_dir):
+            return [FilePair(tmp_path / "missing.txt", target_dir / "toy" / "dst.txt", "dst.txt")]
+
+    target = tmp_path / "sync"; target.mkdir()
+    with pytest.raises(FileNotFoundError, match="missing.txt"):
+        _Toy().sync_from(target)
+
+
+def test_default_sync_to_backs_up_then_copies_stored_over_local(tmp_path):
+    from dotsync.apps.base import App, FilePair
+    home = tmp_path / "home"; home.mkdir()
+    (home / "live.txt").write_text("OLD")
+    target = tmp_path / "sync"
+    (target / "toy").mkdir(parents=True)
+    (target / "toy" / "live.txt").write_text("NEW")
+    backup = tmp_path / "bk"; backup.mkdir()
+
+    class _Toy(App):
+        name = "toy"
+        def tracked_files(self, target_dir):
+            return [FilePair(home / "live.txt", target_dir / "toy" / "live.txt", "live.txt")]
+
+    _Toy().sync_to(target, backup)
+    assert (home / "live.txt").read_text() == "NEW"
+    assert (backup / "toy" / "live.txt").read_text() == "OLD"
+
+
+def test_default_sync_to_raises_when_stored_missing(tmp_path):
+    from dotsync.apps.base import App, FilePair
+    home = tmp_path / "home"; home.mkdir()
+    target = tmp_path / "sync"
+    (target / "toy").mkdir(parents=True)
+    backup = tmp_path / "bk"; backup.mkdir()
+
+    class _Toy(App):
+        name = "toy"
+        def tracked_files(self, target_dir):
+            return [FilePair(home / "x.txt", target_dir / "toy" / "x.txt", "x.txt")]
+
+    with pytest.raises(FileNotFoundError, match="x.txt"):
+        _Toy().sync_to(target, backup)
+
+
+def test_default_status_uses_diff_files_over_tracked_pairs(tmp_path):
+    from dotsync.apps.base import App, FilePair
+    home = tmp_path / "home"; home.mkdir()
+    (home / "a.txt").write_text("X")
+    target = tmp_path / "sync"
+    (target / "toy").mkdir(parents=True)
+    (target / "toy" / "a.txt").write_text("X")
+
+    class _Toy(App):
+        name = "toy"
+        def tracked_files(self, target_dir):
+            return [FilePair(home / "a.txt", target_dir / "toy" / "a.txt", "a.txt")]
+
+    s = _Toy().status(target)
+    assert s.state == "clean"
+
+
+def test_app_warnings_starts_empty():
+    from dotsync.apps.base import App
+    class _Toy(App):
+        name = "toy"
+        def tracked_files(self, target_dir): return []
+    assert _Toy().warnings == []
+
+
+def test_run_external_warn_mode_returns_result_and_collects_failure(monkeypatch):
+    from dotsync.apps.base import App
+    import subprocess
+    class _Toy(App):
+        name = "toy"
+        def tracked_files(self, target_dir): return []
+
+    captured = subprocess.CompletedProcess(args=["foo"], returncode=1, stdout="", stderr="boom")
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: captured)
+
+    app = _Toy()
+    result = app._run_external(["foo", "bar"], desc="foo run", fail_mode="warn")
+    assert result is captured
+    assert any("foo run" in w for w in app.warnings)
+
+
+def test_run_external_raise_mode_raises_runtime_error_on_failure(monkeypatch):
+    from dotsync.apps.base import App
+    import subprocess
+    class _Toy(App):
+        name = "toy"
+        def tracked_files(self, target_dir): return []
+
+    captured = subprocess.CompletedProcess(args=["foo"], returncode=1, stdout="", stderr="bad")
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: captured)
+
+    with pytest.raises(RuntimeError, match="foo run"):
+        _Toy()._run_external(["foo"], desc="foo run", fail_mode="raise")
+
+
+def test_app_cli_hooks_have_safe_defaults(tmp_path):
+    """Default impls do nothing — apps without CLI customizations stay clean."""
+    import argparse
+    from dotsync.apps.base import App
+    class _Toy(App):
+        name = "toy"
+        def tracked_files(self, target_dir): return []
+
+    parser = argparse.ArgumentParser()
+    _Toy.extra_init_args(parser)  # no-op, must not raise
+    assert _Toy.picker_annotation(detected=True) is None
+    assert _Toy.picker_annotation(detected=False) is None
+
+    # resolve_options returns None (no custom options) by default.
+    args = argparse.Namespace()
+    cfg_options = _Toy.resolve_options(args, prev_apps=[], new_apps=["toy"], interactive=False)
+    assert cfg_options is None
+
+    # extra_config_subcommands no-op
+    sub_parser = argparse.ArgumentParser().add_subparsers()
+    _Toy.extra_config_subcommands(sub_parser)  # no-op
+
+    # handle_config_subcommand returns None (not handled) by default
+    assert _Toy.handle_config_subcommand(args, None) is None

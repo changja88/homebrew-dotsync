@@ -8,10 +8,13 @@ from pathlib import Path
 _BACKUP_NAME_RE = re.compile(r"^\d{8}_\d{6}$")
 
 
-def new_backup_session(root: Path) -> Path:
-    """Create and return a fresh timestamped backup directory under `root`."""
+def new_backup_session(root: Path, *, now: datetime | None = None) -> Path:
+    """Create and return a fresh timestamped backup directory under `root`.
+
+    `now` is a test seam — production passes None and uses datetime.now().
+    """
     root.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
     session = root / ts
     session.mkdir(exist_ok=False)
     return session

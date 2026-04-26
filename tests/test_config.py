@@ -240,3 +240,45 @@ def test_config_backup_dir_explicit_override(tmp_path):
     custom = tmp_path / "custom-bk"
     cfg = Config(dir=tmp_path, apps=["zsh"], backup_dir=custom)
     assert cfg.backup_dir == custom
+
+
+def test_load_corrupted_toml_raises_config_error(monkeypatch, tmp_path):
+    """A hand-mangled dotsync.toml must surface as ConfigError, not raw
+    TOMLDecodeError, so cli.py's friendly handler catches it."""
+    folder = tmp_path / "broken"
+    folder.mkdir()
+    (folder / "dotsync.toml").write_text('apps = ["zsh"\n[options\nbroken = ')
+    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
+    with pytest.raises(ConfigError, match="dotsync.toml"):
+        load_config()
+
+
+def test_config_app_options_default_is_empty_dict(tmp_path):
+    cfg = Config(dir=tmp_path, apps=["zsh"])
+    assert cfg.app_options == {}
+
+
+def test_load_reads_app_options_subtables(monkeypatch, tmp_path):
+    folder = tmp_path / "x"; folder.mkdir()
+    (folder / "dotsync.toml").write_text(
+        'apps = ["bettertouchtool"]\n\n[options]\n'
+        'backup_keep = 5\n\n'
+        '[options.bettertouchtool]\n'
+        'presets = ["A", "B"]\n'
+    )
+    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
+    cfg = load_config()
+    assert cfg.app_options.get("bettertouchtool") == {"presets": ["A", "B"]}
+
+
+def test_save_persists_app_options_as_subtables(tmp_path):
+    folder = tmp_path / "fresh"; folder.mkdir()
+    cfg = Config(
+        dir=folder,
+        apps=["bettertouchtool"],
+        app_options={"bettertouchtool": {"presets": ["X", "Y"]}},
+    )
+    save_config(cfg)
+    text = (folder / "dotsync.toml").read_text()
+    assert "[options.bettertouchtool]" in text
+    assert 'presets = ["X", "Y"]' in text

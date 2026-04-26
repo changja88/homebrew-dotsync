@@ -6,19 +6,20 @@ import time
 from pathlib import Path
 from typing import Sequence
 from dotsync import __version__, ui
-from dotsync.apps import APP_NAMES, app_descriptions, build_app, detect_present
+from dotsync.apps import APP_CLASSES, APP_NAMES, app_descriptions, build_app, detect_present
 from dotsync.backup import new_backup_session, rotate_backups
 from dotsync.config import (
     Config,
     ConfigError,
-    DEFAULT_BTT_PRESETS,
     ENV_VAR,
-    SUPPORTED_APPS,
     folder_config_path,
     load_config,
     save_config,
 )
 from dotsync.welcome import print_welcome
+
+# Existing call sites use this name; alias to the registry's source of truth.
+SUPPORTED_APPS = APP_NAMES
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -29,7 +30,8 @@ def _build_parser() -> argparse.ArgumentParser:
     init = sub.add_parser("init", help="initialize config")
     init.add_argument("--dir", help="absolute path to sync folder")
     init.add_argument("--apps", help="comma-separated app names")
-    init.add_argument("--btt-presets", default=None, help=f"BetterTouchTool preset names, comma-separated (default: {','.join(DEFAULT_BTT_PRESETS)})")
+    for app_cls in APP_CLASSES:
+        app_cls.extra_init_args(init)
     init.add_argument("--yes", action="store_true", help="non-interactive: skip prompts")
     init.add_argument("--quiet", action="store_true", help="skip the welcome banner")
     init.add_argument("--no-hints", action="store_true", help="skip the post-init 'next steps' block")
@@ -42,8 +44,8 @@ def _build_parser() -> argparse.ArgumentParser:
     cfg_dir.add_argument("path")
     cfg_apps = cfg_sub.add_parser("apps", help="set tracked apps")
     cfg_apps.add_argument("apps", help="comma-separated names")
-    cfg_btt = cfg_sub.add_parser("btt-presets", help="set BetterTouchTool preset names (comma-separated)")
-    cfg_btt.add_argument("presets", help="comma-separated names")
+    for app_cls in APP_CLASSES:
+        app_cls.extra_config_subcommands(cfg_sub)
     cfg_sub.add_parser("show", help="print current config")
 
     sub.add_parser("apps", help="pick which apps to track (same UI as init)")
@@ -107,10 +109,19 @@ def cmd_init(args) -> int:
     if apps:
         ui.done(f"tracked: {' · '.join(apps)}")
 
-    # BTT presets are auto-discovered and silently rolled into the config.
-    btt_presets = _resolve_btt_presets(args, apps)
+    # Each app supplies its own options via its resolve_options hook.
+    interactive = not args.yes
+    app_options = _resolve_app_options(args, prev_apps=[], new_apps=apps, interactive=interactive)
+    if interactive:
+        for app_name, opts in app_options.items():
+            # Surface auto-discovered options so the user can see what was set.
+            opts_summary = ", ".join(
+                f"{k} = {v}" if not isinstance(v, list) else f"{k} = {', '.join(v)}"
+                for k, v in opts.items()
+            )
+            ui.done(f"{app_name}: {opts_summary}   (auto-detected)")
 
-    save_config(Config(dir=dir_path, apps=apps, bettertouchtool_presets=btt_presets))
+    save_config(Config(dir=dir_path, apps=apps, app_options=app_options))
     print()
     ui.done(f"config saved → {folder_config_path(dir_path)}")
     if not args.no_hints:
@@ -133,40 +144,32 @@ def _resolve_sync_folder(args) -> Path:
     return Path(dir_str).expanduser().resolve() if dir_str else default_dir
 
 
-def _resolve_btt_presets(args, apps: list[str]) -> list[str]:
-    """Pick BTT presets to track.
-
-    Precedence: explicit --btt-presets > auto-discovered (interactive only,
-    when BTT is in apps) > DEFAULT_BTT_PRESETS. Auto-discovery syncs every
-    preset BTT knows about — no per-preset prompt. --yes mode is intentionally
-    deterministic and skips discovery entirely.
-    """
-    if args.btt_presets:
-        return [p.strip() for p in args.btt_presets.split(",") if p.strip()]
-    if "bettertouchtool" not in apps or args.yes:
-        return list(DEFAULT_BTT_PRESETS)
-    from .apps.bettertouchtool import BetterTouchToolApp
-    discovered = BetterTouchToolApp.discover_preset_names()
-    if discovered:
-        ui.done(f"BetterTouchTool presets = {', '.join(discovered)}   (auto-detected)")
-        return discovered
-    return list(DEFAULT_BTT_PRESETS)
+def _picker_annotations(detected: set[str]) -> dict[str, str]:
+    """Collect picker annotations from every App's picker_annotation hook."""
+    result: dict[str, str] = {}
+    for app_cls in APP_CLASSES:
+        ann = app_cls.picker_annotation(detected=app_cls.name in detected)
+        if ann:
+            result[app_cls.name] = ann
+    return result
 
 
-def _btt_annotation(detected: set[str]) -> "dict[str, str]":
-    """Right-side annotation for the BTT row in the picker.
-
-    Shows the detected preset count when BTT is locally installed so the
-    user knows how many presets will be tracked if they keep the row checked.
-    """
-    if "bettertouchtool" not in detected:
-        return {}
-    from .apps.bettertouchtool import BetterTouchToolApp
-    count = len(BetterTouchToolApp.discover_preset_names())
-    if count <= 0:
-        return {}
-    suffix = "preset" if count == 1 else "presets"
-    return {"bettertouchtool": f"{count} {suffix}"}
+def _resolve_app_options(
+    args,
+    *,
+    prev_apps: list[str],
+    new_apps: list[str],
+    interactive: bool,
+) -> dict[str, dict]:
+    """Collect each App's options dict via its resolve_options hook."""
+    out: dict[str, dict] = {}
+    for app_cls in APP_CLASSES:
+        opts = app_cls.resolve_options(
+            args, prev_apps=prev_apps, new_apps=new_apps, interactive=interactive,
+        )
+        if opts is not None:
+            out[app_cls.name] = opts
+    return out
 
 
 def _resolve_apps_for_init(args) -> "list[str] | None":
@@ -198,7 +201,7 @@ def _resolve_apps_for_init(args) -> "list[str] | None":
         sorted(SUPPORTED_APPS),
         preselected=set(detected),
         detected=set(detected),
-        annotations=_btt_annotation(set(detected)),
+        annotations=_picker_annotations(set(detected)),
     )
     if result is None:
         print("cancelled — no apps selected", file=sys.stderr)
@@ -272,16 +275,12 @@ def cmd_config(args) -> int:
         save_config(cfg)
         ui.done(f"apps = {new_apps}")
         return 0
-    if args.cfg_cmd == "btt-presets":
-        cfg = load_config()
-        new_presets = [p.strip() for p in args.presets.split(",") if p.strip()]
-        if not new_presets:
-            print("provide at least one preset name", file=sys.stderr)
-            return 2
-        cfg.bettertouchtool_presets = new_presets
-        save_config(cfg)
-        ui.done(f"bettertouchtool_presets = {new_presets}")
-        return 0
+    # Delegate any non-core subcommands to the matching app's hook.
+    cfg = load_config()
+    for app_cls in APP_CLASSES:
+        rc = app_cls.handle_config_subcommand(args, cfg)
+        if rc is not None:
+            return rc
     return 2
 
 
@@ -299,45 +298,38 @@ def cmd_apps(args) -> int:
         sorted(SUPPORTED_APPS),
         preselected=set(cfg.apps),
         detected=detected,
-        annotations=_btt_annotation(detected),
+        annotations=_picker_annotations(detected),
     )
     if new_apps is None:
         ui.dim("cancelled")
         return 0
 
     apps_changed = set(new_apps) != set(cfg.apps)
-    new_btt_presets = _refresh_btt_presets_after_pick(new_apps, cfg)
-    presets_changed = new_btt_presets != cfg.bettertouchtool_presets
+    # Construct synthetic args namespace with no flags — apps re-discover by toggle.
+    import argparse
+    args_for_resolve = argparse.Namespace(yes=False)
+    new_options = _resolve_app_options(
+        args_for_resolve, prev_apps=cfg.apps, new_apps=new_apps, interactive=True,
+    )
+    options_changed = bool(new_options) and any(
+        cfg.app_options.get(k) != v for k, v in new_options.items()
+    )
 
-    if not apps_changed and not presets_changed:
+    if not apps_changed and not options_changed:
         ui.dim("no change")
         return 0
 
     cfg.apps = new_apps
-    cfg.bettertouchtool_presets = new_btt_presets
+    for k, v in new_options.items():
+        cfg.app_options[k] = v
     save_config(cfg)
     if apps_changed:
         ui.done(f"apps = {new_apps}")
-    if presets_changed:
-        ui.done(f"bettertouchtool_presets = {new_btt_presets}")
+    if options_changed:
+        for k, v in new_options.items():
+            ui.done(f"{k} options = {v}")
     return 0
 
-
-def _refresh_btt_presets_after_pick(new_apps: list[str], cfg: Config) -> list[str]:
-    """When the user toggles BTT in the picker, re-discover its presets.
-
-    Toggling on → adopt every detected preset (matches init's behavior).
-    Toggling off → keep the saved list as-is so the user doesn't lose it
-    if they re-enable BTT later. No change → keep saved list.
-    """
-    was_tracked = "bettertouchtool" in cfg.apps
-    is_tracked = "bettertouchtool" in new_apps
-    if is_tracked and not was_tracked:
-        from .apps.bettertouchtool import BetterTouchToolApp
-        discovered = BetterTouchToolApp.discover_preset_names()
-        if discovered:
-            return discovered
-    return cfg.bettertouchtool_presets
 
 
 def cmd_status(args) -> int:
@@ -354,6 +346,18 @@ def cmd_status(args) -> int:
             direction=getattr(s, "direction", ""),
         ))
     return 0
+
+
+def _print_app_warnings(warnings_by_app: dict[str, list[str]]) -> None:
+    """Render any collected non-fatal warnings under a 'warnings' divider.
+    Called after the sync summary so partial failures aren't hidden."""
+    if not warnings_by_app:
+        return
+    print()
+    ui.divider("warnings")
+    for name, warns in warnings_by_app.items():
+        for w in warns:
+            ui.warn(f"{name}: {w}")
 
 
 def _resolve_app_list(args, cfg: Config) -> list[str]:
@@ -380,6 +384,7 @@ def cmd_from(args) -> int:
     start = time.monotonic()
     synced: list[str] = []
     failed: list[str] = []
+    warnings_by_app: dict[str, list[str]] = {}
     for i, name in enumerate(apps, 1):
         app = build_app(name, cfg)
         ui.section(name, index=i, total=len(apps), sub=app.description)
@@ -390,6 +395,8 @@ def cmd_from(args) -> int:
         except (FileNotFoundError, RuntimeError) as e:
             ui.error(str(e))
             failed.append(name)
+        if app.warnings:
+            warnings_by_app[name] = list(app.warnings)
         print()
     ui.summary(
         ok=len(synced), error=len(failed),
@@ -397,6 +404,7 @@ def cmd_from(args) -> int:
         synced=synced or None,
         failed=failed or None,
     )
+    _print_app_warnings(warnings_by_app)
     return 0 if not failed else 6
 
 
@@ -446,11 +454,10 @@ def cmd_to(args) -> int:
     applied: list[str] = []
     unchanged: list[str] = []
     failed: list[str] = []
+    warnings_by_app: dict[str, list[str]] = {}
     for i, name in enumerate(apps, 1):
         app = build_app(name, cfg)
         ui.section(name, index=i, total=len(apps), sub=app.description)
-        # Already in sync? Skip the sync call entirely so we don't run
-        # osascript/copy for no reason — and tell the user nothing moved.
         if statuses.get(name) == "clean":
             app._finish_unchanged()
             unchanged.append(name)
@@ -463,6 +470,8 @@ def cmd_to(args) -> int:
         except (FileNotFoundError, RuntimeError) as e:
             ui.error(str(e))
             failed.append(name)
+        if app.warnings:
+            warnings_by_app[name] = list(app.warnings)
         print()
     rotate_backups(cfg.backup_dir, cfg.backup_keep)
     ui.summary(
@@ -472,6 +481,7 @@ def cmd_to(args) -> int:
         unchanged=unchanged or None,
         failed=failed or None,
     )
+    _print_app_warnings(warnings_by_app)
     return 0 if not failed else 6
 
 
