@@ -32,7 +32,7 @@ def test_sync_from_invokes_osascript_export(tmp_path):
     target = tmp_path / "configs"
     target.mkdir()
     with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=_osascript_done) as run:
-        BetterTouchToolApp(preset="Master_bt").sync_from(target)
+        BetterTouchToolApp(presets=["Master_bt"]).sync_from(target)
     assert run.called
     assert (target / "bettertouchtool" / "presets" / "Master_bt.bttpreset").exists()
 
@@ -41,8 +41,77 @@ def test_sync_from_uses_custom_preset_name(tmp_path):
     target = tmp_path / "configs"
     target.mkdir()
     with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=_osascript_done):
-        BetterTouchToolApp(preset="MyPreset").sync_from(target)
+        BetterTouchToolApp(presets=["MyPreset"]).sync_from(target)
     assert (target / "bettertouchtool" / "presets" / "MyPreset.bttpreset").exists()
+
+
+def test_sync_from_exports_every_preset(tmp_path):
+    target = tmp_path / "configs"
+    target.mkdir()
+    with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=_osascript_done):
+        BetterTouchToolApp(presets=["Master_bt", "Mini_bt"]).sync_from(target)
+    presets_dir = target / "bettertouchtool" / "presets"
+    assert (presets_dir / "Master_bt.bttpreset").exists()
+    assert (presets_dir / "Mini_bt.bttpreset").exists()
+
+
+def test_sync_to_imports_every_preset(tmp_path):
+    target = tmp_path / "configs"
+    presets_dir = target / "bettertouchtool" / "presets"
+    presets_dir.mkdir(parents=True)
+    (presets_dir / "Master_bt.bttpreset").write_text("<bttpreset/>")
+    (presets_dir / "Mini_bt.bttpreset").write_text("<bttpreset/>")
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=_osascript_done) as run:
+        BetterTouchToolApp(presets=["Master_bt", "Mini_bt"]).sync_to(target, backup)
+
+    cmds = [" ".join(c.args[0]) for c in run.call_args_list]
+    assert any("import_preset" in c and "Master_bt" in c for c in cmds)
+    assert any("import_preset" in c and "Mini_bt" in c for c in cmds)
+
+
+def test_status_dirty_when_one_of_many_presets_differs(tmp_path):
+    target = tmp_path / "configs"
+    presets = target / "bettertouchtool" / "presets"
+    presets.mkdir(parents=True)
+    (presets / "Master_bt.bttpreset").write_text("<bttpreset>SAME</bttpreset>")
+    (presets / "Mini_bt.bttpreset").write_text("<bttpreset>STORED</bttpreset>")
+
+    def fake_run(*args, **kwargs):
+        class R:
+            returncode = 0
+            stdout = "done"
+            stderr = ""
+        cmd = args[0]
+        joined = " ".join(cmd)
+        for token in cmd:
+            if "outputPath" in token:
+                import re
+                m = re.search(r'outputPath "([^"]+)"', token)
+                if m:
+                    Path(m.group(1)).parent.mkdir(parents=True, exist_ok=True)
+                    if "Master_bt" in joined:
+                        Path(m.group(1)).write_text("<bttpreset>SAME</bttpreset>")
+                    else:
+                        Path(m.group(1)).write_text("<bttpreset>LIVE</bttpreset>")
+        return R()
+
+    with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=fake_run):
+        result = BetterTouchToolApp(presets=["Master_bt", "Mini_bt"]).status(target)
+    assert result.state == "dirty"
+    assert "Mini_bt" in result.details
+
+
+def test_status_missing_when_one_of_many_presets_missing(tmp_path):
+    target = tmp_path / "configs"
+    presets = target / "bettertouchtool" / "presets"
+    presets.mkdir(parents=True)
+    (presets / "Master_bt.bttpreset").write_text("<bttpreset/>")
+    result = BetterTouchToolApp(presets=["Master_bt", "Mini_bt"]).status(target)
+    assert result.state == "missing"
+    assert "Mini_bt" in result.details
 
 
 def test_sync_from_failure_raises(tmp_path):
@@ -54,7 +123,7 @@ def test_sync_from_failure_raises(tmp_path):
         stderr = "BTT not running"
     with patch("dotsync.apps.bettertouchtool.subprocess.run", return_value=Fail()):
         with pytest.raises(RuntimeError, match="osascript"):
-            BetterTouchToolApp(preset="Master_bt").sync_from(target)
+            BetterTouchToolApp(presets=["Master_bt"]).sync_from(target)
 
 
 def test_sync_to_imports_preset(tmp_path):
@@ -66,7 +135,7 @@ def test_sync_to_imports_preset(tmp_path):
     backup.mkdir()
 
     with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=_osascript_done_no_export) as run:
-        BetterTouchToolApp(preset="Master_bt").sync_to(target, backup)
+        BetterTouchToolApp(presets=["Master_bt"]).sync_to(target, backup)
 
     calls = [c.args[0] for c in run.call_args_list]
     assert any("import_preset" in " ".join(c) for c in calls)
@@ -78,7 +147,7 @@ def test_sync_to_missing_preset_raises(tmp_path):
     backup = tmp_path / "backup"
     backup.mkdir()
     with pytest.raises(FileNotFoundError, match="bttpreset"):
-        BetterTouchToolApp(preset="Master_bt").sync_to(target, backup)
+        BetterTouchToolApp(presets=["Master_bt"]).sync_to(target, backup)
 
 
 def test_is_present_locally_true_when_btt_app_exists(monkeypatch, tmp_path):
@@ -123,7 +192,7 @@ def test_status_clean_when_export_matches_stored(tmp_path):
         return R()
 
     with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=fake_run):
-        result = BetterTouchToolApp(preset="Master_bt").status(target)
+        result = BetterTouchToolApp(presets=["Master_bt"]).status(target)
     assert result.state == "clean"
 
 
@@ -149,7 +218,7 @@ def test_status_dirty_when_export_differs(tmp_path):
         return R()
 
     with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=fake_run):
-        result = BetterTouchToolApp(preset="Master_bt").status(target)
+        result = BetterTouchToolApp(presets=["Master_bt"]).status(target)
     assert result.state == "dirty"
 
 
@@ -157,7 +226,7 @@ def test_status_missing_when_stored_absent(tmp_path):
     target = tmp_path / "configs"
     (target / "bettertouchtool" / "presets").mkdir(parents=True)
     # no .bttpreset stored
-    result = BetterTouchToolApp(preset="Master_bt").status(target)
+    result = BetterTouchToolApp(presets=["Master_bt"]).status(target)
     assert result.state == "missing"
 
 
@@ -174,7 +243,7 @@ def test_status_unknown_when_btt_not_running(tmp_path):
         stderr = "BTT not running"
 
     with patch("dotsync.apps.bettertouchtool.subprocess.run", return_value=Fail()):
-        result = BetterTouchToolApp(preset="Master_bt").status(target)
+        result = BetterTouchToolApp(presets=["Master_bt"]).status(target)
     assert result.state == "unknown"
     assert "running" in result.details.lower() or "btt" in result.details.lower()
 

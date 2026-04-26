@@ -256,6 +256,35 @@ def test_render_marks_cursor_position(capsys, monkeypatch):
     assert "▸" not in claude_line
 
 
+def test_render_shows_installed_hint_for_detected_apps(capsys, monkeypatch):
+    """Each row carries a right-side hint about whether the app is locally
+    installed. Detected → 'installed', else → 'not installed'."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    state = PickerState(ITEMS, preselected=set(), detected={"claude", "zsh"})
+    _render(state, "Pick apps", first=True)
+    lines = capsys.readouterr().out.splitlines()
+    claude_line = next(l for l in lines if "claude" in l)
+    ghostty_line = next(l for l in lines if "ghostty" in l)
+    assert "installed" in claude_line
+    assert "not installed" in ghostty_line
+
+
+def test_render_includes_annotation_when_provided(capsys, monkeypatch):
+    """Annotations (e.g. BTT preset count) extend the installed hint inline."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    state = PickerState(
+        ITEMS,
+        preselected=set(),
+        detected={"bettertouchtool"},
+        annotations={"bettertouchtool": "2 presets"},
+    )
+    _render(state, "Pick apps", first=True)
+    out = capsys.readouterr().out
+    btt_line = next(l for l in out.splitlines() if "bettertouchtool" in l)
+    assert "installed" in btt_line
+    assert "2 presets" in btt_line
+
+
 def test_render_redraw_emits_cursor_up_and_clear(capsys, monkeypatch):
     """Subsequent renders must move the cursor up and clear so the picker
     stays in place rather than scrolling."""
@@ -325,8 +354,34 @@ def test_pick_apps_uses_fallback_when_not_tty(monkeypatch):
     result = pick_apps(
         ["claude", "ghostty", "bettertouchtool", "zsh"],
         preselected={"claude", "bettertouchtool", "zsh"},
+        detected=set(),
     )
     assert result == ["claude", "bettertouchtool"]
+
+
+def test_pick_apps_accepts_detected_and_annotations(monkeypatch):
+    """The TTY entry point forwards detected + annotations into the picker.
+    Smoke test that the new arguments are accepted and rendered without
+    crashing."""
+    monkeypatch.setattr("dotsync.ui_picker._interactive_supported", lambda: True)
+    monkeypatch.setattr("dotsync.ui_picker._enter_raw_mode", lambda: object())
+    monkeypatch.setattr("dotsync.ui_picker._restore_terminal", lambda token: None)
+    rendered = []
+    def fake_render(state, title, *, first):
+        rendered.append((state.detected, state.annotations))
+    monkeypatch.setattr("dotsync.ui_picker._render", fake_render)
+    monkeypatch.setattr("dotsync.ui_picker._read_key", lambda: "enter")
+
+    pick_apps(
+        ["claude", "bettertouchtool"],
+        preselected=set(),
+        detected={"bettertouchtool"},
+        annotations={"bettertouchtool": "3 presets"},
+    )
+    assert rendered, "render must be called"
+    detected_seen, annotations_seen = rendered[0]
+    assert "bettertouchtool" in detected_seen
+    assert annotations_seen.get("bettertouchtool") == "3 presets"
 
 
 def test_pick_apps_fallback_returns_empty_list_when_all_skipped(monkeypatch):
@@ -336,6 +391,7 @@ def test_pick_apps_fallback_returns_empty_list_when_all_skipped(monkeypatch):
     result = pick_apps(
         ["claude", "ghostty", "bettertouchtool", "zsh"],
         preselected={"claude"},
+        detected=set(),
     )
     assert result == []
 
@@ -355,6 +411,7 @@ def test_pick_apps_tty_path_drives_state_to_completion(monkeypatch):
     result = pick_apps(
         ["claude", "ghostty", "bettertouchtool", "zsh"],
         preselected=set(),
+        detected=set(),
     )
     assert result == ["ghostty"]
 
@@ -366,7 +423,7 @@ def test_pick_apps_cancel_returns_none(monkeypatch):
     monkeypatch.setattr("dotsync.ui_picker._render", lambda *a, **kw: None)
     monkeypatch.setattr("dotsync.ui_picker._read_key", lambda: "cancel")
 
-    result = pick_apps(["claude", "ghostty"], preselected=set())
+    result = pick_apps(["claude", "ghostty"], preselected=set(), detected=set())
     assert result is None
 
 
@@ -388,6 +445,6 @@ def test_pick_apps_keyboard_interrupt_returns_none_and_restores(monkeypatch):
         raise KeyboardInterrupt
     monkeypatch.setattr("dotsync.ui_picker._read_key", boom)
 
-    result = pick_apps(["claude", "ghostty"], preselected=set())
+    result = pick_apps(["claude", "ghostty"], preselected=set(), detected=set())
     assert result is None
     assert restored == [sentinel]   # terminal was restored exactly once

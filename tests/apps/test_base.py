@@ -104,6 +104,39 @@ def test_diff_files_clean_has_empty_direction(tmp_path):
     assert result.direction == ""
 
 
+def test_finish_ok_emits_done_line(capsys, monkeypatch):
+    """`App._finish_ok()` is the canonical 'this app is done' marker —
+    a green ✓ line that closes a per-app section."""
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    class FakeApp(App):
+        name = "fake"
+        description = ""
+        def sync_from(self, target_dir): pass
+        def sync_to(self, target_dir, backup_dir): pass
+
+    FakeApp()._finish_ok()
+    out = capsys.readouterr().out
+    assert "✓" in out
+    assert "done" in out
+
+
+def test_finish_unchanged_emits_dim_line(capsys, monkeypatch):
+    """`App._finish_unchanged()` is the canonical 'nothing to do here'
+    marker for `dotsync to` when local and stored are byte-identical."""
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    class FakeApp(App):
+        name = "fake"
+        description = ""
+        def sync_from(self, target_dir): pass
+        def sync_to(self, target_dir, backup_dir): pass
+
+    FakeApp()._finish_unchanged()
+    out = capsys.readouterr().out
+    assert "unchanged" in out
+
+
 def test_diff_files_reports_diverged_when_some_local_newer_some_stored_newer(tmp_path):
     """When the differs set contains both local-newer and folder-newer pairs,
     direction = diverged so the user knows neither side is fully ahead."""

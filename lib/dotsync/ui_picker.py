@@ -1,15 +1,25 @@
 """Interactive arrow-key checkbox picker.
 
-Used by `dotsync init` (edit branch) and `dotsync apps edit` to let the
-user toggle which apps to track. stdlib only; falls back to per-app y/n
-prompts when stdin/stdout is not a TTY.
+Used by `dotsync init` and `dotsync apps` to let the user toggle which
+apps to track. stdlib only; falls back to per-app y/n prompts when
+stdin/stdout is not a TTY.
 
 Design split:
-    PickerState         — pure logic (no I/O), unit-testable
+    PickerState         — pure logic + presentation data (no I/O), unit-testable
     _read_key           — termios + ANSI escape parsing
     _render             — ANSI redraw
     _fallback_per_app   — non-TTY sequential prompts
     pick_apps           — top-level glue (TTY detect → loop or fallback)
+
+Each row in the picker shows three signals at once:
+    [x]/[ ]            — tracked / untracked (toggleable)
+    installed / not    — local install state (read-only, from `detected`)
+    optional annotation — extra info per item (e.g. "2 presets" for BTT)
+The combination drives the row color so misconfigured states stand out:
+    [x] + installed       → default (healthy)
+    [x] + not installed   → red dim    (cleanup candidate)
+    [ ] + installed       → yellow dim (add candidate)
+    [ ] + not installed   → dim
 """
 from __future__ import annotations
 
@@ -25,19 +35,33 @@ from . import ui
 _GLYPH_CURSOR = "▸"
 _CHECK_ON = "[x]"
 _CHECK_OFF = "[ ]"
+_HINT_INSTALLED = "installed"
+_HINT_NOT_INSTALLED = "not installed"
+_HINT_COL = 24  # column where the right-side hint starts (after the name)
 _CURSOR_HIDE = "\x1b[?25l"
 _CURSOR_SHOW = "\x1b[?25h"
 
 
 class PickerState:
-    """Pure logic for the picker. Inputs are abstract event strings.
+    """Pure logic + presentation data for the picker.
+
+    `selected` and `cursor` mutate; `detected` and `annotations` are
+    read-only context the renderer uses to color rows.
 
     Events: 'up', 'down', 'space', 'enter', 'cancel'. Anything else is a no-op.
     """
 
-    def __init__(self, items: list[str], preselected) -> None:
+    def __init__(
+        self,
+        items: list[str],
+        preselected,
+        detected: "set[str] | None" = None,
+        annotations: "dict[str, str] | None" = None,
+    ) -> None:
         self.items = list(items)
         self.selected: set[str] = {a for a in preselected if a in self.items}
+        self.detected: set[str] = set(detected) if detected else set()
+        self.annotations: dict[str, str] = dict(annotations) if annotations else {}
         self.cursor = 0
         self.done = False
         self.cancelled = False
@@ -61,13 +85,13 @@ class PickerState:
         # unknown keys: silent no-op
 
     @property
-    def result(self) -> list[str] | None:
+    def result(self) -> "list[str] | None":
         if self.cancelled:
             return None
         return [a for a in self.items if a in self.selected]
 
 
-def _read_key() -> str | None:
+def _read_key() -> "str | None":
     """Read a single keystroke event. Caller must already have set the
     terminal to cbreak/raw mode. Returns one of:
         'up', 'down', 'space', 'enter', 'cancel', or None (unrecognized).
@@ -84,8 +108,6 @@ def _read_key() -> str | None:
     if ch == b"\x03":           # ctrl+c
         raise KeyboardInterrupt
     if ch == b"\x1b":           # ESC — could start an arrow sequence
-        # Peek for `[A` / `[B` with a short timeout so a bare ESC press
-        # (user wants to cancel) doesn't hang waiting for a 3rd byte.
         ready, _, _ = select.select([fd], [], [], 0.05)
         if not ready:
             return "cancel"
@@ -109,6 +131,21 @@ def _read_key() -> str | None:
     return None
 
 
+def _row_color(*, selected: bool, installed: bool) -> str:
+    """Map (selected, installed) to an ANSI color prefix for the row.
+
+    Healthy combinations get the default fg; mismatches get a tinted dim
+    so misconfigured states stand out without being loud.
+    """
+    if selected and installed:
+        return ""                       # healthy → default
+    if selected and not installed:
+        return ui.RED + ui.DIM_ANSI     # tracked but missing
+    if not selected and installed:
+        return ui.YELLOW + ui.DIM_ANSI  # installed but untracked
+    return ui.DIM_ANSI                  # neither
+
+
 def _render(state: PickerState, title: str, *, first: bool) -> None:
     """Print or redraw the picker. `first=True` for the initial pass;
     subsequent passes move the cursor up and clear the previous frame."""
@@ -123,11 +160,29 @@ def _render(state: PickerState, title: str, *, first: bool) -> None:
     out.write("\n")
     for i, name in enumerate(state.items):
         cursor_marker = ui._wrap(ui.PRIMARY, _GLYPH_CURSOR) if i == state.cursor else " "
-        if name in state.selected:
+        is_selected = name in state.selected
+        is_installed = name in state.detected
+        if is_selected:
             check = ui._wrap(ui.GREEN, _CHECK_ON)
         else:
             check = _CHECK_OFF
-        out.write(f"  {cursor_marker} {check} {name}\n")
+        # Right-side hint: "installed" / "not installed", with optional
+        # annotation appended ("installed · 2 presets").
+        base_hint = _HINT_INSTALLED if is_installed else _HINT_NOT_INSTALLED
+        annotation = state.annotations.get(name, "")
+        if annotation:
+            hint_text = f"{base_hint} · {annotation}"
+        else:
+            hint_text = base_hint
+        # Pad the name so hints align in a column.
+        name_padded = name.ljust(_HINT_COL)
+        # Apply a row-level color tint to the name+hint combo so misconfigured
+        # rows draw the eye. Cursor marker and check stay in their own colors.
+        tint = _row_color(selected=is_selected, installed=is_installed)
+        body = f"{name_padded}{hint_text}"
+        if tint:
+            body = f"{tint}{body}{ui.RESET}" if ui._color_enabled() else body
+        out.write(f"  {cursor_marker} {check} {body}\n")
     out.flush()
 
 
@@ -178,9 +233,15 @@ def _restore_terminal(token) -> None:
 def pick_apps(
     items: list[str],
     preselected,
+    detected: "set[str] | None" = None,
+    *,
+    annotations: "dict[str, str] | None" = None,
     title: str = "Pick apps to track",
-) -> list[str] | None:
+) -> "list[str] | None":
     """Interactive arrow-key checkbox picker.
+
+    `detected` and `annotations` are presentation hints — they don't
+    influence which items are selected, only how each row is drawn.
 
     Returns the selected items in input order, or None if the user
     cancelled (q / esc / ctrl+c). On non-TTY environments (CI, piped
@@ -189,7 +250,7 @@ def pick_apps(
     if not _interactive_supported():
         return _fallback_per_app(items, preselected)
 
-    state = PickerState(items, preselected)
+    state = PickerState(items, preselected, detected=detected, annotations=annotations)
     token = _enter_raw_mode()
     try:
         _render(state, title, first=True)

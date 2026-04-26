@@ -19,10 +19,14 @@ def test_build_app_unknown_raises(tmp_path):
         build_app("nonsense", cfg)
 
 
-def test_build_app_bettertouchtool_uses_config_preset(tmp_path):
-    cfg = Config(dir=tmp_path, apps=["bettertouchtool"], bettertouchtool_preset="MyPreset")
+def test_build_app_bettertouchtool_uses_config_presets(tmp_path):
+    cfg = Config(
+        dir=tmp_path,
+        apps=["bettertouchtool"],
+        bettertouchtool_presets=["MyPreset", "Other"],
+    )
     app = build_app("bettertouchtool", cfg)
-    assert app.preset == "MyPreset"
+    assert app.presets == ["MyPreset", "Other"]
 
 
 def test_supported_apps_matches_registry():

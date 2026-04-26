@@ -29,33 +29,41 @@ Python 3.12 또는 3.13 이 canonical 경로 (`/opt/homebrew/bin/python3.{12,13}
 
 ### 사용법
 
-#### 1. 처음 한 번 — sync 대상 폴더 정하기 (앱은 자동 감지됨)
+#### 1. 처음 한 번 — sync 폴더 정하고 추적할 앱 고르기
 
-대화형으로 폴더 경로만 입력하면, 이 머신에 설치된 앱들이 자동 감지돼 default로 제시된다. 폴더 경로 prompt에서 그냥 Enter만 치면 default `~/Desktop/dotsync_config`를 사용한다.
+`dotsync init` 은 두 단계 wizard 다.
+
+**Step 1 — Sync folder.** 폴더 경로를 입력한다. 그냥 Enter면 default `~/Desktop/dotsync_config` 를 사용한다.
+
+**Step 2 — Pick apps to track.** 화살표 키 picker 가 곧바로 뜬다. 이 머신에 설치된 앱들은 미리 체크돼 있고(`installed` 표시), 미설치 앱은 비어 있다(`not installed`). 키로 토글한 뒤 Enter 로 확정.
 
 ```bash
 dotsync init
-# sync folder (absolute path) [/Users/you/Desktop/dotsync_config]: ⏎
+# ▶ Step 1 — Sync folder
+# ? sync folder (absolute path) [/Users/you/Desktop/dotsync_config] › ⏎
+# ✔ folder ready → /Users/you/Desktop/dotsync_config
 #
-# Detected on this machine:
-#   ✓ claude
-#   ✓ ghostty
-#   ✓ bettertouchtool
-#   ✓ zsh
-# Track all of these? [Y/n/edit]: ⏎
-# ✓ BetterTouchTool preset detected: Master_bt
+# ▶ Step 2 — Pick apps to track
+#   Pick apps to track   ↑/↓ move · space toggle · enter submit
+#
+#   ▸ [x] claude              installed
+#     [x] ghostty             installed
+#     [x] bettertouchtool     installed · 2 presets
+#     [x] zsh                 installed
+#
+# ✔ tracked: claude · ghostty · bettertouchtool · zsh
+# ✔ BetterTouchTool presets = Master_bt, Mini_bt   (auto-detected)
+# ✔ config saved → /Users/you/Desktop/dotsync_config/dotsync.toml
 ```
 
-`Y`(또는 Enter)면 감지된 전부 추적, `n`이면 아무것도 안 추적, `edit`이면 화살표 키 picker 로 직접 고른다 (키 안내는 아래 `apps edit` 설명 참고).
+picker 의 색상은 행 상태를 한눈에 보여준다.
 
-`dotsync init` 은 BTT 의 내부 SQLite store 를 읽어 현재 등록된 preset 이름을
-자동 감지한다.
+- `[x] + installed` → 정상 (기본 색)
+- `[x] + not installed` → 빨강 dim ("정리 후보")
+- `[ ] + installed` → 노랑 dim ("추가 후보")
+- `[ ] + not installed` → 그냥 dim
 
-- preset 1개만 있으면 자동으로 채택 (질문 없음)
-- 여러 개면 목록을 보여주고 첫 번째를 default 로 1개를 고르게 한다
-- 감지 실패 시 (BTT 미설치, 스키마 변경 등) 기존처럼 `Master_bt` 를 default 로 묻는다
-
-`--btt-preset <name>` 또는 `--yes` 가 주어지면 자동 감지를 건너뛴다.
+**BetterTouchTool 의 preset 은 자동으로 모두 추적된다.** dotsync 가 BTT 내부 SQLite 를 읽어 등록된 preset 이름을 모두 가져와 `bettertouchtool_presets` 에 넣는다 (예: `["Master_bt", "Mini_bt"]`). 사용자가 따로 고를 일은 없다. `--yes` 모드는 deterministic 한 결정을 위해 자동 감지를 건너뛰고 default(`["Master_bt"]`)를 쓴다.
 
 비대화형(스크립트/새 머신 셋업용):
 
@@ -64,8 +72,8 @@ dotsync init
 # --apps 생략 시 자동 감지된 전체를 추적
 dotsync init --yes
 
-# 명시적으로 지정도 가능
-dotsync init --dir ~/my-configs --apps claude,zsh --btt-preset Master_bt --yes
+# 명시적으로 지정도 가능 (BTT presets 는 콤마 구분)
+dotsync init --dir ~/my-configs --apps claude,zsh --btt-presets Master_bt,Mini_bt --yes
 ```
 
 **dotsync는 사용자가 지정한 sync 폴더 외에는 컴퓨터 어디에도 파일/디렉토리를 만들지 않는다.** 모든 설정은 `<sync 폴더>/dotsync.toml`에만 저장되고, 백업도 `<sync 폴더>/.backups/`에 쌓인다.
@@ -98,16 +106,40 @@ dotsync from --all          # 추적 중인 모든 앱
 dotsync from claude         # 한 앱만
 ```
 
+banner 의 `→` 화살표는 sync 방향을, summary box 는 어떤 앱이 실제로 동기화됐는지를 한 줄로 보여준다.
+
+```
+╭──────────────────────────────────────────────────────────╮
+│ dotsync from                                             │
+│ 4 apps  →  /Users/you/Desktop/dotsync_config             │
+╰──────────────────────────────────────────────────────────╯
+... (per-app sections) ...
+╭──────────────────────────────────────────────────────────╮
+│ ✓ synced     claude · ghostty · bettertouchtool · zsh    │
+│ 4 ok  ·  0 warn  ·  0 error  ·  2.3s                     │
+╰──────────────────────────────────────────────────────────╯
+```
+
 이후 그 폴더를 git에 커밋하거나 iCloud로 동기화해두면 백업이 된다.
 
 #### 3. 폴더 → 로컬 앱 (다른 머신에서 복원하기)
 
-`dotsync to`는 로컬을 덮어쓰기 전에 **확인 프롬프트**를 띄웁니다. 변경사항을 미리 확인만 하고 싶다면 `--dry-run`, 자동화에서 프롬프트를 건너뛰려면 `--yes`를 사용하세요. 백업 세션 경로는 실행 중에 출력됩니다.
+`dotsync to`는 로컬을 덮어쓰기 전에 **노란색(warn) 확인 프롬프트**를 띄운다 — 일반 prompt 와 색을 구분해서 destructive 액션임을 강조한다. 변경사항을 미리 확인만 하고 싶다면 `--dry-run`, 자동화에서 프롬프트를 건너뛰려면 `--yes`를 사용한다. 백업 세션 경로는 실행 중에 출력된다.
 
 ```bash
 dotsync to --all --dry-run     # preview only
-dotsync to --all                # interactive (asks Y/n)
+dotsync to --all                # interactive (asks Y/n, yellow accent)
 dotsync to --all --yes          # automation (no prompt)
+```
+
+`to` 의 summary box 는 실제로 변경된 앱(`✓ applied`)과 이미 같은 상태였던 앱(`· unchanged`)을 분리해서 보여준다.
+
+```
+╭──────────────────────────────────────────────────────────╮
+│ ✓ applied     ghostty · bettertouchtool                  │
+│ · unchanged   claude · zsh                               │
+│ 4 ok  ·  0 warn  ·  0 error  ·  3.1s                     │
+╰──────────────────────────────────────────────────────────╯
 ```
 
 `to` 직전 로컬 파일은 `<sync 폴더>/.backups/<YYYYMMDD_HHMMSS>/<app>/`에 자동 백업된다 (사용자 폴더 안에만 쌓이므로 git에 올리고 싶지 않으면 `.gitignore`에 `.backups/` 추가).
@@ -128,19 +160,17 @@ $ dotsync status
 
 #### 폴더/앱 목록을 나중에 바꾸고 싶으면
 
-추적 앱은 두 가지 방법으로 바꿀 수 있습니다 — 인터랙티브 메뉴 또는 일괄 교체.
+`dotsync apps` 가 init Step 2 와 똑같은 picker 를 띄운다. BTT 를 새로 토글하면 등록된 preset 들이 자동 재검색돼 config 에 반영된다.
 
 ```bash
-dotsync apps                              # 현재 추적/설치 상태 한눈에 보기
-dotsync apps edit                         # 인터랙티브로 추적 앱 변경 (Enter = 그대로)
+dotsync apps                              # picker 로 추적 앱 변경 (Enter = 그대로)
 dotsync config show                       # 현재 설정 보기
 dotsync config dir ~/another-folder       # sync 폴더 변경
 dotsync config apps claude,zsh            # 추적 앱 일괄 교체 (자동화용)
-dotsync config btt-preset MyPreset        # BTT preset 이름 변경
+dotsync config btt-presets MyPreset,Other # BTT preset 목록 일괄 교체 (콤마 구분)
 ```
 
-`dotsync apps edit` 또는 `dotsync init` 의 edit 분기를 고르면, 화살표 키로
-체크박스를 토글하는 picker 가 뜬다.
+picker 키 안내:
 
 - `↑` / `↓` — 항목 이동
 - `space` — 현재 항목 체크 토글
@@ -183,34 +213,41 @@ dotsync reuses it — no duplicate install. Otherwise Homebrew pulls in
 
 ### Usage
 
-#### 1. One-time setup — pick your sync folder (apps auto-detected)
+#### 1. One-time setup — pick a sync folder and the apps to track
 
-Interactive. You provide the folder path (or just hit Enter for the default `~/Desktop/dotsync_config`); dotsync detects which supported apps are installed on this machine and offers them as the default.
+`dotsync init` is a two-step wizard.
+
+**Step 1 — Sync folder.** Type the folder path. Bare Enter accepts the default `~/Desktop/dotsync_config`.
+
+**Step 2 — Pick apps to track.** An arrow-key picker opens immediately. Apps installed on this machine come pre-checked (`installed` hint); the rest start unchecked (`not installed`). Toggle with the keys, Enter to confirm.
 
 ```bash
 dotsync init
-# sync folder (absolute path) [/Users/you/Desktop/dotsync_config]: ⏎
+# ▶ Step 1 — Sync folder
+# ? sync folder (absolute path) [/Users/you/Desktop/dotsync_config] › ⏎
+# ✔ folder ready → /Users/you/Desktop/dotsync_config
 #
-# Detected on this machine:
-#   ✓ claude
-#   ✓ ghostty
-#   ✓ bettertouchtool
-#   ✓ zsh
-# Track all of these? [Y/n/edit]: ⏎
-# ✓ BetterTouchTool preset detected: Master_bt
+# ▶ Step 2 — Pick apps to track
+#   Pick apps to track   ↑/↓ move · space toggle · enter submit
+#
+#   ▸ [x] claude              installed
+#     [x] ghostty             installed
+#     [x] bettertouchtool     installed · 2 presets
+#     [x] zsh                 installed
+#
+# ✔ tracked: claude · ghostty · bettertouchtool · zsh
+# ✔ BetterTouchTool presets = Master_bt, Mini_bt   (auto-detected)
+# ✔ config saved → /Users/you/Desktop/dotsync_config/dotsync.toml
 ```
 
-`Y` (or Enter) tracks all detected apps, `n` tracks none, `edit` opens an arrow-key picker so you can pick a custom set (key bindings are described under `apps edit` below).
+Row colors flag misconfigured states at a glance:
 
-`dotsync init` reads BetterTouchTool's internal SQLite store to auto-detect
-the registered preset name(s).
+- `[x] + installed` → default (healthy)
+- `[x] + not installed` → red dim ("cleanup candidate")
+- `[ ] + installed` → yellow dim ("add candidate")
+- `[ ] + not installed` → dim
 
-- Exactly one preset → adopted automatically (no prompt)
-- Multiple → shown as a list; pick one (first is the default)
-- Discovery fails (BTT not installed, schema drift, …) → legacy prompt with
-  `Master_bt` as the default
-
-`--btt-preset <name>` or `--yes` skips discovery.
+**BetterTouchTool presets are auto-discovered and all tracked.** dotsync reads BTT's internal SQLite store and writes every registered preset name into `bettertouchtool_presets` (e.g. `["Master_bt", "Mini_bt"]`). No per-preset prompt. `--yes` mode skips discovery in favor of a deterministic default (`["Master_bt"]`) — useful for CI.
 
 Non-interactive (scripts / new-machine bootstrap):
 
@@ -220,8 +257,8 @@ Non-interactive (scripts / new-machine bootstrap):
 #   --apps defaults to all auto-detected apps
 dotsync init --yes
 
-# Or specify explicitly
-dotsync init --dir ~/my-configs --apps claude,zsh --btt-preset Master_bt --yes
+# Or specify explicitly (BTT presets are comma-separated)
+dotsync init --dir ~/my-configs --apps claude,zsh --btt-presets Master_bt,Mini_bt --yes
 ```
 
 **dotsync creates no files or directories anywhere on your machine outside the sync folder you chose.** All settings live in `<sync folder>/dotsync.toml`, and backups accumulate in `<sync folder>/.backups/`.
@@ -254,16 +291,40 @@ dotsync from --all          # all tracked apps
 dotsync from claude         # one app
 ```
 
+The banner's `→` arrow shows direction; the summary box names every app that actually synced.
+
+```
+╭──────────────────────────────────────────────────────────╮
+│ dotsync from                                             │
+│ 4 apps  →  /Users/you/Desktop/dotsync_config             │
+╰──────────────────────────────────────────────────────────╯
+... (per-app sections) ...
+╭──────────────────────────────────────────────────────────╮
+│ ✓ synced     claude · ghostty · bettertouchtool · zsh    │
+│ 4 ok  ·  0 warn  ·  0 error  ·  2.3s                     │
+╰──────────────────────────────────────────────────────────╯
+```
+
 Then commit the folder to git or let iCloud sync it — that's your backup.
 
 #### 3. Folder → local apps (restore on another machine)
 
-`dotsync to` prompts for confirmation before overwriting your local configs. Use `--dry-run` to preview, `--yes` to skip the prompt in automation. The backup session path is printed at run time.
+`dotsync to` prompts for confirmation before overwriting your local configs — the prompt uses a **yellow (warn) accent** so it can't be mistaken for a routine question. Use `--dry-run` to preview, `--yes` to skip the prompt in automation. The backup session path is printed at run time.
 
 ```bash
 dotsync to --all --dry-run     # preview only
-dotsync to --all                # interactive (asks Y/n)
+dotsync to --all                # interactive (asks Y/n, yellow accent)
 dotsync to --all --yes          # automation (no prompt)
+```
+
+The summary box separates apps that actually changed (`✓ applied`) from apps that were already in sync (`· unchanged`).
+
+```
+╭──────────────────────────────────────────────────────────╮
+│ ✓ applied     ghostty · bettertouchtool                  │
+│ · unchanged   claude · zsh                               │
+│ 4 ok  ·  0 warn  ·  0 error  ·  3.1s                     │
+╰──────────────────────────────────────────────────────────╯
 ```
 
 Each `to` snapshots the about-to-be-overwritten local files into `<sync folder>/.backups/<YYYYMMDD_HHMMSS>/<app>/` (lives inside your sync folder; add `.backups/` to `.gitignore` if you don't want it tracked).
@@ -284,19 +345,17 @@ $ dotsync status
 
 #### Change the folder or app list later
 
-Two ways to change the tracked-apps list — an interactive menu or a one-shot replacement.
+`dotsync apps` opens the same picker as init's Step 2. Toggling BTT on re-runs preset discovery and writes the result back to config — no separate command needed.
 
 ```bash
-dotsync apps                              # see current tracked/installed state
-dotsync apps edit                         # interactively edit tracked apps (Enter = keep current)
+dotsync apps                              # picker to change the tracked apps (Enter = keep current)
 dotsync config show                       # print current config
 dotsync config dir ~/another-folder       # change sync folder
 dotsync config apps claude,zsh            # replace the tracked-apps list (for automation)
-dotsync config btt-preset MyPreset        # change BTT preset name
+dotsync config btt-presets MyPreset,Other # replace BTT preset list (comma-separated)
 ```
 
-`dotsync apps edit` (or the `edit` choice in `dotsync init`) opens an
-interactive checkbox picker.
+Picker keys:
 
 - `↑` / `↓` — move
 - `space` — toggle the current row

@@ -25,7 +25,10 @@ from typing import List, Optional
 
 SUPPORTED_APPS = {"claude", "ghostty", "bettertouchtool", "zsh"}
 DEFAULT_BACKUP_KEEP = 10
-DEFAULT_BTT_PRESET = "Master_bt"
+# BetterTouchTool can sync multiple presets at once. The default list ships
+# with one entry to match BTT's stock starter preset; new installs without
+# any explicit configuration fall back to this.
+DEFAULT_BTT_PRESETS: tuple[str, ...] = ("Master_bt",)
 
 ENV_VAR = "DOTSYNC_DIR"
 FOLDER_CONFIG_FILENAME = "dotsync.toml"
@@ -50,7 +53,7 @@ class Config:
     apps: List[str]
     backup_dir: Optional[Path] = None
     backup_keep: int = DEFAULT_BACKUP_KEEP
-    bettertouchtool_preset: str = DEFAULT_BTT_PRESET
+    bettertouchtool_presets: List[str] = field(default_factory=lambda: list(DEFAULT_BTT_PRESETS))
 
     def __post_init__(self):
         if self.backup_dir is None:
@@ -119,15 +122,37 @@ def load_config() -> Config:
     else:
         backup_dir = default_backup_dir(folder)
     backup_keep = int(options.get("backup_keep", DEFAULT_BACKUP_KEEP))
-    btt_preset = str(options.get("bettertouchtool_preset", DEFAULT_BTT_PRESET))
+    btt_presets = _read_btt_presets(options)
 
     return Config(
         dir=folder,
         apps=apps,
         backup_dir=backup_dir,
         backup_keep=backup_keep,
-        bettertouchtool_preset=btt_preset,
+        bettertouchtool_presets=btt_presets,
     )
+
+
+def _read_btt_presets(options: dict) -> List[str]:
+    """Resolve BTT presets from on-disk options, with legacy migration.
+
+    Precedence: new `bettertouchtool_presets` list → legacy
+    `bettertouchtool_preset` single string → DEFAULT_BTT_PRESETS.
+    The legacy single-string form is auto-migrated to a one-element list
+    so users with old dotsync.toml files keep working without manual edits.
+    """
+    new_value = options.get("bettertouchtool_presets")
+    if new_value is not None:
+        if not isinstance(new_value, list):
+            raise ConfigError(
+                f"`bettertouchtool_presets` must be a list of strings, "
+                f"got: {type(new_value).__name__}"
+            )
+        return [str(p) for p in new_value]
+    legacy = options.get("bettertouchtool_preset")
+    if legacy is not None:
+        return [str(legacy)]
+    return list(DEFAULT_BTT_PRESETS)
 
 
 def save_config(cfg: Config) -> None:
@@ -145,7 +170,8 @@ def save_config(cfg: Config) -> None:
     if cfg.backup_dir is not None and cfg.backup_dir != default_bd:
         lines.append(f'backup_dir = "{cfg.backup_dir}"')
     lines.append(f"backup_keep = {cfg.backup_keep}")
-    lines.append(f'bettertouchtool_preset = "{cfg.bettertouchtool_preset}"')
+    presets_repr = ", ".join(f'"{p}"' for p in cfg.bettertouchtool_presets)
+    lines.append(f"bettertouchtool_presets = [{presets_repr}]")
     lines.append("")
 
     folder_config_path(cfg.dir).write_text("\n".join(lines))

@@ -80,3 +80,19 @@ class App(ABC):
         Concrete apps should override and return diff_files(...) over their tracked files.
         """
         return AppStatus(state="unknown")
+
+    # ----- per-app section finishers --------------------------------------
+    # Both finishers exist so per-app sections close with a uniform line —
+    # the cli's per-app loop never has to special-case which marker to draw.
+
+    def _finish_ok(self) -> None:
+        """Close a per-app sync section with a green ✓ done line."""
+        from dotsync import ui
+        ui.ok("done")
+
+    def _finish_unchanged(self) -> None:
+        """Close a per-app sync section with a dim 'unchanged' line — used
+        by `dotsync to` when local already matches stored, so the user can
+        see at a glance which apps did vs. didn't move."""
+        from dotsync import ui
+        ui.dim("unchanged")

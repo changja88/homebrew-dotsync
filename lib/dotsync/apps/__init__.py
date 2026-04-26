@@ -36,7 +36,7 @@ def build_app(name: str, cfg) -> App:
     if name == "ghostty":
         return GhosttyApp()
     if name == "bettertouchtool":
-        return BetterTouchToolApp(preset=cfg.bettertouchtool_preset)
+        return BetterTouchToolApp(presets=cfg.bettertouchtool_presets)
     if name == "zsh":
         return ZshApp()
     raise KeyError(name)  # unreachable

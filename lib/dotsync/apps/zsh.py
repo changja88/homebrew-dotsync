@@ -27,7 +27,7 @@ class ZshApp(App):
         dst = self._stored(target_dir)
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
-        ui.ok(".zshrc")
+        ui.sub(".zshrc")
         ui.dim(f"source → {src}")
 
     def sync_to(self, target_dir: Path, backup_dir: Path) -> None:
@@ -40,7 +40,7 @@ class ZshApp(App):
             shutil.copy2(local, backup_dir / self.name / ".zshrc")
             ui.dim(f"backup → {backup_dir / self.name / '.zshrc'}")
         shutil.copy2(src, local)
-        ui.ok(".zshrc")
+        ui.sub(".zshrc")
         ui.dim("hint: open a new shell or `source ~/.zshrc`")
 
     def status(self, target_dir: Path) -> AppStatus:

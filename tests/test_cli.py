@@ -27,17 +27,17 @@ def test_init_writes_config_noninteractive(fake_home, tmp_path):
     assert not (fake_home / ".config").exists()
 
 
-def test_init_with_btt_preset_flag(fake_home, tmp_path):
+def test_init_with_btt_presets_flag(fake_home, tmp_path):
     target = tmp_path / "myconfigs"
     rc = main([
         "init", "--dir", str(target),
         "--apps", "bettertouchtool",
-        "--btt-preset", "MyPreset",
+        "--btt-presets", "MyPreset,Other",
         "--yes",
     ])
     assert rc == 0
     cfg_text = (target / "dotsync.toml").read_text()
-    assert "MyPreset" in cfg_text
+    assert 'bettertouchtool_presets = ["MyPreset", "Other"]' in cfg_text
 
 
 def test_config_show(fake_home, monkeypatch, tmp_path, capsys):
@@ -198,58 +198,65 @@ def test_init_yes_existing_toml_with_explicit_overrides(fake_home, tmp_path):
     rc = main([
         "init", "--dir", str(target),
         "--apps", "zsh,ghostty",
-        "--btt-preset", "New",
+        "--btt-presets", "New",
         "--yes",
     ])
     assert rc == 0
     cfg_text = (target / "dotsync.toml").read_text()
     assert "zsh" in cfg_text and "ghostty" in cfg_text
     assert "claude" not in cfg_text  # overridden
-    assert "New" in cfg_text
+    assert 'bettertouchtool_presets = ["New"]' in cfg_text
 
 
-def test_init_interactive_uses_detected_default_on_enter(fake_home, tmp_path, monkeypatch):
+def test_init_interactive_picker_keeps_detected_on_bare_enter(fake_home, tmp_path, monkeypatch):
+    """In non-TTY (pytest) the picker falls back to per-app y/n with each
+    detected app pre-defaulted to Y. Bare Enter on every row therefore
+    keeps the detected set."""
     (fake_home / ".zshrc").write_text("X")
     (fake_home / ".claude").mkdir()
     (fake_home / ".claude" / "settings.json").write_text("{}")
     _no_btt(monkeypatch, fake_home)
 
     target = tmp_path / "i"
-    answers = iter([str(target), ""])  # folder path, Enter on "Track all?"
+    # folder + 4 picker fallback answers (sorted: bettertouchtool, claude,
+    # ghostty, zsh). Bare Enter keeps each row's default.
+    answers = iter([str(target), "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     rc = main(["init"])
     assert rc == 0
     cfg_text = (target / "dotsync.toml").read_text()
-    assert "zsh" in cfg_text
-    assert "claude" in cfg_text
+    assert '"zsh"' in cfg_text
+    assert '"claude"' in cfg_text
+    assert '"ghostty"' not in cfg_text
+    assert '"bettertouchtool"' not in cfg_text
 
 
-def test_init_interactive_edit_lets_user_pick_apps(fake_home, tmp_path, monkeypatch):
-    """edit branch: in non-TTY (pytest) the picker falls back to per-app
-    y/n. The user keeps ghostty and zsh, drops claude and bettertouchtool."""
+def test_init_interactive_picker_lets_user_change_selection(fake_home, tmp_path, monkeypatch):
+    """The picker (fallback mode under pytest) lets the user toggle off
+    a preselected app and toggle on an undetected one."""
     (fake_home / ".zshrc").write_text("X")
     _no_btt(monkeypatch, fake_home)
 
     target = tmp_path / "i"
-    # Folder, then "edit", then four per-app fallback answers (sorted order:
-    # bettertouchtool, claude, ghostty, zsh).
-    answers = iter([str(target), "edit", "n", "n", "y", "y"])
+    # folder + per-app y/n in sorted order: bettertouchtool, claude, ghostty, zsh.
+    # Default is N for unselected items, Y for the preselected zsh.
+    # User picks ghostty (toggle on) + zsh (default), drops everything else.
+    answers = iter([str(target), "n", "n", "y", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     rc = main(["init"])
     assert rc == 0
     cfg_text = (target / "dotsync.toml").read_text()
-    assert "ghostty" in cfg_text
-    assert "zsh" in cfg_text
-    # The apps array shouldn't contain claude/bettertouchtool. We check for
-    # the quoted form so we don't collide with `bettertouchtool_preset` in
-    # the [options] section, which is always written.
+    assert '"ghostty"' in cfg_text
+    assert '"zsh"' in cfg_text
     assert '"claude"' not in cfg_text
     assert '"bettertouchtool"' not in cfg_text
 
 
-def test_init_prints_how_to_change_hint(fake_home, tmp_path, monkeypatch, capsys):
+def test_init_prints_next_steps_with_apps_command_hint(fake_home, tmp_path, monkeypatch, capsys):
+    """The next-steps block points users at `dotsync apps` for ongoing
+    changes (the previous `dotsync config apps` was removed)."""
     (fake_home / ".zshrc").write_text("X")
     _no_btt(monkeypatch, fake_home)
     target = tmp_path / "h"
@@ -257,7 +264,9 @@ def test_init_prints_how_to_change_hint(fake_home, tmp_path, monkeypatch, capsys
     assert rc == 0
     out = capsys.readouterr().out
     assert "DOTSYNC_DIR" in out
-    assert "dotsync config apps" in out
+    assert "dotsync apps" in out
+    assert "dotsync from --all" in out
+    assert "dotsync to --all" in out
 
 
 def test_init_shows_welcome_by_default(fake_home, tmp_path, monkeypatch, capsys):
@@ -304,8 +313,8 @@ def test_init_interactive_default_dir_on_empty_input(fake_home, monkeypatch):
     _no_btt(monkeypatch, fake_home)
     (fake_home / ".zshrc").write_text("X")
 
-    # user just hits Enter for the dir prompt, then Enter for "Track all?"
-    answers = iter(["", ""])
+    # bare Enter for the dir prompt + 4 picker fallback answers (Enter on each)
+    answers = iter(["", "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     rc = main(["init"])
@@ -319,7 +328,8 @@ def test_init_interactive_custom_dir_overrides_default(fake_home, monkeypatch, t
     (fake_home / ".zshrc").write_text("X")
     custom = tmp_path / "elsewhere"
 
-    answers = iter([str(custom), ""])  # custom path, then Enter for "Track all?"
+    # custom path + 4 picker fallback answers (Enter on each)
+    answers = iter([str(custom), "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     rc = main(["init"])
@@ -472,132 +482,52 @@ def test_init_no_hints_also_suppresses_adopt_branch_hints(fake_home, tmp_path, c
     assert "adopted existing config" in out
 
 
-def test_init_interactive_explains_edit_option(fake_home, tmp_path, monkeypatch, capsys):
-    """The 'Track all of these?' prompt must include a dim hint that names
-    what each of y/n/edit does, so first-time users don't have to guess."""
+def test_init_step_headers_visible(fake_home, tmp_path, monkeypatch, capsys):
+    """The init flow surfaces explicit step headers so the user knows where
+    they are in the wizard."""
     monkeypatch.setenv("NO_COLOR", "1")
     (fake_home / ".zshrc").write_text("X")
     _no_btt(monkeypatch, fake_home)
 
     target = tmp_path / "i"
-    answers = iter([str(target), "y"])  # folder, then accept default
+    answers = iter([str(target), "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     rc = main(["init"])
     assert rc == 0
     out = capsys.readouterr().out
-    # The hint must explicitly describe the 'edit' choice.
-    assert "edit" in out and "pick" in out.lower()
+    assert "Step 1 — Sync folder" in out
+    assert "Step 2 — Pick apps to track" in out
+    assert "folder ready" in out
+    assert "tracked:" in out
 
 
-def test_apps_shows_tracked_and_installed_status(fake_home, monkeypatch, tmp_path, capsys):
-    """`dotsync apps` reports each supported app's (tracked, installed) state
-    so users can see what they manage and what their machine has."""
-    monkeypatch.setenv("NO_COLOR", "1")
-    target = tmp_path / "configs"
-    target.mkdir()
-    save_config(Config(dir=target, apps=["zsh", "claude"]))
-    monkeypatch.setenv("DOTSYNC_DIR", str(target))
-
-    # Locally: zsh installed, claude not, ghostty/btt not
-    (fake_home / ".zshrc").write_text("X")
-    _no_btt(monkeypatch, fake_home)
-
-    rc = main(["apps"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    # zsh is both tracked and installed (the canonical "all good" row)
-    assert "zsh" in out
-    # the words tracked AND installed both appear somewhere
-    assert "tracked" in out
-    assert "installed" in out
-    # claude is tracked but not present locally — must be flagged
-    assert "claude" in out
-    assert "not installed" in out
-
-
-def test_apps_works_without_config(fake_home, monkeypatch, tmp_path, capsys):
-    """`dotsync apps` should still work when dotsync isn't initialized —
-    just shows the catalog with installed status and tracked = none."""
-    monkeypatch.setenv("NO_COLOR", "1")
-    monkeypatch.chdir(tmp_path)  # cwd has no dotsync.toml, no DOTSYNC_DIR
-    (fake_home / ".zshrc").write_text("X")
-    _no_btt(monkeypatch, fake_home)
-
-    rc = main(["apps"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    # Doesn't crash on missing config; still lists apps and zsh's install status
-    assert "zsh" in out
-    assert "installed" in out
-
-
-def test_apps_edit_updates_config_via_picker(fake_home, monkeypatch, tmp_path):
-    """Picker (in fallback mode under pytest) lets the user track a new
-    set of apps. Sorted order: bettertouchtool, claude, ghostty, zsh."""
+def test_apps_lets_user_change_tracked_set_via_picker(fake_home, monkeypatch, tmp_path):
+    """`dotsync apps` runs the same picker as init Step 2. Under pytest
+    (non-TTY) the picker falls back to per-app y/n in sorted order:
+    bettertouchtool, claude, ghostty, zsh."""
     target = tmp_path / "configs"
     target.mkdir()
     save_config(Config(dir=target, apps=["zsh"]))
     monkeypatch.setenv("DOTSYNC_DIR", str(target))
+    _no_btt(monkeypatch, fake_home)
 
-    # btt=n, claude=y, ghostty=n, zsh=y (default Y because preselected)
+    # btt=n, claude=y (toggle on), ghostty=n, zsh=Enter (preselected → keeps Y)
     answers = iter(["n", "y", "n", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
-    rc = main(["apps", "edit"])
+    rc = main(["apps"])
     assert rc == 0
     cfg_text = (target / "dotsync.toml").read_text()
-    assert "claude" in cfg_text
-    assert "zsh" in cfg_text
-    # Negative checks use quoted form: `bettertouchtool_preset` always
-    # appears in [options], so the bare substring would falsely match.
+    assert '"claude"' in cfg_text
+    assert '"zsh"' in cfg_text
     assert '"ghostty"' not in cfg_text
     assert '"bettertouchtool"' not in cfg_text
 
 
-def test_apps_edit_keeps_defaults_when_user_just_hits_enter(fake_home, monkeypatch, tmp_path):
-    """Bare Enter on every fallback prompt accepts the current set."""
-    target = tmp_path / "configs"
-    target.mkdir()
-    save_config(Config(dir=target, apps=["zsh", "claude"]))
-    monkeypatch.setenv("DOTSYNC_DIR", str(target))
-
-    answers = iter(["", "", "", ""])  # accept default for all 4
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
-
-    rc = main(["apps", "edit"])
-    assert rc == 0
-    cfg_text = (target / "dotsync.toml").read_text()
-    assert "zsh" in cfg_text
-    assert "claude" in cfg_text
-
-
-def test_apps_edit_cancel_keeps_current(fake_home, monkeypatch, tmp_path, capsys):
-    """When the picker returns None (cancel), config is unchanged and
-    a 'cancelled' notice is shown."""
-    target = tmp_path / "configs"
-    target.mkdir()
-    save_config(Config(dir=target, apps=["zsh", "claude"]))
-    monkeypatch.setenv("DOTSYNC_DIR", str(target))
-
-    # Force pick_apps to return None to simulate cancel (fallback can't
-    # cancel — it only ever returns a list — so we patch directly).
-    monkeypatch.setattr(
-        "dotsync.ui_picker.pick_apps",
-        lambda items, preselected, title="Pick apps to track": None,
-    )
-
-    rc = main(["apps", "edit"])
-    assert rc == 0
-    cfg_text = (target / "dotsync.toml").read_text()
-    # Untouched
-    assert "zsh" in cfg_text
-    assert "claude" in cfg_text
-
-
-def test_apps_edit_no_change_is_silent_noop(fake_home, monkeypatch, tmp_path, capsys):
-    """If picker returns the same list as already saved, config file is
-    not rewritten."""
+def test_apps_no_change_when_user_keeps_current_set(fake_home, monkeypatch, tmp_path):
+    """If the picker returns the same set as the saved config, nothing
+    is rewritten and a 'no change' line is shown."""
     target = tmp_path / "configs"
     target.mkdir()
     save_config(Config(dir=target, apps=["claude", "zsh"]))
@@ -607,43 +537,80 @@ def test_apps_edit_no_change_is_silent_noop(fake_home, monkeypatch, tmp_path, ca
 
     monkeypatch.setattr(
         "dotsync.ui_picker.pick_apps",
-        lambda items, preselected, title="Pick apps to track": ["claude", "zsh"],
+        lambda items, preselected, detected, **kw: ["claude", "zsh"],
     )
 
-    rc = main(["apps", "edit"])
+    rc = main(["apps"])
     assert rc == 0
     mtime_after = (target / "dotsync.toml").stat().st_mtime_ns
-    assert mtime_before == mtime_after  # file untouched
+    assert mtime_before == mtime_after
 
 
-def test_apps_edit_no_change_when_existing_order_differs(fake_home, monkeypatch, tmp_path):
-    """The picker returns sorted order; the saved config may not be sorted.
-    Same set in different order is still a no-op — don't rewrite the file."""
+def test_apps_cancel_keeps_current_config(fake_home, monkeypatch, tmp_path, capsys):
+    """Cancelling the picker leaves the saved config untouched and prints
+    a quiet 'cancelled' marker."""
+    monkeypatch.setenv("NO_COLOR", "1")
     target = tmp_path / "configs"
     target.mkdir()
-    # Saved order is reverse-alpha; picker will hand back sorted-alpha.
     save_config(Config(dir=target, apps=["zsh", "claude"]))
     monkeypatch.setenv("DOTSYNC_DIR", str(target))
 
-    mtime_before = (target / "dotsync.toml").stat().st_mtime_ns
-
     monkeypatch.setattr(
         "dotsync.ui_picker.pick_apps",
-        lambda items, preselected, title="Pick apps to track": ["claude", "zsh"],
+        lambda items, preselected, detected, **kw: None,
     )
 
-    rc = main(["apps", "edit"])
+    rc = main(["apps"])
     assert rc == 0
-    mtime_after = (target / "dotsync.toml").stat().st_mtime_ns
-    assert mtime_before == mtime_after  # file untouched — same set, different order
+    cfg_text = (target / "dotsync.toml").read_text()
+    assert '"zsh"' in cfg_text
+    assert '"claude"' in cfg_text
+    out = capsys.readouterr().out
+    assert "cancelled" in out
+
+
+def test_apps_toggle_on_btt_auto_discovers_presets(fake_home, monkeypatch, tmp_path):
+    """Adding BTT to the tracked set re-runs preset discovery so the saved
+    list reflects the current BTT state — the user doesn't have to remember
+    a separate `dotsync config btt-presets` step."""
+    target = tmp_path / "configs"
+    target.mkdir()
+    save_config(Config(dir=target, apps=["zsh"], bettertouchtool_presets=["Old"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+
+    monkeypatch.setattr(
+        "dotsync.apps.bettertouchtool.BetterTouchToolApp.discover_preset_names",
+        classmethod(lambda cls: ["Master_bt", "Travel"]),
+    )
+    monkeypatch.setattr(
+        "dotsync.ui_picker.pick_apps",
+        lambda items, preselected, detected, **kw: ["bettertouchtool", "zsh"],
+    )
+
+    rc = main(["apps"])
+    assert rc == 0
+    cfg_text = (target / "dotsync.toml").read_text()
+    assert 'bettertouchtool_presets = ["Master_bt", "Travel"]' in cfg_text
+    assert '"bettertouchtool"' in cfg_text
+
+
+def test_apps_requires_initialized_config(fake_home, monkeypatch, tmp_path, capsys):
+    """`dotsync apps` edits an existing tracked set, so it requires init
+    to have run first. Without a config it fails the same way other
+    config-needing commands do (the user is pointed back at `dotsync init`)."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.chdir(tmp_path)  # no DOTSYNC_DIR, no dotsync.toml in cwd
+    rc = main(["apps"])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "dotsync init" in err or "DOTSYNC_DIR" in err
 
 
 def test_init_btt_auto_uses_single_discovered_preset(fake_home, tmp_path, monkeypatch, capsys):
     """When BTT discovery returns exactly 1 preset, init uses it without
-    prompting — the user sees a confirmation, not a question."""
+    prompting — the user sees a confirmation."""
     monkeypatch.setenv("NO_COLOR", "1")
     (fake_home / ".zshrc").write_text("X")
-    # Mark BTT as locally installed so init's app detection picks it up
     bttapp = fake_home / "Applications" / "BetterTouchTool.app"
     bttapp.mkdir(parents=True)
     monkeypatch.setattr(
@@ -655,22 +622,23 @@ def test_init_btt_auto_uses_single_discovered_preset(fake_home, tmp_path, monkey
     )
 
     target = tmp_path / "i"
-    answers = iter([str(target), "y"])  # folder, then accept detected apps
+    # folder + 4 picker fallback Enters (preselected: bettertouchtool, zsh)
+    answers = iter([str(target), "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     rc = main(["init"])
     assert rc == 0
     out = capsys.readouterr().out
     cfg_text = (target / "dotsync.toml").read_text()
-    assert 'bettertouchtool_preset = "Master_bt"' in cfg_text
-    # Confirmation visible — and the "BetterTouchTool preset name" prompt is NOT shown
+    assert 'bettertouchtool_presets = ["Master_bt"]' in cfg_text
     assert "Master_bt" in out
+    # The legacy single-preset prompt must not appear under the new flow
     assert "BetterTouchTool preset name" not in out
+    assert "which preset to track" not in out
 
 
-def test_init_btt_asks_when_multiple_discovered(fake_home, tmp_path, monkeypatch, capsys):
-    """Multiple presets → list is shown, prompt asks for one of them, the
-    user-typed name is accepted if it matches."""
+def test_init_btt_auto_tracks_every_discovered_preset(fake_home, tmp_path, monkeypatch, capsys):
+    """Multiple presets → all of them tracked automatically. No prompt."""
     monkeypatch.setenv("NO_COLOR", "1")
     (fake_home / ".zshrc").write_text("X")
     bttapp = fake_home / "Applications" / "BetterTouchTool.app"
@@ -684,71 +652,21 @@ def test_init_btt_asks_when_multiple_discovered(fake_home, tmp_path, monkeypatch
     )
 
     target = tmp_path / "i"
-    # folder, accept detected apps, pick "Work"
-    answers = iter([str(target), "y", "Work"])
+    answers = iter([str(target), "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     rc = main(["init"])
     assert rc == 0
     out = capsys.readouterr().out
     cfg_text = (target / "dotsync.toml").read_text()
-    assert 'bettertouchtool_preset = "Work"' in cfg_text
-    # All three names are shown to the user
+    assert 'bettertouchtool_presets = ["Master_bt", "Travel", "Work"]' in cfg_text
     assert "Master_bt" in out and "Travel" in out and "Work" in out
+    assert "which preset to track" not in out
 
 
-def test_init_btt_multi_rejects_unknown_name(fake_home, tmp_path, monkeypatch, capsys):
-    """If the user types a name that isn't in the discovered list, we
-    error out — no silent acceptance."""
-    monkeypatch.setenv("NO_COLOR", "1")
-    (fake_home / ".zshrc").write_text("X")
-    bttapp = fake_home / "Applications" / "BetterTouchTool.app"
-    bttapp.mkdir(parents=True)
-    monkeypatch.setattr(
-        "dotsync.apps.bettertouchtool.BetterTouchToolApp.APP_PATH", bttapp
-    )
-    monkeypatch.setattr(
-        "dotsync.apps.bettertouchtool.BetterTouchToolApp.discover_preset_names",
-        classmethod(lambda cls: ["Master_bt", "Travel"]),
-    )
-
-    target = tmp_path / "i"
-    answers = iter([str(target), "y", "DoesNotExist"])
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
-
-    rc = main(["init"])
-    assert rc == 2
-    err = capsys.readouterr().err
-    assert "DoesNotExist" in err
-    assert "unknown preset" in err
-
-
-def test_init_btt_multi_empty_input_uses_first(fake_home, tmp_path, monkeypatch):
-    """Bare Enter at the multi prompt accepts the first listed preset."""
-    (fake_home / ".zshrc").write_text("X")
-    bttapp = fake_home / "Applications" / "BetterTouchTool.app"
-    bttapp.mkdir(parents=True)
-    monkeypatch.setattr(
-        "dotsync.apps.bettertouchtool.BetterTouchToolApp.APP_PATH", bttapp
-    )
-    monkeypatch.setattr(
-        "dotsync.apps.bettertouchtool.BetterTouchToolApp.discover_preset_names",
-        classmethod(lambda cls: ["AAA_first", "ZZZ_last"]),
-    )
-
-    target = tmp_path / "i"
-    answers = iter([str(target), "y", ""])  # bare Enter at preset prompt
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
-
-    rc = main(["init"])
-    assert rc == 0
-    cfg_text = (target / "dotsync.toml").read_text()
-    assert 'bettertouchtool_preset = "AAA_first"' in cfg_text
-
-
-def test_init_btt_falls_back_when_discovery_empty(fake_home, tmp_path, monkeypatch, capsys):
+def test_init_btt_falls_back_to_default_when_discovery_empty(fake_home, tmp_path, monkeypatch):
     """No presets discovered (BTT not running, schema drift, etc.) →
-    legacy behavior: prompt with DEFAULT_BTT_PRESET as default."""
+    DEFAULT_BTT_PRESETS used silently. No prompt under the new flow."""
     (fake_home / ".zshrc").write_text("X")
     bttapp = fake_home / "Applications" / "BetterTouchTool.app"
     bttapp.mkdir(parents=True)
@@ -761,17 +679,17 @@ def test_init_btt_falls_back_when_discovery_empty(fake_home, tmp_path, monkeypat
     )
 
     target = tmp_path / "i"
-    answers = iter([str(target), "y", "MyName"])  # folder, apps, preset name
+    answers = iter([str(target), "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     rc = main(["init"])
     assert rc == 0
     cfg_text = (target / "dotsync.toml").read_text()
-    assert 'bettertouchtool_preset = "MyName"' in cfg_text
+    assert 'bettertouchtool_presets = ["Master_bt"]' in cfg_text
 
 
-def test_init_btt_explicit_flag_skips_discovery(fake_home, tmp_path, monkeypatch):
-    """--btt-preset X always wins, even when discovery would return
+def test_init_btt_presets_flag_skips_discovery(fake_home, tmp_path, monkeypatch):
+    """--btt-presets X,Y always wins, even when discovery would return
     different names. No discovery call is needed."""
     (fake_home / ".zshrc").write_text("X")
     bttapp = fake_home / "Applications" / "BetterTouchTool.app"
@@ -781,23 +699,22 @@ def test_init_btt_explicit_flag_skips_discovery(fake_home, tmp_path, monkeypatch
     )
 
     def boom(cls):
-        raise AssertionError("discover_preset_names must not be called when --btt-preset is set")
+        raise AssertionError("discover_preset_names must not be called when --btt-presets is set")
     monkeypatch.setattr(
         "dotsync.apps.bettertouchtool.BetterTouchToolApp.discover_preset_names",
         classmethod(boom),
     )
 
     target = tmp_path / "i"
-    rc = main(["init", "--dir", str(target), "--yes", "--btt-preset", "Forced"])
+    rc = main(["init", "--dir", str(target), "--yes", "--btt-presets", "Forced,Other"])
     assert rc == 0
     cfg_text = (target / "dotsync.toml").read_text()
-    assert 'bettertouchtool_preset = "Forced"' in cfg_text
+    assert 'bettertouchtool_presets = ["Forced", "Other"]' in cfg_text
 
 
 def test_init_btt_yes_without_flag_uses_default_skips_discovery(fake_home, tmp_path, monkeypatch):
-    """--yes without --btt-preset must not consult discovery; DEFAULT_BTT_PRESET wins.
-    This pins the deliberate choice that --yes mode is deterministic regardless of
-    what BTT happens to have configured on the machine."""
+    """--yes without --btt-presets must not consult discovery; DEFAULT_BTT_PRESETS wins.
+    --yes mode is deterministic regardless of what BTT happens to have on the machine."""
     (fake_home / ".zshrc").write_text("X")
     bttapp = fake_home / "Applications" / "BetterTouchTool.app"
     bttapp.mkdir(parents=True)
@@ -814,4 +731,4 @@ def test_init_btt_yes_without_flag_uses_default_skips_discovery(fake_home, tmp_p
     rc = main(["init", "--dir", str(target), "--yes"])
     assert rc == 0
     cfg_text = (target / "dotsync.toml").read_text()
-    assert 'bettertouchtool_preset = "Master_bt"' in cfg_text
+    assert 'bettertouchtool_presets = ["Master_bt"]' in cfg_text

@@ -79,6 +79,42 @@ def test_format_summary_shows_count_and_duration():
     assert "╭" in out and "╰" in out
 
 
+def test_format_summary_lists_synced_apps(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    out = ui.format_summary(
+        ok=3, warn=0, error=0, duration_ms=2300,
+        synced=["claude", "ghostty", "zsh"],
+    )
+    assert "synced" in out
+    assert "claude" in out and "ghostty" in out and "zsh" in out
+
+
+def test_format_summary_separates_applied_and_unchanged(monkeypatch):
+    """For `dotsync to`, the summary distinguishes apps that actually
+    changed (applied) from apps that were already in sync (unchanged)."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    out = ui.format_summary(
+        ok=4, warn=0, error=0, duration_ms=3100,
+        applied=["ghostty", "bettertouchtool"],
+        unchanged=["claude", "zsh"],
+    )
+    assert "applied" in out
+    assert "ghostty" in out and "bettertouchtool" in out
+    assert "unchanged" in out
+    assert "claude" in out and "zsh" in out
+
+
+def test_format_summary_lists_failed_apps(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    out = ui.format_summary(
+        ok=2, warn=0, error=1, duration_ms=1100,
+        synced=["claude", "zsh"],
+        failed=["bettertouchtool"],
+    )
+    assert "failed" in out
+    assert "bettertouchtool" in out
+
+
 def test_format_divider_with_label():
     out = ui.format_divider("restore")
     assert "restore" in out
@@ -101,6 +137,22 @@ def test_format_ask_with_default_renders_brackets():
     out = ui.format_ask("sync folder", "/tmp/default")
     assert "/tmp/default" in out
     assert "[" in out and "]" in out
+
+
+def test_format_ask_warn_accent_uses_yellow(monkeypatch):
+    """Destructive prompts (e.g. apply changes) use a yellow accent so
+    they read as a warning, not a routine question."""
+    monkeypatch.setattr("dotsync.ui._color_enabled", lambda: True)
+    out = ui.format_ask("Apply these changes?", default="y/N", accent="warn")
+    assert "Apply these changes?" in out
+    assert ui.YELLOW in out
+
+
+def test_format_ask_default_accent_uses_primary(monkeypatch):
+    monkeypatch.setattr("dotsync.ui._color_enabled", lambda: True)
+    out = ui.format_ask("sync folder", default="x")
+    assert ui.PRIMARY in out
+    assert ui.YELLOW not in out
 
 
 def test_format_status_line_clean(monkeypatch):

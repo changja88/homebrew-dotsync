@@ -168,28 +168,71 @@ def format_divider(label: str = "") -> str:
     return f"  {_wrap(DIM_ANSI, bar)} {label} {_wrap(DIM_ANSI, GLYPH_HORIZ * 40)}"
 
 
-def format_ask(question: str, default: str = "") -> str:
+def format_ask(question: str, default: str = "", *, accent: str = "primary") -> str:
     """A high-visibility input prompt: `? question [default] › `
 
-    Use for any line that requires user action — much more legible than a dim
-    one-color prompt.
+    `accent="primary"` (default) renders the prompt in the brand purple — used
+    for routine questions. `accent="warn"` renders it in yellow + bold,
+    reserved for destructive confirmations (e.g. `dotsync to`'s "Apply?")
+    so the user can tell at a glance that the next keystroke matters.
     """
-    bullet = _wrap(PRIMARY, _wrap(BOLD, "?"))
-    arrow = _wrap(PRIMARY, "›")
+    color = YELLOW if accent == "warn" else PRIMARY
+    bullet = _wrap(color, _wrap(BOLD, "?"))
+    arrow = _wrap(color, "›")
     if default:
         return f"{bullet} {question} {_wrap(DIM_ANSI, '[' + default + ']')} {arrow} "
     return f"{bullet} {question} {arrow} "
 
 
-def ask(question: str, default: str = "") -> str:
+def ask(question: str, default: str = "", *, accent: str = "primary") -> str:
     """Side-effect: render an accented prompt and return stripped user input."""
-    return input(format_ask(question, default)).strip()
+    return input(format_ask(question, default, accent=accent)).strip()
 
 
-def format_summary(*, ok: int = 0, warn: int = 0, error: int = 0, duration_ms: int = 0) -> str:
-    """Bottom rounded box with counts + elapsed time."""
+def format_summary(
+    *,
+    ok: int = 0,
+    warn: int = 0,
+    error: int = 0,
+    duration_ms: int = 0,
+    synced: "list[str] | None" = None,
+    applied: "list[str] | None" = None,
+    unchanged: "list[str] | None" = None,
+    failed: "list[str] | None" = None,
+) -> str:
+    """Bottom rounded box: per-app result lines + counts + elapsed time.
+
+    Per-app lines are optional — pass them to make the user-facing
+    summary concrete. Use ``synced`` for `dotsync from`, and the pair
+    ``applied``/``unchanged`` for `dotsync to` (which distinguishes apps
+    that actually changed from apps that were already in sync).
+    ``failed`` lists apps whose sync raised, regardless of direction.
+    """
     width = BOX_WIDTH
     duration = f"{duration_ms / 1000:.1f}s"
+
+    body_lines: list[str] = []
+    if synced:
+        body_lines.append(
+            f"{_wrap(GREEN, GLYPH_OK)} synced     "
+            f"{_wrap(DIM_ANSI, ' · '.join(synced))}"
+        )
+    if applied:
+        body_lines.append(
+            f"{_wrap(GREEN, GLYPH_OK)} applied    "
+            f"{_wrap(DIM_ANSI, ' · '.join(applied))}"
+        )
+    if unchanged:
+        body_lines.append(
+            f"{_wrap(DIM_ANSI, GLYPH_DIM)} unchanged  "
+            f"{_wrap(DIM_ANSI, ' · '.join(unchanged))}"
+        )
+    if failed:
+        body_lines.append(
+            f"{_wrap(RED, GLYPH_ERROR)} failed     "
+            f"{_wrap(DIM_ANSI, ' · '.join(failed))}"
+        )
+
     parts = [
         f"{_wrap(GREEN, str(ok))} ok",
         f"{_wrap(YELLOW, str(warn))} warn",
@@ -197,10 +240,11 @@ def format_summary(*, ok: int = 0, warn: int = 0, error: int = 0, duration_ms: i
         _wrap(DIM_ANSI, duration),
     ]
     sep = _wrap(DIM_ANSI, "  ·  ")
-    body = sep.join(parts)
+    body_lines.append(sep.join(parts))
+
     return "\n".join([
         _box_top(width),
-        _box_line(body, width),
+        *(_box_line(line, width) for line in body_lines),
         _box_bottom(width),
     ])
 
@@ -273,5 +317,18 @@ def divider(label: str = "") -> None:
     print(format_divider(label))
 
 
-def summary(*, ok: int = 0, warn: int = 0, error: int = 0, duration_ms: int = 0) -> None:
-    print(format_summary(ok=ok, warn=warn, error=error, duration_ms=duration_ms))
+def summary(
+    *,
+    ok: int = 0,
+    warn: int = 0,
+    error: int = 0,
+    duration_ms: int = 0,
+    synced: "list[str] | None" = None,
+    applied: "list[str] | None" = None,
+    unchanged: "list[str] | None" = None,
+    failed: "list[str] | None" = None,
+) -> None:
+    print(format_summary(
+        ok=ok, warn=warn, error=error, duration_ms=duration_ms,
+        synced=synced, applied=applied, unchanged=unchanged, failed=failed,
+    ))
