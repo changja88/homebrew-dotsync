@@ -44,6 +44,12 @@ class BetterTouchToolApp(App):
 
     @classmethod
     def from_config(cls, cfg) -> "BetterTouchToolApp":
+        # Precedence: new app_options namespace > legacy bettertouchtool_presets field.
+        # The legacy field is preserved for one release cycle so existing dotsync.toml
+        # files keep working until users save through the new code path.
+        opts = cfg.app_options.get(cls.name, {}) if hasattr(cfg, "app_options") else {}
+        if "presets" in opts:
+            return cls(presets=list(opts["presets"]))
         return cls(presets=cfg.bettertouchtool_presets)
 
     @classmethod

@@ -522,3 +522,32 @@ def test_btt_from_config_falls_back_to_default_when_unset(tmp_path):
     cfg = Config(dir=tmp_path, apps=[])  # bettertouchtool_presets defaults
     app = BetterTouchToolApp.from_config(cfg)
     assert app.presets == list(DEFAULT_BTT_PRESETS)
+
+
+def test_btt_from_config_reads_app_options(tmp_path):
+    """BTT prefers app_options['bettertouchtool']['presets'] when present."""
+    from dotsync.apps.bettertouchtool import BetterTouchToolApp
+    from dotsync.config import Config
+
+    cfg = Config(
+        dir=tmp_path,
+        apps=["bettertouchtool"],
+        app_options={"bettertouchtool": {"presets": ["FromOptions1", "FromOptions2"]}},
+    )
+    app = BetterTouchToolApp.from_config(cfg)
+    assert app.presets == ["FromOptions1", "FromOptions2"]
+
+
+def test_btt_from_config_falls_back_to_legacy_field_when_app_options_empty(tmp_path):
+    """Existing dotsync.toml with bettertouchtool_presets only (no [options.bettertouchtool])
+    must keep working without manual migration."""
+    from dotsync.apps.bettertouchtool import BetterTouchToolApp
+    from dotsync.config import Config
+
+    cfg = Config(
+        dir=tmp_path,
+        apps=["bettertouchtool"],
+        bettertouchtool_presets=["Legacy"],  # no app_options
+    )
+    app = BetterTouchToolApp.from_config(cfg)
+    assert app.presets == ["Legacy"]
