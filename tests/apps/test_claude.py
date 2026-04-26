@@ -233,3 +233,35 @@ def test_is_present_locally_true_when_claude_dir_exists(fake_home):
 
 def test_is_present_locally_false_when_no_claude_dir(fake_home):
     assert ClaudeApp.is_present_locally() is False
+
+
+def test_sync_to_tolerates_v1_plugin_entries_dict(fake_home, tmp_path):
+    """Sync folders saved before the v2 schema may have plugins values that are
+    dicts (single entry) rather than lists. sync_to must not crash, and must
+    treat such plugins as 'no installPath provided' so the install path runs."""
+    _make_local(fake_home)
+    target = tmp_path / "configs"
+    cdir = target / "claude"
+    (cdir / "plugins").mkdir(parents=True)
+    (cdir / "settings.json").write_text("{}")
+    (cdir / "mcp-servers.json").write_text("{}")
+    (cdir / "plugins" / "installed_plugins.json").write_text(json.dumps({
+        "version": 1,
+        "plugins": {"legacy@official": {"installPath": "/p/legacy/1.0.0"}},  # v1: value is dict, not list
+    }))
+    (cdir / "plugins" / "known_marketplaces.json").write_text(json.dumps({
+        "official": {"source": {"source": "github", "repo": "anthropics/sp"}}
+    }))
+    backup = tmp_path / "backup"; backup.mkdir()
+
+    with patch("dotsync.apps.claude.subprocess.run") as run:
+        run.return_value.returncode = 0
+        run.return_value.stdout = ""
+        run.return_value.stderr = ""
+        ClaudeApp().sync_to(target, backup)  # must not raise
+
+    cmds = [" ".join(c.args[0]) for c in run.call_args_list]
+    # marketplace add still happens; plugin install also runs because we
+    # cannot read installPath out of a non-list value.
+    assert any("marketplace add --scope user anthropics/sp" in c for c in cmds)
+    assert any("plugin install --scope user legacy@official" in c for c in cmds)
