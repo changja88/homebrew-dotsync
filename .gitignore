@@ -88,3 +88,6 @@ docs/
 # --- dotsync's own dogfooding (keep developer's local sync state out of git)
 dotsync.toml
 .backups/
+
+# --- uv lockfile (project is stdlib-only; lock has no real content) -----
+uv.lock
