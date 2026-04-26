@@ -311,3 +311,28 @@ def test_sync_to_treats_string_false_as_truthy_in_enabled_plugins(fake_home, tmp
     # Real bool False → disabled. String "false" (truthy) → not disabled.
     assert any("real-bool@mp" in c for c in disable_cmds)
     assert not any("truthy-str@mp" in c for c in disable_cmds)
+
+
+def test_sync_to_warns_instead_of_raising_when_claude_cli_missing(fake_home, tmp_path):
+    """When `claude` is not in PATH, plugin restoration is skipped with a
+    warning — settings.json copy must still complete."""
+    _make_local(fake_home)
+    target = tmp_path / "configs"
+    cdir = target / "claude"
+    (cdir / "plugins").mkdir(parents=True)
+    (cdir / "settings.json").write_text(json.dumps({"theme": "x"}))
+    (cdir / "mcp-servers.json").write_text("{}")
+    (cdir / "plugins" / "installed_plugins.json").write_text(json.dumps({
+        "version": 2, "plugins": {"sp@official": [_plugin_entry("/nope")]}
+    }))
+    (cdir / "plugins" / "known_marketplaces.json").write_text(json.dumps({
+        "official": {"source": {"source": "github", "repo": "anthropics/sp"}}
+    }))
+    backup = tmp_path / "backup"; backup.mkdir()
+
+    with patch("dotsync.apps.claude.subprocess.run", side_effect=FileNotFoundError("claude")):
+        app = ClaudeApp()
+        app.sync_to(target, backup)  # must not raise
+
+    assert (fake_home / ".claude" / "settings.json").read_text()  # got copied
+    assert any("claude" in w.lower() for w in app.warnings)
