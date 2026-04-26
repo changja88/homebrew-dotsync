@@ -60,6 +60,7 @@ class Config:
     backup_dir: Optional[Path] = None
     backup_keep: int = DEFAULT_BACKUP_KEEP
     bettertouchtool_presets: List[str] = field(default_factory=lambda: list(DEFAULT_BTT_PRESETS))
+    app_options: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.backup_dir is None:
@@ -133,6 +134,8 @@ def load_config() -> Config:
         backup_dir = default_backup_dir(folder)
     backup_keep = int(options.get("backup_keep", DEFAULT_BACKUP_KEEP))
     btt_presets = _read_btt_presets(options)
+    # tomllib materializes [options.x] as nested dict values within `options`.
+    app_options = {k: v for k, v in options.items() if isinstance(v, dict)}
 
     return Config(
         dir=folder,
@@ -140,7 +143,22 @@ def load_config() -> Config:
         backup_dir=backup_dir,
         backup_keep=backup_keep,
         bettertouchtool_presets=btt_presets,
+        app_options=app_options,
     )
+
+
+def _toml_value(v) -> str:
+    """Minimal TOML value serializer for app_options (str | int | float | bool | list of those)."""
+    if isinstance(v, bool):
+        # bool MUST come before int — bool is a subclass of int in Python.
+        return "true" if v else "false"
+    if isinstance(v, str):
+        return f'"{v}"'
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, list):
+        return "[" + ", ".join(_toml_value(x) for x in v) + "]"
+    raise TypeError(f"unsupported app_options value type: {type(v).__name__}")
 
 
 def _read_btt_presets(options: dict) -> List[str]:
@@ -183,5 +201,13 @@ def save_config(cfg: Config) -> None:
     presets_repr = ", ".join(f'"{p}"' for p in cfg.bettertouchtool_presets)
     lines.append(f"bettertouchtool_presets = [{presets_repr}]")
     lines.append("")
+
+    for app_name, opts in cfg.app_options.items():
+        if not opts:
+            continue
+        lines.append(f"[options.{app_name}]")
+        for key, val in opts.items():
+            lines.append(f"{key} = {_toml_value(val)}")
+        lines.append("")
 
     folder_config_path(cfg.dir).write_text("\n".join(lines))
