@@ -23,7 +23,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-SUPPORTED_APPS = {"claude", "ghostty", "bettertouchtool", "zsh"}
 DEFAULT_BACKUP_KEEP = 10
 # BetterTouchTool can sync multiple presets at once. The default list ships
 # with one entry to match BTT's stock starter preset; new installs without
@@ -33,6 +32,13 @@ DEFAULT_BTT_PRESETS: tuple[str, ...] = ("Master_bt",)
 ENV_VAR = "DOTSYNC_DIR"
 FOLDER_CONFIG_FILENAME = "dotsync.toml"
 DEFAULT_BACKUP_SUBDIR = ".backups"
+
+
+def supported_apps() -> set[str]:
+    """Return the set of registered app names. Lazy import keeps this module
+    importable without firing apps/__init__.py at top of file."""
+    from dotsync.apps import APP_NAMES
+    return set(APP_NAMES)
 
 
 class ConfigError(Exception):
@@ -110,10 +116,11 @@ def load_config() -> Config:
     apps = data.get("apps") or []
     if not isinstance(apps, list):
         raise ConfigError(f"`apps` must be a list, got: {type(apps).__name__}")
+    known = supported_apps()
     for app in apps:
-        if app not in SUPPORTED_APPS:
+        if app not in known:
             raise ConfigError(
-                f"unknown app `{app}` in config (supported: {sorted(SUPPORTED_APPS)})"
+                f"unknown app `{app}` in config (supported: {sorted(known)})"
             )
 
     options = data.get("options", {}) or {}

@@ -37,12 +37,6 @@ def test_build_app_bettertouchtool_uses_config_presets(tmp_path):
     assert app.presets == ["MyPreset", "Other"]
 
 
-def test_supported_apps_matches_registry():
-    """SUPPORTED_APPS in config.py and APP_NAMES here must stay in sync."""
-    from dotsync.config import SUPPORTED_APPS
-    assert SUPPORTED_APPS == set(APP_NAMES)
-
-
 def test_detect_present_returns_only_locally_installed(fake_home, monkeypatch):
     """detect_present() asks each app's is_present_locally() classmethod."""
     from dotsync.apps import detect_present

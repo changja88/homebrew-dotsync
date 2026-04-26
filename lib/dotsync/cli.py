@@ -13,12 +13,14 @@ from dotsync.config import (
     ConfigError,
     DEFAULT_BTT_PRESETS,
     ENV_VAR,
-    SUPPORTED_APPS,
     folder_config_path,
     load_config,
     save_config,
 )
 from dotsync.welcome import print_welcome
+
+# Existing call sites use this name; alias to the registry's source of truth.
+SUPPORTED_APPS = APP_NAMES
 
 
 def _build_parser() -> argparse.ArgumentParser:
