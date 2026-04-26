@@ -16,6 +16,18 @@ class AppStatus:
     direction: str = ""  # "local-newer" | "folder-newer" | "diverged" | ""
 
 
+@dataclass
+class FilePair:
+    """One (local, stored) pair an app tracks for sync.
+
+    `local` is the canonical on-machine path; `stored` is the path inside
+    target_dir/<app.name>/. `label` is what shows up in ui.sub() output.
+    """
+    local: Path
+    stored: Path
+    label: str
+
+
 def _hash(path: Path) -> str:
     h = hashlib.sha256()
     h.update(path.read_bytes())
@@ -83,6 +95,17 @@ class App(ABC):
         any app that returns False here.
         """
         return False
+
+    def tracked_files(self, target_dir: Path) -> list["FilePair"]:
+        """Declare the (local, stored) file pairs this app tracks.
+
+        Default: []. Apps with simple file-based sync override this and rely
+        on the default sync_from/sync_to/status (added in Phase 4.2); apps with
+        non-file resources (claude plugins, BTT presets) may return [] and
+        override the sync methods directly, OR mix declarative tracked_files
+        with overridden sync methods that call super().
+        """
+        return []
 
     @abstractmethod
     def sync_from(self, target_dir: Path) -> None:

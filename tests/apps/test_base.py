@@ -168,3 +168,22 @@ def test_app_from_config_default_returns_instance_with_no_args(tmp_path):
     instance = _Toy.from_config(cfg)
     assert isinstance(instance, _Toy)
     assert instance.name == "toy"
+
+
+def test_app_tracked_files_default_returns_empty(tmp_path):
+    from dotsync.apps.base import App
+
+    class _Toy(App):
+        name = "toy"
+        def sync_from(self, target_dir): pass
+        def sync_to(self, target_dir, backup_dir): pass
+
+    assert _Toy().tracked_files(tmp_path) == []
+
+
+def test_file_pair_is_a_dataclass_with_local_stored_label(tmp_path):
+    from dotsync.apps.base import FilePair
+    pair = FilePair(local=tmp_path / "a", stored=tmp_path / "b", label="x")
+    assert pair.local == tmp_path / "a"
+    assert pair.stored == tmp_path / "b"
+    assert pair.label == "x"
