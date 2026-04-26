@@ -114,6 +114,54 @@ def test_status_missing_when_one_of_many_presets_missing(tmp_path):
     assert "Mini_bt" in result.details
 
 
+def test_sync_from_waits_for_async_export(tmp_path, monkeypatch):
+    """BTT's export_preset returns 'done' before the file is on disk. sync_from
+    must poll for the file to appear instead of failing immediately."""
+    target = tmp_path / "configs"
+    target.mkdir()
+    expected = target / "bettertouchtool" / "presets" / "Master_bt.bttpreset"
+
+    def osascript_async(*args, **kwargs):
+        class R:
+            returncode = 0
+            stdout = "done"
+            stderr = ""
+        return R()
+
+    sleeps: list[float] = []
+
+    def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        if len(sleeps) == 2:
+            expected.write_text("<bttpreset/>")
+
+    monkeypatch.setattr("dotsync.apps.bettertouchtool.subprocess.run", osascript_async)
+    monkeypatch.setattr("dotsync.apps.bettertouchtool.time.sleep", fake_sleep)
+
+    BetterTouchToolApp(presets=["Master_bt"]).sync_from(target)
+    assert expected.exists()
+    assert len(sleeps) >= 1
+
+
+def test_sync_from_raises_when_export_never_appears(tmp_path, monkeypatch):
+    target = tmp_path / "configs"
+    target.mkdir()
+
+    def osascript_async(*args, **kwargs):
+        class R:
+            returncode = 0
+            stdout = "done"
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr("dotsync.apps.bettertouchtool.subprocess.run", osascript_async)
+    monkeypatch.setattr("dotsync.apps.bettertouchtool.time.sleep", lambda _s: None)
+    monkeypatch.setattr("dotsync.apps.bettertouchtool._EXPORT_WAIT_TIMEOUT", 0.05)
+
+    with pytest.raises(RuntimeError, match="not created"):
+        BetterTouchToolApp(presets=["Master_bt"]).sync_from(target)
+
+
 def test_sync_from_failure_raises(tmp_path):
     target = tmp_path / "configs"
     target.mkdir()

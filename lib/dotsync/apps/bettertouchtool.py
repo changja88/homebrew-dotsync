@@ -7,9 +7,16 @@ file layout is ``<sync>/bettertouchtool/presets/<name>.bttpreset``.
 from __future__ import annotations
 import sqlite3
 import subprocess
+import time
 from pathlib import Path
 from dotsync import ui
 from dotsync.apps.base import App, AppStatus, _hash
+
+# BTT's `export_preset` AppleScript returns "done" the moment the command is
+# accepted, but the actual file write happens asynchronously — empirically the
+# preset shows up on disk ~10–50ms later. Without polling, sync_from races
+# the export and raises "BTT export file was not created" on every run.
+_EXPORT_WAIT_TIMEOUT = 5.0
 
 
 class BetterTouchToolApp(App):
@@ -58,6 +65,17 @@ class BetterTouchToolApp(App):
     def _stored(self, target_dir: Path, preset: str) -> Path:
         return target_dir / self.name / "presets" / f"{preset}.bttpreset"
 
+    def _wait_for_export(self, path: Path, timeout: float | None = None) -> bool:
+        deadline = time.monotonic() + (timeout if timeout is not None else _EXPORT_WAIT_TIMEOUT)
+        interval = 0.02
+        while True:
+            if path.exists() and path.stat().st_size > 0:
+                return True
+            if time.monotonic() >= deadline:
+                return path.exists() and path.stat().st_size > 0
+            time.sleep(interval)
+            interval = min(interval * 1.5, 0.2)
+
     def _osascript(self, script: str) -> None:
         result = subprocess.run(
             ["osascript", "-e", script],
@@ -80,8 +98,10 @@ class BetterTouchToolApp(App):
                 f'tell application "BetterTouchTool" to export_preset '
                 f'"{preset}" outputPath "{dst}" compress false includeSettings true'
             )
+            if dst.exists():
+                dst.unlink()
             self._osascript(script)
-            if not dst.exists():
+            if not self._wait_for_export(dst):
                 raise RuntimeError(f"BTT export file was not created: {dst}")
             ui.sub(f"presets/{preset}.bttpreset")
 
@@ -109,9 +129,14 @@ class BetterTouchToolApp(App):
                 f'tell application "BetterTouchTool" to export_preset '
                 f'"{preset}" outputPath "{backup_target}" compress false includeSettings true'
             )
+            if backup_target.exists():
+                backup_target.unlink()
             try:
                 self._osascript(export_script)
-                ui.dim(f"backup → {backup_target}")
+                if self._wait_for_export(backup_target):
+                    ui.dim(f"backup → {backup_target}")
+                else:
+                    ui.warn(f"existing preset backup file did not appear for {preset} (continuing anyway)")
             except RuntimeError:
                 ui.warn(f"existing preset backup failed for {preset} (continuing anyway)")
 
@@ -153,7 +178,7 @@ class BetterTouchToolApp(App):
                         state="unknown",
                         details="BTT not running — cannot diff live preset",
                     )
-                if not live.exists():
+                if not self._wait_for_export(live):
                     return AppStatus(
                         state="unknown",
                         details="BTT export produced no file",
