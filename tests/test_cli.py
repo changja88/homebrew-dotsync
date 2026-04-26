@@ -130,7 +130,7 @@ def test_runtime_error_caught_with_friendly_exit(fake_home, monkeypatch, tmp_pat
     save_config(Config(dir=target, apps=["zsh"]))
     monkeypatch.setenv("DOTSYNC_DIR", str(target))
 
-    with patch("dotsync.apps.zsh.shutil.copy2", side_effect=RuntimeError("disk full")):
+    with patch("dotsync.apps.base.shutil.copy2", side_effect=RuntimeError("disk full")):
         rc = main(["to", "zsh", "--yes"])
     assert rc != 0
     err = capsys.readouterr().err
