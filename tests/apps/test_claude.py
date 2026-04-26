@@ -57,7 +57,9 @@ def test_sync_from_copies_all_files(fake_home, tmp_path):
     assert json.loads((cdir / "plugins" / "superpowers" / "config.json").read_text()) == {"foo": "bar"}
 
 
-def test_sync_to_restores_files_and_merges_mcp(fake_home, tmp_path):
+def test_sync_to_replaces_mcp_servers_in_claude_json(fake_home, tmp_path):
+    """sync_to overwrites .claude.json's mcpServers wholesale — pre-existing
+    entries that aren't in the stored mcp-servers.json are dropped."""
     _make_local(fake_home, mcp={"existing": {"command": "old"}}, settings={"theme": "old"})
     target = tmp_path / "configs"
     cdir = target / "claude"
@@ -78,6 +80,8 @@ def test_sync_to_restores_files_and_merges_mcp(fake_home, tmp_path):
     assert json.loads((fake_home / ".claude" / "settings.json").read_text())["theme"] == "new"
     cj = json.loads((fake_home / ".claude.json").read_text())
     assert cj["mcpServers"] == {"new-mcp": {"command": "x"}}
+    # The pre-existing "existing" key MUST be gone — current behavior is replace, not merge.
+    assert "existing" not in cj["mcpServers"]
     assert json.loads((backup / "claude" / "settings.json").read_text())["theme"] == "old"
 
 
