@@ -66,6 +66,24 @@ class App(ABC):
     name: str = ""           # short id, must match config and dir/<name>/
     description: str = ""    # human-readable
 
+    @classmethod
+    def from_config(cls, cfg) -> "App":
+        """Construct a configured instance from `cfg` (a dotsync.config.Config).
+
+        Default: zero-arg construction. Apps that need to read their options
+        from cfg (e.g. BetterTouchToolApp reading preset names) override this.
+        """
+        return cls()
+
+    @classmethod
+    def is_present_locally(cls) -> bool:
+        """Return True if this app is detected as installed on this machine.
+
+        Default: False. Concrete apps override; init's auto-detection skips
+        any app that returns False here.
+        """
+        return False
+
     @abstractmethod
     def sync_from(self, target_dir: Path) -> None:
         """Local app config → target_dir/<self.name>/"""

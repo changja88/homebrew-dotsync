@@ -151,3 +151,20 @@ def test_diff_files_reports_diverged_when_some_local_newer_some_stored_newer(tmp
     result = diff_files([(a_local, a_stored), (b_local, b_stored)])
     assert result.state == "dirty"
     assert result.direction == "diverged"
+
+
+def test_app_from_config_default_returns_instance_with_no_args(tmp_path):
+    """App.from_config(cfg) defaults to no-arg construction. Apps with config
+    deps (BTT) override this classmethod."""
+    from dotsync.apps.base import App
+    from dotsync.config import Config
+
+    class _Toy(App):
+        name = "toy"
+        def sync_from(self, target_dir): pass
+        def sync_to(self, target_dir, backup_dir): pass
+
+    cfg = Config(dir=tmp_path, apps=["toy"])
+    instance = _Toy.from_config(cfg)
+    assert isinstance(instance, _Toy)
+    assert instance.name == "toy"
