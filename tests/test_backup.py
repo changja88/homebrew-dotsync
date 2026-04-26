@@ -1,12 +1,11 @@
 from pathlib import Path
-import time
+from datetime import datetime
 from dotsync.backup import new_backup_session, rotate_backups
 
 
 def test_new_backup_session_creates_unique_dir(tmp_path):
-    s1 = new_backup_session(tmp_path)
-    time.sleep(1.01)
-    s2 = new_backup_session(tmp_path)
+    s1 = new_backup_session(tmp_path, now=datetime(2026, 1, 1, 10, 0, 0))
+    s2 = new_backup_session(tmp_path, now=datetime(2026, 1, 1, 10, 0, 1))
     assert s1.exists()
     assert s2.exists()
     assert s1 != s2
