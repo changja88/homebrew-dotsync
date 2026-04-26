@@ -3,8 +3,16 @@ from dotsync.apps import APP_NAMES, build_app
 from dotsync.config import Config
 
 
-def test_app_names_are_supported_set():
-    assert APP_NAMES == frozenset({"claude", "ghostty", "bettertouchtool", "zsh"})
+def test_app_names_derive_from_app_classes():
+    """APP_NAMES is derived from APP_CLASSES, not a separate literal — adding
+    a new app only requires appending to APP_CLASSES."""
+    from dotsync.apps import APP_NAMES, APP_CLASSES
+    assert APP_NAMES == frozenset(c.name for c in APP_CLASSES)
+
+
+def test_app_descriptions_derive_from_app_classes():
+    from dotsync.apps import app_descriptions, APP_CLASSES
+    assert app_descriptions() == {c.name: c.description for c in APP_CLASSES}
 
 
 def test_build_app_returns_instance(tmp_path):
