@@ -97,6 +97,41 @@ class App(ABC):
         """
         return False
 
+    def __init__(self) -> None:
+        # Per-instance accumulator for non-fatal warnings (failed external
+        # process calls in fail_mode="warn", etc.). cli's summary surface
+        # reads this after each sync so partial failures aren't silenced.
+        self.warnings: list[str] = []
+
+    def _run_external(
+        self,
+        cmd: list[str],
+        *,
+        desc: str,
+        fail_mode: Literal["warn", "raise"] = "warn",
+    ) -> "subprocess.CompletedProcess":
+        """Run an external command, with a uniform failure policy.
+
+        - `desc` is the human label shown in warnings/errors.
+        - fail_mode="warn": on rc!=0 append a warning to self.warnings, return
+          the CompletedProcess so the caller can react. Use for best-effort
+          plugin restoration, optional backups, etc.
+        - fail_mode="raise": on rc!=0 raise RuntimeError. Use when the failure
+          should abort the whole app's sync.
+        """
+        import subprocess
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            return result
+        msg = (
+            f"{desc} failed (rc={result.returncode}): "
+            f"{(result.stderr or '').strip() or 'no stderr'}"
+        )
+        if fail_mode == "raise":
+            raise RuntimeError(msg)
+        self.warnings.append(msg)
+        return result
+
     def tracked_files(self, target_dir: Path) -> list["FilePair"]:
         """Declare the (local, stored) file pairs this app tracks.
 

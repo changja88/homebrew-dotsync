@@ -270,3 +270,41 @@ def test_default_status_uses_diff_files_over_tracked_pairs(tmp_path):
 
     s = _Toy().status(target)
     assert s.state == "clean"
+
+
+def test_app_warnings_starts_empty():
+    from dotsync.apps.base import App
+    class _Toy(App):
+        name = "toy"
+        def tracked_files(self, target_dir): return []
+    assert _Toy().warnings == []
+
+
+def test_run_external_warn_mode_returns_result_and_collects_failure(monkeypatch):
+    from dotsync.apps.base import App
+    import subprocess
+    class _Toy(App):
+        name = "toy"
+        def tracked_files(self, target_dir): return []
+
+    captured = subprocess.CompletedProcess(args=["foo"], returncode=1, stdout="", stderr="boom")
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: captured)
+
+    app = _Toy()
+    result = app._run_external(["foo", "bar"], desc="foo run", fail_mode="warn")
+    assert result is captured
+    assert any("foo run" in w for w in app.warnings)
+
+
+def test_run_external_raise_mode_raises_runtime_error_on_failure(monkeypatch):
+    from dotsync.apps.base import App
+    import subprocess
+    class _Toy(App):
+        name = "toy"
+        def tracked_files(self, target_dir): return []
+
+    captured = subprocess.CompletedProcess(args=["foo"], returncode=1, stdout="", stderr="bad")
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: captured)
+
+    with pytest.raises(RuntimeError, match="foo run"):
+        _Toy()._run_external(["foo"], desc="foo run", fail_mode="raise")

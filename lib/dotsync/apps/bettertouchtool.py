@@ -80,6 +80,7 @@ class BetterTouchToolApp(App):
         return Path(cls.APP_PATH).exists()
 
     def __init__(self, presets: list[str] | None = None):
+        super().__init__()
         self.presets: list[str] = list(presets) if presets else ["Master_bt"]
 
     def _stored(self, target_dir: Path, preset: str) -> Path:
