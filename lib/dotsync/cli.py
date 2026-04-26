@@ -358,6 +358,18 @@ def cmd_status(args) -> int:
     return 0
 
 
+def _print_app_warnings(warnings_by_app: dict[str, list[str]]) -> None:
+    """Render any collected non-fatal warnings under a 'warnings' divider.
+    Called after the sync summary so partial failures aren't hidden."""
+    if not warnings_by_app:
+        return
+    print()
+    ui.divider("warnings")
+    for name, warns in warnings_by_app.items():
+        for w in warns:
+            ui.warn(f"{name}: {w}")
+
+
 def _resolve_app_list(args, cfg: Config) -> list[str]:
     if args.all:
         return list(cfg.apps)
@@ -382,6 +394,7 @@ def cmd_from(args) -> int:
     start = time.monotonic()
     synced: list[str] = []
     failed: list[str] = []
+    warnings_by_app: dict[str, list[str]] = {}
     for i, name in enumerate(apps, 1):
         app = build_app(name, cfg)
         ui.section(name, index=i, total=len(apps), sub=app.description)
@@ -392,6 +405,8 @@ def cmd_from(args) -> int:
         except (FileNotFoundError, RuntimeError) as e:
             ui.error(str(e))
             failed.append(name)
+        if app.warnings:
+            warnings_by_app[name] = list(app.warnings)
         print()
     ui.summary(
         ok=len(synced), error=len(failed),
@@ -399,6 +414,7 @@ def cmd_from(args) -> int:
         synced=synced or None,
         failed=failed or None,
     )
+    _print_app_warnings(warnings_by_app)
     return 0 if not failed else 6
 
 
@@ -448,11 +464,10 @@ def cmd_to(args) -> int:
     applied: list[str] = []
     unchanged: list[str] = []
     failed: list[str] = []
+    warnings_by_app: dict[str, list[str]] = {}
     for i, name in enumerate(apps, 1):
         app = build_app(name, cfg)
         ui.section(name, index=i, total=len(apps), sub=app.description)
-        # Already in sync? Skip the sync call entirely so we don't run
-        # osascript/copy for no reason — and tell the user nothing moved.
         if statuses.get(name) == "clean":
             app._finish_unchanged()
             unchanged.append(name)
@@ -465,6 +480,8 @@ def cmd_to(args) -> int:
         except (FileNotFoundError, RuntimeError) as e:
             ui.error(str(e))
             failed.append(name)
+        if app.warnings:
+            warnings_by_app[name] = list(app.warnings)
         print()
     rotate_backups(cfg.backup_dir, cfg.backup_keep)
     ui.summary(
@@ -474,6 +491,7 @@ def cmd_to(args) -> int:
         unchanged=unchanged or None,
         failed=failed or None,
     )
+    _print_app_warnings(warnings_by_app)
     return 0 if not failed else 6
 
 

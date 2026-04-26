@@ -732,3 +732,28 @@ def test_init_btt_yes_without_flag_uses_default_skips_discovery(fake_home, tmp_p
     assert rc == 0
     cfg_text = (target / "dotsync.toml").read_text()
     assert 'bettertouchtool_presets = ["Master_bt"]' in cfg_text
+
+
+def test_cmd_to_surfaces_app_warnings_in_summary(fake_home, monkeypatch, capsys, tmp_path):
+    """Warnings collected on the App during sync show up after the summary
+    so partial failures aren't silenced."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    folder = tmp_path / "sync"; folder.mkdir()
+    (folder / "dotsync.toml").write_text('apps = ["zsh"]\n')
+    (folder / "zsh").mkdir()
+    (folder / "zsh" / ".zshrc").write_text("X")
+    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
+
+    # Inject a warning into the ZshApp instance build_app returns.
+    from dotsync.apps import build_app as real_build
+    def stub_build(name, cfg):
+        app = real_build(name, cfg)
+        app.warnings.append("zsh: simulated network blip")
+        return app
+    monkeypatch.setattr("dotsync.cli.build_app", stub_build)
+
+    from dotsync.cli import main
+    rc = main(["to", "--all", "--yes"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "simulated network blip" in out
