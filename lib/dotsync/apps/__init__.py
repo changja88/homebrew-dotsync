@@ -27,19 +27,14 @@ def app_descriptions() -> dict[str, str]:
 def build_app(name: str, cfg) -> App:
     """Construct a configured App instance for `name`.
 
-    `cfg` is a dotsync.config.Config.
+    `cfg` is a dotsync.config.Config. Apps with config dependencies (e.g.
+    BetterTouchToolApp) read their options through their own from_config
+    classmethod — build_app stays per-app-knowledge-free.
     """
-    if name not in APP_NAMES:
+    cls = _APP_CLASSES.get(name)
+    if cls is None:
         raise KeyError(f"unknown app: {name}. Supported: {sorted(APP_NAMES)}")
-    if name == "claude":
-        return ClaudeApp()
-    if name == "ghostty":
-        return GhosttyApp()
-    if name == "bettertouchtool":
-        return BetterTouchToolApp(presets=cfg.bettertouchtool_presets)
-    if name == "zsh":
-        return ZshApp()
-    raise KeyError(name)  # unreachable
+    return cls.from_config(cfg)
 
 
 _APP_CLASSES = {

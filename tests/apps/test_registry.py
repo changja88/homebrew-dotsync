@@ -54,3 +54,24 @@ def test_detect_present_returns_only_locally_installed(fake_home, monkeypatch):
     assert "claude" in detected
     assert "ghostty" not in detected
     assert "bettertouchtool" not in detected
+
+
+def test_build_app_uses_from_config_polymorphism(tmp_path, monkeypatch):
+    """build_app must call cls.from_config(cfg), not have its own if-elif."""
+    from dotsync.apps import build_app
+    from dotsync.apps.bettertouchtool import BetterTouchToolApp
+
+    calls = []
+    original = BetterTouchToolApp.from_config
+
+    @classmethod
+    def spy(cls, cfg):
+        calls.append(cfg)
+        return original.__func__(cls, cfg)
+
+    monkeypatch.setattr(BetterTouchToolApp, "from_config", spy)
+    cfg = Config(dir=tmp_path, apps=["bettertouchtool"], bettertouchtool_presets=["X"])
+    app = build_app("bettertouchtool", cfg)
+
+    assert len(calls) == 1 and calls[0] is cfg
+    assert app.presets == ["X"]
