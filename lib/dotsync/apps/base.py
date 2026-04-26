@@ -1,6 +1,7 @@
 """Abstract base for app sync modules."""
 from __future__ import annotations
 import hashlib
+import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -107,20 +108,64 @@ class App(ABC):
         """
         return []
 
-    @abstractmethod
     def sync_from(self, target_dir: Path) -> None:
-        """Local app config → target_dir/<self.name>/"""
+        """Local app config → target_dir/<self.name>/
 
-    @abstractmethod
+        Default: walk tracked_files(), copy each .local → .stored. Apps that
+        need extra behavior (network calls, file transformation) override this.
+        """
+        from dotsync import ui
+        pairs = self.tracked_files(target_dir)
+        if not pairs:
+            raise NotImplementedError(
+                f"{type(self).__name__} declares no tracked_files and does not "
+                f"override sync_from"
+            )
+        for pair in pairs:
+            if not pair.local.exists():
+                raise FileNotFoundError(f"{pair.local} not found ({pair.label} missing)")
+            pair.stored.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(pair.local, pair.stored)
+            ui.sub(pair.label)
+
     def sync_to(self, target_dir: Path, backup_dir: Path) -> None:
-        """target_dir/<self.name>/ → local app config, after backing up local to backup_dir/<self.name>/"""
+        """target_dir/<self.name>/ → local app config, after backing up local.
+
+        Default: walk tracked_files(), for each pair (a) verify .stored exists,
+        (b) if .local exists copy it to backup_dir/<self.name>/<label>, (c)
+        copy .stored over .local.
+        """
+        from dotsync import ui
+        pairs = self.tracked_files(target_dir)
+        if not pairs:
+            raise NotImplementedError(
+                f"{type(self).__name__} declares no tracked_files and does not "
+                f"override sync_to"
+            )
+        # Fail-fast: verify every stored side exists before mutating any local file.
+        missing = [p for p in pairs if not p.stored.exists()]
+        if missing:
+            first = missing[0]
+            raise FileNotFoundError(
+                f"{first.stored} not found ({self.name}/{first.label} missing)"
+            )
+        for pair in pairs:
+            pair.local.parent.mkdir(parents=True, exist_ok=True)
+            if pair.local.exists():
+                bdst = backup_dir / self.name / pair.label
+                bdst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(pair.local, bdst)
+                ui.dim(f"backup → {bdst}")
+            shutil.copy2(pair.stored, pair.local)
+            ui.sub(pair.label)
 
     def status(self, target_dir: Path) -> AppStatus:
-        """Optional: report local-vs-target state. Default: unknown.
-
-        Concrete apps should override and return diff_files(...) over their tracked files.
-        """
-        return AppStatus(state="unknown")
+        """Default: diff_files over tracked_files. Apps with non-file state
+        (BTT live exports, claude .claude.json mcp comparison) override."""
+        pairs = self.tracked_files(target_dir)
+        if not pairs:
+            return AppStatus(state="unknown")
+        return diff_files((p.local, p.stored) for p in pairs)
 
     # ----- per-app section finishers --------------------------------------
     # Both finishers exist so per-app sections close with a uniform line —

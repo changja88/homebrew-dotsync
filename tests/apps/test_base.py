@@ -2,9 +2,12 @@ import pytest
 from dotsync.apps.base import App, AppStatus, diff_files
 
 
-def test_app_is_abstract():
-    with pytest.raises(TypeError):
-        App()
+def test_app_base_has_no_tracked_files_and_raises_not_implemented(tmp_path):
+    """App() can be instantiated (no abstract methods), but calling sync_from
+    or sync_to on a bare App with no tracked_files raises NotImplementedError."""
+    app = App()
+    with pytest.raises(NotImplementedError):
+        app.sync_from(tmp_path)
 
 
 def test_concrete_subclass_works(tmp_path):
@@ -187,3 +190,83 @@ def test_file_pair_is_a_dataclass_with_local_stored_label(tmp_path):
     assert pair.local == tmp_path / "a"
     assert pair.stored == tmp_path / "b"
     assert pair.label == "x"
+
+
+def test_default_sync_from_copies_each_tracked_file(tmp_path):
+    from dotsync.apps.base import App, FilePair
+    home = tmp_path / "home"; home.mkdir()
+    (home / "src.txt").write_text("ALPHA")
+
+    class _Toy(App):
+        name = "toy"
+        def tracked_files(self, target_dir):
+            return [FilePair(home / "src.txt", target_dir / "toy" / "dst.txt", "dst.txt")]
+
+    target = tmp_path / "sync"; target.mkdir()
+    _Toy().sync_from(target)
+    assert (target / "toy" / "dst.txt").read_text() == "ALPHA"
+
+
+def test_default_sync_from_raises_when_local_missing(tmp_path):
+    from dotsync.apps.base import App, FilePair
+
+    class _Toy(App):
+        name = "toy"
+        def tracked_files(self, target_dir):
+            return [FilePair(tmp_path / "missing.txt", target_dir / "toy" / "dst.txt", "dst.txt")]
+
+    target = tmp_path / "sync"; target.mkdir()
+    with pytest.raises(FileNotFoundError, match="missing.txt"):
+        _Toy().sync_from(target)
+
+
+def test_default_sync_to_backs_up_then_copies_stored_over_local(tmp_path):
+    from dotsync.apps.base import App, FilePair
+    home = tmp_path / "home"; home.mkdir()
+    (home / "live.txt").write_text("OLD")
+    target = tmp_path / "sync"
+    (target / "toy").mkdir(parents=True)
+    (target / "toy" / "live.txt").write_text("NEW")
+    backup = tmp_path / "bk"; backup.mkdir()
+
+    class _Toy(App):
+        name = "toy"
+        def tracked_files(self, target_dir):
+            return [FilePair(home / "live.txt", target_dir / "toy" / "live.txt", "live.txt")]
+
+    _Toy().sync_to(target, backup)
+    assert (home / "live.txt").read_text() == "NEW"
+    assert (backup / "toy" / "live.txt").read_text() == "OLD"
+
+
+def test_default_sync_to_raises_when_stored_missing(tmp_path):
+    from dotsync.apps.base import App, FilePair
+    home = tmp_path / "home"; home.mkdir()
+    target = tmp_path / "sync"
+    (target / "toy").mkdir(parents=True)
+    backup = tmp_path / "bk"; backup.mkdir()
+
+    class _Toy(App):
+        name = "toy"
+        def tracked_files(self, target_dir):
+            return [FilePair(home / "x.txt", target_dir / "toy" / "x.txt", "x.txt")]
+
+    with pytest.raises(FileNotFoundError, match="x.txt"):
+        _Toy().sync_to(target, backup)
+
+
+def test_default_status_uses_diff_files_over_tracked_pairs(tmp_path):
+    from dotsync.apps.base import App, FilePair
+    home = tmp_path / "home"; home.mkdir()
+    (home / "a.txt").write_text("X")
+    target = tmp_path / "sync"
+    (target / "toy").mkdir(parents=True)
+    (target / "toy" / "a.txt").write_text("X")
+
+    class _Toy(App):
+        name = "toy"
+        def tracked_files(self, target_dir):
+            return [FilePair(home / "a.txt", target_dir / "toy" / "a.txt", "a.txt")]
+
+    s = _Toy().status(target)
+    assert s.state == "clean"
