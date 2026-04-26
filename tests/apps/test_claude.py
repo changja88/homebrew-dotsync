@@ -265,3 +265,20 @@ def test_sync_to_tolerates_v1_plugin_entries_dict(fake_home, tmp_path):
     # cannot read installPath out of a non-list value.
     assert any("marketplace add --scope user anthropics/sp" in c for c in cmds)
     assert any("plugin install --scope user legacy@official" in c for c in cmds)
+
+
+def test_sync_to_corrupted_mcp_servers_json_raises_runtime_error(fake_home, tmp_path):
+    """When mcp-servers.json is hand-corrupted, surface a friendly RuntimeError
+    so cli.py:507's friendly handler catches it instead of a raw traceback."""
+    _make_local(fake_home)
+    target = tmp_path / "configs"
+    cdir = target / "claude"
+    (cdir / "plugins").mkdir(parents=True)
+    (cdir / "settings.json").write_text("{}")
+    (cdir / "mcp-servers.json").write_text("{not valid json")  # corrupted
+    (cdir / "plugins" / "installed_plugins.json").write_text(json.dumps({"version": 2, "plugins": {}}))
+    (cdir / "plugins" / "known_marketplaces.json").write_text(json.dumps({}))
+    backup = tmp_path / "backup"; backup.mkdir()
+
+    with pytest.raises(RuntimeError, match="mcp-servers.json"):
+        ClaudeApp().sync_to(target, backup)

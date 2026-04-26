@@ -89,8 +89,14 @@ class ClaudeApp(App):
         ui.ok("plugins/known_marketplaces.json")
 
         claude_json_path = self._claude_json()
-        cj = json.loads(claude_json_path.read_text()) if claude_json_path.exists() else {}
-        cj["mcpServers"] = json.loads((stored / "mcp-servers.json").read_text())
+        try:
+            cj = json.loads(claude_json_path.read_text()) if claude_json_path.exists() else {}
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"~/.claude.json is corrupted: {e}") from e
+        try:
+            cj["mcpServers"] = json.loads((stored / "mcp-servers.json").read_text())
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"{stored / 'mcp-servers.json'} is corrupted: {e}") from e
         claude_json_path.write_text(json.dumps(cj, indent=2, ensure_ascii=False))
         ui.ok("mcp-servers.json → ~/.claude.json")
 
