@@ -282,3 +282,32 @@ def test_sync_to_corrupted_mcp_servers_json_raises_runtime_error(fake_home, tmp_
 
     with pytest.raises(RuntimeError, match="mcp-servers.json"):
         ClaudeApp().sync_to(target, backup)
+
+
+def test_sync_to_treats_string_false_as_truthy_in_enabled_plugins(fake_home, tmp_path):
+    """Today's contract: enabledPlugins values are interpreted as Python truthy.
+    A literal string "false" (hand-edited) counts as enabled and is NOT disabled.
+    Pin this so any future fix (proper bool check) is a deliberate change."""
+    _make_local(fake_home)
+    target = tmp_path / "configs"
+    cdir = target / "claude"
+    (cdir / "plugins").mkdir(parents=True)
+    (cdir / "settings.json").write_text(json.dumps({
+        "enabledPlugins": {"truthy-str@mp": "false", "real-bool@mp": False}
+    }))
+    (cdir / "mcp-servers.json").write_text("{}")
+    (cdir / "plugins" / "installed_plugins.json").write_text(json.dumps({"version": 2, "plugins": {}}))
+    (cdir / "plugins" / "known_marketplaces.json").write_text(json.dumps({}))
+    backup = tmp_path / "backup"; backup.mkdir()
+
+    with patch("dotsync.apps.claude.subprocess.run") as run:
+        run.return_value.returncode = 0
+        run.return_value.stdout = ""
+        run.return_value.stderr = ""
+        ClaudeApp().sync_to(target, backup)
+
+    cmds = [" ".join(c.args[0]) for c in run.call_args_list]
+    disable_cmds = [c for c in cmds if "plugin disable" in c]
+    # Real bool False → disabled. String "false" (truthy) → not disabled.
+    assert any("real-bool@mp" in c for c in disable_cmds)
+    assert not any("truthy-str@mp" in c for c in disable_cmds)
