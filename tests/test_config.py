@@ -240,3 +240,14 @@ def test_config_backup_dir_explicit_override(tmp_path):
     custom = tmp_path / "custom-bk"
     cfg = Config(dir=tmp_path, apps=["zsh"], backup_dir=custom)
     assert cfg.backup_dir == custom
+
+
+def test_load_corrupted_toml_raises_config_error(monkeypatch, tmp_path):
+    """A hand-mangled dotsync.toml must surface as ConfigError, not raw
+    TOMLDecodeError, so cli.py's friendly handler catches it."""
+    folder = tmp_path / "broken"
+    folder.mkdir()
+    (folder / "dotsync.toml").write_text('apps = ["zsh"\n[options\nbroken = ')
+    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
+    with pytest.raises(ConfigError, match="dotsync.toml"):
+        load_config()

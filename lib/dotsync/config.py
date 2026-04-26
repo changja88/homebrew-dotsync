@@ -102,7 +102,10 @@ def load_config() -> Config:
             f"Run `dotsync init --dir {folder} --yes` to create it."
         )
     with cfg_file.open("rb") as f:
-        data = tomllib.load(f)
+        try:
+            data = tomllib.load(f)
+        except tomllib.TOMLDecodeError as e:
+            raise ConfigError(f"dotsync.toml at {cfg_file} is malformed: {e}") from e
 
     apps = data.get("apps") or []
     if not isinstance(apps, list):
