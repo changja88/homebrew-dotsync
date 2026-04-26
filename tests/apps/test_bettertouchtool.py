@@ -244,6 +244,91 @@ def test_status_clean_when_export_matches_stored(tmp_path):
     assert result.state == "clean"
 
 
+def test_status_clean_when_only_btt_preset_uuid_differs(tmp_path):
+    """BTT regenerates BTTPresetUUID on every export_preset call, even when
+    the preset content is otherwise identical. status() must normalize that
+    line away or every from→to roundtrip falsely shows dirty."""
+    target = tmp_path / "configs"
+    presets = target / "bettertouchtool" / "presets"
+    presets.mkdir(parents=True)
+    stored_text = (
+        '{\n'
+        '  "BTTPresetVersion" : "4.0",\n'
+        '  "BTTPresetUUID" : "AAAAAAAA-1111-2222-3333-444444444444",\n'
+        '  "BTTPresetName" : "Master_bt"\n'
+        '}\n'
+    )
+    live_text = (
+        '{\n'
+        '  "BTTPresetVersion" : "4.0",\n'
+        '  "BTTPresetUUID" : "BBBBBBBB-9999-8888-7777-666666666666",\n'
+        '  "BTTPresetName" : "Master_bt"\n'
+        '}\n'
+    )
+    (presets / "Master_bt.bttpreset").write_text(stored_text)
+
+    def fake_run(*args, **kwargs):
+        class R:
+            returncode = 0
+            stdout = "done"
+            stderr = ""
+        cmd = args[0]
+        for token in cmd:
+            if "outputPath" in token:
+                import re
+                m = re.search(r'outputPath "([^"]+)"', token)
+                if m:
+                    Path(m.group(1)).parent.mkdir(parents=True, exist_ok=True)
+                    Path(m.group(1)).write_text(live_text)
+        return R()
+
+    with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=fake_run):
+        result = BetterTouchToolApp(presets=["Master_bt"]).status(target)
+    assert result.state == "clean"
+
+
+def test_status_dirty_when_real_content_differs_despite_uuid_normalization(tmp_path):
+    """Sanity check: normalizing the UUID line must NOT mask real content
+    changes elsewhere in the file."""
+    target = tmp_path / "configs"
+    presets = target / "bettertouchtool" / "presets"
+    presets.mkdir(parents=True)
+    stored_text = (
+        '{\n'
+        '  "BTTPresetUUID" : "AAAAAAAA-1111-2222-3333-444444444444",\n'
+        '  "BTTPresetName" : "Master_bt",\n'
+        '  "trigger" : "OLD"\n'
+        '}\n'
+    )
+    live_text = (
+        '{\n'
+        '  "BTTPresetUUID" : "BBBBBBBB-9999-8888-7777-666666666666",\n'
+        '  "BTTPresetName" : "Master_bt",\n'
+        '  "trigger" : "NEW"\n'
+        '}\n'
+    )
+    (presets / "Master_bt.bttpreset").write_text(stored_text)
+
+    def fake_run(*args, **kwargs):
+        class R:
+            returncode = 0
+            stdout = "done"
+            stderr = ""
+        cmd = args[0]
+        for token in cmd:
+            if "outputPath" in token:
+                import re
+                m = re.search(r'outputPath "([^"]+)"', token)
+                if m:
+                    Path(m.group(1)).parent.mkdir(parents=True, exist_ok=True)
+                    Path(m.group(1)).write_text(live_text)
+        return R()
+
+    with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=fake_run):
+        result = BetterTouchToolApp(presets=["Master_bt"]).status(target)
+    assert result.state == "dirty"
+
+
 def test_status_dirty_when_export_differs(tmp_path):
     target = tmp_path / "configs"
     presets = target / "bettertouchtool" / "presets"

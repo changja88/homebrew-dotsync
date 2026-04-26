@@ -5,18 +5,34 @@ names. sync_from / sync_to / status iterate every preset; the per-preset
 file layout is ``<sync>/bettertouchtool/presets/<name>.bttpreset``.
 """
 from __future__ import annotations
+import hashlib
+import re
 import sqlite3
 import subprocess
 import time
 from pathlib import Path
 from dotsync import ui
-from dotsync.apps.base import App, AppStatus, _hash
+from dotsync.apps.base import App, AppStatus
 
 # BTT's `export_preset` AppleScript returns "done" the moment the command is
 # accepted, but the actual file write happens asynchronously — empirically the
 # preset shows up on disk ~10–50ms later. Without polling, sync_from races
 # the export and raises "BTT export file was not created" on every run.
 _EXPORT_WAIT_TIMEOUT = 5.0
+
+# BTT regenerates BTTPresetUUID on every export_preset call, even when no
+# user-visible change exists. A naive byte-for-byte hash would flag every
+# from→status comparison as dirty, so we normalize that one line before hashing.
+_BTT_UUID_LINE_RE = re.compile(
+    r'^(\s*"BTTPresetUUID"\s*:\s*")[^"]+(",?\s*)$',
+    re.MULTILINE,
+)
+
+
+def _hash_preset(path: Path) -> str:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    normalized = _BTT_UUID_LINE_RE.sub(r"\1<normalized>\2", text)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 class BetterTouchToolApp(App):
@@ -183,7 +199,7 @@ class BetterTouchToolApp(App):
                         state="unknown",
                         details="BTT export produced no file",
                     )
-                if _hash(live) != _hash(stored):
+                if _hash_preset(live) != _hash_preset(stored):
                     differs.append(f"{preset}.bttpreset")
 
         if differs:
