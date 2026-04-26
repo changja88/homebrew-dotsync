@@ -551,3 +551,49 @@ def test_btt_from_config_falls_back_to_legacy_field_when_app_options_empty(tmp_p
     )
     app = BetterTouchToolApp.from_config(cfg)
     assert app.presets == ["Legacy"]
+
+
+def test_btt_extra_init_args_registers_presets_flag():
+    import argparse
+    from dotsync.apps.bettertouchtool import BetterTouchToolApp
+    parser = argparse.ArgumentParser()
+    BetterTouchToolApp.extra_init_args(parser)
+    args = parser.parse_args(["--btt-presets", "Foo,Bar"])
+    assert args.btt_presets == "Foo,Bar"
+
+
+def test_btt_picker_annotation_when_detected(monkeypatch):
+    from dotsync.apps.bettertouchtool import BetterTouchToolApp
+    monkeypatch.setattr(BetterTouchToolApp, "discover_preset_names", classmethod(lambda cls: ["A", "B", "C"]))
+    assert BetterTouchToolApp.picker_annotation(detected=True) == "3 presets"
+
+
+def test_btt_picker_annotation_one_preset_singular(monkeypatch):
+    from dotsync.apps.bettertouchtool import BetterTouchToolApp
+    monkeypatch.setattr(BetterTouchToolApp, "discover_preset_names", classmethod(lambda cls: ["Only"]))
+    assert BetterTouchToolApp.picker_annotation(detected=True) == "1 preset"
+
+
+def test_btt_picker_annotation_none_when_not_detected():
+    from dotsync.apps.bettertouchtool import BetterTouchToolApp
+    assert BetterTouchToolApp.picker_annotation(detected=False) is None
+
+
+def test_btt_resolve_options_explicit_flag(tmp_path, monkeypatch):
+    import argparse
+    from dotsync.apps.bettertouchtool import BetterTouchToolApp
+    args = argparse.Namespace(btt_presets="X,Y", yes=False)
+    opts = BetterTouchToolApp.resolve_options(
+        args, prev_apps=[], new_apps=["bettertouchtool"], interactive=False,
+    )
+    assert opts == {"presets": ["X", "Y"]}
+
+
+def test_btt_resolve_options_returns_none_when_btt_not_in_new_apps():
+    import argparse
+    from dotsync.apps.bettertouchtool import BetterTouchToolApp
+    args = argparse.Namespace(btt_presets=None, yes=False)
+    opts = BetterTouchToolApp.resolve_options(
+        args, prev_apps=[], new_apps=["zsh"], interactive=False,
+    )
+    assert opts is None  # don't touch app_options if BTT isn't tracked

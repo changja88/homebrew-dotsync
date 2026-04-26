@@ -37,7 +37,8 @@ def test_init_with_btt_presets_flag(fake_home, tmp_path):
     ])
     assert rc == 0
     cfg_text = (target / "dotsync.toml").read_text()
-    assert 'bettertouchtool_presets = ["MyPreset", "Other"]' in cfg_text
+    # New format: presets stored under [options.bettertouchtool] sub-table.
+    assert 'presets = ["MyPreset", "Other"]' in cfg_text
 
 
 def test_config_show(fake_home, monkeypatch, tmp_path, capsys):
@@ -205,7 +206,8 @@ def test_init_yes_existing_toml_with_explicit_overrides(fake_home, tmp_path):
     cfg_text = (target / "dotsync.toml").read_text()
     assert "zsh" in cfg_text and "ghostty" in cfg_text
     assert "claude" not in cfg_text  # overridden
-    assert 'bettertouchtool_presets = ["New"]' in cfg_text
+    # BTT is not in apps, so --btt-presets is silently ignored (no BTT section written)
+    assert "[options.bettertouchtool]" not in cfg_text
 
 
 def test_init_interactive_picker_keeps_detected_on_bare_enter(fake_home, tmp_path, monkeypatch):
@@ -590,7 +592,8 @@ def test_apps_toggle_on_btt_auto_discovers_presets(fake_home, monkeypatch, tmp_p
     rc = main(["apps"])
     assert rc == 0
     cfg_text = (target / "dotsync.toml").read_text()
-    assert 'bettertouchtool_presets = ["Master_bt", "Travel"]' in cfg_text
+    # New format: presets stored under [options.bettertouchtool] sub-table.
+    assert 'presets = ["Master_bt", "Travel"]' in cfg_text
     assert '"bettertouchtool"' in cfg_text
 
 
@@ -630,7 +633,8 @@ def test_init_btt_auto_uses_single_discovered_preset(fake_home, tmp_path, monkey
     assert rc == 0
     out = capsys.readouterr().out
     cfg_text = (target / "dotsync.toml").read_text()
-    assert 'bettertouchtool_presets = ["Master_bt"]' in cfg_text
+    # New format: presets stored under [options.bettertouchtool] sub-table.
+    assert 'presets = ["Master_bt"]' in cfg_text
     assert "Master_bt" in out
     # The legacy single-preset prompt must not appear under the new flow
     assert "BetterTouchTool preset name" not in out
@@ -659,7 +663,8 @@ def test_init_btt_auto_tracks_every_discovered_preset(fake_home, tmp_path, monke
     assert rc == 0
     out = capsys.readouterr().out
     cfg_text = (target / "dotsync.toml").read_text()
-    assert 'bettertouchtool_presets = ["Master_bt", "Travel", "Work"]' in cfg_text
+    # New format: presets stored under [options.bettertouchtool] sub-table.
+    assert 'presets = ["Master_bt", "Travel", "Work"]' in cfg_text
     assert "Master_bt" in out and "Travel" in out and "Work" in out
     assert "which preset to track" not in out
 
@@ -709,7 +714,8 @@ def test_init_btt_presets_flag_skips_discovery(fake_home, tmp_path, monkeypatch)
     rc = main(["init", "--dir", str(target), "--yes", "--btt-presets", "Forced,Other"])
     assert rc == 0
     cfg_text = (target / "dotsync.toml").read_text()
-    assert 'bettertouchtool_presets = ["Forced", "Other"]' in cfg_text
+    # New format: presets stored under [options.bettertouchtool] sub-table.
+    assert 'presets = ["Forced", "Other"]' in cfg_text
 
 
 def test_init_btt_yes_without_flag_uses_default_skips_discovery(fake_home, tmp_path, monkeypatch):

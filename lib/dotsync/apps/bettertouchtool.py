@@ -85,6 +85,74 @@ class BetterTouchToolApp(App):
     def is_present_locally(cls) -> bool:
         return Path(cls.APP_PATH).exists()
 
+    DEFAULT_PRESETS: tuple[str, ...] = ("Master_bt",)
+
+    @classmethod
+    def extra_init_args(cls, parser) -> None:
+        parser.add_argument(
+            "--btt-presets",
+            default=None,
+            help=f"BetterTouchTool preset names, comma-separated (default: {','.join(cls.DEFAULT_PRESETS)})",
+        )
+
+    @classmethod
+    def picker_annotation(cls, *, detected: bool) -> str | None:
+        if not detected:
+            return None
+        count = len(cls.discover_preset_names())
+        if count <= 0:
+            return None
+        return f"{count} preset" if count == 1 else f"{count} presets"
+
+    @classmethod
+    def resolve_options(
+        cls,
+        args,
+        *,
+        prev_apps: list[str],
+        new_apps: list[str],
+        interactive: bool,
+    ) -> dict | None:
+        # Not tracking BTT? leave options alone.
+        if cls.name not in new_apps:
+            return None
+        # Explicit flag wins.
+        flag_value = getattr(args, "btt_presets", None)
+        if flag_value:
+            return {"presets": [p.strip() for p in flag_value.split(",") if p.strip()]}
+        # Toggling BTT on (was-not, now-is) interactively → auto-discover.
+        was = cls.name in prev_apps
+        if interactive and not was:
+            discovered = cls.discover_preset_names()
+            if discovered:
+                return {"presets": discovered}
+        # No change requested.
+        return None
+
+    @classmethod
+    def extra_config_subcommands(cls, subparser) -> None:
+        p = subparser.add_parser(
+            "btt-presets",
+            help="set BetterTouchTool preset names (comma-separated)",
+        )
+        p.add_argument("presets", help="comma-separated names")
+
+    @classmethod
+    def handle_config_subcommand(cls, args, cfg) -> int | None:
+        from dotsync import ui
+        from dotsync.config import save_config
+        if getattr(args, "cfg_cmd", None) != "btt-presets":
+            return None
+        new_presets = [p.strip() for p in args.presets.split(",") if p.strip()]
+        if not new_presets:
+            import sys
+            print("provide at least one preset name", file=sys.stderr)
+            return 2
+        cfg.app_options.setdefault(cls.name, {})["presets"] = new_presets
+        save_config(cfg)
+        ui.done(f"bettertouchtool presets = {new_presets}")
+        return 0
+
     def __init__(self, presets: list[str] | None = None):
         super().__init__()
         self.presets: list[str] = list(presets) if presets else ["Master_bt"]
