@@ -202,6 +202,55 @@ class App(ABC):
             return AppStatus(state="unknown")
         return diff_files((p.local, p.stored) for p in pairs)
 
+    # ----- CLI extension hooks --------------------------------------------
+    # An App that needs CLI customization (extra flags on `init`, picker
+    # annotations, config subcommands) overrides these. Defaults are no-ops
+    # so apps without customization stay free of CLI plumbing.
+
+    @classmethod
+    def extra_init_args(cls, parser) -> None:
+        """Optionally add app-specific argparse args to `dotsync init`.
+        E.g. BetterTouchTool adds --btt-presets here."""
+        return None
+
+    @classmethod
+    def picker_annotation(cls, *, detected: bool) -> str | None:
+        """Right-side annotation shown next to this app's row in the picker.
+        Return None for no annotation."""
+        return None
+
+    @classmethod
+    def resolve_options(
+        cls,
+        args,
+        *,
+        prev_apps: list[str],
+        new_apps: list[str],
+        interactive: bool,
+    ) -> dict | None:
+        """Compute this app's options dict (the value stored under
+        cfg.app_options[cls.name]) given init-time inputs.
+
+        - args: argparse Namespace (may carry app-specific flags).
+        - prev_apps / new_apps: tracked apps before/after the picker, for
+          apps that re-discover state when toggled on (BTT does this).
+        - interactive: True for interactive init, False for --yes / scripted.
+
+        Return None to leave app_options[cls.name] unchanged.
+        """
+        return None
+
+    @classmethod
+    def extra_config_subcommands(cls, subparser) -> None:
+        """Optionally register `dotsync config <name>-...` subcommands."""
+        return None
+
+    @classmethod
+    def handle_config_subcommand(cls, args, cfg) -> int | None:
+        """If the dispatch matched a subcommand registered above, mutate cfg
+        and return an exit code. Return None if not a match."""
+        return None
+
     # ----- per-app section finishers --------------------------------------
     # Both finishers exist so per-app sections close with a uniform line —
     # the cli's per-app loop never has to special-case which marker to draw.

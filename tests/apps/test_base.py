@@ -308,3 +308,29 @@ def test_run_external_raise_mode_raises_runtime_error_on_failure(monkeypatch):
 
     with pytest.raises(RuntimeError, match="foo run"):
         _Toy()._run_external(["foo"], desc="foo run", fail_mode="raise")
+
+
+def test_app_cli_hooks_have_safe_defaults(tmp_path):
+    """Default impls do nothing — apps without CLI customizations stay clean."""
+    import argparse
+    from dotsync.apps.base import App
+    class _Toy(App):
+        name = "toy"
+        def tracked_files(self, target_dir): return []
+
+    parser = argparse.ArgumentParser()
+    _Toy.extra_init_args(parser)  # no-op, must not raise
+    assert _Toy.picker_annotation(detected=True) is None
+    assert _Toy.picker_annotation(detected=False) is None
+
+    # resolve_options returns None (no custom options) by default.
+    args = argparse.Namespace()
+    cfg_options = _Toy.resolve_options(args, prev_apps=[], new_apps=["toy"], interactive=False)
+    assert cfg_options is None
+
+    # extra_config_subcommands no-op
+    sub_parser = argparse.ArgumentParser().add_subparsers()
+    _Toy.extra_config_subcommands(sub_parser)  # no-op
+
+    # handle_config_subcommand returns None (not handled) by default
+    assert _Toy.handle_config_subcommand(args, None) is None
