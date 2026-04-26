@@ -43,6 +43,10 @@ class BetterTouchToolApp(App):
     DATA_DIR = Path.home() / "Library" / "Application Support" / "BetterTouchTool"
 
     @classmethod
+    def from_config(cls, cfg) -> "BetterTouchToolApp":
+        return cls(presets=cfg.bettertouchtool_presets)
+
+    @classmethod
     def discover_preset_names(cls) -> list[str]:
         """Best-effort enumeration of preset names from BTT's own SQLite store.
         Returns a sorted list. Returns [] on any failure (BTT not installed,

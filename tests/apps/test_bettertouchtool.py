@@ -500,3 +500,25 @@ def test_discover_preset_names_filters_null_and_empty(tmp_path, monkeypatch):
     conn.close()
     monkeypatch.setattr(BetterTouchToolApp, "DATA_DIR", btt_dir)
     assert BetterTouchToolApp.discover_preset_names() == ["Real"]
+
+
+def test_btt_from_config_reads_presets(tmp_path):
+    from dotsync.apps.bettertouchtool import BetterTouchToolApp
+    from dotsync.config import Config
+
+    cfg = Config(
+        dir=tmp_path,
+        apps=["bettertouchtool"],
+        bettertouchtool_presets=["Alpha", "Beta"],
+    )
+    app = BetterTouchToolApp.from_config(cfg)
+    assert app.presets == ["Alpha", "Beta"]
+
+
+def test_btt_from_config_falls_back_to_default_when_unset(tmp_path):
+    from dotsync.apps.bettertouchtool import BetterTouchToolApp
+    from dotsync.config import Config, DEFAULT_BTT_PRESETS
+
+    cfg = Config(dir=tmp_path, apps=[])  # bettertouchtool_presets defaults
+    app = BetterTouchToolApp.from_config(cfg)
+    assert app.presets == list(DEFAULT_BTT_PRESETS)
