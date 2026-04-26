@@ -59,6 +59,12 @@ class Config:
     apps: List[str]
     backup_dir: Optional[Path] = None
     backup_keep: int = DEFAULT_BACKUP_KEEP
+    # TODO: remove `bettertouchtool_presets` once one release has passed with
+    # `app_options` as the canonical home. BTT now reads from
+    # `cfg.app_options["bettertouchtool"]["presets"]` via from_config(); this
+    # field exists only as a legacy fallback for dotsync.toml files saved
+    # before Phase 6/7. When removed, also drop the legacy fallback in
+    # BetterTouchToolApp.from_config and the legacy migration in _read_btt_presets.
     bettertouchtool_presets: List[str] = field(default_factory=lambda: list(DEFAULT_BTT_PRESETS))
     app_options: dict = field(default_factory=dict)
 
