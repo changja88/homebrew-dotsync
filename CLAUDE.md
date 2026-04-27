@@ -13,7 +13,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 CLI는 **단일 패키지 + plugin 스타일 앱 레지스트리** 구조를 따른다.
 
-- `lib/dotsync/cli.py` — argparse dispatch (`init`, `config`, `from`, `to`, `status`, `apps`). `init`은 설치된 앱을 `detect_present()`로 자동 감지해 default로 제시하고, 사용자가 지정한 폴더에 `dotsync.toml`이 이미 있으면 그것을 채택한다. 종료 시 `export DOTSYNC_DIR=...` 한 줄을 안내한다 (셸 rc는 자동으로 건드리지 않는다).
+- `lib/dotsync/cli.py` — argparse dispatch (`init`, `config`, `from`, `to`, `status`, `apps`). `init`은 설치된 앱을 `detect_present()`로 자동 감지해 default로 제시하고, 사용자가 지정한 폴더에 `dotsync.toml`이 이미 있으면 그것을 채택한다. 종료 직전에 사용자 동의(`--yes` 또는 interactive 프롬프트)를 받아 `~/.zshrc`(또는 `~/.bash_profile`)에 `export DOTSYNC_DIR=...` 한 줄을 자동 추가한다 — 동의 없이는 절대 안 건드리고, `--no-shell-init`으로 명시적으로 끌 수 있다.
+- `lib/dotsync/shellrc.py` — 셸 rc 파일 감지(`detect_rc_path` via `$SHELL`)와 멱등 insert/update/skip 로직(`update_shell_rc`). 순수 함수만 두고, 동의 처리는 cli.py가 담당. 다른 `export DOTSYNC_DIR=` 라인이 이미 있으면 그 자리에서 갱신, 동일하면 무변경, 없으면 marker 주석과 함께 EOF에 append. rc 파일이 없으면 만들지 않는다(`rc_missing` 반환).
 - `lib/dotsync/config.py` — **dotsync는 사용자가 지정한 sync 폴더 외에는 어디에도 파일/디렉토리를 만들지 않는다.** 실제 config는 `<sync_folder>/dotsync.toml`에만 존재한다. sync 폴더 위치는 (1) `$DOTSYNC_DIR` 환경변수 (절대경로), (2) cwd에서 위로 거슬러 올라가며 `dotsync.toml` 검색(git 방식) 중 하나로 발견한다. 폴더가 자기 위치를 자기에게 적을 필요 없으므로 dotsync.toml에 `dir` 필드 없음. stdlib `tomllib` 사용.
 - `lib/dotsync/backup.py` — `to` 직전 스냅샷을 `<sync_folder>/.backups/<YYYYMMDD_HHMMSS>/<app>/`(default)에 저장, `backup_keep` 기준으로 회전. 사용자 폴더 외부에는 절대 쓰지 않는다.
 - `lib/dotsync/ui.py` — ANSI 컬러 출력 (`NO_COLOR` 환경변수 존중). 출력 톤(`▶ ↳ ✓ ⚠ ✗ ✔`)은 기존 Make 스타일과 동일.
@@ -26,6 +27,7 @@ CLI는 **단일 패키지 + plugin 스타일 앱 레지스트리** 구조를 따
 - **런타임은 stdlib only.** 허용: `tomllib`, `argparse`, `shutil`, `pathlib`, `subprocess`, `json`, `dataclasses`, `abc`, `hashlib`, `re`, `sqlite3`. 외부 의존성 금지 — Homebrew formula를 단순하게 유지(`depends_on "python@3.12"` 하나)하고 vendoring을 피하기 위함.
 - **macOS 전용.** BTT sync는 `osascript`로 BTT 앱을 제어하고, Ghostty/zsh/Claude 경로도 macOS 관례를 가정한다. v0.1에서 Linux 분기 추가하지 말 것.
 - **dotsync 자체는 네트워크 호출 없음.** Claude 앱 모듈이 `claude plugin install --scope user`을 shell-out하거나(marketplace fetch), BTT가 `osascript`을 호출하는 것이 유일한 외부 프로세스.
+- **사용자 sync 폴더 외부에 dotsync가 쓰는 곳은 단 한 곳: 사용자 동의 받은 셸 rc 파일.** 그 외에는 `~/.dotsync` 같은 메타 디렉토리도 만들지 않는다. shellrc 모듈은 rc 파일이 없으면 새로 만들지도 않는다 — 멱등성과 안전성 우선.
 - **`from` = local → folder, `to` = folder → local.** `to` 전에는 항상 백업. `from` 전에는 백업하지 않음 — 사용자 sync 폴더는 사용자의 git 책임.
 - **App ABC는 `tracked_files(target_dir) -> list[FilePair]`를 선언적 모델로 제공.** 단일/다중 파일 sync는 base의 default `sync_from`/`sync_to`/`status`가 알아서 처리(fail-fast 누락 체크 + 백업 후 덮어쓰기 포함). 외부 프로세스/복합 동작이 필요한 앱(claude, BTT)만 sync 메서드를 override한다.
 - **외부 프로세스 호출은 `self._run_external(cmd, desc=..., fail_mode="warn"|"raise")`로 통일.** `warn` 모드 실패는 `self.warnings`에 누적되어 cli summary가 surface한다. Claude의 `claude` CLI 부재 같은 부분 실패는 더이상 sync 전체를 죽이지 않는다.

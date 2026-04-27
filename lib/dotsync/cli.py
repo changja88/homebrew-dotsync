@@ -16,6 +16,12 @@ from dotsync.config import (
     load_config,
     save_config,
 )
+from dotsync.shellrc import (
+    ShellRcResult,
+    detect_rc_path,
+    export_line,
+    update_shell_rc,
+)
 from dotsync.welcome import print_welcome
 
 # Existing call sites use this name; alias to the registry's source of truth.
@@ -35,6 +41,8 @@ def _build_parser() -> argparse.ArgumentParser:
     init.add_argument("--yes", action="store_true", help="non-interactive: skip prompts")
     init.add_argument("--quiet", action="store_true", help="skip the welcome banner")
     init.add_argument("--no-hints", action="store_true", help="skip the post-init 'next steps' block")
+    init.add_argument("--no-shell-init", action="store_true",
+                      help="don't add `export DOTSYNC_DIR=...` to ~/.zshrc (or ~/.bash_profile)")
 
     sub.add_parser("welcome", help="print the welcome banner")
 
@@ -90,8 +98,9 @@ def cmd_init(args) -> int:
     has_overrides = bool(args.apps) or bool(args.btt_presets)
     if existing.exists() and not has_overrides:
         ui.done(f"adopted existing config → {existing}")
+        rc_result = _maybe_update_shell_rc(args, dir_path)
         if not args.no_hints:
-            _print_init_hints(dir_path)
+            _print_init_hints(dir_path, rc_result)
         return 0
 
     ui.done(f"folder ready → {dir_path}")
@@ -124,8 +133,9 @@ def cmd_init(args) -> int:
     save_config(Config(dir=dir_path, apps=apps, app_options=app_options))
     print()
     ui.done(f"config saved → {folder_config_path(dir_path)}")
+    rc_result = _maybe_update_shell_rc(args, dir_path)
     if not args.no_hints:
-        _print_init_hints(dir_path)
+        _print_init_hints(dir_path, rc_result)
     return 0
 
 
@@ -209,8 +219,51 @@ def _resolve_apps_for_init(args) -> "list[str] | None":
     return result
 
 
-def _print_init_hints(folder: Path) -> None:
-    """Friendly post-init guidance, styled with the design system."""
+def _maybe_update_shell_rc(args, dir_path: Path) -> "ShellRcResult | None":
+    """Step 3 (optional): wire `export DOTSYNC_DIR=...` into the user's rc.
+
+    Behavior:
+      - `--no-shell-init`            → skip entirely, return None.
+      - unknown shell (fish, nu, …) → no rc to safely edit, return None.
+      - `--yes`                      → consent is implicit, write directly.
+      - interactive                  → prompt with [Y/n] (default Y).
+      - rc file doesn't exist        → don't create one, return None.
+    """
+    if args.no_shell_init:
+        return None
+    rc_path = detect_rc_path()
+    if rc_path is None:
+        return None
+    if not rc_path.exists():
+        # Don't create rc files on the user's behalf; the next-steps block
+        # will tell them what to add manually.
+        return None
+
+    if not args.yes:
+        line = export_line(dir_path)
+        ans = ui.ask(
+            f"Add `{line}` to {rc_path.name}?",
+            default="Y/n",
+        ).lower()
+        if ans not in ("", "y", "yes"):
+            return None
+
+    result = update_shell_rc(rc_path, dir_path)
+    if result.action in ("added", "updated"):
+        ui.done(f"{rc_path} updated — open a new shell or `source {rc_path.name}` to apply")
+    elif result.action == "already_set":
+        ui.dim(f"{rc_path.name} already has the export — left as is")
+    return result
+
+
+def _print_init_hints(folder: Path, rc_result: "ShellRcResult | None" = None) -> None:
+    """Friendly post-init guidance, styled with the design system.
+
+    When the rc file was just updated (`added` / `updated` / `already_set`),
+    the big "Add this one line" block shrinks to a one-liner pointer at the
+    rc file. Otherwise (declined, unsupported shell, rc missing) we render
+    the full export instructions so the user has a copy-paste target.
+    """
     bullet = ui._wrap(ui.PRIMARY, "▸")
     bold = lambda s: ui._wrap(ui.BOLD, s)
     primary_bold = lambda s: ui._wrap(ui.PRIMARY, ui._wrap(ui.BOLD, s))
@@ -221,13 +274,23 @@ def _print_init_hints(folder: Path) -> None:
     ui.divider("next steps")
     print()
 
+    rc_handled = rc_result is not None and rc_result.action in (
+        "added", "updated", "already_set",
+    )
+    export_str = f'export {ENV_VAR}="{folder}"'
+
     # 1. shell rc — the most important follow-up
-    export_line = f'export {ENV_VAR}="{folder}"'
-    print(f"  {bullet} 1. {bold('Make dotsync available everywhere')}")
-    print(f"       {dim('Add this one line to ~/.zshrc:')}")
-    print()
-    print(f"         {primary_bold(export_line)}")
-    print()
+    if rc_handled:
+        rc_path = rc_result.rc_path
+        print(f"  {bullet} 1. {bold('dotsync is wired into your shell')}")
+        print(f"       {dim(f'Already in {rc_path.name}: ')}{primary_bold(export_str)}")
+        print()
+    else:
+        print(f"  {bullet} 1. {bold('Make dotsync available everywhere')}")
+        print(f"       {dim('Add this one line to ~/.zshrc:')}")
+        print()
+        print(f"         {primary_bold(export_str)}")
+        print()
 
     # 2. first sync
     print(f"  {bullet} 2. {bold('Take a snapshot of your local configs')}")

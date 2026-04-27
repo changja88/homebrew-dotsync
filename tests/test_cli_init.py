@@ -430,3 +430,130 @@ def test_init_btt_yes_without_flag_uses_default_skips_discovery(fake_home, tmp_p
     assert rc == 0
     cfg_text = (target / "dotsync.toml").read_text()
     assert 'bettertouchtool_presets = ["Master_bt"]' in cfg_text
+
+
+# ---------- shell rc auto-init -------------------------------------------
+
+def test_init_yes_auto_adds_export_to_zshrc(fake_home, tmp_path, monkeypatch):
+    """--yes mode = explicit user consent → write `export DOTSYNC_DIR=...` to
+    ~/.zshrc so future shells find the sync folder without manual setup."""
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    _no_btt(monkeypatch, fake_home)
+    rc = fake_home / ".zshrc"
+    rc.write_text("# pre-existing\nalias ll='ls -la'\n")
+
+    target = tmp_path / "configs"
+    code = main(["init", "--dir", str(target), "--apps", "zsh", "--yes"])
+    assert code == 0
+    text = rc.read_text()
+    assert "alias ll='ls -la'" in text         # original preserved
+    assert f'export DOTSYNC_DIR="{target}"' in text
+
+
+def test_init_yes_with_no_shell_init_flag_skips(fake_home, tmp_path, monkeypatch):
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    _no_btt(monkeypatch, fake_home)
+    rc = fake_home / ".zshrc"
+    rc.write_text("# pre-existing\n")
+
+    target = tmp_path / "configs"
+    code = main(["init", "--dir", str(target), "--apps", "zsh",
+                 "--yes", "--no-shell-init"])
+    assert code == 0
+    assert "DOTSYNC_DIR" not in rc.read_text()
+
+
+def test_init_yes_is_idempotent_on_rc(fake_home, tmp_path, monkeypatch):
+    """Calling init twice with the same dir leaves a single export line."""
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    _no_btt(monkeypatch, fake_home)
+    rc = fake_home / ".zshrc"
+    rc.write_text("")
+
+    target = tmp_path / "configs"
+    main(["init", "--dir", str(target), "--apps", "zsh", "--yes"])
+    main(["init", "--dir", str(target), "--apps", "zsh", "--yes"])
+    text = rc.read_text()
+    line = f'export DOTSYNC_DIR="{target}"'
+    assert text.count(line) == 1
+
+
+def test_init_yes_replaces_old_export_when_dir_changes(fake_home, tmp_path, monkeypatch):
+    """User moved their sync folder → init points the export at the new path."""
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    _no_btt(monkeypatch, fake_home)
+    rc = fake_home / ".zshrc"
+    old = tmp_path / "old"
+    new = tmp_path / "new"
+    rc.write_text(f'export DOTSYNC_DIR="{old}"\n')
+
+    code = main(["init", "--dir", str(new), "--apps", "zsh", "--yes"])
+    assert code == 0
+    text = rc.read_text()
+    assert f'export DOTSYNC_DIR="{new}"' in text
+    assert f'export DOTSYNC_DIR="{old}"' not in text
+
+
+def test_init_yes_unsupported_shell_falls_back_to_hint(fake_home, tmp_path, monkeypatch, capsys):
+    """fish/nu/etc. → don't touch any rc, but still surface the export line in
+    the next-steps hints so the user can wire it manually."""
+    monkeypatch.setenv("SHELL", "/usr/local/bin/fish")
+    _no_btt(monkeypatch, fake_home)
+    rc = fake_home / ".zshrc"
+    rc.write_text("# untouched\n")
+
+    target = tmp_path / "configs"
+    code = main(["init", "--dir", str(target), "--apps", "zsh", "--yes"])
+    assert code == 0
+    assert rc.read_text() == "# untouched\n"
+    out = capsys.readouterr().out
+    assert "DOTSYNC_DIR" in out                # still in the hints block
+
+
+def test_init_interactive_prompts_and_accepts_default(fake_home, tmp_path, monkeypatch):
+    """Default to Y when the user just hits Enter on the rc-add prompt."""
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    _no_btt(monkeypatch, fake_home)
+    rc = fake_home / ".zshrc"
+    rc.write_text("")
+
+    target = tmp_path / "configs"
+    # dir + 4 picker fallback Enters + rc-add prompt Enter
+    answers = iter([str(target), "", "", "", "", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    code = main(["init"])
+    assert code == 0
+    assert f'export DOTSYNC_DIR="{target}"' in rc.read_text()
+
+
+def test_init_interactive_decline_skips_rc(fake_home, tmp_path, monkeypatch):
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    _no_btt(monkeypatch, fake_home)
+    rc = fake_home / ".zshrc"
+    rc.write_text("")
+
+    target = tmp_path / "configs"
+    # dir + 4 picker fallback Enters + 'n' on rc prompt
+    answers = iter([str(target), "", "", "", "", "n"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+
+    code = main(["init"])
+    assert code == 0
+    assert "DOTSYNC_DIR" not in rc.read_text()
+
+
+def test_init_yes_prints_rc_updated_confirmation(fake_home, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    monkeypatch.setenv("NO_COLOR", "1")
+    _no_btt(monkeypatch, fake_home)
+    rc = fake_home / ".zshrc"
+    rc.write_text("")
+
+    target = tmp_path / "configs"
+    code = main(["init", "--dir", str(target), "--apps", "zsh", "--yes"])
+    assert code == 0
+    out = capsys.readouterr().out
+    # Some confirmation must reference the rc path so the user knows what happened
+    assert ".zshrc" in out
+    assert "DOTSYNC_DIR" in out

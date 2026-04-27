@@ -39,8 +39,9 @@ class Dotsync < Formula
         dotsync welcome   # quickstart guide
         dotsync init      # pick a sync folder + auto-detect apps
 
-      `dotsync init` will print the exact `export DOTSYNC_DIR=...` line to
-      add to your shell rc so dotsync works from any directory.
+      `dotsync init` will offer to add `export DOTSYNC_DIR=...` to your
+      shell rc (~/.zshrc or ~/.bash_profile) so dotsync works from any
+      directory. Pass --no-shell-init to skip the auto-write.
     EOS
   end
 

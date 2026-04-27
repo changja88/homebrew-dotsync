@@ -4,9 +4,15 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def isolate_env(monkeypatch):
-    """Auto-applied: scrub env vars that affect dotsync's behavior."""
+    """Auto-applied: scrub env vars that affect dotsync's behavior.
+
+    SHELL is also blanked by default so the new shell-rc auto-init step
+    short-circuits unless a test explicitly opts in via monkeypatch.setenv.
+    Tests that need to exercise rc auto-write must set SHELL themselves.
+    """
     monkeypatch.delenv("DOTSYNC_DIR", raising=False)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("SHELL", raising=False)
 
 
 @pytest.fixture
