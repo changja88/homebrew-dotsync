@@ -8,6 +8,7 @@ edits.
 from __future__ import annotations
 from dotsync.apps.base import App
 from dotsync.apps.claude import ClaudeApp
+from dotsync.apps.codex import CodexApp
 from dotsync.apps.ghostty import GhosttyApp
 from dotsync.apps.bettertouchtool import BetterTouchToolApp
 from dotsync.apps.zsh import ZshApp
@@ -15,6 +16,7 @@ from dotsync.apps.zsh import ZshApp
 # Order is the canonical app order (used by detect_present and any UI listing).
 APP_CLASSES: tuple[type[App], ...] = (
     ClaudeApp,
+    CodexApp,
     GhosttyApp,
     BetterTouchToolApp,
     ZshApp,

@@ -89,6 +89,16 @@ def test_format_summary_lists_synced_apps(monkeypatch):
     assert "claude" in out and "ghostty" in out and "zsh" in out
 
 
+def test_format_summary_fits_all_supported_apps(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    out = ui.format_summary(
+        ok=5, warn=0, error=0, duration_ms=2300,
+        synced=["claude", "codex", "ghostty", "bettertouchtool", "zsh"],
+    )
+    lines = out.splitlines()
+    assert max(len(line) for line in lines) == len(lines[0])
+
+
 def test_format_summary_separates_applied_and_unchanged(monkeypatch):
     """For `dotsync to`, the summary distinguishes apps that actually
     changed (applied) from apps that were already in sync (unchanged)."""

@@ -10,7 +10,7 @@ A CLI that consolidates your macOS app configs into **one folder of your choice*
 
 ### Purpose
 
-dotsync consolidates your macOS app configs (Claude Code, Ghostty, BetterTouchTool, zsh) into **one folder of your choice** and keeps it in two-way sync with the apps. That folder can be anywhere — a fresh directory like `~/my-configs`, or a folder you already track in git or sync via iCloud Drive. Tool (dotsync) and data (the folder) are separated, so setting up a new Mac is just a matter of bringing the folder along.
+dotsync consolidates your macOS app configs (Claude Code, Codex CLI, Ghostty, BetterTouchTool, zsh) into **one folder of your choice** and keeps it in two-way sync with the apps. That folder can be anywhere — a fresh directory like `~/my-configs`, or a folder you already track in git or sync via iCloud Drive. Tool (dotsync) and data (the folder) are separated, so setting up a new Mac is just a matter of bringing the folder along.
 
 ### Install
 
@@ -54,11 +54,12 @@ dotsync init
 #   Pick apps to track   ↑/↓ move · space toggle · enter submit
 #
 #   ▸ [x] claude              installed
+#     [x] codex               installed
 #     [x] ghostty             installed
 #     [x] bettertouchtool     installed · 2 presets
 #     [x] zsh                 installed
 #
-# ✔ tracked: claude · ghostty · bettertouchtool · zsh
+# ✔ tracked: claude · codex · ghostty · bettertouchtool · zsh
 # ✔ BetterTouchTool presets = Master_bt, Mini_bt   (auto-detected)
 # ✔ config saved → /Users/you/Desktop/dotsync_config/dotsync.toml
 ```
@@ -123,15 +124,15 @@ dotsync from claude         # one app
 The banner's `→` arrow shows direction; the summary box names every app that actually synced.
 
 ```
-╭──────────────────────────────────────────────────────────╮
-│ dotsync from                                             │
-│ 4 apps  →  /Users/you/Desktop/dotsync_config             │
-╰──────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────╮
+│ dotsync from                                                     │
+│ 5 apps  →  /Users/you/Desktop/dotsync_config                     │
+╰──────────────────────────────────────────────────────────────────╯
 ... (per-app sections) ...
-╭──────────────────────────────────────────────────────────╮
-│ ✓ synced     claude · ghostty · bettertouchtool · zsh    │
-│ 4 ok  ·  0 warn  ·  0 error  ·  2.3s                     │
-╰──────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────╮
+│ ✓ synced     claude · codex · ghostty · bettertouchtool · zsh    │
+│ 5 ok  ·  0 warn  ·  0 error  ·  2.3s                             │
+╰──────────────────────────────────────────────────────────────────╯
 ```
 
 Then commit the folder to git or let iCloud sync it — that's your backup.
@@ -149,16 +150,18 @@ dotsync to --all --yes          # automation (no prompt)
 The summary box separates apps that actually changed (`✓ applied`) from apps that were already in sync (`· unchanged`).
 
 ```
-╭──────────────────────────────────────────────────────────╮
-│ ✓ applied     ghostty · bettertouchtool                  │
-│ · unchanged   claude · zsh                               │
-│ 4 ok  ·  0 warn  ·  0 error  ·  3.1s                     │
-╰──────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────╮
+│ ✓ applied    ghostty · bettertouchtool                           │
+│ · unchanged  claude · codex · zsh                                │
+│ 5 ok  ·  0 warn  ·  0 error  ·  3.1s                             │
+╰──────────────────────────────────────────────────────────────────╯
 ```
 
 Each `to` snapshots the about-to-be-overwritten local files into `<sync folder>/.backups/<YYYYMMDD_HHMMSS>/<app>/` (lives inside your sync folder; add `.backups/` to `.gitignore` if you don't want it tracked). Only the 10 most recent sessions are kept — tune via `backup_keep` in `dotsync.toml`.
 
 **Claude restoration goes beyond file copy.** dotsync replays the recorded marketplaces (`claude plugin marketplace add`) and runs `claude plugin install --scope user` for every plugin in `installed_plugins.json`, then re-applies the `enabledPlugins` map so disabled plugins stay disabled. If the `claude` CLI isn't installed, plugin replay is skipped (logged as a warning) and the file copy still succeeds.
+
+**Codex sync is intentionally narrow.** dotsync copies `~/.codex/config.toml` and optional `~/.codex/AGENTS.md`. It does not copy `auth.json`, history, logs, sqlite state, caches, skills, plugins, or vendor imports.
 
 **BetterTouchTool must be running** for `from` / `to` / `status` — dotsync drives BTT via `osascript`. If BTT isn't running, `status` reports `unknown` and `from` / `to` raise an error.
 
@@ -171,6 +174,7 @@ $ dotsync status
 ▸ status                              ~/dotsync_config
 
   ✓ zsh              clean
+  ✓ codex            clean
   ⚠ ghostty          dirty   local-newer  — config
   ✗ claude           missing
   · bettertouchtool  unknown — BTT not running
@@ -207,7 +211,7 @@ Picker keys:
 In non-TTY environments (CI, piped stdin) it automatically falls back to
 sequential per-app y/n prompts.
 
-Supported apps: `claude`, `ghostty`, `bettertouchtool`, `zsh`
+Supported apps: `claude`, `codex`, `ghostty`, `bettertouchtool`, `zsh`
 
 ### Adding a new app
 
@@ -221,7 +225,7 @@ Help: `dotsync --help`, `dotsync <command> --help`. All output respects `NO_COLO
 
 ### 목적
 
-dotsync는 macOS의 앱 설정(Claude Code, Ghostty, BetterTouchTool, zsh)을 **사용자가 지정한 단일 폴더**에 모아서 양방향으로 동기화한다. 그 폴더는 어디든 OK — 새 폴더(`~/my-configs`)일 수도 있고, 이미 git이나 iCloud Drive로 관리 중인 폴더일 수도 있다. 도구(dotsync)와 데이터(폴더)를 분리해서, 새 Mac 셋업도 폴더만 옮겨오면 끝난다.
+dotsync는 macOS의 앱 설정(Claude Code, Codex CLI, Ghostty, BetterTouchTool, zsh)을 **사용자가 지정한 단일 폴더**에 모아서 양방향으로 동기화한다. 그 폴더는 어디든 OK — 새 폴더(`~/my-configs`)일 수도 있고, 이미 git이나 iCloud Drive로 관리 중인 폴더일 수도 있다. 도구(dotsync)와 데이터(폴더)를 분리해서, 새 Mac 셋업도 폴더만 옮겨오면 끝난다.
 
 ### 설치
 
@@ -262,11 +266,12 @@ dotsync init
 #   Pick apps to track   ↑/↓ move · space toggle · enter submit
 #
 #   ▸ [x] claude              installed
+#     [x] codex               installed
 #     [x] ghostty             installed
 #     [x] bettertouchtool     installed · 2 presets
 #     [x] zsh                 installed
 #
-# ✔ tracked: claude · ghostty · bettertouchtool · zsh
+# ✔ tracked: claude · codex · ghostty · bettertouchtool · zsh
 # ✔ BetterTouchTool presets = Master_bt, Mini_bt   (auto-detected)
 # ✔ config saved → /Users/you/Desktop/dotsync_config/dotsync.toml
 ```
@@ -330,15 +335,15 @@ dotsync from claude         # 한 앱만
 banner 의 `→` 화살표는 sync 방향을, summary box 는 어떤 앱이 실제로 동기화됐는지를 한 줄로 보여준다.
 
 ```
-╭──────────────────────────────────────────────────────────╮
-│ dotsync from                                             │
-│ 4 apps  →  /Users/you/Desktop/dotsync_config             │
-╰──────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────╮
+│ dotsync from                                                     │
+│ 5 apps  →  /Users/you/Desktop/dotsync_config                     │
+╰──────────────────────────────────────────────────────────────────╯
 ... (per-app sections) ...
-╭──────────────────────────────────────────────────────────╮
-│ ✓ synced     claude · ghostty · bettertouchtool · zsh    │
-│ 4 ok  ·  0 warn  ·  0 error  ·  2.3s                     │
-╰──────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────╮
+│ ✓ synced     claude · codex · ghostty · bettertouchtool · zsh    │
+│ 5 ok  ·  0 warn  ·  0 error  ·  2.3s                             │
+╰──────────────────────────────────────────────────────────────────╯
 ```
 
 이후 그 폴더를 git에 커밋하거나 iCloud로 동기화해두면 백업이 된다.
@@ -356,16 +361,18 @@ dotsync to --all --yes          # automation (no prompt)
 `to` 의 summary box 는 실제로 변경된 앱(`✓ applied`)과 이미 같은 상태였던 앱(`· unchanged`)을 분리해서 보여준다.
 
 ```
-╭──────────────────────────────────────────────────────────╮
-│ ✓ applied     ghostty · bettertouchtool                  │
-│ · unchanged   claude · zsh                               │
-│ 4 ok  ·  0 warn  ·  0 error  ·  3.1s                     │
-╰──────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────╮
+│ ✓ applied    ghostty · bettertouchtool                           │
+│ · unchanged  claude · codex · zsh                                │
+│ 5 ok  ·  0 warn  ·  0 error  ·  3.1s                             │
+╰──────────────────────────────────────────────────────────────────╯
 ```
 
 `to` 직전 로컬 파일은 `<sync 폴더>/.backups/<YYYYMMDD_HHMMSS>/<app>/`에 자동 백업된다 (사용자 폴더 안에만 쌓이므로 git에 올리고 싶지 않으면 `.gitignore`에 `.backups/` 추가). 백업은 최근 10세션만 유지되며, `dotsync.toml` 의 `backup_keep` 으로 조절한다.
 
 **Claude 복원은 파일 복사 이상이다.** dotsync 가 기록된 marketplace 들을 다시 등록하고 (`claude plugin marketplace add`), `installed_plugins.json` 에 적힌 모든 plugin 을 `claude plugin install --scope user` 로 재설치한 뒤, `enabledPlugins` 맵에 따라 비활성 상태였던 plugin 은 다시 disable 한다. `claude` CLI 가 설치돼 있지 않으면 plugin 복원만 skip되고 (warning 으로 노출) 파일 복사는 정상 진행된다.
+
+**Codex sync 범위는 의도적으로 좁다.** dotsync 는 `~/.codex/config.toml` 과 선택적 `~/.codex/AGENTS.md` 만 복사한다. `auth.json`, history, logs, sqlite state, caches, skills, plugins, vendor imports 는 복사하지 않는다.
 
 **BetterTouchTool 은 실행 중이어야 한다.** `from` / `to` / `status` 모두 `osascript` 으로 BTT 를 제어하기 때문. BTT 가 꺼져 있으면 `status` 는 `unknown`, `from` / `to` 는 에러로 멈춘다.
 
@@ -378,6 +385,7 @@ $ dotsync status
 ▸ status                              ~/dotsync_config
 
   ✓ zsh              clean
+  ✓ codex            clean
   ⚠ ghostty          dirty   local-newer  — config
   ✗ claude           missing
   · bettertouchtool  unknown — BTT not running
@@ -413,7 +421,7 @@ picker 키 안내:
 
 CI나 파이프 같은 비-TTY 환경에서는 자동으로 앱별 y/n 프롬프트로 fallback 한다.
 
-지원 앱: `claude`, `ghostty`, `bettertouchtool`, `zsh`
+지원 앱: `claude`, `codex`, `ghostty`, `bettertouchtool`, `zsh`
 
 ### 새 앱 추가
 

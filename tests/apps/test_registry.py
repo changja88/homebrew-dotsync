@@ -45,6 +45,9 @@ def test_detect_present_returns_only_locally_installed(fake_home, monkeypatch):
     # claude: present
     (fake_home / ".claude").mkdir()
     (fake_home / ".claude" / "settings.json").write_text("{}")
+    # codex: present
+    (fake_home / ".codex").mkdir()
+    (fake_home / ".codex" / "config.toml").write_text("model = 'x'\n")
     # ghostty: absent (no config dir)
     # bettertouchtool: absent (point APP_PATH to nowhere)
     monkeypatch.setattr(
@@ -54,6 +57,7 @@ def test_detect_present_returns_only_locally_installed(fake_home, monkeypatch):
     detected = detect_present()
     assert "zsh" in detected
     assert "claude" in detected
+    assert "codex" in detected
     assert "ghostty" not in detected
     assert "bettertouchtool" not in detected
 

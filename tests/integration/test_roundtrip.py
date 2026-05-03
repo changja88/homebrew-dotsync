@@ -3,12 +3,17 @@ non-source side. Regression net for Phase 4's default sync_from/sync_to."""
 import shutil
 from pathlib import Path
 import pytest
+from dotsync.apps.codex import CodexApp
 from dotsync.apps.ghostty import GhosttyApp
 from dotsync.apps.zsh import ZshApp
 
 
 def _ghostty_local(home: Path) -> Path:
     return home / "Library" / "Application Support" / "com.mitchellh.ghostty" / "config.ghostty"
+
+
+def _codex_dir(home: Path) -> Path:
+    return home / ".codex"
 
 
 def test_ghostty_from_then_to_does_not_change_local(fake_home, tmp_path):
@@ -61,6 +66,39 @@ def test_zsh_to_then_from_does_not_change_stored(fake_home, tmp_path):
     ZshApp().sync_from(target)
 
     assert (target / "zsh" / ".zshrc").read_text() == "alias ll='ls -la'\n"
+
+
+def test_codex_from_then_to_does_not_change_local(fake_home, tmp_path):
+    cdir = _codex_dir(fake_home)
+    cdir.mkdir()
+    (cdir / "config.toml").write_text('model = "gpt-5.2"\n')
+    (cdir / "AGENTS.md").write_text("# instructions\n")
+    target = tmp_path / "sync"; target.mkdir()
+    backup = tmp_path / "backup"; backup.mkdir()
+
+    CodexApp().sync_from(target)
+    CodexApp().sync_to(target, backup)
+
+    assert (cdir / "config.toml").read_text() == 'model = "gpt-5.2"\n'
+    assert (cdir / "AGENTS.md").read_text() == "# instructions\n"
+
+
+def test_codex_to_then_from_does_not_change_stored(fake_home, tmp_path):
+    target = tmp_path / "sync"; target.mkdir()
+    stored_dir = target / "codex"; stored_dir.mkdir()
+    (stored_dir / "config.toml").write_text('approval_policy = "on-request"\n')
+    (stored_dir / "AGENTS.md").write_text("# shared instructions\n")
+    backup = tmp_path / "backup"; backup.mkdir()
+    cdir = _codex_dir(fake_home)
+    cdir.mkdir()
+    (cdir / "config.toml").write_text("old\n")
+    (cdir / "AGENTS.md").write_text("old agents\n")
+
+    CodexApp().sync_to(target, backup)
+    CodexApp().sync_from(target)
+
+    assert (stored_dir / "config.toml").read_text() == 'approval_policy = "on-request"\n'
+    assert (stored_dir / "AGENTS.md").read_text() == "# shared instructions\n"
 
 
 def test_ghostty_from_then_to_creates_backup_before_overwriting(fake_home, tmp_path):

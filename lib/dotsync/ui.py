@@ -48,7 +48,7 @@ GLYPH_BOX_BR = "╯"
 
 # --- internals --------------------------------------------------------------
 
-BOX_WIDTH = 60   # inner width of banner / summary boxes
+BOX_WIDTH = 64   # inner width of banner / summary boxes
 
 
 def _color_enabled() -> bool:
