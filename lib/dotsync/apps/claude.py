@@ -8,10 +8,12 @@ from typing import Any
 from dotsync import ui
 from dotsync.apps.base import App, AppStatus, diff_files, _hash
 
+GLOBAL_RULE_DIRECTORIES = ("commands", "agents", "skills", "output-styles")
+
 
 class ClaudeApp(App):
     name = "claude"
-    description = "Claude Code (settings + plugins + MCP servers)"
+    description = "Claude Code (settings + plugins + MCP servers + global rules)"
 
     @classmethod
     def is_present_locally(cls) -> bool:
@@ -69,6 +71,17 @@ class ClaudeApp(App):
             except OSError:
                 pass
 
+    def _sync_from_global_rules(self, target_dir: Path) -> None:
+        """Mirror present user-level Claude global rules from local to stored."""
+        cdir = self._claude_dir()
+        stored = self._stored(target_dir)
+
+        src_md = cdir / "CLAUDE.md"
+        if src_md.exists():
+            stored.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_md, stored / "CLAUDE.md")
+            ui.ok("CLAUDE.md")
+
     def sync_from(self, target_dir: Path) -> None:
         ui.dim(f"source → {self._claude_dir()}")
 
@@ -96,6 +109,8 @@ class ClaudeApp(App):
                 dst_dir.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst_dir / "config.json")
                 ui.ok(f"plugins/{plugin_name}/config.json")
+
+        self._sync_from_global_rules(target_dir)
 
     def sync_to(self, target_dir: Path, backup_dir: Path) -> None:
         stored = self._stored(target_dir)

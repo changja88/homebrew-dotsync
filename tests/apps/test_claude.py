@@ -429,3 +429,24 @@ def test_mirror_tree_cleans_up_empty_subdirs(tmp_path):
     ClaudeApp()._mirror_tree(src, dst)
     assert not (dst / "old_subdir" / "ghost.md").exists()
     assert not (dst / "old_subdir").exists()
+
+
+def test_sync_from_copies_global_md(fake_home, tmp_path):
+    _make_local(fake_home)
+    (fake_home / ".claude" / "CLAUDE.md").write_text("global rules\n")
+    target = tmp_path / "configs"; target.mkdir()
+
+    ClaudeApp().sync_from(target)
+
+    assert (target / "claude" / "CLAUDE.md").read_text() == "global rules\n"
+
+
+def test_sync_from_skips_when_local_md_absent(fake_home, tmp_path):
+    _make_local(fake_home)
+    target = tmp_path / "configs"; target.mkdir()
+    (target / "claude").mkdir()
+    (target / "claude" / "CLAUDE.md").write_text("preserved\n")
+
+    ClaudeApp().sync_from(target)
+
+    assert (target / "claude" / "CLAUDE.md").read_text() == "preserved\n"
