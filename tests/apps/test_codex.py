@@ -33,7 +33,7 @@ def test_sync_from_missing_config_raises(fake_home, tmp_path):
         _codex_app().sync_from(target)
 
 
-def test_sync_from_removes_stale_stored_agents_when_local_agents_missing(fake_home, tmp_path):
+def test_sync_from_preserves_stored_agents_when_local_agents_missing(fake_home, tmp_path):
     cdir = _codex_dir(fake_home)
     cdir.mkdir()
     (cdir / "config.toml").write_text("X\n")
@@ -43,7 +43,58 @@ def test_sync_from_removes_stale_stored_agents_when_local_agents_missing(fake_ho
 
     _codex_app().sync_from(target)
 
-    assert not (target / "codex" / "AGENTS.md").exists()
+    assert (target / "codex" / "AGENTS.md").read_text() == "STALE\n"
+
+
+def test_sync_from_copies_optional_files_when_present(fake_home, tmp_path):
+    cdir = _codex_dir(fake_home)
+    cdir.mkdir()
+    (cdir / "config.toml").write_text("X\n")
+    (cdir / "AGENTS.override.md").write_text("# override\n")
+    (cdir / "hooks.json").write_text("{}\n")
+    (cdir / "requirements.toml").write_text("[features]\n")
+    target = tmp_path / "configs"
+    target.mkdir()
+
+    _codex_app().sync_from(target)
+
+    stored = target / "codex"
+    assert (stored / "AGENTS.override.md").read_text() == "# override\n"
+    assert (stored / "hooks.json").read_text() == "{}\n"
+    assert (stored / "requirements.toml").read_text() == "[features]\n"
+
+
+def test_sync_from_mirrors_rules_directory(fake_home, tmp_path):
+    cdir = _codex_dir(fake_home)
+    cdir.mkdir()
+    (cdir / "config.toml").write_text("X\n")
+    (cdir / "rules").mkdir()
+    (cdir / "rules" / "default.rules").write_text("allow\n")
+    target = tmp_path / "configs"
+    (target / "codex" / "rules").mkdir(parents=True)
+    (target / "codex" / "rules" / "stale.rules").write_text("stale\n")
+
+    _codex_app().sync_from(target)
+
+    assert (target / "codex" / "rules" / "default.rules").read_text() == "allow\n"
+    assert not (target / "codex" / "rules" / "stale.rules").exists()
+
+
+def test_sync_from_mirrors_user_skills_but_excludes_system_skills(fake_home, tmp_path):
+    cdir = _codex_dir(fake_home)
+    cdir.mkdir()
+    (cdir / "config.toml").write_text("X\n")
+    (cdir / "skills" / "mine").mkdir(parents=True)
+    (cdir / "skills" / "mine" / "SKILL.md").write_text("# mine\n")
+    (cdir / "skills" / ".system" / "builtin").mkdir(parents=True)
+    (cdir / "skills" / ".system" / "builtin" / "SKILL.md").write_text("# builtin\n")
+    target = tmp_path / "configs"
+    target.mkdir()
+
+    _codex_app().sync_from(target)
+
+    assert (target / "codex" / "skills" / "mine" / "SKILL.md").read_text() == "# mine\n"
+    assert not (target / "codex" / "skills" / ".system").exists()
 
 
 def test_sync_to_backs_up_and_writes_config_and_agents(fake_home, tmp_path):
@@ -84,6 +135,67 @@ def test_sync_to_without_stored_agents_keeps_local_agents(fake_home, tmp_path):
     assert not (backup / "codex" / "AGENTS.md").exists()
 
 
+def test_sync_to_restores_optional_files_with_backup(fake_home, tmp_path):
+    cdir = _codex_dir(fake_home)
+    cdir.mkdir()
+    (cdir / "config.toml").write_text("OLD\n")
+    (cdir / "AGENTS.override.md").write_text("OLD OVERRIDE\n")
+    target = tmp_path / "configs"
+    (target / "codex").mkdir(parents=True)
+    (target / "codex" / "config.toml").write_text("NEW\n")
+    (target / "codex" / "AGENTS.override.md").write_text("NEW OVERRIDE\n")
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    _codex_app().sync_to(target, backup)
+
+    assert (cdir / "AGENTS.override.md").read_text() == "NEW OVERRIDE\n"
+    assert (backup / "codex" / "AGENTS.override.md").read_text() == "OLD OVERRIDE\n"
+
+
+def test_sync_to_mirrors_rules_directory_with_backup(fake_home, tmp_path):
+    cdir = _codex_dir(fake_home)
+    cdir.mkdir()
+    (cdir / "config.toml").write_text("OLD\n")
+    (cdir / "rules").mkdir()
+    (cdir / "rules" / "old.rules").write_text("old\n")
+    (cdir / "rules" / "shared.rules").write_text("local\n")
+    target = tmp_path / "configs"
+    (target / "codex" / "rules").mkdir(parents=True)
+    (target / "codex" / "config.toml").write_text("NEW\n")
+    (target / "codex" / "rules" / "shared.rules").write_text("stored\n")
+    (target / "codex" / "rules" / "new.rules").write_text("new\n")
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    _codex_app().sync_to(target, backup)
+
+    assert (cdir / "rules" / "shared.rules").read_text() == "stored\n"
+    assert (cdir / "rules" / "new.rules").read_text() == "new\n"
+    assert not (cdir / "rules" / "old.rules").exists()
+    assert (backup / "codex" / "rules" / "old.rules").read_text() == "old\n"
+    assert (backup / "codex" / "rules" / "shared.rules").read_text() == "local\n"
+
+
+def test_sync_to_preserves_local_system_skills(fake_home, tmp_path):
+    cdir = _codex_dir(fake_home)
+    cdir.mkdir()
+    (cdir / "config.toml").write_text("OLD\n")
+    (cdir / "skills" / ".system" / "builtin").mkdir(parents=True)
+    (cdir / "skills" / ".system" / "builtin" / "SKILL.md").write_text("# builtin\n")
+    target = tmp_path / "configs"
+    (target / "codex" / "skills" / "mine").mkdir(parents=True)
+    (target / "codex" / "config.toml").write_text("NEW\n")
+    (target / "codex" / "skills" / "mine" / "SKILL.md").write_text("# mine\n")
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    _codex_app().sync_to(target, backup)
+
+    assert (cdir / "skills" / "mine" / "SKILL.md").read_text() == "# mine\n"
+    assert (cdir / "skills" / ".system" / "builtin" / "SKILL.md").read_text() == "# builtin\n"
+
+
 def test_status_clean_when_config_and_agents_match(fake_home, tmp_path):
     cdir = _codex_dir(fake_home)
     cdir.mkdir()
@@ -111,6 +223,51 @@ def test_status_dirty_when_agents_differ(fake_home, tmp_path):
 
     assert status.state == "dirty"
     assert "AGENTS.md" in status.details
+
+
+def test_status_dirty_when_optional_file_exists_on_one_side(fake_home, tmp_path):
+    cdir = _codex_dir(fake_home)
+    cdir.mkdir()
+    (cdir / "config.toml").write_text("X")
+    (cdir / "AGENTS.override.md").write_text("LOCAL")
+    target = tmp_path / "configs"
+    (target / "codex").mkdir(parents=True)
+    (target / "codex" / "config.toml").write_text("X")
+
+    status = _codex_app().status(target)
+
+    assert status.state == "dirty"
+    assert "AGENTS.override.md" in status.details
+
+
+def test_status_dirty_when_rules_directory_differs(fake_home, tmp_path):
+    cdir = _codex_dir(fake_home)
+    cdir.mkdir()
+    (cdir / "config.toml").write_text("X")
+    (cdir / "rules").mkdir()
+    (cdir / "rules" / "default.rules").write_text("LOCAL")
+    target = tmp_path / "configs"
+    (target / "codex" / "rules").mkdir(parents=True)
+    (target / "codex" / "config.toml").write_text("X")
+    (target / "codex" / "rules" / "default.rules").write_text("STORED")
+
+    status = _codex_app().status(target)
+
+    assert status.state == "dirty"
+    assert "rules/default.rules" in status.details
+
+
+def test_status_ignores_system_skills(fake_home, tmp_path):
+    cdir = _codex_dir(fake_home)
+    cdir.mkdir()
+    (cdir / "config.toml").write_text("X")
+    (cdir / "skills" / ".system" / "builtin").mkdir(parents=True)
+    (cdir / "skills" / ".system" / "builtin" / "SKILL.md").write_text("LOCAL")
+    target = tmp_path / "configs"
+    (target / "codex" / "skills").mkdir(parents=True)
+    (target / "codex" / "config.toml").write_text("X")
+
+    assert _codex_app().status(target).state == "clean"
 
 
 def test_status_ignores_agents_when_missing_on_both_sides(fake_home, tmp_path):

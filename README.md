@@ -161,7 +161,7 @@ Each `to` snapshots the about-to-be-overwritten local files into `<sync folder>/
 
 **Claude restoration goes beyond file copy.** dotsync replays the recorded marketplaces (`claude plugin marketplace add`) and runs `claude plugin install --scope user` for every plugin in `installed_plugins.json`, then re-applies the `enabledPlugins` map so disabled plugins stay disabled. If the `claude` CLI isn't installed, plugin replay is skipped (logged as a warning) and the file copy still succeeds. dotsync also mirrors your user-level global rules — `~/.claude/CLAUDE.md` and the `commands/`, `agents/`, `skills/`, `output-styles/` directories — so personal slash commands, subagents, and skills follow you across machines.
 
-**Codex sync is intentionally narrow.** dotsync copies `~/.codex/config.toml` and optional `~/.codex/AGENTS.md`. It does not copy `auth.json`, history, logs, sqlite state, caches, skills, plugins, or vendor imports.
+**Codex sync mirrors user-authored global settings.** dotsync copies `~/.codex/config.toml`, optional instruction/config files (`AGENTS.md`, `AGENTS.override.md`, `hooks.json`, `requirements.toml`), and the user-managed `rules/` and `skills/` directories. It skips generated or sensitive state such as `auth.json`, history, sessions, logs, sqlite state, caches, system skills, plugins, memories, and vendor imports.
 
 **BetterTouchTool must be running** for `from` / `to` / `status` — dotsync drives BTT via `osascript`. If BTT isn't running, `status` reports `unknown` and `from` / `to` raise an error.
 
@@ -372,7 +372,7 @@ dotsync to --all --yes          # automation (no prompt)
 
 **Claude 복원은 파일 복사 이상이다.** dotsync 가 기록된 marketplace 들을 다시 등록하고 (`claude plugin marketplace add`), `installed_plugins.json` 에 적힌 모든 plugin 을 `claude plugin install --scope user` 로 재설치한 뒤, `enabledPlugins` 맵에 따라 비활성 상태였던 plugin 은 다시 disable 한다. `claude` CLI 가 설치돼 있지 않으면 plugin 복원만 skip되고 (warning 으로 노출) 파일 복사는 정상 진행된다. 사용자 레벨 글로벌 룰 — `~/.claude/CLAUDE.md` 와 `commands/`, `agents/`, `skills/`, `output-styles/` 디렉토리 — 도 mirror 되므로, 개인 슬래시 커맨드·서브에이전트·스킬이 머신 간에 따라온다.
 
-**Codex sync 범위는 의도적으로 좁다.** dotsync 는 `~/.codex/config.toml` 과 선택적 `~/.codex/AGENTS.md` 만 복사한다. `auth.json`, history, logs, sqlite state, caches, skills, plugins, vendor imports 는 복사하지 않는다.
+**Codex sync 는 사용자가 작성한 글로벌 설정을 mirror 한다.** dotsync 는 `~/.codex/config.toml`, 선택적 instruction/config 파일(`AGENTS.md`, `AGENTS.override.md`, `hooks.json`, `requirements.toml`), 그리고 사용자가 관리하는 `rules/`, `skills/` 디렉토리를 복사한다. `auth.json`, history, sessions, logs, sqlite state, caches, system skills, plugins, memories, vendor imports 같은 생성/민감 상태는 복사하지 않는다.
 
 **BetterTouchTool 은 실행 중이어야 한다.** `from` / `to` / `status` 모두 `osascript` 으로 BTT 를 제어하기 때문. BTT 가 꺼져 있으면 `status` 는 `unknown`, `from` / `to` 는 에러로 멈춘다.
 

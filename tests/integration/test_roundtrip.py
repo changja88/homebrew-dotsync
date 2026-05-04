@@ -73,6 +73,12 @@ def test_codex_from_then_to_does_not_change_local(fake_home, tmp_path):
     cdir.mkdir()
     (cdir / "config.toml").write_text('model = "gpt-5.2"\n')
     (cdir / "AGENTS.md").write_text("# instructions\n")
+    (cdir / "rules").mkdir()
+    (cdir / "rules" / "default.rules").write_text("allow\n")
+    (cdir / "skills" / "mine").mkdir(parents=True)
+    (cdir / "skills" / "mine" / "SKILL.md").write_text("# mine\n")
+    (cdir / "skills" / ".system" / "builtin").mkdir(parents=True)
+    (cdir / "skills" / ".system" / "builtin" / "SKILL.md").write_text("# builtin\n")
     target = tmp_path / "sync"; target.mkdir()
     backup = tmp_path / "backup"; backup.mkdir()
 
@@ -81,6 +87,10 @@ def test_codex_from_then_to_does_not_change_local(fake_home, tmp_path):
 
     assert (cdir / "config.toml").read_text() == 'model = "gpt-5.2"\n'
     assert (cdir / "AGENTS.md").read_text() == "# instructions\n"
+    assert (cdir / "rules" / "default.rules").read_text() == "allow\n"
+    assert (cdir / "skills" / "mine" / "SKILL.md").read_text() == "# mine\n"
+    assert (cdir / "skills" / ".system" / "builtin" / "SKILL.md").read_text() == "# builtin\n"
+    assert not (target / "codex" / "skills" / ".system").exists()
 
 
 def test_codex_to_then_from_does_not_change_stored(fake_home, tmp_path):
@@ -88,6 +98,10 @@ def test_codex_to_then_from_does_not_change_stored(fake_home, tmp_path):
     stored_dir = target / "codex"; stored_dir.mkdir()
     (stored_dir / "config.toml").write_text('approval_policy = "on-request"\n')
     (stored_dir / "AGENTS.md").write_text("# shared instructions\n")
+    (stored_dir / "rules").mkdir()
+    (stored_dir / "rules" / "default.rules").write_text("prompt\n")
+    (stored_dir / "skills" / "shared").mkdir(parents=True)
+    (stored_dir / "skills" / "shared" / "SKILL.md").write_text("# shared\n")
     backup = tmp_path / "backup"; backup.mkdir()
     cdir = _codex_dir(fake_home)
     cdir.mkdir()
@@ -99,6 +113,8 @@ def test_codex_to_then_from_does_not_change_stored(fake_home, tmp_path):
 
     assert (stored_dir / "config.toml").read_text() == 'approval_policy = "on-request"\n'
     assert (stored_dir / "AGENTS.md").read_text() == "# shared instructions\n"
+    assert (stored_dir / "rules" / "default.rules").read_text() == "prompt\n"
+    assert (stored_dir / "skills" / "shared" / "SKILL.md").read_text() == "# shared\n"
 
 
 def test_ghostty_from_then_to_creates_backup_before_overwriting(fake_home, tmp_path):
