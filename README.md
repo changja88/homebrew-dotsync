@@ -159,7 +159,7 @@ The summary box separates apps that actually changed (`✓ applied`) from apps t
 
 Each `to` snapshots the about-to-be-overwritten local files into `<sync folder>/.backups/<YYYYMMDD_HHMMSS>/<app>/` (lives inside your sync folder; add `.backups/` to `.gitignore` if you don't want it tracked). Only the 10 most recent sessions are kept — tune via `backup_keep` in `dotsync.toml`.
 
-**Claude restoration goes beyond file copy.** dotsync replays the recorded marketplaces (`claude plugin marketplace add`) and runs `claude plugin install --scope user` for every plugin in `installed_plugins.json`, then re-applies the `enabledPlugins` map so disabled plugins stay disabled. If the `claude` CLI isn't installed, plugin replay is skipped (logged as a warning) and the file copy still succeeds.
+**Claude restoration goes beyond file copy.** dotsync replays the recorded marketplaces (`claude plugin marketplace add`) and runs `claude plugin install --scope user` for every plugin in `installed_plugins.json`, then re-applies the `enabledPlugins` map so disabled plugins stay disabled. If the `claude` CLI isn't installed, plugin replay is skipped (logged as a warning) and the file copy still succeeds. dotsync also mirrors your user-level global rules — `~/.claude/CLAUDE.md` and the `commands/`, `agents/`, `skills/`, `output-styles/` directories — so personal slash commands, subagents, and skills follow you across machines.
 
 **Codex sync is intentionally narrow.** dotsync copies `~/.codex/config.toml` and optional `~/.codex/AGENTS.md`. It does not copy `auth.json`, history, logs, sqlite state, caches, skills, plugins, or vendor imports.
 
@@ -370,7 +370,7 @@ dotsync to --all --yes          # automation (no prompt)
 
 `to` 직전 로컬 파일은 `<sync 폴더>/.backups/<YYYYMMDD_HHMMSS>/<app>/`에 자동 백업된다 (사용자 폴더 안에만 쌓이므로 git에 올리고 싶지 않으면 `.gitignore`에 `.backups/` 추가). 백업은 최근 10세션만 유지되며, `dotsync.toml` 의 `backup_keep` 으로 조절한다.
 
-**Claude 복원은 파일 복사 이상이다.** dotsync 가 기록된 marketplace 들을 다시 등록하고 (`claude plugin marketplace add`), `installed_plugins.json` 에 적힌 모든 plugin 을 `claude plugin install --scope user` 로 재설치한 뒤, `enabledPlugins` 맵에 따라 비활성 상태였던 plugin 은 다시 disable 한다. `claude` CLI 가 설치돼 있지 않으면 plugin 복원만 skip되고 (warning 으로 노출) 파일 복사는 정상 진행된다.
+**Claude 복원은 파일 복사 이상이다.** dotsync 가 기록된 marketplace 들을 다시 등록하고 (`claude plugin marketplace add`), `installed_plugins.json` 에 적힌 모든 plugin 을 `claude plugin install --scope user` 로 재설치한 뒤, `enabledPlugins` 맵에 따라 비활성 상태였던 plugin 은 다시 disable 한다. `claude` CLI 가 설치돼 있지 않으면 plugin 복원만 skip되고 (warning 으로 노출) 파일 복사는 정상 진행된다. 사용자 레벨 글로벌 룰 — `~/.claude/CLAUDE.md` 와 `commands/`, `agents/`, `skills/`, `output-styles/` 디렉토리 — 도 mirror 되므로, 개인 슬래시 커맨드·서브에이전트·스킬이 머신 간에 따라온다.
 
 **Codex sync 범위는 의도적으로 좁다.** dotsync 는 `~/.codex/config.toml` 과 선택적 `~/.codex/AGENTS.md` 만 복사한다. `auth.json`, history, logs, sqlite state, caches, skills, plugins, vendor imports 는 복사하지 않는다.
 
