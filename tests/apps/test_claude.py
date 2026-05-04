@@ -558,3 +558,45 @@ def test_status_merges_base_dirty_with_global_md_diff(fake_home, tmp_path):
     assert status.state == "dirty"
     assert "settings.json" in status.details
     assert "CLAUDE.md" in status.details
+
+
+def test_sync_from_mirrors_commands_directory(fake_home, tmp_path):
+    _make_local(fake_home)
+    cdir = fake_home / ".claude"
+    (cdir / "commands").mkdir()
+    (cdir / "commands" / "foo.md").write_text("foo\n")
+    target = tmp_path / "configs"; target.mkdir()
+    (target / "claude").mkdir()
+    (target / "claude" / "commands").mkdir()
+    (target / "claude" / "commands" / "stale.md").write_text("stale\n")
+
+    ClaudeApp().sync_from(target)
+
+    assert (target / "claude" / "commands" / "foo.md").read_text() == "foo\n"
+    assert not (target / "claude" / "commands" / "stale.md").exists()
+
+
+def test_sync_from_skips_when_local_directory_absent(fake_home, tmp_path):
+    _make_local(fake_home)
+    target = tmp_path / "configs"; target.mkdir()
+    (target / "claude").mkdir()
+    (target / "claude" / "commands").mkdir()
+    (target / "claude" / "commands" / "preserved.md").write_text("keep\n")
+
+    ClaudeApp().sync_from(target)
+
+    assert (target / "claude" / "commands" / "preserved.md").read_text() == "keep\n"
+
+
+def test_sync_from_handles_all_global_rule_directories(fake_home, tmp_path):
+    _make_local(fake_home)
+    cdir = fake_home / ".claude"
+    for name in ("commands", "agents", "skills", "output-styles"):
+        (cdir / name).mkdir()
+        (cdir / name / "item.md").write_text(name)
+    target = tmp_path / "configs"; target.mkdir()
+
+    ClaudeApp().sync_from(target)
+
+    for name in ("commands", "agents", "skills", "output-styles"):
+        assert (target / "claude" / name / "item.md").read_text() == name

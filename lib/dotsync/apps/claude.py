@@ -82,6 +82,12 @@ class ClaudeApp(App):
             shutil.copy2(src_md, stored / "CLAUDE.md")
             ui.ok("CLAUDE.md")
 
+        for name in GLOBAL_RULE_DIRECTORIES:
+            src_dir = cdir / name
+            if src_dir.exists():
+                self._mirror_tree(src_dir, stored / name)
+                ui.ok(f"{name}/")
+
     def _sync_to_global_rules(self, target_dir: Path, backup_dir: Path) -> None:
         """Restore present stored user-level Claude global rules to local."""
         cdir = self._claude_dir()
