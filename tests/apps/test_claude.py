@@ -336,3 +336,46 @@ def test_sync_to_warns_instead_of_raising_when_claude_cli_missing(fake_home, tmp
 
     assert (fake_home / ".claude" / "settings.json").read_text()  # got copied
     assert any("claude" in w.lower() for w in app.warnings)
+
+
+def test_diff_tree_both_absent_returns_empty(tmp_path):
+    app = ClaudeApp()
+    added, removed, modified = app._diff_tree(tmp_path / "a", tmp_path / "b")
+    assert added == set() and removed == set() and modified == set()
+
+
+def test_diff_tree_only_stored_returns_all_added(tmp_path):
+    stored = tmp_path / "stored"
+    stored.mkdir()
+    (stored / "foo.md").write_text("x")
+    (stored / "sub").mkdir()
+    (stored / "sub" / "bar.md").write_text("y")
+    app = ClaudeApp()
+    added, removed, modified = app._diff_tree(tmp_path / "local", stored)
+    assert added == {Path("foo.md"), Path("sub/bar.md")}
+    assert removed == set() and modified == set()
+
+
+def test_diff_tree_only_local_returns_all_removed(tmp_path):
+    local = tmp_path / "local"
+    local.mkdir()
+    (local / "foo.md").write_text("x")
+    app = ClaudeApp()
+    added, removed, modified = app._diff_tree(local, tmp_path / "stored")
+    assert added == set() and removed == {Path("foo.md")} and modified == set()
+
+
+def test_diff_tree_classifies_added_removed_modified(tmp_path):
+    local = tmp_path / "local"; local.mkdir()
+    stored = tmp_path / "stored"; stored.mkdir()
+    (local / "same.md").write_text("same")
+    (stored / "same.md").write_text("same")
+    (local / "different.md").write_text("v1")
+    (stored / "different.md").write_text("v2")
+    (local / "only-local.md").write_text("local")
+    (stored / "only-stored.md").write_text("stored")
+    app = ClaudeApp()
+    added, removed, modified = app._diff_tree(local, stored)
+    assert added == {Path("only-stored.md")}
+    assert removed == {Path("only-local.md")}
+    assert modified == {Path("different.md")}

@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 from dotsync import ui
-from dotsync.apps.base import App, AppStatus, diff_files
+from dotsync.apps.base import App, AppStatus, diff_files, _hash
 
 
 class ClaudeApp(App):
@@ -25,6 +25,24 @@ class ClaudeApp(App):
 
     def _stored(self, target_dir: Path) -> Path:
         return target_dir / self.name
+
+    def _diff_tree(
+        self, local: Path, stored: Path
+    ) -> tuple[set[Path], set[Path], set[Path]]:
+        """Return (added_in_stored, removed_in_stored, modified) relative paths."""
+        local_files = (
+            {f.relative_to(local) for f in local.rglob("*") if f.is_file()}
+            if local.exists() else set()
+        )
+        stored_files = (
+            {f.relative_to(stored) for f in stored.rglob("*") if f.is_file()}
+            if stored.exists() else set()
+        )
+        added = stored_files - local_files
+        removed = local_files - stored_files
+        common = local_files & stored_files
+        modified = {rel for rel in common if _hash(local / rel) != _hash(stored / rel)}
+        return added, removed, modified
 
     def sync_from(self, target_dir: Path) -> None:
         ui.dim(f"source → {self._claude_dir()}")
