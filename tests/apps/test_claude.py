@@ -379,3 +379,53 @@ def test_diff_tree_classifies_added_removed_modified(tmp_path):
     assert added == {Path("only-stored.md")}
     assert removed == {Path("only-local.md")}
     assert modified == {Path("different.md")}
+
+
+def test_mirror_tree_creates_dst_when_absent(tmp_path):
+    src = tmp_path / "src"; src.mkdir()
+    (src / "foo.md").write_text("hello")
+    dst = tmp_path / "dst"
+    ClaudeApp()._mirror_tree(src, dst)
+    assert (dst / "foo.md").read_text() == "hello"
+
+
+def test_mirror_tree_overwrites_existing_files(tmp_path):
+    src = tmp_path / "src"; src.mkdir()
+    (src / "foo.md").write_text("new")
+    dst = tmp_path / "dst"; dst.mkdir()
+    (dst / "foo.md").write_text("old")
+    ClaudeApp()._mirror_tree(src, dst)
+    assert (dst / "foo.md").read_text() == "new"
+
+
+def test_mirror_tree_deletes_dst_only_files(tmp_path):
+    src = tmp_path / "src"; src.mkdir()
+    (src / "keep.md").write_text("keep")
+    dst = tmp_path / "dst"; dst.mkdir()
+    (dst / "keep.md").write_text("keep")
+    (dst / "extra.md").write_text("extra")
+    ClaudeApp()._mirror_tree(src, dst)
+    assert (dst / "keep.md").exists()
+    assert not (dst / "extra.md").exists()
+
+
+def test_mirror_tree_handles_nested_subdirectories(tmp_path):
+    src = tmp_path / "src"; src.mkdir()
+    (src / "a").mkdir()
+    (src / "a" / "b").mkdir()
+    (src / "a" / "b" / "deep.md").write_text("deep")
+    dst = tmp_path / "dst"
+    ClaudeApp()._mirror_tree(src, dst)
+    assert (dst / "a" / "b" / "deep.md").read_text() == "deep"
+
+
+def test_mirror_tree_cleans_up_empty_subdirs(tmp_path):
+    src = tmp_path / "src"; src.mkdir()
+    (src / "keep.md").write_text("keep")
+    dst = tmp_path / "dst"; dst.mkdir()
+    (dst / "keep.md").write_text("keep")
+    (dst / "old_subdir").mkdir()
+    (dst / "old_subdir" / "ghost.md").write_text("ghost")
+    ClaudeApp()._mirror_tree(src, dst)
+    assert not (dst / "old_subdir" / "ghost.md").exists()
+    assert not (dst / "old_subdir").exists()

@@ -44,6 +44,31 @@ class ClaudeApp(App):
         modified = {rel for rel in common if _hash(local / rel) != _hash(stored / rel)}
         return added, removed, modified
 
+    def _mirror_tree(self, src: Path, dst: Path) -> None:
+        """Strict full mirror: make dst's file tree match src."""
+        dst.mkdir(parents=True, exist_ok=True)
+        src_rels = {f.relative_to(src) for f in src.rglob("*") if f.is_file()}
+        dst_rels = {f.relative_to(dst) for f in dst.rglob("*") if f.is_file()}
+
+        for rel in src_rels:
+            target = dst / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src / rel, target)
+
+        for rel in dst_rels - src_rels:
+            (dst / rel).unlink()
+
+        subdirs = sorted(
+            (d for d in dst.rglob("*") if d.is_dir()),
+            key=lambda p: len(p.parts),
+            reverse=True,
+        )
+        for d in subdirs:
+            try:
+                d.rmdir()
+            except OSError:
+                pass
+
     def sync_from(self, target_dir: Path) -> None:
         ui.dim(f"source → {self._claude_dir()}")
 
