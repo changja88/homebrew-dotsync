@@ -656,3 +656,53 @@ def test_sync_to_skips_directory_when_stored_absent(fake_home, tmp_path):
         ClaudeApp().sync_to(target, backup)
 
     assert (cdir_local / "commands" / "local-only.md").read_text() == "keep\n"
+
+
+def test_status_dirty_lists_files_when_few_changes(fake_home, tmp_path):
+    _make_local(fake_home, settings={"theme": "x"})
+    cdir = fake_home / ".claude"
+    (cdir / "commands").mkdir()
+    (cdir / "commands" / "foo.md").write_text("local\n")
+    target = tmp_path / "configs"
+    stored_cdir = _make_minimal_stored(target)
+    (stored_cdir / "commands").mkdir()
+    (stored_cdir / "commands" / "foo.md").write_text("stored\n")
+    (stored_cdir / "commands" / "bar.md").write_text("new\n")
+
+    status = ClaudeApp().status(target)
+
+    assert status.state == "dirty"
+    assert "commands/foo.md" in status.details
+    assert "commands/bar.md" in status.details
+
+
+def test_status_dirty_summarizes_when_many_changes(fake_home, tmp_path):
+    _make_local(fake_home, settings={"theme": "x"})
+    cdir = fake_home / ".claude"
+    (cdir / "commands").mkdir()
+    target = tmp_path / "configs"
+    stored_cdir = _make_minimal_stored(target)
+    (stored_cdir / "commands").mkdir()
+    for i in range(10):
+        (stored_cdir / "commands" / f"f{i}.md").write_text(str(i))
+
+    status = ClaudeApp().status(target)
+
+    assert status.state == "dirty"
+    assert "commands/ (10 changed)" in status.details
+    assert "commands/f0.md" not in status.details
+
+
+def test_status_clean_when_global_directories_match(fake_home, tmp_path):
+    _make_local(fake_home, settings={"theme": "x"})
+    cdir = fake_home / ".claude"
+    (cdir / "commands").mkdir()
+    (cdir / "commands" / "foo.md").write_text("same\n")
+    target = tmp_path / "configs"
+    stored_cdir = _make_minimal_stored(target)
+    (stored_cdir / "commands").mkdir()
+    (stored_cdir / "commands" / "foo.md").write_text("same\n")
+
+    status = ClaudeApp().status(target)
+
+    assert status.state == "clean"

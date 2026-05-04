@@ -133,6 +133,14 @@ class ClaudeApp(App):
             flat_paths.append("CLAUDE.md")
             summary_parts.append(("CLAUDE.md", 1))
 
+        for name in GLOBAL_RULE_DIRECTORIES:
+            added, removed, modified = self._diff_tree(cdir / name, stored / name)
+            count = len(added) + len(removed) + len(modified)
+            if count > 0:
+                for rel in sorted(added | removed | modified):
+                    flat_paths.append(f"{name}/{rel}")
+                summary_parts.append((f"{name}/", count))
+
         if not flat_paths:
             return AppStatus(state="clean")
 
