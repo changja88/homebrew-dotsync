@@ -31,6 +31,18 @@ def _make_local(home: Path, plugins: dict | None = None, marketplaces: dict | No
         (pdir / name / "config.json").write_text(json.dumps(cfg))
 
 
+def _make_minimal_stored(target: Path) -> Path:
+    cdir = target / "claude"
+    (cdir / "plugins").mkdir(parents=True)
+    (cdir / "settings.json").write_text(json.dumps({"theme": "x"}))
+    (cdir / "mcp-servers.json").write_text("{}")
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"version": 2, "plugins": {}})
+    )
+    (cdir / "plugins" / "known_marketplaces.json").write_text("{}")
+    return cdir
+
+
 def test_sync_from_copies_all_files(fake_home, tmp_path):
     _make_local(
         fake_home,
@@ -600,3 +612,47 @@ def test_sync_from_handles_all_global_rule_directories(fake_home, tmp_path):
 
     for name in ("commands", "agents", "skills", "output-styles"):
         assert (target / "claude" / name / "item.md").read_text() == name
+
+
+def test_sync_to_mirrors_directory_with_full_backup(fake_home, tmp_path):
+    _make_local(fake_home, settings={"theme": "x"})
+    cdir_local = fake_home / ".claude"
+    (cdir_local / "commands").mkdir()
+    (cdir_local / "commands" / "old.md").write_text("old\n")
+    (cdir_local / "commands" / "shared.md").write_text("local\n")
+    target = tmp_path / "configs"
+    stored_cdir = _make_minimal_stored(target)
+    (stored_cdir / "commands").mkdir()
+    (stored_cdir / "commands" / "shared.md").write_text("stored\n")
+    (stored_cdir / "commands" / "new.md").write_text("new\n")
+    backup = tmp_path / "backup"; backup.mkdir()
+
+    with patch("dotsync.apps.claude.subprocess.run") as run:
+        run.return_value.returncode = 0
+        run.return_value.stdout = ""
+        run.return_value.stderr = ""
+        ClaudeApp().sync_to(target, backup)
+
+    assert (cdir_local / "commands" / "shared.md").read_text() == "stored\n"
+    assert (cdir_local / "commands" / "new.md").read_text() == "new\n"
+    assert not (cdir_local / "commands" / "old.md").exists()
+    assert (backup / "claude" / "commands" / "old.md").read_text() == "old\n"
+    assert (backup / "claude" / "commands" / "shared.md").read_text() == "local\n"
+
+
+def test_sync_to_skips_directory_when_stored_absent(fake_home, tmp_path):
+    _make_local(fake_home, settings={"theme": "x"})
+    cdir_local = fake_home / ".claude"
+    (cdir_local / "commands").mkdir()
+    (cdir_local / "commands" / "local-only.md").write_text("keep\n")
+    target = tmp_path / "configs"
+    _make_minimal_stored(target)
+    backup = tmp_path / "backup"; backup.mkdir()
+
+    with patch("dotsync.apps.claude.subprocess.run") as run:
+        run.return_value.returncode = 0
+        run.return_value.stdout = ""
+        run.return_value.stderr = ""
+        ClaudeApp().sync_to(target, backup)
+
+    assert (cdir_local / "commands" / "local-only.md").read_text() == "keep\n"

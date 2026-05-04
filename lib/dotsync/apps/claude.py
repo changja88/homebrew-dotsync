@@ -104,6 +104,15 @@ class ClaudeApp(App):
             shutil.copy2(stored_md, local_md)
             ui.ok("CLAUDE.md")
 
+        for name in GLOBAL_RULE_DIRECTORIES:
+            stored_dir = stored / name
+            local_dir = cdir / name
+            if stored_dir.exists():
+                if local_dir.exists():
+                    shutil.copytree(local_dir, bdir / name, dirs_exist_ok=True)
+                self._mirror_tree(stored_dir, local_dir)
+                ui.ok(f"{name}/")
+
     def _diff_global_rules(self, target_dir: Path) -> AppStatus:
         """Compare user-level Claude global rules."""
         cdir = self._claude_dir()
