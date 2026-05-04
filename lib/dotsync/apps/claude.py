@@ -98,6 +98,45 @@ class ClaudeApp(App):
             shutil.copy2(stored_md, local_md)
             ui.ok("CLAUDE.md")
 
+    def _diff_global_rules(self, target_dir: Path) -> AppStatus:
+        """Compare user-level Claude global rules."""
+        cdir = self._claude_dir()
+        stored = self._stored(target_dir)
+
+        flat_paths: list[str] = []
+        summary_parts: list[tuple[str, int]] = []
+
+        local_md = cdir / "CLAUDE.md"
+        stored_md = stored / "CLAUDE.md"
+        md_changed = False
+        if local_md.exists() and stored_md.exists():
+            if _hash(local_md) != _hash(stored_md):
+                md_changed = True
+        elif local_md.exists() ^ stored_md.exists():
+            md_changed = True
+        if md_changed:
+            flat_paths.append("CLAUDE.md")
+            summary_parts.append(("CLAUDE.md", 1))
+
+        if not flat_paths:
+            return AppStatus(state="clean")
+
+        if len(flat_paths) <= 8:
+            details = ", ".join(flat_paths)
+        else:
+            details = ", ".join(f"{label} ({n} changed)" for label, n in summary_parts)
+        return AppStatus(state="dirty", details=details)
+
+    @staticmethod
+    def _merge_status(base: AppStatus, rules: AppStatus) -> AppStatus:
+        """Merge statuses with missing > dirty > clean priority."""
+        if base.state == "missing":
+            return base
+        if base.state == "clean" and rules.state == "clean":
+            return AppStatus(state="clean")
+        parts = [s for s in (base.details, rules.details) if s]
+        return AppStatus(state="dirty", details=", ".join(parts))
+
     def sync_from(self, target_dir: Path) -> None:
         ui.dim(f"source → {self._claude_dir()}")
 
@@ -206,7 +245,7 @@ class ClaudeApp(App):
             (cdir / "plugins" / "known_marketplaces.json", stored / "plugins" / "known_marketplaces.json"),
         ]
         base = diff_files(pairs)
-        if base.state in ("missing", "dirty"):
+        if base.state == "missing":
             return base
         local_cj = self._claude_json()
         stored_mcp = stored / "mcp-servers.json"
@@ -215,8 +254,12 @@ class ClaudeApp(App):
         local_mcp = json.loads(local_cj.read_text()).get("mcpServers", {})
         stored_mcp_data = json.loads(stored_mcp.read_text())
         if local_mcp != stored_mcp_data:
-            return AppStatus(state="dirty", details="mcp-servers.json")
-        return base
+            if base.state == "dirty":
+                base = AppStatus(state="dirty", details=f"{base.details}, mcp-servers.json")
+            else:
+                base = AppStatus(state="dirty", details="mcp-servers.json")
+        rules = self._diff_global_rules(target_dir)
+        return self._merge_status(base, rules)
 
     @staticmethod
     def _installed_plugin_names(installed_plugins_path: Path) -> list[str]:

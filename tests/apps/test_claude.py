@@ -498,3 +498,63 @@ def test_sync_to_skips_global_md_when_stored_absent(fake_home, tmp_path):
         ClaudeApp().sync_to(target, backup)
 
     assert (fake_home / ".claude" / "CLAUDE.md").read_text() == "local only\n"
+
+
+def test_status_clean_when_global_md_matches(fake_home, tmp_path):
+    _make_local(fake_home)
+    (fake_home / ".claude" / "CLAUDE.md").write_text("rules\n")
+    target = tmp_path / "configs"
+    cdir = target / "claude"
+    (cdir / "plugins").mkdir(parents=True)
+    (cdir / "settings.json").write_text(json.dumps({"theme": "dark"}))
+    (cdir / "mcp-servers.json").write_text("{}")
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"version": 2, "plugins": {}})
+    )
+    (cdir / "plugins" / "known_marketplaces.json").write_text("{}")
+    (cdir / "CLAUDE.md").write_text("rules\n")
+
+    status = ClaudeApp().status(target)
+
+    assert status.state == "clean"
+
+
+def test_status_dirty_when_global_md_differs(fake_home, tmp_path):
+    _make_local(fake_home)
+    (fake_home / ".claude" / "CLAUDE.md").write_text("local rules\n")
+    target = tmp_path / "configs"
+    cdir = target / "claude"
+    (cdir / "plugins").mkdir(parents=True)
+    (cdir / "settings.json").write_text(json.dumps({"theme": "dark"}))
+    (cdir / "mcp-servers.json").write_text("{}")
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"version": 2, "plugins": {}})
+    )
+    (cdir / "plugins" / "known_marketplaces.json").write_text("{}")
+    (cdir / "CLAUDE.md").write_text("stored rules\n")
+
+    status = ClaudeApp().status(target)
+
+    assert status.state == "dirty"
+    assert "CLAUDE.md" in status.details
+
+
+def test_status_merges_base_dirty_with_global_md_diff(fake_home, tmp_path):
+    _make_local(fake_home, settings={"theme": "old"})
+    (fake_home / ".claude" / "CLAUDE.md").write_text("local rules\n")
+    target = tmp_path / "configs"
+    cdir = target / "claude"
+    (cdir / "plugins").mkdir(parents=True)
+    (cdir / "settings.json").write_text(json.dumps({"theme": "new"}))
+    (cdir / "mcp-servers.json").write_text("{}")
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"version": 2, "plugins": {}})
+    )
+    (cdir / "plugins" / "known_marketplaces.json").write_text("{}")
+    (cdir / "CLAUDE.md").write_text("stored rules\n")
+
+    status = ClaudeApp().status(target)
+
+    assert status.state == "dirty"
+    assert "settings.json" in status.details
+    assert "CLAUDE.md" in status.details
