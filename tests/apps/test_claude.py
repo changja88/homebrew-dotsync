@@ -450,3 +450,51 @@ def test_sync_from_skips_when_local_md_absent(fake_home, tmp_path):
     ClaudeApp().sync_from(target)
 
     assert (target / "claude" / "CLAUDE.md").read_text() == "preserved\n"
+
+
+def test_sync_to_restores_global_md_with_backup(fake_home, tmp_path):
+    _make_local(fake_home, settings={"theme": "old"})
+    (fake_home / ".claude" / "CLAUDE.md").write_text("old rules\n")
+    target = tmp_path / "configs"
+    cdir = target / "claude"
+    (cdir / "plugins").mkdir(parents=True)
+    (cdir / "settings.json").write_text(json.dumps({"theme": "new"}))
+    (cdir / "mcp-servers.json").write_text("{}")
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"version": 2, "plugins": {}})
+    )
+    (cdir / "plugins" / "known_marketplaces.json").write_text("{}")
+    (cdir / "CLAUDE.md").write_text("new rules\n")
+    backup = tmp_path / "backup"; backup.mkdir()
+
+    with patch("dotsync.apps.claude.subprocess.run") as run:
+        run.return_value.returncode = 0
+        run.return_value.stdout = ""
+        run.return_value.stderr = ""
+        ClaudeApp().sync_to(target, backup)
+
+    assert (fake_home / ".claude" / "CLAUDE.md").read_text() == "new rules\n"
+    assert (backup / "claude" / "CLAUDE.md").read_text() == "old rules\n"
+
+
+def test_sync_to_skips_global_md_when_stored_absent(fake_home, tmp_path):
+    _make_local(fake_home, settings={"theme": "x"})
+    (fake_home / ".claude" / "CLAUDE.md").write_text("local only\n")
+    target = tmp_path / "configs"
+    cdir = target / "claude"
+    (cdir / "plugins").mkdir(parents=True)
+    (cdir / "settings.json").write_text(json.dumps({"theme": "x"}))
+    (cdir / "mcp-servers.json").write_text("{}")
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"version": 2, "plugins": {}})
+    )
+    (cdir / "plugins" / "known_marketplaces.json").write_text("{}")
+    backup = tmp_path / "backup"; backup.mkdir()
+
+    with patch("dotsync.apps.claude.subprocess.run") as run:
+        run.return_value.returncode = 0
+        run.return_value.stdout = ""
+        run.return_value.stderr = ""
+        ClaudeApp().sync_to(target, backup)
+
+    assert (fake_home / ".claude" / "CLAUDE.md").read_text() == "local only\n"

@@ -82,6 +82,22 @@ class ClaudeApp(App):
             shutil.copy2(src_md, stored / "CLAUDE.md")
             ui.ok("CLAUDE.md")
 
+    def _sync_to_global_rules(self, target_dir: Path, backup_dir: Path) -> None:
+        """Restore present stored user-level Claude global rules to local."""
+        cdir = self._claude_dir()
+        stored = self._stored(target_dir)
+        bdir = backup_dir / self.name
+
+        stored_md = stored / "CLAUDE.md"
+        local_md = cdir / "CLAUDE.md"
+        if stored_md.exists():
+            bdir.mkdir(parents=True, exist_ok=True)
+            if local_md.exists():
+                shutil.copy2(local_md, bdir / "CLAUDE.md")
+            cdir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(stored_md, local_md)
+            ui.ok("CLAUDE.md")
+
     def sync_from(self, target_dir: Path) -> None:
         ui.dim(f"source → {self._claude_dir()}")
 
@@ -176,6 +192,8 @@ class ClaudeApp(App):
         self._restore_plugins(stored)
 
         self._enforce_disabled(stored / "settings.json")
+
+        self._sync_to_global_rules(target_dir, backup_dir)
 
         ui.dim("hint: restart Claude Code to pick up new plugins")
 
