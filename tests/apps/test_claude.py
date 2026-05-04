@@ -706,3 +706,60 @@ def test_status_clean_when_global_directories_match(fake_home, tmp_path):
     status = ClaudeApp().status(target)
 
     assert status.state == "clean"
+
+
+def test_claude_global_md_round_trip_does_not_change_local(fake_home, tmp_path):
+    _make_local(fake_home)
+    (fake_home / ".claude" / "CLAUDE.md").write_text("rules\n")
+    target = tmp_path / "sync"; target.mkdir()
+    backup = tmp_path / "backup"; backup.mkdir()
+
+    with patch("dotsync.apps.claude.subprocess.run") as run:
+        run.return_value.returncode = 0
+        run.return_value.stdout = ""
+        run.return_value.stderr = ""
+        ClaudeApp().sync_from(target)
+        ClaudeApp().sync_to(target, backup)
+
+    assert (fake_home / ".claude" / "CLAUDE.md").read_text() == "rules\n"
+
+
+def test_claude_commands_directory_round_trip_does_not_change_local(fake_home, tmp_path):
+    _make_local(fake_home)
+    cdir = fake_home / ".claude"
+    (cdir / "commands").mkdir()
+    (cdir / "commands" / "foo.md").write_text("foo\n")
+    (cdir / "commands" / "sub").mkdir()
+    (cdir / "commands" / "sub" / "bar.md").write_text("bar\n")
+    target = tmp_path / "sync"; target.mkdir()
+    backup = tmp_path / "backup"; backup.mkdir()
+
+    with patch("dotsync.apps.claude.subprocess.run") as run:
+        run.return_value.returncode = 0
+        run.return_value.stdout = ""
+        run.return_value.stderr = ""
+        ClaudeApp().sync_from(target)
+        ClaudeApp().sync_to(target, backup)
+
+    assert (cdir / "commands" / "foo.md").read_text() == "foo\n"
+    assert (cdir / "commands" / "sub" / "bar.md").read_text() == "bar\n"
+
+
+def test_claude_global_rules_round_trip_to_then_from_preserves_stored(fake_home, tmp_path):
+    _make_local(fake_home)
+    target = tmp_path / "sync"; target.mkdir()
+    cdir_stored = _make_minimal_stored(target)
+    (cdir_stored / "CLAUDE.md").write_text("stored rules\n")
+    (cdir_stored / "agents").mkdir()
+    (cdir_stored / "agents" / "reviewer.md").write_text("reviewer\n")
+    backup = tmp_path / "backup"; backup.mkdir()
+
+    with patch("dotsync.apps.claude.subprocess.run") as run:
+        run.return_value.returncode = 0
+        run.return_value.stdout = ""
+        run.return_value.stderr = ""
+        ClaudeApp().sync_to(target, backup)
+        ClaudeApp().sync_from(target)
+
+    assert (cdir_stored / "CLAUDE.md").read_text() == "stored rules\n"
+    assert (cdir_stored / "agents" / "reviewer.md").read_text() == "reviewer\n"
