@@ -1,6 +1,7 @@
 from pathlib import Path
 from unittest.mock import patch
 import pytest
+from dotsync.apps.base import AppStatus
 from dotsync.apps.bettertouchtool import BetterTouchToolApp
 
 
@@ -172,6 +173,26 @@ def test_sync_from_failure_raises(tmp_path):
     with patch("dotsync.apps.bettertouchtool.subprocess.run", return_value=Fail()):
         with pytest.raises(RuntimeError, match="osascript"):
             BetterTouchToolApp(presets=["Master_bt"]).sync_from(target)
+
+
+def test_plan_to_reports_missing_preset(tmp_path):
+    app = BetterTouchToolApp(presets=["Missing"])
+
+    plan = app.plan_to(tmp_path)
+
+    assert plan.changes[0].kind == "missing-source"
+    assert plan.changes[0].label == "presets/Missing.bttpreset"
+
+
+def test_plan_from_reports_unknown_when_btt_status_unknown(tmp_path, monkeypatch):
+    app = BetterTouchToolApp(presets=["Master_bt"])
+
+    monkeypatch.setattr(app, "status", lambda target_dir: AppStatus("unknown", "BTT not running"))
+
+    plan = app.plan_from(tmp_path)
+
+    assert plan.changes[0].kind == "unknown"
+    assert "BTT not running" in plan.changes[0].details
 
 
 def test_sync_to_imports_preset(tmp_path):

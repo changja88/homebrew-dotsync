@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from dotsync import ui
 from dotsync.apps.base import App, AppStatus
+from dotsync.plan import AppPlan, Change, plan_file_copy
 
 # BTT's `export_preset` AppleScript returns "done" the moment the command is
 # accepted, but the actual file write happens asynchronously — empirically the
@@ -183,6 +184,43 @@ class BetterTouchToolApp(App):
                 f"stdout={out!r} stderr={result.stderr.strip()!r}. "
                 f"Is BetterTouchTool running?"
             )
+
+    def plan_from(self, target_dir: Path) -> AppPlan:
+        status = self.status(target_dir)
+        changes: list[Change] = []
+        if status.state == "unknown":
+            details = status.details or "cannot preview live BetterTouchTool presets"
+            return AppPlan(
+                self.name,
+                "from",
+                [Change("presets/", "unknown", details=details)],
+                self.description,
+            )
+        dirty = {
+            item.strip()
+            for item in status.details.split(",")
+            if item.strip()
+        }
+        for preset in self.presets:
+            label = f"presets/{preset}.bttpreset"
+            stored = self._stored(target_dir, preset)
+            if status.state == "missing" or f"{preset}.bttpreset" in dirty:
+                kind = "create" if not stored.exists() else "update"
+            else:
+                kind = "unchanged"
+            changes.append(Change(label, kind, dest=stored))
+        return AppPlan(self.name, "from", changes, self.description)
+
+    def plan_to(self, target_dir: Path) -> AppPlan:
+        changes = [
+            plan_file_copy(
+                f"presets/{preset}.bttpreset",
+                self._stored(target_dir, preset),
+                Path(f"BetterTouchTool:{preset}"),
+            )
+            for preset in self.presets
+        ]
+        return AppPlan(self.name, "to", changes, self.description)
 
     def sync_from(self, target_dir: Path) -> None:
         for preset in self.presets:
