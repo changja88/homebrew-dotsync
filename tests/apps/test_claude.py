@@ -797,6 +797,23 @@ def test_plan_to_reports_unknown_for_corrupt_stored_mcp_when_local_json_missing(
     assert "invalid" in changes["mcp-servers.json"].details
 
 
+def test_plan_to_reports_mcp_update_when_local_claude_json_lacks_mcp_servers(fake_home, tmp_path):
+    cdir = fake_home / ".claude"
+    cdir.mkdir()
+    (fake_home / ".claude.json").write_text('{"other": true}')
+    stored = tmp_path / "sync" / "claude"
+    (stored / "plugins").mkdir(parents=True)
+    (stored / "settings.json").write_text("{}")
+    (stored / "plugins" / "installed_plugins.json").write_text('{"plugins": {}}')
+    (stored / "plugins" / "known_marketplaces.json").write_text("{}")
+    (stored / "mcp-servers.json").write_text("{}")
+
+    plan = ClaudeApp().plan_to(tmp_path / "sync")
+
+    changes = {c.label: c for c in plan.changes}
+    assert changes["mcp-servers.json"].kind == "update"
+
+
 def test_plan_from_reports_unknown_for_corrupt_local_claude_json(fake_home, tmp_path):
     cdir = fake_home / ".claude"
     plugins = cdir / "plugins"

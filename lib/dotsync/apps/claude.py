@@ -223,9 +223,12 @@ class ClaudeApp(App):
             )
         if not dest.exists():
             return Change("mcp-servers.json", "create", source, dest)
+        planned_doc = dict(local_doc)
+        planned_doc["mcpServers"] = stored_mcp
+        planned = json.dumps(planned_doc, indent=2, ensure_ascii=False)
         return Change(
             "mcp-servers.json",
-            "unchanged" if local_doc.get("mcpServers", {}) == stored_mcp else "update",
+            "unchanged" if dest.read_text() == planned else "update",
             source,
             dest,
         )
