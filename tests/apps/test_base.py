@@ -334,3 +334,44 @@ def test_app_cli_hooks_have_safe_defaults(tmp_path):
 
     # handle_config_subcommand returns None (not handled) by default
     assert _Toy.handle_config_subcommand(args, None) is None
+
+
+def test_default_plan_from_uses_local_as_source_and_stored_as_destination(tmp_path):
+    from dotsync.apps.base import App, FilePair
+
+    class _Toy(App):
+        name = "toy"
+
+        def tracked_files(self, target_dir):
+            local = tmp_path / "local.cfg"
+            stored = target_dir / "toy" / "local.cfg"
+            local.write_text("LOCAL")
+            return [FilePair(local=local, stored=stored, label="local.cfg")]
+
+    plan = _Toy().plan_from(tmp_path / "target")
+
+    assert plan.app == "toy"
+    assert plan.direction == "from"
+    assert plan.changes[0].kind == "create"
+    assert plan.changes[0].label == "local.cfg"
+
+
+def test_default_plan_to_uses_stored_as_source_and_local_as_destination(tmp_path):
+    from dotsync.apps.base import App, FilePair
+
+    class _Toy(App):
+        name = "toy"
+
+        def tracked_files(self, target_dir):
+            local = tmp_path / "local.cfg"
+            stored = target_dir / "toy" / "local.cfg"
+            stored.parent.mkdir(parents=True)
+            stored.write_text("STORED")
+            return [FilePair(local=local, stored=stored, label="local.cfg")]
+
+    plan = _Toy().plan_to(tmp_path / "target")
+
+    assert plan.app == "toy"
+    assert plan.direction == "to"
+    assert plan.changes[0].kind == "create"
+    assert plan.changes[0].source.name == "local.cfg"

@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Literal, Tuple
 
+from dotsync.plan import AppPlan, plan_file_copy
+
 StatusState = Literal["clean", "dirty", "missing", "unknown"]
 
 
@@ -142,6 +144,34 @@ class App(ABC):
         with overridden sync methods that call super().
         """
         return []
+
+    def plan_from(self, target_dir: Path) -> AppPlan:
+        """Plan local app config -> sync folder for declarative file apps."""
+        pairs = self.tracked_files(target_dir)
+        changes = [
+            plan_file_copy(pair.label, pair.local, pair.stored)
+            for pair in pairs
+        ]
+        return AppPlan(
+            app=self.name,
+            direction="from",
+            changes=changes or [],
+            description=self.description,
+        )
+
+    def plan_to(self, target_dir: Path) -> AppPlan:
+        """Plan sync folder -> local app config for declarative file apps."""
+        pairs = self.tracked_files(target_dir)
+        changes = [
+            plan_file_copy(pair.label, pair.stored, pair.local)
+            for pair in pairs
+        ]
+        return AppPlan(
+            app=self.name,
+            direction="to",
+            changes=changes or [],
+            description=self.description,
+        )
 
     def sync_from(self, target_dir: Path) -> None:
         """Local app config → target_dir/<self.name>/
