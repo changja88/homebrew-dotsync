@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from dotsync import ui
 from dotsync.apps.base import App, AppStatus, diff_files, _hash
+from dotsync.plan import AppPlan, Change, plan_file_copy, plan_tree_mirror
 
 GLOBAL_RULE_DIRECTORIES = ("commands", "agents", "skills", "output-styles")
 
@@ -169,6 +170,138 @@ class ClaudeApp(App):
             return AppStatus(state="clean")
         parts = [s for s in (base.details, rules.details) if s]
         return AppStatus(state="dirty", details=", ".join(parts))
+
+    def _plan_mcp_from(self, stored: Path) -> Change:
+        source = self._claude_json()
+        dest = stored / "mcp-servers.json"
+        if not source.exists():
+            return Change("mcp-servers.json", "missing-source", source, dest)
+        try:
+            data = json.loads(source.read_text()).get("mcpServers", {})
+        except json.JSONDecodeError:
+            return Change(
+                "mcp-servers.json",
+                "update",
+                source,
+                dest,
+                "local ~/.claude.json is invalid",
+            )
+        planned = json.dumps(data, indent=2, ensure_ascii=False)
+        if not dest.exists():
+            return Change("mcp-servers.json", "create", source, dest)
+        return Change(
+            "mcp-servers.json",
+            "unchanged" if dest.read_text() == planned else "update",
+            source,
+            dest,
+        )
+
+    def _plan_mcp_to(self, stored: Path) -> Change:
+        source = stored / "mcp-servers.json"
+        dest = self._claude_json()
+        if not source.exists():
+            return Change("mcp-servers.json", "missing-source", source, dest)
+        if not dest.exists():
+            return Change("mcp-servers.json", "create", source, dest)
+        try:
+            local_doc = json.loads(dest.read_text())
+            stored_mcp = json.loads(source.read_text())
+        except json.JSONDecodeError:
+            return Change(
+                "mcp-servers.json",
+                "update",
+                source,
+                dest,
+                "json validation required during apply",
+            )
+        return Change(
+            "mcp-servers.json",
+            "unchanged" if local_doc.get("mcpServers", {}) == stored_mcp else "update",
+            source,
+            dest,
+        )
+
+    def _installed_plugin_config_changes_from(self, stored: Path) -> list[Change]:
+        changes: list[Change] = []
+        installed = stored / "plugins" / "installed_plugins.json"
+        for plugin_name in self._installed_plugin_names(installed):
+            src = self._claude_dir() / "plugins" / plugin_name / "config.json"
+            if src.exists():
+                changes.append(
+                    plan_file_copy(
+                        f"plugins/{plugin_name}/config.json",
+                        src,
+                        stored / "plugins" / plugin_name / "config.json",
+                    )
+                )
+        return changes
+
+    def _installed_plugin_config_changes_to(self, stored: Path) -> list[Change]:
+        changes: list[Change] = []
+        installed = stored / "plugins" / "installed_plugins.json"
+        for plugin_name in self._installed_plugin_names(installed):
+            src = stored / "plugins" / plugin_name / "config.json"
+            if src.exists():
+                changes.append(
+                    plan_file_copy(
+                        f"plugins/{plugin_name}/config.json",
+                        src,
+                        self._claude_dir() / "plugins" / plugin_name / "config.json",
+                    )
+                )
+        return changes
+
+    def plan_from(self, target_dir: Path) -> AppPlan:
+        cdir = self._claude_dir()
+        stored = self._stored(target_dir)
+        changes = [
+            plan_file_copy("settings.json", cdir / "settings.json", stored / "settings.json"),
+            plan_file_copy(
+                "plugins/installed_plugins.json",
+                cdir / "plugins" / "installed_plugins.json",
+                stored / "plugins" / "installed_plugins.json",
+            ),
+            plan_file_copy(
+                "plugins/known_marketplaces.json",
+                cdir / "plugins" / "known_marketplaces.json",
+                stored / "plugins" / "known_marketplaces.json",
+            ),
+            self._plan_mcp_from(stored),
+        ]
+        changes.extend(self._installed_plugin_config_changes_from(stored))
+        if (cdir / "CLAUDE.md").exists():
+            changes.append(plan_file_copy("CLAUDE.md", cdir / "CLAUDE.md", stored / "CLAUDE.md"))
+        for name in GLOBAL_RULE_DIRECTORIES:
+            local_dir = cdir / name
+            if local_dir.exists():
+                changes.append(plan_tree_mirror(f"{name}/", local_dir, stored / name))
+        return AppPlan(self.name, "from", changes, self.description)
+
+    def plan_to(self, target_dir: Path) -> AppPlan:
+        cdir = self._claude_dir()
+        stored = self._stored(target_dir)
+        changes = [
+            plan_file_copy("settings.json", stored / "settings.json", cdir / "settings.json"),
+            plan_file_copy(
+                "plugins/installed_plugins.json",
+                stored / "plugins" / "installed_plugins.json",
+                cdir / "plugins" / "installed_plugins.json",
+            ),
+            plan_file_copy(
+                "plugins/known_marketplaces.json",
+                stored / "plugins" / "known_marketplaces.json",
+                cdir / "plugins" / "known_marketplaces.json",
+            ),
+            self._plan_mcp_to(stored),
+        ]
+        changes.extend(self._installed_plugin_config_changes_to(stored))
+        if (stored / "CLAUDE.md").exists():
+            changes.append(plan_file_copy("CLAUDE.md", stored / "CLAUDE.md", cdir / "CLAUDE.md"))
+        for name in GLOBAL_RULE_DIRECTORIES:
+            stored_dir = stored / name
+            if stored_dir.exists():
+                changes.append(plan_tree_mirror(f"{name}/", stored_dir, cdir / name))
+        return AppPlan(self.name, "to", changes, self.description)
 
     def sync_from(self, target_dir: Path) -> None:
         ui.dim(f"source → {self._claude_dir()}")

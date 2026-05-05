@@ -763,3 +763,41 @@ def test_claude_global_rules_round_trip_to_then_from_preserves_stored(fake_home,
 
     assert (cdir_stored / "CLAUDE.md").read_text() == "stored rules\n"
     assert (cdir_stored / "agents" / "reviewer.md").read_text() == "reviewer\n"
+
+
+def test_plan_from_reports_claude_mcp_servers_create(fake_home, tmp_path):
+    cdir = fake_home / ".claude"
+    plugins = cdir / "plugins"
+    plugins.mkdir(parents=True)
+    (cdir / "settings.json").write_text("{}")
+    (plugins / "installed_plugins.json").write_text('{"plugins": {}}')
+    (plugins / "known_marketplaces.json").write_text("{}")
+    (fake_home / ".claude.json").write_text('{"mcpServers": {"serena": {}}}')
+
+    plan = ClaudeApp().plan_from(tmp_path / "sync")
+
+    labels = {c.label: c.kind for c in plan.changes}
+    assert labels["mcp-servers.json"] == "create"
+
+
+def test_plan_to_reports_claude_global_rule_tree_update(fake_home, tmp_path):
+    cdir = fake_home / ".claude"
+    cdir.mkdir()
+    local_commands = cdir / "commands"
+    local_commands.mkdir()
+    (local_commands / "old.md").write_text("old")
+    stored = tmp_path / "sync" / "claude"
+    (stored / "plugins").mkdir(parents=True)
+    (stored / "settings.json").write_text("{}")
+    (stored / "plugins" / "installed_plugins.json").write_text('{"plugins": {}}')
+    (stored / "plugins" / "known_marketplaces.json").write_text("{}")
+    (stored / "mcp-servers.json").write_text("{}")
+    (stored / "commands").mkdir()
+    (stored / "commands" / "new.md").write_text("new")
+
+    plan = ClaudeApp().plan_to(tmp_path / "sync")
+
+    commands = [c for c in plan.changes if c.label == "commands/"][0]
+    assert commands.kind == "update"
+    assert "1 create" in commands.details
+    assert "1 remove" in commands.details
