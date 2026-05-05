@@ -298,3 +298,41 @@ def test_is_present_locally_true_when_config_exists(fake_home):
 
 def test_is_present_locally_false_when_no_config(fake_home):
     assert type(_codex_app()).is_present_locally() is False
+
+
+def test_plan_from_reports_codex_directory_mirror_removals(fake_home, tmp_path):
+    app = _codex_app()
+    target = tmp_path / "sync"
+    codex_dir = fake_home / ".codex"
+    codex_dir.mkdir()
+    (codex_dir / "config.toml").write_text("config")
+    (codex_dir / "rules").mkdir()
+    (codex_dir / "rules" / "keep.rules").write_text("new")
+    stored_rules = target / "codex" / "rules"
+    stored_rules.mkdir(parents=True)
+    (stored_rules / "old.rules").write_text("old")
+
+    plan = app.plan_from(target)
+
+    rules = [c for c in plan.changes if c.label == "rules/"][0]
+    assert rules.kind == "update"
+    assert "1 create" in rules.details
+    assert "1 remove" in rules.details
+
+
+def test_plan_to_reports_codex_optional_file_update(fake_home, tmp_path):
+    app = _codex_app()
+    target = tmp_path / "sync"
+    codex_dir = fake_home / ".codex"
+    codex_dir.mkdir()
+    (codex_dir / "config.toml").write_text("local")
+    stored = target / "codex"
+    stored.mkdir(parents=True)
+    (stored / "config.toml").write_text("stored")
+    (stored / "AGENTS.md").write_text("stored agents")
+
+    plan = app.plan_to(target)
+
+    labels = {c.label: c.kind for c in plan.changes}
+    assert labels["config.toml"] == "update"
+    assert labels["AGENTS.md"] == "create"

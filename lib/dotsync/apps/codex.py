@@ -4,6 +4,7 @@ import shutil
 from pathlib import Path
 from dotsync import ui
 from dotsync.apps.base import App, AppStatus, diff_files, _hash
+from dotsync.plan import AppPlan, plan_file_copy, plan_tree_mirror
 
 OPTIONAL_FILES = ("AGENTS.md", "AGENTS.override.md", "hooks.json", "requirements.toml")
 OPTIONAL_DIRECTORIES = ("rules", "skills")
@@ -129,6 +130,51 @@ class CodexApp(App):
             details = ", ".join(s.details for s in dirty if s.details)
             return AppStatus(state="dirty", details=details)
         return AppStatus(state="clean")
+
+    def plan_from(self, target_dir: Path) -> AppPlan:
+        stored = self._stored(target_dir)
+        changes = [
+            plan_file_copy("config.toml", self._config_path(), stored / "config.toml")
+        ]
+        for name in OPTIONAL_FILES:
+            local_file = self._codex_dir() / name
+            if local_file.exists():
+                changes.append(plan_file_copy(name, local_file, stored / name))
+        for name in OPTIONAL_DIRECTORIES:
+            local_dir = self._codex_dir() / name
+            if local_dir.exists():
+                changes.append(
+                    plan_tree_mirror(
+                        f"{name}/",
+                        local_dir,
+                        stored / name,
+                        self._ignored_top_dirs(name),
+                    )
+                )
+        return AppPlan(self.name, "from", changes, self.description)
+
+    def plan_to(self, target_dir: Path) -> AppPlan:
+        stored = self._stored(target_dir)
+        local_dir = self._codex_dir()
+        changes = [
+            plan_file_copy("config.toml", stored / "config.toml", self._config_path())
+        ]
+        for name in OPTIONAL_FILES:
+            stored_file = stored / name
+            if stored_file.exists():
+                changes.append(plan_file_copy(name, stored_file, local_dir / name))
+        for name in OPTIONAL_DIRECTORIES:
+            stored_dir = stored / name
+            if stored_dir.exists():
+                changes.append(
+                    plan_tree_mirror(
+                        f"{name}/",
+                        stored_dir,
+                        local_dir / name,
+                        self._ignored_top_dirs(name),
+                    )
+                )
+        return AppPlan(self.name, "to", changes, self.description)
 
     def sync_from(self, target_dir: Path) -> None:
         stored = self._stored(target_dir)
