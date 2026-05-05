@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from dotsync import ui
 from dotsync.apps.base import App, AppStatus
-from dotsync.plan import AppPlan, Change, plan_file_copy
+from dotsync.plan import AppPlan, Change
 
 # BTT's `export_preset` AppleScript returns "done" the moment the command is
 # accepted, but the actual file write happens asynchronously — empirically the
@@ -212,14 +212,13 @@ class BetterTouchToolApp(App):
         return AppPlan(self.name, "from", changes, self.description)
 
     def plan_to(self, target_dir: Path) -> AppPlan:
-        changes = [
-            plan_file_copy(
-                f"presets/{preset}.bttpreset",
-                self._stored(target_dir, preset),
-                Path(f"BetterTouchTool:{preset}"),
-            )
-            for preset in self.presets
-        ]
+        changes: list[Change] = []
+        for preset in self.presets:
+            label = f"presets/{preset}.bttpreset"
+            stored = self._stored(target_dir, preset)
+            dest = Path(f"BetterTouchTool:{preset}")
+            kind = "update" if stored.exists() else "missing-source"
+            changes.append(Change(label, kind, source=stored, dest=dest))
         return AppPlan(self.name, "to", changes, self.description)
 
     def sync_from(self, target_dir: Path) -> None:

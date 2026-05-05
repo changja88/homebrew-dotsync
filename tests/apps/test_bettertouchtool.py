@@ -184,6 +184,33 @@ def test_plan_to_reports_missing_preset(tmp_path):
     assert plan.changes[0].label == "presets/Missing.bttpreset"
 
 
+def test_plan_to_reports_existing_preset_as_update(tmp_path):
+    target = tmp_path / "configs"
+    stored = target / "bettertouchtool" / "presets" / "Master_bt.bttpreset"
+    stored.parent.mkdir(parents=True)
+    stored.write_text("<bttpreset/>")
+
+    plan = BetterTouchToolApp(presets=["Master_bt"]).plan_to(target)
+
+    assert plan.changes[0].kind == "update"
+    assert plan.has_changes is True
+
+
+def test_plan_to_ignores_pseudo_destination_file_collision(tmp_path, monkeypatch):
+    target = tmp_path / "configs"
+    stored = target / "bettertouchtool" / "presets" / "Master_bt.bttpreset"
+    stored.parent.mkdir(parents=True)
+    stored.write_text("<bttpreset/>")
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    (cwd / "BetterTouchTool:Master_bt").write_text("<bttpreset/>")
+    monkeypatch.chdir(cwd)
+
+    plan = BetterTouchToolApp(presets=["Master_bt"]).plan_to(target)
+
+    assert plan.changes[0].kind == "update"
+
+
 def test_plan_from_reports_unknown_when_btt_status_unknown(tmp_path, monkeypatch):
     app = BetterTouchToolApp(presets=["Master_bt"])
 
