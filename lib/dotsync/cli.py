@@ -501,7 +501,10 @@ def cmd_from(args) -> int:
     if not _confirm_or_abort(args, direction="from"):
         return 0
 
-    changed_by_plan = {plan.app: plan.has_changes for plan in plans}
+    unchanged_by_plan = {
+        plan.app: bool(plan.changes) and not plan.has_changes
+        for plan in plans
+    }
     start = time.monotonic()
     changed: list[str] = []
     unchanged: list[str] = []
@@ -510,7 +513,7 @@ def cmd_from(args) -> int:
     for i, name in enumerate(apps, 1):
         app = build_app(name, cfg)
         ui.section(name, index=i, total=len(apps), sub=app.description)
-        if not changed_by_plan.get(name, True):
+        if unchanged_by_plan.get(name, False):
             app._finish_unchanged()
             unchanged.append(name)
             print()
@@ -552,7 +555,10 @@ def cmd_to(args) -> int:
     _print_preview(plans, direction="to")
     if not _confirm_or_abort(args, direction="to"):
         return 0
-    changed_by_plan = {plan.app: plan.has_changes for plan in plans}
+    unchanged_by_plan = {
+        plan.app: bool(plan.changes) and not plan.has_changes
+        for plan in plans
+    }
 
     session = new_backup_session(cfg.backup_dir)
     ui.kv("backup", str(session))
@@ -565,7 +571,7 @@ def cmd_to(args) -> int:
     for i, name in enumerate(apps, 1):
         app = build_app(name, cfg)
         ui.section(name, index=i, total=len(apps), sub=app.description)
-        if not changed_by_plan.get(name, True):
+        if unchanged_by_plan.get(name, False):
             app._finish_unchanged()
             unchanged.append(name)
             print()

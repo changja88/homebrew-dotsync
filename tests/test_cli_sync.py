@@ -3,6 +3,7 @@ from unittest.mock import patch
 import pytest
 from dotsync.cli import main
 from dotsync.config import Config, save_config
+from dotsync.plan import AppPlan
 
 
 def test_from_single_app_calls_sync_from(fake_home, monkeypatch, tmp_path):
@@ -138,6 +139,70 @@ def test_to_preview_uses_concrete_plan_actions(fake_home, monkeypatch, tmp_path,
     assert "preview" in out
     assert "update" in out
     assert ".zshrc" in out
+
+
+def test_from_unknown_empty_plan_still_applies_after_yes(monkeypatch, tmp_path):
+    monkeypatch.setenv("NO_COLOR", "1")
+    target = tmp_path / "configs"
+    target.mkdir()
+    save_config(Config(dir=target, apps=["claude"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+    calls = {"sync_from": 0}
+
+    class CustomApp:
+        description = "Custom app"
+        warnings = []
+
+        def plan_from(self, target_dir):
+            return AppPlan(app="claude", direction="from", changes=[])
+
+        def sync_from(self, target_dir):
+            calls["sync_from"] += 1
+
+        def _finish_ok(self):
+            pass
+
+        def _finish_unchanged(self):
+            pass
+
+    monkeypatch.setattr("dotsync.cli.build_app", lambda name, cfg: CustomApp())
+
+    rc = main(["from", "claude", "--yes"])
+
+    assert rc == 0
+    assert calls["sync_from"] == 1
+
+
+def test_to_unknown_empty_plan_still_applies_after_yes(monkeypatch, tmp_path):
+    monkeypatch.setenv("NO_COLOR", "1")
+    target = tmp_path / "configs"
+    target.mkdir()
+    save_config(Config(dir=target, apps=["claude"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+    calls = {"sync_to": 0}
+
+    class CustomApp:
+        description = "Custom app"
+        warnings = []
+
+        def plan_to(self, target_dir):
+            return AppPlan(app="claude", direction="to", changes=[])
+
+        def sync_to(self, target_dir, session):
+            calls["sync_to"] += 1
+
+        def _finish_ok(self):
+            pass
+
+        def _finish_unchanged(self):
+            pass
+
+    monkeypatch.setattr("dotsync.cli.build_app", lambda name, cfg: CustomApp())
+
+    rc = main(["to", "claude", "--yes"])
+
+    assert rc == 0
+    assert calls["sync_to"] == 1
 
 
 def test_to_dry_run_does_not_change_local_or_create_backup(fake_home, monkeypatch, tmp_path, capsys):
