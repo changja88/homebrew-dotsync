@@ -16,6 +16,7 @@ from dotsync.config import (
     load_config,
     save_config,
 )
+from dotsync.plan import AppPlan
 from dotsync.shellrc import (
     ShellRcResult,
     detect_rc_path,
@@ -62,6 +63,10 @@ def _build_parser() -> argparse.ArgumentParser:
     sync_from = sub.add_parser("from", help="local → folder")
     sync_from.add_argument("app", nargs="?", help="app name or omit with --all")
     sync_from.add_argument("--all", action="store_true")
+    sync_from.add_argument("--dry-run", action="store_true",
+                           help="print what would change and exit without modifying anything")
+    sync_from.add_argument("--yes", action="store_true",
+                           help="skip the confirmation prompt")
 
     sync_to = sub.add_parser("to", help="folder → local")
     sync_to.add_argument("app", nargs="?", help="app name or omit with --all")
@@ -432,6 +437,53 @@ def _resolve_app_list(args, cfg: Config) -> list[str]:
     return [args.app]
 
 
+def _build_plans(apps: list[str], cfg: Config, direction: str) -> list[AppPlan]:
+    plans = []
+    for name in apps:
+        app = build_app(name, cfg)
+        if direction == "from":
+            plans.append(app.plan_from(cfg.dir))
+        else:
+            plans.append(app.plan_to(cfg.dir))
+    return plans
+
+
+def _print_preview(plans: list[AppPlan], *, direction: str) -> None:
+    sub = (
+        "what would change in the sync folder"
+        if direction == "from"
+        else "what would change on this machine"
+    )
+    ui.section("preview", sub=sub)
+    print()
+    for plan in plans:
+        ui.section(plan.app, sub=plan.description)
+        if not plan.changes:
+            ui.dim("unknown")
+        else:
+            for change in plan.changes:
+                ui.plan_change(change)
+        print()
+
+
+def _confirm_or_abort(args, *, direction: str) -> bool:
+    if args.dry_run:
+        ui.dim("dry-run: no files will be modified")
+        return False
+    if args.yes:
+        return True
+    target = "the sync folder" if direction == "from" else "your local machine"
+    answer = ui.ask(
+        f"Apply these changes to {target}?",
+        default="y/N",
+        accent="warn",
+    ).lower()
+    if answer not in ("y", "yes"):
+        ui.dim("aborted")
+        return False
+    return True
+
+
 def cmd_from(args) -> int:
     cfg = load_config()
     apps = _resolve_app_list(args, cfg)
@@ -444,17 +496,29 @@ def cmd_from(args) -> int:
         f"{len(apps)} app{'s' if len(apps) != 1 else ''}  →  {cfg.dir}",
     )
     print()
+    plans = _build_plans(apps, cfg, "from")
+    _print_preview(plans, direction="from")
+    if not _confirm_or_abort(args, direction="from"):
+        return 0
+
+    changed_by_plan = {plan.app: plan.has_changes for plan in plans}
     start = time.monotonic()
-    synced: list[str] = []
+    changed: list[str] = []
+    unchanged: list[str] = []
     failed: list[str] = []
     warnings_by_app: dict[str, list[str]] = {}
     for i, name in enumerate(apps, 1):
         app = build_app(name, cfg)
         ui.section(name, index=i, total=len(apps), sub=app.description)
+        if not changed_by_plan.get(name, True):
+            app._finish_unchanged()
+            unchanged.append(name)
+            print()
+            continue
         try:
             app.sync_from(cfg.dir)
             app._finish_ok()
-            synced.append(name)
+            changed.append(name)
         except (FileNotFoundError, RuntimeError) as e:
             ui.error(str(e))
             failed.append(name)
@@ -462,9 +526,10 @@ def cmd_from(args) -> int:
             warnings_by_app[name] = list(app.warnings)
         print()
     ui.summary(
-        ok=len(synced), error=len(failed),
+        ok=len(changed) + len(unchanged), error=len(failed),
         duration_ms=int((time.monotonic() - start) * 1000),
-        synced=synced or None,
+        changed=changed or None,
+        unchanged=unchanged or None,
         failed=failed or None,
     )
     _print_app_warnings(warnings_by_app)
@@ -483,45 +548,24 @@ def cmd_to(args) -> int:
         f"{len(apps)} app{'s' if len(apps) != 1 else ''}  ←  {cfg.dir}",
     )
     print()
-    ui.section("preview", sub="what would change on this machine")
-    print()
-    statuses: dict[str, str] = {}
-    for name in apps:
-        app = build_app(name, cfg)
-        s = app.status(cfg.dir)
-        statuses[name] = s.state
-        print(ui.format_status_line(
-            name, state=s.state, details=s.details,
-            direction=getattr(s, "direction", ""),
-        ))
-    print()
-
-    if args.dry_run:
-        ui.dim("dry-run: no files will be modified")
+    plans = _build_plans(apps, cfg, "to")
+    _print_preview(plans, direction="to")
+    if not _confirm_or_abort(args, direction="to"):
         return 0
-
-    if not args.yes:
-        answer = ui.ask(
-            "Apply these changes to your local machine?",
-            default="y/N",
-            accent="warn",
-        ).lower()
-        if answer not in ("y", "yes"):
-            ui.dim("aborted")
-            return 0
+    changed_by_plan = {plan.app: plan.has_changes for plan in plans}
 
     session = new_backup_session(cfg.backup_dir)
     ui.kv("backup", str(session))
     print()
     start = time.monotonic()
-    applied: list[str] = []
+    changed: list[str] = []
     unchanged: list[str] = []
     failed: list[str] = []
     warnings_by_app: dict[str, list[str]] = {}
     for i, name in enumerate(apps, 1):
         app = build_app(name, cfg)
         ui.section(name, index=i, total=len(apps), sub=app.description)
-        if statuses.get(name) == "clean":
+        if not changed_by_plan.get(name, True):
             app._finish_unchanged()
             unchanged.append(name)
             print()
@@ -529,7 +573,7 @@ def cmd_to(args) -> int:
         try:
             app.sync_to(cfg.dir, session)
             app._finish_ok()
-            applied.append(name)
+            changed.append(name)
         except (FileNotFoundError, RuntimeError) as e:
             ui.error(str(e))
             failed.append(name)
@@ -538,9 +582,9 @@ def cmd_to(args) -> int:
         print()
     rotate_backups(cfg.backup_dir, cfg.backup_keep)
     ui.summary(
-        ok=len(applied) + len(unchanged), error=len(failed),
+        ok=len(changed) + len(unchanged), error=len(failed),
         duration_ms=int((time.monotonic() - start) * 1000),
-        applied=applied or None,
+        changed=changed or None,
         unchanged=unchanged or None,
         failed=failed or None,
     )

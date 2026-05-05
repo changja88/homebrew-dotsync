@@ -12,7 +12,7 @@ def test_from_single_app_calls_sync_from(fake_home, monkeypatch, tmp_path):
     monkeypatch.setenv("DOTSYNC_DIR", str(target))
     (fake_home / ".zshrc").write_text("X")
 
-    rc = main(["from", "zsh"])
+    rc = main(["from", "zsh", "--yes"])
     assert rc == 0
     assert (target / "zsh" / ".zshrc").read_text() == "X"
 
@@ -48,7 +48,7 @@ def test_from_continues_after_one_app_fails(fake_home, monkeypatch, tmp_path, ca
     (fake_home / ".zshrc").write_text("Z")
     # ghostty source missing → its sync_from raises FileNotFoundError
 
-    rc = main(["from", "--all"])
+    rc = main(["from", "--all", "--yes"])
     out = capsys.readouterr().out
     # zsh succeeded (file copied)
     assert (target / "zsh" / ".zshrc").read_text() == "Z"
@@ -57,6 +57,87 @@ def test_from_continues_after_one_app_fails(fake_home, monkeypatch, tmp_path, ca
     assert "1 error" in out
     # exit code reflects partial failure
     assert rc != 0
+
+
+def test_from_dry_run_shows_preview_without_changing_folder(fake_home, monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("NO_COLOR", "1")
+    target = tmp_path / "configs"
+    target.mkdir()
+    save_config(Config(dir=target, apps=["zsh"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+    (fake_home / ".zshrc").write_text("LOCAL")
+
+    rc = main(["from", "zsh", "--dry-run"])
+
+    assert rc == 0
+    assert not (target / "zsh" / ".zshrc").exists()
+    out = capsys.readouterr().out
+    assert "preview" in out
+    assert "create" in out
+    assert ".zshrc" in out
+    assert "dry-run" in out.lower()
+
+
+def test_from_prompts_confirmation_by_default_and_decline_keeps_folder(fake_home, monkeypatch, tmp_path):
+    monkeypatch.setenv("NO_COLOR", "1")
+    target = tmp_path / "configs"
+    target.mkdir()
+    save_config(Config(dir=target, apps=["zsh"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+    (fake_home / ".zshrc").write_text("LOCAL")
+    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+
+    rc = main(["from", "zsh"])
+
+    assert rc == 0
+    assert not (target / "zsh" / ".zshrc").exists()
+
+
+def test_from_bare_enter_aborts(fake_home, monkeypatch, tmp_path):
+    monkeypatch.setenv("NO_COLOR", "1")
+    target = tmp_path / "configs"
+    target.mkdir()
+    save_config(Config(dir=target, apps=["zsh"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+    (fake_home / ".zshrc").write_text("LOCAL")
+    monkeypatch.setattr("builtins.input", lambda prompt="": "")
+
+    rc = main(["from", "zsh"])
+
+    assert rc == 0
+    assert not (target / "zsh" / ".zshrc").exists()
+
+
+def test_from_yes_skips_prompt_and_applies(fake_home, monkeypatch, tmp_path):
+    monkeypatch.setenv("NO_COLOR", "1")
+    target = tmp_path / "configs"
+    target.mkdir()
+    save_config(Config(dir=target, apps=["zsh"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+    (fake_home / ".zshrc").write_text("LOCAL")
+
+    rc = main(["from", "zsh", "--yes"])
+
+    assert rc == 0
+    assert (target / "zsh" / ".zshrc").read_text() == "LOCAL"
+
+
+def test_to_preview_uses_concrete_plan_actions(fake_home, monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("NO_COLOR", "1")
+    target = tmp_path / "configs"
+    (target / "zsh").mkdir(parents=True)
+    (target / "zsh" / ".zshrc").write_text("FROM_FOLDER")
+    (fake_home / ".zshrc").write_text("LOCAL_ORIG")
+    save_config(Config(dir=target, apps=["zsh"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+
+    rc = main(["to", "zsh", "--dry-run"])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "preview" in out
+    assert "update" in out
+    assert ".zshrc" in out
 
 
 def test_to_dry_run_does_not_change_local_or_create_backup(fake_home, monkeypatch, tmp_path, capsys):
