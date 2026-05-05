@@ -223,7 +223,7 @@ class ClaudeApp(App):
 
     def _installed_plugin_config_changes_from(self, stored: Path) -> list[Change]:
         changes: list[Change] = []
-        installed = stored / "plugins" / "installed_plugins.json"
+        installed = self._claude_dir() / "plugins" / "installed_plugins.json"
         for plugin_name in self._installed_plugin_names(installed):
             src = self._claude_dir() / "plugins" / plugin_name / "config.json"
             if src.exists():

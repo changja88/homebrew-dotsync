@@ -780,6 +780,25 @@ def test_plan_from_reports_claude_mcp_servers_create(fake_home, tmp_path):
     assert labels["mcp-servers.json"] == "create"
 
 
+def test_plan_from_uses_local_installed_plugins_for_config_preview(fake_home, tmp_path):
+    cdir = fake_home / ".claude"
+    plugins = cdir / "plugins"
+    plugins.mkdir(parents=True)
+    (cdir / "settings.json").write_text("{}")
+    (plugins / "installed_plugins.json").write_text(
+        '{"plugins": {"pilot@official": [{"installPath": "/tmp/pilot"}]}}'
+    )
+    (plugins / "known_marketplaces.json").write_text("{}")
+    (plugins / "pilot").mkdir()
+    (plugins / "pilot" / "config.json").write_text('{"enabled": true}')
+    (fake_home / ".claude.json").write_text('{"mcpServers": {}}')
+
+    plan = ClaudeApp().plan_from(tmp_path / "sync")
+
+    labels = {c.label: c.kind for c in plan.changes}
+    assert labels["plugins/pilot/config.json"] == "create"
+
+
 def test_plan_to_reports_claude_global_rule_tree_update(fake_home, tmp_path):
     cdir = fake_home / ".claude"
     cdir.mkdir()
