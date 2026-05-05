@@ -336,3 +336,41 @@ def test_plan_to_reports_codex_optional_file_update(fake_home, tmp_path):
     labels = {c.label: c.kind for c in plan.changes}
     assert labels["config.toml"] == "update"
     assert labels["AGENTS.md"] == "create"
+
+
+def test_plan_from_reports_codex_skills_system_purge(fake_home, tmp_path):
+    app = _codex_app()
+    target = tmp_path / "sync"
+    codex_dir = fake_home / ".codex"
+    codex_dir.mkdir()
+    (codex_dir / "config.toml").write_text("config")
+    (codex_dir / "skills" / "user").mkdir(parents=True)
+    (codex_dir / "skills" / "user" / "SKILL.md").write_text("# user\n")
+    stored_skills = target / "codex" / "skills"
+    (stored_skills / "user").mkdir(parents=True)
+    (stored_skills / "user" / "SKILL.md").write_text("# user\n")
+    (stored_skills / ".system" / "generated").mkdir(parents=True)
+    (stored_skills / ".system" / "generated" / "SKILL.md").write_text(
+        "# generated\n"
+    )
+
+    plan = app.plan_from(target)
+
+    skills = [c for c in plan.changes if c.label == "skills/"][0]
+    assert skills.kind == "update"
+    assert "purge" in skills.details
+    assert ".system" in skills.details
+
+
+def test_plan_from_reports_empty_directory_creation(fake_home, tmp_path):
+    app = _codex_app()
+    target = tmp_path / "sync"
+    codex_dir = fake_home / ".codex"
+    codex_dir.mkdir()
+    (codex_dir / "config.toml").write_text("config")
+    (codex_dir / "rules").mkdir()
+
+    plan = app.plan_from(target)
+
+    rules = [c for c in plan.changes if c.label == "rules/"][0]
+    assert rules.kind == "create"

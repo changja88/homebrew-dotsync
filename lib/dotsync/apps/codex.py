@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 from dotsync import ui
 from dotsync.apps.base import App, AppStatus, diff_files, _hash
-from dotsync.plan import AppPlan, plan_file_copy, plan_tree_mirror
+from dotsync.plan import AppPlan, Change, plan_file_copy, plan_tree_mirror
 
 OPTIONAL_FILES = ("AGENTS.md", "AGENTS.override.md", "hooks.json", "requirements.toml")
 OPTIONAL_DIRECTORIES = ("rules", "skills")
@@ -131,6 +131,44 @@ class CodexApp(App):
             return AppStatus(state="dirty", details=details)
         return AppStatus(state="clean")
 
+    def _plan_tree_mirror(
+        self,
+        label: str,
+        source: Path,
+        dest: Path,
+        ignored_top_dirs: tuple[str, ...] = (),
+        *,
+        purge_ignored_dst: bool = False,
+    ) -> Change:
+        change = plan_tree_mirror(label, source, dest, ignored_top_dirs)
+        details = [change.details] if change.details else []
+        kind = change.kind
+
+        if source.exists() and not dest.exists() and kind == "unchanged":
+            kind = "create"
+            details.append("create directory")
+
+        purged = [
+            name
+            for name in ignored_top_dirs
+            if purge_ignored_dst and (dest / name).exists()
+        ]
+        if purged:
+            if kind == "unchanged":
+                kind = "update"
+            details.append(f"purge ignored {', '.join(purged)}")
+
+        original_details = [change.details] if change.details else []
+        if kind == change.kind and details == original_details:
+            return change
+        return Change(
+            label=change.label,
+            kind=kind,
+            source=change.source,
+            dest=change.dest,
+            details=", ".join(details),
+        )
+
     def plan_from(self, target_dir: Path) -> AppPlan:
         stored = self._stored(target_dir)
         changes = [
@@ -143,12 +181,14 @@ class CodexApp(App):
         for name in OPTIONAL_DIRECTORIES:
             local_dir = self._codex_dir() / name
             if local_dir.exists():
+                ignored = self._ignored_top_dirs(name)
                 changes.append(
-                    plan_tree_mirror(
+                    self._plan_tree_mirror(
                         f"{name}/",
                         local_dir,
                         stored / name,
-                        self._ignored_top_dirs(name),
+                        ignored,
+                        purge_ignored_dst=bool(ignored),
                     )
                 )
         return AppPlan(self.name, "from", changes, self.description)
@@ -167,7 +207,7 @@ class CodexApp(App):
             stored_dir = stored / name
             if stored_dir.exists():
                 changes.append(
-                    plan_tree_mirror(
+                    self._plan_tree_mirror(
                         f"{name}/",
                         stored_dir,
                         local_dir / name,
