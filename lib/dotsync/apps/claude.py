@@ -359,8 +359,7 @@ class ClaudeApp(App):
 
     def sync_to(self, target_dir: Path, backup_dir: Path) -> None:
         stored = self._stored(target_dir)
-        if not (stored / "settings.json").exists():
-            raise FileNotFoundError(f"{stored / 'settings.json'} not found (claude/settings.json missing)")
+        stored_mcp = self._validate_sync_to_sources(stored)
 
         cdir = self._claude_dir()
         cdir.mkdir(parents=True, exist_ok=True)
@@ -396,10 +395,7 @@ class ClaudeApp(App):
             cj = json.loads(claude_json_path.read_text()) if claude_json_path.exists() else {}
         except json.JSONDecodeError as e:
             raise RuntimeError(f"~/.claude.json is corrupted: {e}") from e
-        try:
-            cj["mcpServers"] = json.loads((stored / "mcp-servers.json").read_text())
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f"{stored / 'mcp-servers.json'} is corrupted: {e}") from e
+        cj["mcpServers"] = stored_mcp
         claude_json_path.write_text(json.dumps(cj, indent=2, ensure_ascii=False))
         ui.ok("mcp-servers.json → ~/.claude.json")
 
@@ -425,6 +421,27 @@ class ClaudeApp(App):
         self._sync_to_global_rules(target_dir, backup_dir)
 
         ui.dim("hint: restart Claude Code to pick up new plugins")
+
+    def _validate_sync_to_sources(self, stored: Path) -> dict[str, Any]:
+        required_files = [
+            (stored / "settings.json", "claude/settings.json"),
+            (
+                stored / "plugins" / "installed_plugins.json",
+                "claude/plugins/installed_plugins.json",
+            ),
+            (
+                stored / "plugins" / "known_marketplaces.json",
+                "claude/plugins/known_marketplaces.json",
+            ),
+            (stored / "mcp-servers.json", "claude/mcp-servers.json"),
+        ]
+        for path, label in required_files:
+            if not path.exists():
+                raise FileNotFoundError(f"{path} not found ({label} missing)")
+        try:
+            return json.loads((stored / "mcp-servers.json").read_text())
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"{stored / 'mcp-servers.json'} is corrupted: {e}") from e
 
     def status(self, target_dir: Path) -> AppStatus:
         stored = self._stored(target_dir)

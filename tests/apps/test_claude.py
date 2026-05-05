@@ -209,6 +209,46 @@ def test_sync_to_missing_target_raises(fake_home, tmp_path):
         ClaudeApp().sync_to(target, backup)
 
 
+def test_sync_to_missing_required_plugin_metadata_fails_before_mutating_local(fake_home, tmp_path):
+    _make_local(fake_home, settings={"theme": "LOCAL"})
+    target = tmp_path / "configs"
+    cdir = target / "claude"
+    (cdir / "plugins").mkdir(parents=True)
+    (cdir / "settings.json").write_text(json.dumps({"theme": "STORED"}))
+    (cdir / "mcp-servers.json").write_text("{}")
+    (cdir / "plugins" / "known_marketplaces.json").write_text("{}")
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    with pytest.raises(FileNotFoundError, match="installed_plugins.json"):
+        ClaudeApp().sync_to(target, backup)
+
+    assert json.loads((fake_home / ".claude" / "settings.json").read_text()) == {"theme": "LOCAL"}
+    assert not (backup / "claude").exists()
+
+
+def test_sync_to_corrupt_stored_mcp_fails_before_mutating_local(fake_home, tmp_path):
+    _make_local(fake_home, settings={"theme": "LOCAL"}, mcp={"local": {"command": "old"}})
+    target = tmp_path / "configs"
+    cdir = target / "claude"
+    (cdir / "plugins").mkdir(parents=True)
+    (cdir / "settings.json").write_text(json.dumps({"theme": "STORED"}))
+    (cdir / "mcp-servers.json").write_text("{not valid json")
+    (cdir / "plugins" / "installed_plugins.json").write_text(json.dumps({"version": 2, "plugins": {}}))
+    (cdir / "plugins" / "known_marketplaces.json").write_text("{}")
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    with pytest.raises(RuntimeError, match="mcp-servers.json"):
+        ClaudeApp().sync_to(target, backup)
+
+    assert json.loads((fake_home / ".claude" / "settings.json").read_text()) == {"theme": "LOCAL"}
+    assert json.loads((fake_home / ".claude.json").read_text()) == {
+        "mcpServers": {"local": {"command": "old"}}
+    }
+    assert not (backup / "claude").exists()
+
+
 def test_status_clean(fake_home, tmp_path):
     _make_local(fake_home, settings={"x": 1}, mcp={"a": 1})
     target = tmp_path / "configs"
