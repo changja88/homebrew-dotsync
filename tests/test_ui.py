@@ -198,3 +198,47 @@ def test_format_status_line_unknown(monkeypatch):
     line = format_status_line("bettertouchtool", state="unknown", details="BTT not running", direction="")
     assert "·" in line or "?" in line  # any dim marker
     assert "unknown" in line
+
+
+def test_format_plan_change_shows_kind_label_and_details(monkeypatch):
+    from dotsync.plan import Change
+    from dotsync import ui
+
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    out = ui.format_plan_change(Change("rules/", "update", details="1 create, 1 remove"))
+
+    assert "update" in out
+    assert "rules/" in out
+    assert "1 create, 1 remove" in out
+
+
+def test_format_plan_change_shows_missing_source_as_warning(monkeypatch):
+    from dotsync.plan import Change
+    from dotsync import ui
+
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    out = ui.format_plan_change(Change("config.toml", "missing-source"))
+
+    assert "missing-source" in out
+    assert "config.toml" in out
+
+
+def test_format_summary_lists_changed_apps(monkeypatch):
+    from dotsync import ui
+
+    monkeypatch.setenv("NO_COLOR", "1")
+
+    out = ui.format_summary(
+        ok=2,
+        error=0,
+        duration_ms=100,
+        changed=["codex"],
+        unchanged=["zsh"],
+    )
+
+    assert "changed" in out
+    assert "codex" in out
+    assert "unchanged" in out
+    assert "zsh" in out

@@ -196,6 +196,7 @@ def format_summary(
     error: int = 0,
     duration_ms: int = 0,
     synced: "list[str] | None" = None,
+    changed: "list[str] | None" = None,
     applied: "list[str] | None" = None,
     unchanged: "list[str] | None" = None,
     failed: "list[str] | None" = None,
@@ -212,6 +213,11 @@ def format_summary(
     duration = f"{duration_ms / 1000:.1f}s"
 
     body_lines: list[str] = []
+    if changed:
+        body_lines.append(
+            f"{_wrap(GREEN, GLYPH_OK)} changed    "
+            f"{_wrap(DIM_ANSI, ' · '.join(changed))}"
+        )
     if synced:
         body_lines.append(
             f"{_wrap(GREEN, GLYPH_OK)} synced     "
@@ -271,6 +277,24 @@ def format_status_line(name: str, *, state: str, details: str = "", direction: s
     return head
 
 
+_PLAN_KIND_GLYPH = {
+    "create": (GREEN, GLYPH_OK),
+    "update": (YELLOW, GLYPH_WARN),
+    "remove": (YELLOW, GLYPH_WARN),
+    "unchanged": (DIM_ANSI, GLYPH_DIM),
+    "missing-source": (RED, GLYPH_ERROR),
+    "unknown": (DIM_ANSI, GLYPH_DIM),
+}
+
+
+def format_plan_change(change) -> str:
+    color, glyph = _PLAN_KIND_GLYPH.get(change.kind, (DIM_ANSI, GLYPH_DIM))
+    head = f"  {_wrap(color, glyph)} {change.kind:14s} {change.label}"
+    if change.details:
+        return f"{head}  {_wrap(DIM_ANSI, '— ' + change.details)}"
+    return head
+
+
 # --- side-effect printers (use in production code) -------------------------
 
 def step(msg: str) -> None:
@@ -317,6 +341,10 @@ def divider(label: str = "") -> None:
     print(format_divider(label))
 
 
+def plan_change(change) -> None:
+    print(format_plan_change(change))
+
+
 def summary(
     *,
     ok: int = 0,
@@ -324,11 +352,13 @@ def summary(
     error: int = 0,
     duration_ms: int = 0,
     synced: "list[str] | None" = None,
+    changed: "list[str] | None" = None,
     applied: "list[str] | None" = None,
     unchanged: "list[str] | None" = None,
     failed: "list[str] | None" = None,
 ) -> None:
     print(format_summary(
         ok=ok, warn=warn, error=error, duration_ms=duration_ms,
-        synced=synced, applied=applied, unchanged=unchanged, failed=failed,
+        synced=synced, changed=changed, applied=applied, unchanged=unchanged,
+        failed=failed,
     ))
