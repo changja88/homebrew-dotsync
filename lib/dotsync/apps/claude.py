@@ -422,7 +422,7 @@ class ClaudeApp(App):
 
         ui.dim("hint: restart Claude Code to pick up new plugins")
 
-    def _validate_sync_to_sources(self, stored: Path) -> dict[str, Any]:
+    def _validate_sync_to_sources(self, stored: Path) -> Any:
         required_files = [
             (stored / "settings.json", "claude/settings.json"),
             (
@@ -436,12 +436,18 @@ class ClaudeApp(App):
             (stored / "mcp-servers.json", "claude/mcp-servers.json"),
         ]
         for path, label in required_files:
-            if not path.exists():
+            if not path.is_file():
                 raise FileNotFoundError(f"{path} not found ({label} missing)")
+
+        for path, _label in required_files[:-1]:
+            self._load_required_stored_json(path)
+        return self._load_required_stored_json(stored / "mcp-servers.json")
+
+    def _load_required_stored_json(self, path: Path) -> Any:
         try:
-            return json.loads((stored / "mcp-servers.json").read_text())
+            return json.loads(path.read_text())
         except json.JSONDecodeError as e:
-            raise RuntimeError(f"{stored / 'mcp-servers.json'} is corrupted: {e}") from e
+            raise RuntimeError(f"{path} is corrupted: {e}") from e
 
     def status(self, target_dir: Path) -> AppStatus:
         stored = self._stored(target_dir)
