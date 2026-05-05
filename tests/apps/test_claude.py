@@ -780,6 +780,39 @@ def test_plan_from_reports_claude_mcp_servers_create(fake_home, tmp_path):
     assert labels["mcp-servers.json"] == "create"
 
 
+def test_plan_to_reports_unknown_for_corrupt_stored_mcp_when_local_json_missing(fake_home, tmp_path):
+    cdir = fake_home / ".claude"
+    cdir.mkdir()
+    stored = tmp_path / "sync" / "claude"
+    (stored / "plugins").mkdir(parents=True)
+    (stored / "settings.json").write_text("{}")
+    (stored / "plugins" / "installed_plugins.json").write_text('{"plugins": {}}')
+    (stored / "plugins" / "known_marketplaces.json").write_text("{}")
+    (stored / "mcp-servers.json").write_text("{not json")
+
+    plan = ClaudeApp().plan_to(tmp_path / "sync")
+
+    changes = {c.label: c for c in plan.changes}
+    assert changes["mcp-servers.json"].kind == "unknown"
+    assert "invalid" in changes["mcp-servers.json"].details
+
+
+def test_plan_from_reports_unknown_for_corrupt_local_claude_json(fake_home, tmp_path):
+    cdir = fake_home / ".claude"
+    plugins = cdir / "plugins"
+    plugins.mkdir(parents=True)
+    (cdir / "settings.json").write_text("{}")
+    (plugins / "installed_plugins.json").write_text('{"plugins": {}}')
+    (plugins / "known_marketplaces.json").write_text("{}")
+    (fake_home / ".claude.json").write_text("{not json")
+
+    plan = ClaudeApp().plan_from(tmp_path / "sync")
+
+    changes = {c.label: c for c in plan.changes}
+    assert changes["mcp-servers.json"].kind == "unknown"
+    assert "invalid" in changes["mcp-servers.json"].details
+
+
 def test_plan_from_uses_local_installed_plugins_for_config_preview(fake_home, tmp_path):
     cdir = fake_home / ".claude"
     plugins = cdir / "plugins"
@@ -797,6 +830,22 @@ def test_plan_from_uses_local_installed_plugins_for_config_preview(fake_home, tm
 
     labels = {c.label: c.kind for c in plan.changes}
     assert labels["plugins/pilot/config.json"] == "create"
+
+
+def test_plan_from_reports_empty_global_rule_directory_creation(fake_home, tmp_path):
+    cdir = fake_home / ".claude"
+    plugins = cdir / "plugins"
+    plugins.mkdir(parents=True)
+    (cdir / "settings.json").write_text("{}")
+    (plugins / "installed_plugins.json").write_text('{"plugins": {}}')
+    (plugins / "known_marketplaces.json").write_text("{}")
+    (fake_home / ".claude.json").write_text('{"mcpServers": {}}')
+    (cdir / "commands").mkdir()
+
+    plan = ClaudeApp().plan_from(tmp_path / "sync")
+
+    changes = {c.label: c for c in plan.changes}
+    assert changes["commands/"].kind == "create"
 
 
 def test_plan_to_reports_claude_global_rule_tree_update(fake_home, tmp_path):

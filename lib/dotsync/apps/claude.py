@@ -181,7 +181,7 @@ class ClaudeApp(App):
         except json.JSONDecodeError:
             return Change(
                 "mcp-servers.json",
-                "update",
+                "unknown",
                 source,
                 dest,
                 "local ~/.claude.json is invalid",
@@ -201,25 +201,46 @@ class ClaudeApp(App):
         dest = self._claude_json()
         if not source.exists():
             return Change("mcp-servers.json", "missing-source", source, dest)
-        if not dest.exists():
-            return Change("mcp-servers.json", "create", source, dest)
         try:
-            local_doc = json.loads(dest.read_text())
             stored_mcp = json.loads(source.read_text())
         except json.JSONDecodeError:
             return Change(
                 "mcp-servers.json",
-                "update",
+                "unknown",
                 source,
                 dest,
-                "json validation required during apply",
+                "stored mcp-servers.json is invalid",
             )
+        try:
+            local_doc = json.loads(dest.read_text()) if dest.exists() else {}
+        except json.JSONDecodeError:
+            return Change(
+                "mcp-servers.json",
+                "unknown",
+                source,
+                dest,
+                "local ~/.claude.json is invalid",
+            )
+        if not dest.exists():
+            return Change("mcp-servers.json", "create", source, dest)
         return Change(
             "mcp-servers.json",
             "unchanged" if local_doc.get("mcpServers", {}) == stored_mcp else "update",
             source,
             dest,
         )
+
+    def _plan_tree_mirror(self, label: str, source: Path, dest: Path) -> Change:
+        change = plan_tree_mirror(label, source, dest)
+        if source.exists() and not dest.exists() and change.kind == "unchanged":
+            return Change(
+                change.label,
+                "create",
+                change.source,
+                change.dest,
+                "create directory",
+            )
+        return change
 
     def _installed_plugin_config_changes_from(self, stored: Path) -> list[Change]:
         changes: list[Change] = []
@@ -274,7 +295,7 @@ class ClaudeApp(App):
         for name in GLOBAL_RULE_DIRECTORIES:
             local_dir = cdir / name
             if local_dir.exists():
-                changes.append(plan_tree_mirror(f"{name}/", local_dir, stored / name))
+                changes.append(self._plan_tree_mirror(f"{name}/", local_dir, stored / name))
         return AppPlan(self.name, "from", changes, self.description)
 
     def plan_to(self, target_dir: Path) -> AppPlan:
@@ -300,7 +321,7 @@ class ClaudeApp(App):
         for name in GLOBAL_RULE_DIRECTORIES:
             stored_dir = stored / name
             if stored_dir.exists():
-                changes.append(plan_tree_mirror(f"{name}/", stored_dir, cdir / name))
+                changes.append(self._plan_tree_mirror(f"{name}/", stored_dir, cdir / name))
         return AppPlan(self.name, "to", changes, self.description)
 
     def sync_from(self, target_dir: Path) -> None:
