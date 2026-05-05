@@ -213,7 +213,7 @@ def test_format_plan_change_shows_kind_label_and_details(monkeypatch):
     assert "1 create, 1 remove" in out
 
 
-def test_format_plan_change_shows_missing_source_as_warning(monkeypatch):
+def test_format_plan_change_shows_missing_source_as_error(monkeypatch):
     from dotsync.plan import Change
     from dotsync import ui
 
@@ -221,6 +221,7 @@ def test_format_plan_change_shows_missing_source_as_warning(monkeypatch):
 
     out = ui.format_plan_change(Change("config.toml", "missing-source"))
 
+    assert ui.GLYPH_ERROR in out
     assert "missing-source" in out
     assert "config.toml" in out
 
