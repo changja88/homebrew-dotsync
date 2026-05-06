@@ -24,6 +24,7 @@ class Dotsync < Formula
 
   def install
     libexec.install "lib/dotsync"
+    libexec.install "tools"
     bin.install "bin/dotsync"
     # Prefer an already-installed Python 3.12+ over brew's python@3.12; pin
     # the shebang so dotsync runs with a known version regardless of the

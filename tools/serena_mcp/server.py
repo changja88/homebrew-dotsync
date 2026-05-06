@@ -17,7 +17,7 @@ from tools.serena_mcp.health import (
     normalize_dashboard_url,
     pid_is_alive,
 )
-from tools.serena_mcp.paths import Scope
+from tools.serena_mcp.paths import Scope, state_dir_for
 from tools.serena_mcp.registry import Lease, ServerRecord, locked_registry, touch_lease
 from tools.serena_mcp.watchdog import ensure_watchdog
 
@@ -26,14 +26,15 @@ def ensure_server(scope: Scope, initial_lease: Lease) -> ServerRecord:
     """Return a healthy server for a scope and atomically register a lease."""
 
     with locked_registry(scope) as registry:
+        fresh_lease = _fresh_lease(initial_lease)
         if registry.record and server_is_healthy(registry.record, scope):
-            touch_lease(registry, initial_lease)
+            touch_lease(registry, fresh_lease)
             record = registry.record
         else:
             if registry.record:
                 _terminate_pid(registry.record.server_pid)
                 registry.record = None
-            record = _start_healthy_server(scope, initial_lease)
+            record = _start_healthy_server(scope, fresh_lease)
             registry.record = record
     ensure_watchdog(scope)
     return record
@@ -104,41 +105,53 @@ def _find_free_port() -> int:
 
 
 def _start_serena_process(scope: Scope, port: int) -> subprocess.Popen:
-    return subprocess.Popen(
-        [
-            "serena",
-            "start-mcp-server",
-            "--project",
-            str(scope.project_root),
-            "--context",
-            serena_context_for(scope.client_type),
-            "--mode",
-            "editing",
-            "--mode",
-            "interactive",
-            "--transport",
-            "streamable-http",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(port),
-            "--enable-web-dashboard",
-            "true",
-            "--open-web-dashboard",
-            "false",
-        ],
-        cwd=str(scope.project_root),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        start_new_session=True,
-    )
+    log_path = _serena_process_log_path(scope)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w") as log:
+        proc = subprocess.Popen(
+            [
+                "serena",
+                "start-mcp-server",
+                "--project",
+                str(scope.project_root),
+                "--context",
+                serena_context_for(scope.client_type),
+                "--mode",
+                "editing",
+                "--mode",
+                "interactive",
+                "--transport",
+                "streamable-http",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+                "--enable-web-dashboard",
+                "true",
+                "--open-web-dashboard",
+                "false",
+            ],
+            cwd=str(scope.project_root),
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+    proc.dotsync_log_path = log_path
+    return proc
+
+
+def _serena_process_log_path(scope: Scope) -> Path:
+    return state_dir_for(scope) / "serena-server.log"
 
 
 _DASHBOARD_RE = re.compile(r"https?://127\.0\.0\.1:\d+(?:/[^\s]*)?")
 
 
 def _discover_dashboard_url(proc: subprocess.Popen, *, timeout: float = 20.0) -> str:
+    log_path = getattr(proc, "dotsync_log_path", None)
+    if log_path is not None:
+        return _discover_dashboard_url_from_log(proc, Path(log_path), timeout=timeout)
     if proc.stdout is None:
         raise RuntimeError("Serena stdout is unavailable")
     deadline = time.time() + timeout
@@ -152,9 +165,33 @@ def _discover_dashboard_url(proc: subprocess.Popen, *, timeout: float = 20.0) ->
         if not line:
             continue
         match = _DASHBOARD_RE.search(line)
-        if match:
+        if match and _looks_like_dashboard_line(line):
             return normalize_dashboard_url(match.group(0))
     raise RuntimeError("timed out waiting for Serena dashboard URL")
+
+
+def _discover_dashboard_url_from_log(proc: subprocess.Popen, log_path: Path, *, timeout: float) -> str:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if log_path.exists():
+            text = log_path.read_text(errors="replace")
+            for line in text.splitlines():
+                match = _DASHBOARD_RE.search(line)
+                if match and _looks_like_dashboard_line(line):
+                    return normalize_dashboard_url(match.group(0))
+        if proc.poll() is not None:
+            raise RuntimeError("Serena exited before dashboard URL was discovered")
+        time.sleep(0.1)
+    raise RuntimeError("timed out waiting for Serena dashboard URL")
+
+
+def _looks_like_dashboard_line(line: str) -> bool:
+    lowered = line.lower()
+    return "dashboard" in lowered
+
+
+def _fresh_lease(lease: Lease) -> Lease:
+    return Lease(lease.lease_id, lease.launcher_pid, time.time())
 
 
 def _wait_until_healthy(record: ServerRecord, scope: Scope, *, timeout: float = 20.0) -> None:

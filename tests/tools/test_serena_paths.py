@@ -10,6 +10,25 @@ def test_find_project_root_uses_git_root(tmp_path):
     assert find_project_root(nested) == repo.resolve()
 
 
+def test_find_project_root_prefers_serena_project_root(tmp_path):
+    repo = tmp_path / "repo"
+    nested = repo / "a" / "b"
+    nested.mkdir(parents=True)
+    (repo / ".serena").mkdir()
+    (repo / ".serena" / "project.yml").write_text("name: repo\n")
+
+    assert find_project_root(nested) == repo.resolve()
+
+
+def test_find_project_root_uses_common_project_markers(tmp_path):
+    repo = tmp_path / "repo"
+    nested = repo / "a" / "b"
+    nested.mkdir(parents=True)
+    (repo / "pyproject.toml").write_text("[project]\n")
+
+    assert find_project_root(nested) == repo.resolve()
+
+
 def test_find_project_root_falls_back_to_cwd(tmp_path):
     assert find_project_root(tmp_path) == tmp_path.resolve()
 

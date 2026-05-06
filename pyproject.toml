@@ -20,3 +20,6 @@ where = ["lib"]
 [tool.pytest.ini_options]
 pythonpath = ["lib"]
 testpaths = ["tests"]
+markers = [
+    "no_subprocess_block: allow a test to execute subprocess.run directly",
+]

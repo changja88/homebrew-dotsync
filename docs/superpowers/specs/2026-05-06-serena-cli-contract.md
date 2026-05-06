@@ -53,8 +53,9 @@ Codex accepts per-run config overrides:
 codex -c 'mcp_servers.serena.url="http://127.0.0.1:<port>/mcp"' <args...>
 ```
 
-The wrapper passes this override only to the child process. It must not write
-the dynamic URL to `~/.codex/config.toml`.
+The Serena launcher passes this override only to the child process after the zsh
+agent shim has finished preflight cleanup. It must not write the dynamic URL to
+`~/.codex/config.toml`.
 
 ## Claude
 
@@ -67,7 +68,7 @@ claude --mcp-config=<json-file> <args...>
 Use the `--mcp-config=<path>` form because `--mcp-config <path>` is variadic and
 can consume positional child args.
 
-The wrapper writes a temporary JSON file:
+The Serena launcher writes a temporary JSON file:
 
 ```json
 {
@@ -80,7 +81,7 @@ The wrapper writes a temporary JSON file:
 }
 ```
 
-The wrapper must not use `--strict-mcp-config` unless runtime verification shows
-that a user-level stale `serena` entry wins over the per-run config. In that
-case, the implementation must switch to an explicitly merged config file or a
-collision-free runtime server name.
+The Serena launcher must not use `--strict-mcp-config` unless runtime
+verification shows that a user-level stale `serena` entry wins over the per-run
+config. In that case, the implementation must switch to an explicitly merged
+config file or a collision-free runtime server name.

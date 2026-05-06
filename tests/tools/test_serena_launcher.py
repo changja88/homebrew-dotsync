@@ -1,8 +1,16 @@
 import os
+import subprocess
 
 import pytest
 
-from tools.serena_agent_launcher import build_child_command, find_real_binary, infer_client_type
+from tools.serena_agent_launcher import (
+    build_child_command,
+    find_real_binary,
+    format_shutdown_status,
+    format_launch_status,
+    infer_client_type,
+)
+from tools.serena_mcp.watchdog import ShutdownStats
 
 
 def test_infer_client_type_from_program_name():
@@ -57,6 +65,182 @@ def test_build_claude_command_does_not_swallow_positional_args():
     cleanup()
 
 
+def test_format_launch_status_shows_client_project_and_mcp_url():
+    assert format_launch_status(
+        client_type="claude",
+        project_root="/repo",
+        mcp_url="http://127.0.0.1:9122/mcp",
+    ) == "serena launcher: claude project=/repo mcp=http://127.0.0.1:9122/mcp"
+
+
+def test_format_shutdown_status_matches_agent_event_style():
+    assert format_shutdown_status(
+        ShutdownStats(
+            sessions_before=3,
+            sessions_closed=1,
+            sessions_remaining=2,
+            server_was_running=True,
+            server_stopped=False,
+        )
+    ) == "  * serena     done      . sessions_before=3 closed=1 remaining=2 server=kept"
+
+
+def test_format_shutdown_status_reports_stopped_server():
+    assert format_shutdown_status(
+        ShutdownStats(
+            sessions_before=1,
+            sessions_closed=1,
+            sessions_remaining=0,
+            server_was_running=True,
+            server_stopped=True,
+        )
+    ) == "  * serena     done      . sessions_before=1 closed=1 remaining=0 server=stopped"
+
+
+def test_launcher_status_can_be_suppressed_by_zsh_adapter(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".git").mkdir()
+
+    class Record:
+        mcp_url = "http://127.0.0.1:9000/mcp"
+        dashboard_url = "http://127.0.0.1:9001"
+
+    class Proc:
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+        def terminate(self):
+            pass
+
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_QUIET", "1")
+    monkeypatch.setattr("sys.stderr.isatty", lambda: True)
+    monkeypatch.setattr("tools.serena_agent_launcher.ensure_server", lambda scope, lease: Record())
+    monkeypatch.setattr("tools.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")
+    monkeypatch.setattr("tools.serena_agent_launcher._remove_lease_and_shutdown_if_empty", lambda scope, lease_id: None)
+    monkeypatch.setattr("tools.serena_agent_launcher.subprocess.Popen", lambda cmd, cwd=None: Proc())
+
+    from tools.serena_agent_launcher import main
+
+    assert main([]) == 0
+    assert "serena launcher:" not in capsys.readouterr().err
+
+
+def test_launcher_opens_dashboard_for_interactive_agent(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".git").mkdir()
+
+    class Record:
+        mcp_url = "http://127.0.0.1:9000/mcp"
+        dashboard_url = "http://127.0.0.1:9001"
+
+    class Proc:
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+        def terminate(self):
+            pass
+
+    calls = []
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setattr("tools.serena_agent_launcher.ensure_server", lambda scope, lease: Record())
+    monkeypatch.setattr("tools.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")
+    monkeypatch.setattr("tools.serena_agent_launcher._remove_lease_and_shutdown_if_empty", lambda scope, lease_id: None)
+    monkeypatch.setattr("tools.serena_agent_launcher.subprocess.Popen", lambda cmd, cwd=None: Proc())
+    monkeypatch.setattr("tools.serena_agent_launcher.subprocess.run", lambda cmd, **kwargs: calls.append((cmd, kwargs)))
+
+    from tools.serena_agent_launcher import main
+
+    assert main([]) == 0
+    assert calls == [
+        (
+            ["open", "http://127.0.0.1:9001"],
+            {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "check": False},
+        )
+    ]
+
+
+def test_launcher_prints_shutdown_stats_for_interactive_agent(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".git").mkdir()
+
+    class Record:
+        mcp_url = "http://127.0.0.1:9000/mcp"
+        dashboard_url = "http://127.0.0.1:9001"
+
+    class Proc:
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+        def terminate(self):
+            pass
+
+    stats = ShutdownStats(
+        sessions_before=2,
+        sessions_closed=1,
+        sessions_remaining=1,
+        server_was_running=True,
+        server_stopped=False,
+    )
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_QUIET", "1")
+    monkeypatch.setattr("tools.serena_agent_launcher.ensure_server", lambda scope, lease: Record())
+    monkeypatch.setattr("tools.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")
+    monkeypatch.setattr("tools.serena_agent_launcher._remove_lease_and_shutdown_if_empty", lambda scope, lease_id: stats)
+    monkeypatch.setattr("tools.serena_agent_launcher.subprocess.Popen", lambda cmd, cwd=None: Proc())
+    monkeypatch.setattr("tools.serena_agent_launcher.subprocess.run", lambda cmd, **kwargs: None)
+
+    from tools.serena_agent_launcher import main
+
+    assert main([]) == 0
+    assert "  * serena     done      . sessions_before=2 closed=1 remaining=1 server=kept" in capsys.readouterr().out
+
+
+def test_launcher_uses_project_root_from_zsh_adapter(monkeypatch, tmp_path):
+    displayed_root = tmp_path / "project"
+    cwd = displayed_root / "nested"
+    cwd.mkdir(parents=True)
+    monkeypatch.chdir(cwd)
+
+    class Record:
+        mcp_url = "http://127.0.0.1:9000/mcp"
+        dashboard_url = "http://127.0.0.1:9001"
+
+    class Proc:
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+        def terminate(self):
+            pass
+
+    scopes = []
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(displayed_root))
+    monkeypatch.setattr("tools.serena_agent_launcher.ensure_server", lambda scope, lease: scopes.append(scope) or Record())
+    monkeypatch.setattr("tools.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")
+    monkeypatch.setattr("tools.serena_agent_launcher._remove_lease_and_shutdown_if_empty", lambda scope, lease_id: None)
+    monkeypatch.setattr("tools.serena_agent_launcher.subprocess.Popen", lambda cmd, cwd=None: Proc())
+
+    from tools.serena_agent_launcher import main
+
+    assert main([]) == 0
+    assert scopes[0].project_root == displayed_root.resolve()
+
+
 def test_find_real_binary_uses_env_override(monkeypatch, tmp_path):
     real = tmp_path / "codex-real"
     real.write_text("#!/bin/sh\n")
@@ -79,6 +263,7 @@ def test_launcher_registers_and_removes_codex_lease(monkeypatch, tmp_path):
 
     class Record:
         mcp_url = "http://127.0.0.1:9000/mcp"
+        dashboard_url = "http://127.0.0.1:9001"
 
     class Proc:
         def poll(self):
@@ -102,3 +287,47 @@ def test_launcher_registers_and_removes_codex_lease(monkeypatch, tmp_path):
     assert main(["--help"]) == 0
     assert commands[0][0] == "/opt/homebrew/bin/codex"
     assert commands[0][1] == "-c"
+
+
+def test_signal_handler_defers_registry_cleanup_to_finally(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".git").mkdir()
+
+    class Record:
+        mcp_url = "http://127.0.0.1:9000/mcp"
+        dashboard_url = "http://127.0.0.1:9001"
+
+    handlers = {}
+    events = []
+
+    class Proc:
+        def poll(self):
+            return None
+
+        def wait(self):
+            events.append("wait-start")
+            handlers[1](1, None)
+            events.append("wait-end")
+            return 0
+
+        def terminate(self):
+            events.append("terminate")
+
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setattr("tools.serena_agent_launcher.ensure_server", lambda scope, lease: Record())
+    monkeypatch.setattr("tools.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")
+    monkeypatch.setattr("tools.serena_agent_launcher.subprocess.Popen", lambda cmd, cwd=None: Proc())
+    monkeypatch.setattr("tools.serena_agent_launcher.signal.signal", lambda signum, handler: handlers.setdefault(signum, handler))
+    monkeypatch.setattr("tools.serena_agent_launcher._remove_lease_and_shutdown_if_empty", lambda scope, lease_id: events.append("remove"))
+
+    from tools.serena_agent_launcher import main
+
+    assert main([]) == 0
+    assert events == ["wait-start", "terminate", "wait-end", "remove"]
+
+
+def test_launcher_does_not_own_agent_cleanup():
+    import tools.serena_agent_launcher as launcher
+
+    assert not hasattr(launcher, "cleanup_before_launch")
+    assert not hasattr(launcher, "format_cleanup_status")

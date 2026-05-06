@@ -5,6 +5,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 CLIENT_TYPES = {"codex", "claude"}
+PROJECT_MARKERS = (
+    "AGENTS.md",
+    "CLAUDE.md",
+    "pyproject.toml",
+    "package.json",
+    "Cargo.toml",
+    "go.mod",
+    "Gemfile",
+    "Makefile",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,7 +39,13 @@ def find_project_root(cwd: Path) -> Path:
 
     current = cwd.resolve()
     for candidate in (current, *current.parents):
+        if (candidate / ".serena" / "project.yml").is_file():
+            return candidate
+    for candidate in (current, *current.parents):
         if (candidate / ".git").exists():
+            return candidate
+    for candidate in (current, *current.parents):
+        if any((candidate / marker).exists() for marker in PROJECT_MARKERS):
             return candidate
     return current
 
