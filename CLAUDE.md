@@ -80,13 +80,7 @@ brew test dotsync
 
 ## 릴리스 절차 (Homebrew tap)
 
-릴리스는 `make release`로 자동화돼 있다. 인터랙티브로 major/minor/patch를 묻고, 버전 갱신 → 테스트 → commit/push → 태그 → GitHub release → tarball sha256 계산 → Formula 패치 → push까지 처리한다.
-
-```bash
-make release
-```
-
-수동으로 진행해야 할 경우:
+수동 릴리스 절차:
 
 1. `git push -u origin main`
 2. `git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z`

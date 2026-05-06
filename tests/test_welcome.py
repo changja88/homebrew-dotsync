@@ -14,8 +14,7 @@ def test_format_welcome_includes_version():
 def test_format_welcome_marks_init_as_starting_point():
     """Welcome should signal that `init` is where the user starts.
 
-    We changed away from a hard 'required' wording so it doesn't clash with
-    the `make demo` flow that runs init for you. The key signal is now:
+    We changed away from a hard 'required' wording. The key signal is now:
     init is listed first AND has a 'start here' hint.
     """
     out = format_welcome("0.1.0")

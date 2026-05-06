@@ -126,7 +126,7 @@ only one language.
 
 ## Release Notes
 
-`make release` drives the release flow:
+Release flow:
 
 - bump version strings
 - run tests
@@ -155,4 +155,3 @@ brew test dotsync
 - Keep command behavior idempotent where user files are touched.
 - Do not silently swallow partial failures; surface warnings through the
   app warning channel and CLI summaries.
-
