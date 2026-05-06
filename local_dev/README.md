@@ -48,7 +48,9 @@ flow rather than by the launcher.
 After project setup, the shim runs the agent cleanup step and then delegates to
 the Python launcher. The launcher prints Serena MCP progress rows while it
 starts or reuses the scoped server, then clears the preflight output immediately
-before starting the real Codex or Claude TUI.
+before starting the real Codex or Claude TUI. When the agent TUI exits, the
+launcher prints a shutdown progress row before releasing the scoped Serena MCP
+lease and stopping the server when no sessions remain.
 
 After moving this repository or this directory, update the managed block in
 `~/.zshrc` or regenerate it.

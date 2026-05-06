@@ -7,6 +7,7 @@ from local_dev.serena_mcp_management.serena_agent_launcher import (
     build_child_command,
     find_real_binary,
     format_shutdown_status,
+    format_shutdown_progress_status,
     format_launch_status,
     infer_client_type,
 )
@@ -95,6 +96,13 @@ def test_format_shutdown_status_reports_stopped_server():
             server_stopped=True,
         )
     ) == "  * serena     done      . sessions_before=1 closed=1 remaining=0 server=stopped"
+
+
+def test_format_shutdown_progress_status_matches_agent_event_style():
+    assert (
+        format_shutdown_progress_status("stopping scoped MCP server")
+        == "  * serena     shutdown  . stopping scoped MCP server"
+    )
 
 
 def test_format_mcp_progress_status_matches_agent_event_style():
@@ -265,7 +273,12 @@ def test_launcher_prints_shutdown_stats_for_interactive_agent(monkeypatch, tmp_p
     from local_dev.serena_mcp_management.serena_agent_launcher import main
 
     assert main([]) == 0
-    assert "  * serena     done      . sessions_before=2 closed=1 remaining=1 server=kept" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    shutdown_line = "  * serena     shutdown  . stopping scoped MCP server"
+    done_line = "  * serena     done      . sessions_before=2 closed=1 remaining=1 server=kept"
+    assert shutdown_line in output
+    assert done_line in output
+    assert output.index(shutdown_line) < output.index(done_line)
 
 
 def test_launcher_uses_project_root_from_zsh_adapter(monkeypatch, tmp_path):

@@ -125,6 +125,12 @@ def format_shutdown_status(stats: ShutdownStats) -> str:
     return f"  * {'serena':<10} {'done':<10}. {detail}"
 
 
+def format_shutdown_progress_status(detail: str) -> str:
+    """Return a visible MCP shutdown progress row."""
+
+    return f"  * {'serena':<10} {'shutdown':<10}. {detail}"
+
+
 def format_mcp_progress_status(state: str, detail: str) -> str:
     """Return a visible MCP startup progress row."""
 
@@ -206,6 +212,8 @@ def main(argv: list[str] | None = None) -> int:
             signal.signal(signum, shutdown)
         return int(child.wait())
     finally:
+        if _interactive_launch():
+            print(format_shutdown_progress_status("stopping scoped MCP server"), flush=True)
         stop.set()
         cleanup()
         stats = _remove_lease_and_shutdown_if_empty(scope, lease_id)
