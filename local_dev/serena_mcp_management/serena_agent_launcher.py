@@ -125,6 +125,19 @@ def format_shutdown_status(stats: ShutdownStats) -> str:
     return f"  * {'serena':<10} {'done':<10}. {detail}"
 
 
+def format_mcp_progress_status(state: str, detail: str) -> str:
+    """Return a visible MCP startup progress row."""
+
+    phase = "mcp" if state == "pending" else state
+    return f"  * {'serena':<10} {phase:<10}. {detail}"
+
+
+def clear_terminal_before_child() -> None:
+    """Clear the preflight/progress terminal output before opening the agent TUI."""
+
+    print("\x1b[3J\x1b[H\x1b[2J", end="", flush=True)
+
+
 def open_dashboard_if_requested(dashboard_url: str) -> None:
     """Open the Serena dashboard for interactive agent sessions."""
 
@@ -147,7 +160,11 @@ def main(argv: list[str] | None = None) -> int:
     scope = Scope(project_root, client_type)
     lease_id = str(uuid.uuid4())
     lease = Lease(lease_id, os.getpid(), time.time())
+    if _interactive_launch():
+        print(format_mcp_progress_status("pending", "preparing scoped server"), flush=True)
     record = ensure_server(scope, lease)
+    if _interactive_launch():
+        print(format_mcp_progress_status("ready", record.mcp_url), flush=True)
     stop = threading.Event()
     cleanup: Callable[[], None] = lambda: None
     child: subprocess.Popen | None = None
@@ -176,6 +193,8 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
         open_dashboard_if_requested(record.dashboard_url)
+        if os.environ.get("SERENA_AGENT_CLEAR_BEFORE_CHILD") == "1":
+            clear_terminal_before_child()
         child = subprocess.Popen(cmd, cwd=str(project_root))
 
         def shutdown(signum=None, frame=None):
@@ -199,6 +218,10 @@ def _project_root_from_environment() -> Path | None:
     if not value:
         return None
     return Path(value).resolve()
+
+
+def _interactive_launch() -> bool:
+    return os.environ.get("SERENA_AGENT_INTERACTIVE") == "1"
 
 
 def _heartbeat_loop(scope: Scope, lease_id: str, stop: threading.Event) -> None:

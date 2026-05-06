@@ -97,6 +97,67 @@ def test_format_shutdown_status_reports_stopped_server():
     ) == "  * serena     done      . sessions_before=1 closed=1 remaining=0 server=stopped"
 
 
+def test_format_mcp_progress_status_matches_agent_event_style():
+    import local_dev.serena_mcp_management.serena_agent_launcher as launcher
+
+    assert (
+        launcher.format_mcp_progress_status("pending", "preparing scoped server")
+        == "  * serena     mcp       . preparing scoped server"
+    )
+    assert (
+        launcher.format_mcp_progress_status("ready", "http://127.0.0.1:9000/mcp")
+        == "  * serena     ready     . http://127.0.0.1:9000/mcp"
+    )
+
+
+def test_launcher_prints_mcp_progress_and_clears_before_child(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".git").mkdir()
+
+    class Record:
+        mcp_url = "http://127.0.0.1:9000/mcp"
+        dashboard_url = "http://127.0.0.1:9001"
+
+    class Proc:
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+        def terminate(self):
+            pass
+
+    events = []
+
+    def fake_ensure_server(scope, lease):
+        events.append(("ensure", capsys.readouterr().out))
+        return Record()
+
+    def fake_popen(cmd, cwd=None):
+        events.append(("popen", capsys.readouterr().out))
+        return Proc()
+
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_QUIET", "1")
+    monkeypatch.setenv("SERENA_AGENT_CLEAR_BEFORE_CHILD", "1")
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.ensure_server", fake_ensure_server)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._remove_lease_and_shutdown_if_empty", lambda scope, lease_id: None)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.subprocess.run", lambda cmd, **kwargs: None)
+
+    from local_dev.serena_mcp_management.serena_agent_launcher import main
+
+    assert main([]) == 0
+    assert events[0][0] == "ensure"
+    assert "  * serena     mcp       . preparing scoped server" in events[0][1]
+    assert events[1][0] == "popen"
+    assert "  * serena     ready     . http://127.0.0.1:9000/mcp" in events[1][1]
+    assert "\x1b[3J\x1b[H\x1b[2J" in events[1][1]
+
+
 def test_launcher_status_can_be_suppressed_by_zsh_adapter(monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".git").mkdir()

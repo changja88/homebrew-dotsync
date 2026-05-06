@@ -24,6 +24,26 @@ Generate the local zsh snippet from this checkout:
 python3 local_dev/serena_mcp_management/serena_zsh_shim.py
 ```
 
+Apply the generated snippet to the managed block in `~/.zshrc`:
+
+```bash
+make local-serena-shim
+```
+
+Interactive no-argument `codex` / `claude` launches show the existing
+preflight first, including cleanup and memory reset counts. If the project root
+does not have `.serena/project.yml`, the preflight marks Serena as
+`project config missing`; after the user confirms the preflight, the shim asks
+whether to run `serena project create <project-root>`. Declining that prompt
+launches the real agent binary without Serena project config. When project
+creation runs, additional Serena language prompts receive the default answer so
+optional language servers are not enabled accidentally.
+
+After project setup, the shim runs the agent cleanup step and then delegates to
+the Python launcher. The launcher prints Serena MCP progress rows while it
+starts or reuses the scoped server, then clears the preflight output immediately
+before starting the real Codex or Claude TUI.
+
 After moving this repository or this directory, update the managed block in
 `~/.zshrc` or regenerate it.
 
