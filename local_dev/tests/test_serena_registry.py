@@ -1,8 +1,8 @@
 import os
 import time
 
-from tools.serena_mcp.paths import Scope
-from tools.serena_mcp.registry import (
+from local_dev.serena_mcp_management.serena_mcp.paths import Scope
+from local_dev.serena_mcp_management.serena_mcp.registry import (
     Lease,
     ServerRecord,
     locked_registry,

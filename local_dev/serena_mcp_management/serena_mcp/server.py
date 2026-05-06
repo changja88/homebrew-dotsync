@@ -11,15 +11,15 @@ import subprocess
 import time
 from pathlib import Path
 
-from tools.serena_mcp.health import (
+from local_dev.serena_mcp_management.serena_mcp.health import (
     dashboard_matches_project,
     http_endpoint_alive,
     normalize_dashboard_url,
     pid_is_alive,
 )
-from tools.serena_mcp.paths import Scope, state_dir_for
-from tools.serena_mcp.registry import Lease, ServerRecord, locked_registry, touch_lease
-from tools.serena_mcp.watchdog import ensure_watchdog
+from local_dev.serena_mcp_management.serena_mcp.paths import Scope, state_dir_for
+from local_dev.serena_mcp_management.serena_mcp.registry import Lease, ServerRecord, locked_registry, touch_lease
+from local_dev.serena_mcp_management.serena_mcp.watchdog import ensure_watchdog
 
 
 def ensure_server(scope: Scope, initial_lease: Lease) -> ServerRecord:

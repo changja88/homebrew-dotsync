@@ -3,14 +3,14 @@ import subprocess
 
 import pytest
 
-from tools.serena_agent_launcher import (
+from local_dev.serena_mcp_management.serena_agent_launcher import (
     build_child_command,
     find_real_binary,
     format_shutdown_status,
     format_launch_status,
     infer_client_type,
 )
-from tools.serena_mcp.watchdog import ShutdownStats
+from local_dev.serena_mcp_management.serena_mcp.watchdog import ShutdownStats
 
 
 def test_infer_client_type_from_program_name():
@@ -118,12 +118,12 @@ def test_launcher_status_can_be_suppressed_by_zsh_adapter(monkeypatch, tmp_path,
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_QUIET", "1")
     monkeypatch.setattr("sys.stderr.isatty", lambda: True)
-    monkeypatch.setattr("tools.serena_agent_launcher.ensure_server", lambda scope, lease: Record())
-    monkeypatch.setattr("tools.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")
-    monkeypatch.setattr("tools.serena_agent_launcher._remove_lease_and_shutdown_if_empty", lambda scope, lease_id: None)
-    monkeypatch.setattr("tools.serena_agent_launcher.subprocess.Popen", lambda cmd, cwd=None: Proc())
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.ensure_server", lambda scope, lease: Record())
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._remove_lease_and_shutdown_if_empty", lambda scope, lease_id: None)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.subprocess.Popen", lambda cmd, cwd=None: Proc())
 
-    from tools.serena_agent_launcher import main
+    from local_dev.serena_mcp_management.serena_agent_launcher import main
 
     assert main([]) == 0
     assert "serena launcher:" not in capsys.readouterr().err
@@ -150,13 +150,13 @@ def test_launcher_opens_dashboard_for_interactive_agent(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setattr("tools.serena_agent_launcher.ensure_server", lambda scope, lease: Record())
-    monkeypatch.setattr("tools.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")
-    monkeypatch.setattr("tools.serena_agent_launcher._remove_lease_and_shutdown_if_empty", lambda scope, lease_id: None)
-    monkeypatch.setattr("tools.serena_agent_launcher.subprocess.Popen", lambda cmd, cwd=None: Proc())
-    monkeypatch.setattr("tools.serena_agent_launcher.subprocess.run", lambda cmd, **kwargs: calls.append((cmd, kwargs)))
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.ensure_server", lambda scope, lease: Record())
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._remove_lease_and_shutdown_if_empty", lambda scope, lease_id: None)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.subprocess.Popen", lambda cmd, cwd=None: Proc())
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.subprocess.run", lambda cmd, **kwargs: calls.append((cmd, kwargs)))
 
-    from tools.serena_agent_launcher import main
+    from local_dev.serena_mcp_management.serena_agent_launcher import main
 
     assert main([]) == 0
     assert calls == [
@@ -195,13 +195,13 @@ def test_launcher_prints_shutdown_stats_for_interactive_agent(monkeypatch, tmp_p
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
     monkeypatch.setenv("SERENA_AGENT_QUIET", "1")
-    monkeypatch.setattr("tools.serena_agent_launcher.ensure_server", lambda scope, lease: Record())
-    monkeypatch.setattr("tools.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")
-    monkeypatch.setattr("tools.serena_agent_launcher._remove_lease_and_shutdown_if_empty", lambda scope, lease_id: stats)
-    monkeypatch.setattr("tools.serena_agent_launcher.subprocess.Popen", lambda cmd, cwd=None: Proc())
-    monkeypatch.setattr("tools.serena_agent_launcher.subprocess.run", lambda cmd, **kwargs: None)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.ensure_server", lambda scope, lease: Record())
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._remove_lease_and_shutdown_if_empty", lambda scope, lease_id: stats)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.subprocess.Popen", lambda cmd, cwd=None: Proc())
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.subprocess.run", lambda cmd, **kwargs: None)
 
-    from tools.serena_agent_launcher import main
+    from local_dev.serena_mcp_management.serena_agent_launcher import main
 
     assert main([]) == 0
     assert "  * serena     done      . sessions_before=2 closed=1 remaining=1 server=kept" in capsys.readouterr().out
@@ -230,12 +230,12 @@ def test_launcher_uses_project_root_from_zsh_adapter(monkeypatch, tmp_path):
     scopes = []
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(displayed_root))
-    monkeypatch.setattr("tools.serena_agent_launcher.ensure_server", lambda scope, lease: scopes.append(scope) or Record())
-    monkeypatch.setattr("tools.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")
-    monkeypatch.setattr("tools.serena_agent_launcher._remove_lease_and_shutdown_if_empty", lambda scope, lease_id: None)
-    monkeypatch.setattr("tools.serena_agent_launcher.subprocess.Popen", lambda cmd, cwd=None: Proc())
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.ensure_server", lambda scope, lease: scopes.append(scope) or Record())
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._remove_lease_and_shutdown_if_empty", lambda scope, lease_id: None)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.subprocess.Popen", lambda cmd, cwd=None: Proc())
 
-    from tools.serena_agent_launcher import main
+    from local_dev.serena_mcp_management.serena_agent_launcher import main
 
     assert main([]) == 0
     assert scopes[0].project_root == displayed_root.resolve()
@@ -277,12 +277,12 @@ def test_launcher_registers_and_removes_codex_lease(monkeypatch, tmp_path):
 
     commands = []
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
-    monkeypatch.setattr("tools.serena_agent_launcher.ensure_server", lambda scope, lease: Record())
-    monkeypatch.setattr("tools.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")
-    monkeypatch.setattr("tools.serena_agent_launcher._remove_lease_and_shutdown_if_empty", lambda scope, lease_id: None)
-    monkeypatch.setattr("tools.serena_agent_launcher.subprocess.Popen", lambda cmd, cwd=None: commands.append(cmd) or Proc())
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.ensure_server", lambda scope, lease: Record())
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._remove_lease_and_shutdown_if_empty", lambda scope, lease_id: None)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.subprocess.Popen", lambda cmd, cwd=None: commands.append(cmd) or Proc())
 
-    from tools.serena_agent_launcher import main
+    from local_dev.serena_mcp_management.serena_agent_launcher import main
 
     assert main(["--help"]) == 0
     assert commands[0][0] == "/opt/homebrew/bin/codex"
@@ -314,20 +314,20 @@ def test_signal_handler_defers_registry_cleanup_to_finally(monkeypatch, tmp_path
             events.append("terminate")
 
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
-    monkeypatch.setattr("tools.serena_agent_launcher.ensure_server", lambda scope, lease: Record())
-    monkeypatch.setattr("tools.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")
-    monkeypatch.setattr("tools.serena_agent_launcher.subprocess.Popen", lambda cmd, cwd=None: Proc())
-    monkeypatch.setattr("tools.serena_agent_launcher.signal.signal", lambda signum, handler: handlers.setdefault(signum, handler))
-    monkeypatch.setattr("tools.serena_agent_launcher._remove_lease_and_shutdown_if_empty", lambda scope, lease_id: events.append("remove"))
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.ensure_server", lambda scope, lease: Record())
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.subprocess.Popen", lambda cmd, cwd=None: Proc())
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.signal.signal", lambda signum, handler: handlers.setdefault(signum, handler))
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._remove_lease_and_shutdown_if_empty", lambda scope, lease_id: events.append("remove"))
 
-    from tools.serena_agent_launcher import main
+    from local_dev.serena_mcp_management.serena_agent_launcher import main
 
     assert main([]) == 0
     assert events == ["wait-start", "terminate", "wait-end", "remove"]
 
 
 def test_launcher_does_not_own_agent_cleanup():
-    import tools.serena_agent_launcher as launcher
+    import local_dev.serena_mcp_management.serena_agent_launcher as launcher
 
     assert not hasattr(launcher, "cleanup_before_launch")
     assert not hasattr(launcher, "format_cleanup_status")

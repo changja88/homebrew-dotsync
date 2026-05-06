@@ -9,13 +9,13 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from tools.serena_mcp.health import pid_is_alive
-from tools.serena_mcp.paths import Scope
-from tools.serena_mcp.registry import locked_registry, stale_lease_ids
+from local_dev.serena_mcp_management.serena_mcp.health import pid_is_alive
+from local_dev.serena_mcp_management.serena_mcp.paths import Scope
+from local_dev.serena_mcp_management.serena_mcp.registry import locked_registry, stale_lease_ids
 
 HEARTBEAT_INTERVAL_SECONDS = 5.0
 LEASE_TIMEOUT_SECONDS = 30.0
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,7 +124,7 @@ def ensure_watchdog(scope: Scope) -> None:
             [
                 sys.executable,
                 "-m",
-                "tools.serena_mcp.watchdog",
+                "local_dev.serena_mcp_management.serena_mcp.watchdog",
                 str(scope.project_root),
                 scope.client_type,
             ],

@@ -12,7 +12,7 @@ Codex와 Claude는 같은 프로젝트에서도 서로 다른 scope로 분리한
 
 - `~/.zshrc`에는 `codex()` / `claude()` agent shim을 둔다.
 - shim은 기존 agent preflight/cleanup UX를 보존한 뒤
-  설치된 `libexec/tools/serena_agent_launcher.py`를 실행한다.
+  repo-local `local_dev/serena_mcp_management/serena_agent_launcher.py`를 실행한다.
 - preflight/cleanup adapter는 Codex/Claude session jsonl 정리, memory reset,
   `sessions delete/keep`, `memory reset` 표시를 담당한다.
 - Serena launcher는 프로젝트 루트 탐지, scope별 server ensure, lease 등록,
@@ -74,7 +74,7 @@ Codex와 Claude는 같은 프로젝트에서도 서로 다른 scope로 분리한
 기존 preflight/cleanup UX를 유지하고, Serena 관리만 Python launcher에 위임한다.
 
 ```bash
-python3 "$(brew --prefix dotsync)/libexec/tools/serena_zsh_shim.py"
+python3 local_dev/serena_mcp_management/serena_zsh_shim.py
 ```
 
 생성된 snippet은 인자가 없는 대화형 `codex` / `claude` 실행만 관리한다.
@@ -92,13 +92,13 @@ cleanup이나 Serena launcher를 거치지 않고 실제 binary로 직접 전달
   or `~/.claude.json`.
 - Existing stale global Serena MCP entries must be removed from local configs.
 - Existing agent preflight/cleanup output must remain owned by the zsh shim, not
-  by `tools/serena_agent_launcher.py`.
+  by `local_dev/serena_mcp_management/serena_agent_launcher.py`.
 
 ## Verification
 
 - Unit tests cover sanitizer behavior, registry locking, health checks, server
   ensure, watchdog cleanup, launcher command construction, and zsh shim text.
-- Unit tests prove `tools/serena_agent_launcher.py` does not import or execute
+- Unit tests prove `local_dev/serena_mcp_management/serena_agent_launcher.py` does not import or execute
   Codex/Claude session cleanup.
 - zsh shim tests prove `sessions delete/keep`, `memory reset`, Claude cleanup,
   and Codex cleanup remain present.

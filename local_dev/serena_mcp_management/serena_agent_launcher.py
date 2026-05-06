@@ -13,14 +13,14 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from tools.serena_mcp.paths import Scope, find_project_root
-from tools.serena_mcp.registry import Lease, locked_registry, touch_lease
-from tools.serena_mcp.server import ensure_server
-from tools.serena_mcp.watchdog import (
+from local_dev.serena_mcp_management.serena_mcp.paths import Scope, find_project_root
+from local_dev.serena_mcp_management.serena_mcp.registry import Lease, locked_registry, touch_lease
+from local_dev.serena_mcp_management.serena_mcp.server import ensure_server
+from local_dev.serena_mcp_management.serena_mcp.watchdog import (
     HEARTBEAT_INTERVAL_SECONDS,
     ShutdownStats,
     release_lease_and_shutdown_if_empty,

@@ -1,7 +1,7 @@
 import json
 import os
 
-from tools.serena_mcp.health import (
+from local_dev.serena_mcp_management.serena_mcp.health import (
     dashboard_matches_project,
     http_endpoint_alive,
     normalize_dashboard_url,
@@ -36,7 +36,7 @@ def test_http_endpoint_alive_posts_json(monkeypatch):
         seen["timeout"] = timeout
         return Response(b'{"jsonrpc":"2.0","id":1,"result":{}}')
 
-    monkeypatch.setattr("tools.serena_mcp.health.urlopen", fake_urlopen)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.health.urlopen", fake_urlopen)
 
     assert http_endpoint_alive("http://127.0.0.1:9123/mcp")
     assert seen == {"method": "POST", "timeout": 1.0}
@@ -44,14 +44,14 @@ def test_http_endpoint_alive_posts_json(monkeypatch):
 
 def test_dashboard_matches_project_by_active_path(monkeypatch, tmp_path):
     body = json.dumps({"active_project": {"path": str(tmp_path.resolve())}}).encode()
-    monkeypatch.setattr("tools.serena_mcp.health.urlopen", lambda url, timeout: Response(body))
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.health.urlopen", lambda url, timeout: Response(body))
 
     assert dashboard_matches_project("http://127.0.0.1:24282", tmp_path)
 
 
 def test_dashboard_rejects_active_project_none(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        "tools.serena_mcp.health.urlopen",
+        "local_dev.serena_mcp_management.serena_mcp.health.urlopen",
         lambda url, timeout: Response(b"Active Project: None"),
     )
 
@@ -63,7 +63,7 @@ def test_dashboard_rejects_registered_project_without_active_project(monkeypatch
         "active_project": {"path": None},
         "registered_projects": [{"path": str(tmp_path.resolve())}],
     }).encode()
-    monkeypatch.setattr("tools.serena_mcp.health.urlopen", lambda url, timeout: Response(body))
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.health.urlopen", lambda url, timeout: Response(body))
 
     assert not dashboard_matches_project("http://127.0.0.1:24282", tmp_path)
 

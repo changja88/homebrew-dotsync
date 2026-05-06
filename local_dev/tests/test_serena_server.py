@@ -1,9 +1,9 @@
 import os
 import subprocess
 
-from tools.serena_mcp.paths import Scope
-from tools.serena_mcp.registry import Lease, ServerRecord, locked_registry
-from tools.serena_mcp.server import _discover_dashboard_url, _start_serena_process, ensure_server, serena_context_for
+from local_dev.serena_mcp_management.serena_mcp.paths import Scope
+from local_dev.serena_mcp_management.serena_mcp.registry import Lease, ServerRecord, locked_registry
+from local_dev.serena_mcp_management.serena_mcp.server import _discover_dashboard_url, _start_serena_process, ensure_server, serena_context_for
 
 
 def test_ensure_server_reuses_healthy_record(monkeypatch, tmp_path):
@@ -21,10 +21,10 @@ def test_ensure_server_reuses_healthy_record(monkeypatch, tmp_path):
         registry.record = record
 
     lease = Lease("lease-a", os.getpid(), 10.0)
-    monkeypatch.setattr("tools.serena_mcp.server.server_is_healthy", lambda r, s: True)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.server_is_healthy", lambda r, s: True)
     popen_calls = []
-    monkeypatch.setattr("tools.serena_mcp.server._start_serena_process", lambda *a, **k: popen_calls.append(a))
-    monkeypatch.setattr("tools.serena_mcp.server.ensure_watchdog", lambda scope: None)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server._start_serena_process", lambda *a, **k: popen_calls.append(a))
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.ensure_watchdog", lambda scope: None)
 
     assert ensure_server(scope, lease).mcp_url == record.mcp_url
     assert popen_calls == []
@@ -50,13 +50,13 @@ def test_ensure_server_replaces_unhealthy_record(monkeypatch, tmp_path):
         pid = os.getpid()
 
     lease = Lease("lease-a", os.getpid(), 10.0)
-    monkeypatch.setattr("tools.serena_mcp.server.server_is_healthy", lambda r, s: False)
-    monkeypatch.setattr("tools.serena_mcp.server._find_free_port_with_host_lock", lambda: 9001)
-    monkeypatch.setattr("tools.serena_mcp.server._start_serena_process", lambda scope, port: Proc())
-    monkeypatch.setattr("tools.serena_mcp.server._discover_dashboard_url", lambda proc: "http://127.0.0.1:24001")
-    monkeypatch.setattr("tools.serena_mcp.server._wait_until_healthy", lambda record, scope: None)
-    monkeypatch.setattr("tools.serena_mcp.server._terminate_pid", lambda pid: None)
-    monkeypatch.setattr("tools.serena_mcp.server.ensure_watchdog", lambda scope: None)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.server_is_healthy", lambda r, s: False)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server._find_free_port_with_host_lock", lambda: 9001)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server._start_serena_process", lambda scope, port: Proc())
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server._discover_dashboard_url", lambda proc: "http://127.0.0.1:24001")
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server._wait_until_healthy", lambda record, scope: None)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server._terminate_pid", lambda pid: None)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.ensure_watchdog", lambda scope: None)
 
     record = ensure_server(scope, lease)
 
@@ -76,13 +76,13 @@ def test_ensure_server_refreshes_initial_lease_after_slow_startup(monkeypatch, t
         pid = os.getpid()
 
     lease = Lease("lease-a", os.getpid(), 1.0)
-    monkeypatch.setattr("tools.serena_mcp.server.server_is_healthy", lambda r, s: False)
-    monkeypatch.setattr("tools.serena_mcp.server._find_free_port_with_host_lock", lambda: 9001)
-    monkeypatch.setattr("tools.serena_mcp.server._start_serena_process", lambda scope, port: Proc())
-    monkeypatch.setattr("tools.serena_mcp.server._discover_dashboard_url", lambda proc: "http://127.0.0.1:24001")
-    monkeypatch.setattr("tools.serena_mcp.server._wait_until_healthy", lambda record, scope: None)
-    monkeypatch.setattr("tools.serena_mcp.server.ensure_watchdog", lambda scope: None)
-    monkeypatch.setattr("tools.serena_mcp.server.time.time", lambda: 100.0)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.server_is_healthy", lambda r, s: False)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server._find_free_port_with_host_lock", lambda: 9001)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server._start_serena_process", lambda scope, port: Proc())
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server._discover_dashboard_url", lambda proc: "http://127.0.0.1:24001")
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server._wait_until_healthy", lambda record, scope: None)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.ensure_watchdog", lambda scope: None)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.time.time", lambda: 100.0)
 
     ensure_server(scope, lease)
 
@@ -107,7 +107,7 @@ def test_start_serena_process_redirects_output_to_scope_log(monkeypatch, tmp_pat
         calls.append((args, kwargs))
         return Proc()
 
-    monkeypatch.setattr("tools.serena_mcp.server.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.subprocess.Popen", fake_popen)
 
     proc = _start_serena_process(scope, 9012)
 

@@ -3,18 +3,18 @@ import os
 import subprocess
 import pytest
 
-from tools.serena_zsh_shim import default_python_executable, main, render_zsh_shim
+from local_dev.serena_mcp_management.serena_zsh_shim import default_python_executable, main, render_zsh_shim
 
 
 def test_render_zsh_shim_defines_codex_and_claude_functions():
     text = render_zsh_shim(
-        launcher_path=Path("/repo/tools/serena_agent_launcher.py"),
+        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
         python_executable=Path("/repo/.venv/bin/python3"),
         codex_binary=Path("/opt/homebrew/bin/codex"),
         claude_binary=Path("/opt/homebrew/bin/claude"),
     )
 
-    assert 'SERENA_AGENT_LAUNCHER="/repo/tools/serena_agent_launcher.py"' in text
+    assert 'SERENA_AGENT_LAUNCHER="/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"' in text
     assert 'SERENA_AGENT_PYTHON="/repo/.venv/bin/python3"' in text
     assert "codex() {" in text
     assert "claude() {" in text
@@ -30,7 +30,7 @@ def test_render_zsh_shim_defines_codex_and_claude_functions():
 
 def test_render_zsh_shim_preserves_agent_cleanup_preflight():
     text = render_zsh_shim(
-        launcher_path=Path("/repo/tools/serena_agent_launcher.py"),
+        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
         python_executable=Path("/repo/.venv/bin/python3"),
         codex_binary=Path("/opt/homebrew/bin/codex"),
         claude_binary=Path("/opt/homebrew/bin/claude"),
@@ -51,7 +51,7 @@ def test_render_zsh_shim_preserves_agent_cleanup_preflight():
 
 def test_render_zsh_shim_clears_codex_preflight_before_launch():
     text = render_zsh_shim(
-        launcher_path=Path("/repo/tools/serena_agent_launcher.py"),
+        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
         python_executable=Path("/repo/.venv/bin/python3"),
         codex_binary=Path("/opt/homebrew/bin/codex"),
         claude_binary=Path("/opt/homebrew/bin/claude"),
@@ -65,7 +65,7 @@ def test_render_zsh_shim_clears_codex_preflight_before_launch():
 
 def test_render_zsh_shim_clears_claude_preflight_before_launch():
     text = render_zsh_shim(
-        launcher_path=Path("/repo/tools/serena_agent_launcher.py"),
+        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
         python_executable=Path("/repo/.venv/bin/python3"),
         codex_binary=Path("/opt/homebrew/bin/codex"),
         claude_binary=Path("/opt/homebrew/bin/claude"),
@@ -79,7 +79,7 @@ def test_render_zsh_shim_clears_claude_preflight_before_launch():
 
 def test_render_zsh_shim_does_not_depend_on_path_wrapper_installation():
     text = render_zsh_shim(
-        launcher_path=Path("/repo/tools/serena_agent_launcher.py"),
+        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
         python_executable=Path("/repo/.venv/bin/python3"),
         codex_binary=Path("/opt/homebrew/bin/codex"),
         claude_binary=Path("/opt/homebrew/bin/claude"),
@@ -94,14 +94,14 @@ def test_render_zsh_shim_does_not_depend_on_path_wrapper_installation():
 
 
 def test_zsh_shim_cli_prints_installed_launcher_snippet(monkeypatch, capsys):
-    monkeypatch.setattr("tools.serena_zsh_shim.shutil.which", lambda name: f"/opt/homebrew/bin/{name}")
-    monkeypatch.setattr("tools.serena_zsh_shim.sys.executable", "/opt/homebrew/bin/python3.12")
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_zsh_shim.shutil.which", lambda name: f"/opt/homebrew/bin/{name}")
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_zsh_shim.sys.executable", "/opt/homebrew/bin/python3.12")
 
     assert main([]) == 0
 
     output = capsys.readouterr().out
     assert 'SERENA_AGENT_LAUNCHER="' in output
-    assert "tools/serena_agent_launcher.py" in output
+    assert "local_dev/serena_mcp_management/serena_agent_launcher.py" in output
     assert 'SERENA_AGENT_PYTHON="/opt/homebrew/bin/python3.12"' in output
     assert "SERENA_REAL_CODEX=/opt/homebrew/bin/codex" in output
     assert "SERENA_REAL_CLAUDE=/opt/homebrew/bin/claude" in output
@@ -110,8 +110,8 @@ def test_zsh_shim_cli_prints_installed_launcher_snippet(monkeypatch, capsys):
 def test_default_python_executable_prefers_python_312_when_current_is_too_old(monkeypatch, tmp_path):
     python312 = tmp_path / "python3.12"
     python312.write_text("")
-    monkeypatch.setattr("tools.serena_zsh_shim.sys.version_info", (3, 9, 6))
-    monkeypatch.setattr("tools.serena_zsh_shim.PYTHON_CANDIDATES", (python312,))
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_zsh_shim.sys.version_info", (3, 9, 6))
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_zsh_shim.PYTHON_CANDIDATES", (python312,))
 
     assert default_python_executable() == python312
 

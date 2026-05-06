@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from tools.serena_mcp.paths import Scope, state_dir_for
+from local_dev.serena_mcp_management.serena_mcp.paths import Scope, state_dir_for
 
 REGISTRY_VERSION = 1
 

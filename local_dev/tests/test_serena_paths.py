@@ -1,4 +1,4 @@
-from tools.serena_mcp.paths import Scope, find_project_root, state_dir_for
+from local_dev.serena_mcp_management.serena_mcp.paths import Scope, find_project_root, state_dir_for
 
 
 def test_find_project_root_uses_git_root(tmp_path):
