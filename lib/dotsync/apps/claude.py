@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from dotsync import ui
 from dotsync.apps.base import App, AppStatus, diff_files, _hash
+from dotsync.apps.mcp_sanitizer import filter_claude_mcp_servers
 from dotsync.plan import AppPlan, Change, plan_file_copy, plan_tree_mirror
 
 GLOBAL_RULE_DIRECTORIES = ("commands", "agents", "skills", "output-styles")
@@ -171,13 +172,16 @@ class ClaudeApp(App):
         parts = [s for s in (base.details, rules.details) if s]
         return AppStatus(state="dirty", details=", ".join(parts))
 
+    def _sanitized_mcp_servers(self, servers: dict) -> dict[str, object]:
+        return filter_claude_mcp_servers(servers).value
+
     def _plan_mcp_from(self, stored: Path) -> Change:
         source = self._claude_json()
         dest = stored / "mcp-servers.json"
         if not source.exists():
             return Change("mcp-servers.json", "missing-source", source, dest)
         try:
-            data = json.loads(source.read_text()).get("mcpServers", {})
+            data = self._sanitized_mcp_servers(json.loads(source.read_text()).get("mcpServers", {}))
         except json.JSONDecodeError:
             return Change(
                 "mcp-servers.json",
@@ -189,9 +193,27 @@ class ClaudeApp(App):
         planned = json.dumps(data, indent=2, ensure_ascii=False)
         if not dest.exists():
             return Change("mcp-servers.json", "create", source, dest)
+        try:
+            current = filter_claude_mcp_servers(json.loads(dest.read_text()))
+        except json.JSONDecodeError:
+            return Change(
+                "mcp-servers.json",
+                "unknown",
+                source,
+                dest,
+                "stored mcp-servers.json is invalid",
+            )
+        if current.changed:
+            return Change(
+                "mcp-servers.json",
+                "update",
+                source,
+                dest,
+                "remove dynamic Serena MCP URL",
+            )
         return Change(
             "mcp-servers.json",
-            "unchanged" if dest.read_text() == planned else "update",
+            "unchanged" if json.dumps(current.value, indent=2, ensure_ascii=False) == planned else "update",
             source,
             dest,
         )
@@ -202,7 +224,7 @@ class ClaudeApp(App):
         if not source.exists():
             return Change("mcp-servers.json", "missing-source", source, dest)
         try:
-            stored_mcp = json.loads(source.read_text())
+            stored_mcp = self._sanitized_mcp_servers(json.loads(source.read_text()))
         except json.JSONDecodeError:
             return Change(
                 "mcp-servers.json",
@@ -223,12 +245,25 @@ class ClaudeApp(App):
             )
         if not dest.exists():
             return Change("mcp-servers.json", "create", source, dest)
+        if "mcpServers" not in local_doc:
+            return Change("mcp-servers.json", "update", source, dest)
         planned_doc = dict(local_doc)
         planned_doc["mcpServers"] = stored_mcp
         planned = json.dumps(planned_doc, indent=2, ensure_ascii=False)
+        current_mcp = filter_claude_mcp_servers(local_doc.get("mcpServers", {}))
+        if current_mcp.changed:
+            return Change(
+                "mcp-servers.json",
+                "update",
+                source,
+                dest,
+                "remove dynamic Serena MCP URL",
+            )
+        current_doc = dict(local_doc)
+        current_doc["mcpServers"] = current_mcp.value
         return Change(
             "mcp-servers.json",
-            "unchanged" if dest.read_text() == planned else "update",
+            "unchanged" if json.dumps(current_doc, indent=2, ensure_ascii=False) == planned else "update",
             source,
             dest,
         )
@@ -342,8 +377,9 @@ class ClaudeApp(App):
             ui.ok(f"plugins/{fname}")
 
         cj = json.loads(self._claude_json().read_text())
+        mcp_servers = self._sanitized_mcp_servers(cj.get("mcpServers", {}))
         (stored / "mcp-servers.json").write_text(
-            json.dumps(cj.get("mcpServers", {}), indent=2, ensure_ascii=False)
+            json.dumps(mcp_servers, indent=2, ensure_ascii=False)
         )
         ui.ok("mcp-servers.json")
 
@@ -395,7 +431,7 @@ class ClaudeApp(App):
             cj = json.loads(claude_json_path.read_text()) if claude_json_path.exists() else {}
         except json.JSONDecodeError as e:
             raise RuntimeError(f"~/.claude.json is corrupted: {e}") from e
-        cj["mcpServers"] = stored_mcp
+        cj["mcpServers"] = self._sanitized_mcp_servers(stored_mcp)
         claude_json_path.write_text(json.dumps(cj, indent=2, ensure_ascii=False))
         ui.ok("mcp-servers.json → ~/.claude.json")
 
@@ -441,7 +477,7 @@ class ClaudeApp(App):
 
         for path, _label in required_files[:-1]:
             self._load_required_stored_json(path)
-        return self._load_required_stored_json(stored / "mcp-servers.json")
+        return self._sanitized_mcp_servers(self._load_required_stored_json(stored / "mcp-servers.json"))
 
     def _load_required_stored_json(self, path: Path) -> Any:
         try:
@@ -464,8 +500,8 @@ class ClaudeApp(App):
         stored_mcp = stored / "mcp-servers.json"
         if not local_cj.exists() or not stored_mcp.exists():
             return AppStatus(state="missing", details="mcp-servers.json")
-        local_mcp = json.loads(local_cj.read_text()).get("mcpServers", {})
-        stored_mcp_data = json.loads(stored_mcp.read_text())
+        local_mcp = self._sanitized_mcp_servers(json.loads(local_cj.read_text()).get("mcpServers", {}))
+        stored_mcp_data = self._sanitized_mcp_servers(json.loads(stored_mcp.read_text()))
         if local_mcp != stored_mcp_data:
             if base.state == "dirty":
                 base = AppStatus(state="dirty", details=f"{base.details}, mcp-servers.json")

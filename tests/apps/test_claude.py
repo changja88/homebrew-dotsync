@@ -329,6 +329,95 @@ def test_status_clean(fake_home, tmp_path):
     assert s.state == "clean"
 
 
+def test_sync_from_excludes_dynamic_serena_from_claude_mcp(fake_home, tmp_path):
+    _make_local(
+        fake_home,
+        mcp={
+            "serena": {"type": "http", "url": "http://127.0.0.1:9123/mcp"},
+            "playwright": {"command": "npx"},
+        },
+        settings={"theme": "dark"},
+    )
+    target = tmp_path / "configs"
+    target.mkdir()
+
+    ClaudeApp().sync_from(target)
+
+    stored = json.loads((target / "claude" / "mcp-servers.json").read_text())
+    assert stored == {"playwright": {"command": "npx"}}
+
+
+def test_sync_to_excludes_dynamic_serena_from_claude_json(fake_home, tmp_path):
+    _make_local(
+        fake_home,
+        mcp={"local": {"command": "old"}},
+        settings={"theme": "old"},
+    )
+    cdir = tmp_path / "configs" / "claude"
+    (cdir / "plugins").mkdir(parents=True)
+    (cdir / "settings.json").write_text("{}")
+    (cdir / "plugins" / "installed_plugins.json").write_text('{"version": 2, "plugins": {}}')
+    (cdir / "plugins" / "known_marketplaces.json").write_text("{}")
+    (cdir / "mcp-servers.json").write_text(json.dumps({
+        "serena": {"type": "http", "url": "http://127.0.0.1:9123/mcp"},
+        "playwright": {"command": "npx"},
+    }))
+
+    with patch("dotsync.apps.claude.subprocess.run"):
+        ClaudeApp().sync_to(tmp_path / "configs", tmp_path / "backup")
+
+    local = json.loads((fake_home / ".claude.json").read_text())["mcpServers"]
+    assert local == {"playwright": {"command": "npx"}}
+
+
+def test_claude_status_ignores_dynamic_serena_mcp_difference(fake_home, tmp_path):
+    _make_local(
+        fake_home,
+        mcp={"serena": {"type": "http", "url": "http://127.0.0.1:9123/mcp"}},
+        settings={"theme": "dark"},
+    )
+    cdir = tmp_path / "configs" / "claude"
+    (cdir / "plugins").mkdir(parents=True)
+    (cdir / "settings.json").write_text('{"theme": "dark"}')
+    (cdir / "plugins" / "installed_plugins.json").write_text('{"version": 2, "plugins": {}}')
+    (cdir / "plugins" / "known_marketplaces.json").write_text("{}")
+    (cdir / "mcp-servers.json").write_text("{}")
+
+    assert ClaudeApp().status(tmp_path / "configs").state == "clean"
+
+
+def test_plan_from_marks_update_when_stored_has_only_stale_serena_mcp(fake_home, tmp_path):
+    _make_local(
+        fake_home,
+        mcp={},
+        settings={"theme": "dark"},
+    )
+    cdir = tmp_path / "configs" / "claude"
+    cdir.mkdir(parents=True)
+    (cdir / "mcp-servers.json").write_text(json.dumps({
+        "serena": {"type": "http", "url": "http://127.0.0.1:9123/mcp"}
+    }))
+
+    plan = ClaudeApp().plan_from(tmp_path / "configs")
+
+    assert {c.label: c.kind for c in plan.changes}["mcp-servers.json"] == "update"
+
+
+def test_plan_to_marks_update_when_local_has_only_stale_serena_mcp(fake_home, tmp_path):
+    _make_local(
+        fake_home,
+        mcp={"serena": {"type": "http", "url": "http://127.0.0.1:9123/mcp"}},
+        settings={"theme": "dark"},
+    )
+    cdir = tmp_path / "configs" / "claude"
+    cdir.mkdir(parents=True)
+    (cdir / "mcp-servers.json").write_text("{}")
+
+    plan = ClaudeApp().plan_to(tmp_path / "configs")
+
+    assert {c.label: c.kind for c in plan.changes}["mcp-servers.json"] == "update"
+
+
 def test_status_dirty_when_settings_differ(fake_home, tmp_path):
     _make_local(fake_home, settings={"x": "OLD"})
     target = tmp_path / "configs"

@@ -3,7 +3,8 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 from dotsync import ui
-from dotsync.apps.base import App, AppStatus, diff_files, _hash
+from dotsync.apps.base import App, AppStatus, _hash
+from dotsync.apps.mcp_sanitizer import sanitize_codex_config, sanitize_codex_config_text
 from dotsync.plan import AppPlan, Change, plan_file_copy, plan_tree_mirror
 
 OPTIONAL_FILES = ("AGENTS.md", "AGENTS.override.md", "hooks.json", "requirements.toml")
@@ -169,10 +170,48 @@ class CodexApp(App):
             details=", ".join(details),
         )
 
+    def _read_sanitized_config(self, path: Path) -> str:
+        return sanitize_codex_config_text(path.read_text())
+
+    def _write_sanitized_config(self, source: Path, dest: Path) -> None:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(self._read_sanitized_config(source))
+
+    def _plan_sanitized_config_copy(self, source: Path, dest: Path) -> Change:
+        if not source.exists():
+            return Change("config.toml", "missing-source", source, dest)
+        planned = self._read_sanitized_config(source)
+        if not dest.exists():
+            return Change("config.toml", "create", source, dest)
+        current = sanitize_codex_config(dest.read_text())
+        if current.changed:
+            return Change(
+                "config.toml",
+                "update",
+                source,
+                dest,
+                "remove dynamic Serena MCP URL",
+            )
+        return Change(
+            "config.toml",
+            "unchanged" if planned == current.text else "update",
+            source,
+            dest,
+        )
+
+    def _config_status(self, stored: Path) -> AppStatus:
+        local = self._config_path()
+        dest = stored / "config.toml"
+        if not local.exists() or not dest.exists():
+            return AppStatus(state="missing", details="config.toml")
+        if self._read_sanitized_config(local) != sanitize_codex_config_text(dest.read_text()):
+            return AppStatus(state="dirty", details="config.toml")
+        return AppStatus(state="clean")
+
     def plan_from(self, target_dir: Path) -> AppPlan:
         stored = self._stored(target_dir)
         changes = [
-            plan_file_copy("config.toml", self._config_path(), stored / "config.toml")
+            self._plan_sanitized_config_copy(self._config_path(), stored / "config.toml")
         ]
         for name in OPTIONAL_FILES:
             local_file = self._codex_dir() / name
@@ -197,7 +236,7 @@ class CodexApp(App):
         stored = self._stored(target_dir)
         local_dir = self._codex_dir()
         changes = [
-            plan_file_copy("config.toml", stored / "config.toml", self._config_path())
+            self._plan_sanitized_config_copy(stored / "config.toml", self._config_path())
         ]
         for name in OPTIONAL_FILES:
             stored_file = stored / name
@@ -223,7 +262,7 @@ class CodexApp(App):
             raise FileNotFoundError(f"{local_config} not found (config.toml missing)")
 
         stored.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(local_config, stored / "config.toml")
+        self._write_sanitized_config(local_config, stored / "config.toml")
         ui.sub("config.toml")
 
         for name in OPTIONAL_FILES:
@@ -255,7 +294,7 @@ class CodexApp(App):
 
         local_config = self._config_path()
         self._backup_file(local_config, backup_dir, "config.toml")
-        shutil.copy2(stored_config, local_config)
+        self._write_sanitized_config(stored_config, local_config)
         ui.sub("config.toml")
 
         for name in OPTIONAL_FILES:
@@ -282,7 +321,7 @@ class CodexApp(App):
 
     def status(self, target_dir: Path) -> AppStatus:
         stored = self._stored(target_dir)
-        base = diff_files([(self._config_path(), stored / "config.toml")])
+        base = self._config_status(stored)
         if base.state == "missing":
             return base
         statuses = [base]
