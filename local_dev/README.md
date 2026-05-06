@@ -39,6 +39,12 @@ launches the real agent binary without Serena project config. When project
 creation runs, additional Serena language prompts receive the default answer so
 optional language servers are not enabled accidentally.
 
+The preflight also reports whether `graphify` is installed. This is guidance
+only: the shim does not install Graphify, run Graphify, or create
+`graphify-out/`. When you want a project graph, run `/graphify .` from inside
+Codex or Claude. Large corpora should be handled by Graphify's own detection
+flow rather than by the launcher.
+
 After project setup, the shim runs the agent cleanup step and then delegates to
 the Python launcher. The launcher prints Serena MCP progress rows while it
 starts or reuses the scoped server, then clears the preflight output immediately

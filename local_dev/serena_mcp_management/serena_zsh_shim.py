@@ -88,6 +88,18 @@ _dotsync_agent_serena_project_available() {
   [[ -f "$project_root/.serena/project.yml" ]]
 }
 
+_dotsync_agent_graphify_available() {
+  command -v graphify >/dev/null 2>&1
+}
+
+_dotsync_agent_graphify_preflight_state() {
+  if _dotsync_agent_graphify_available; then
+    print -r -- "pending|installed . run /graphify . when you want a project graph"
+  else
+    print -r -- "warn|not installed . install graphify, then run /graphify ."
+  fi
+}
+
 _dotsync_agent_create_serena_project() {
   local project_root="$1"
 
@@ -169,6 +181,8 @@ _dotsync_agent_preflight() {
   local context="$6"
   local serena_state="${7:-active}"
   local serena_phrase="${8:-managed by scoped launcher}"
+  local graphify_state="${9:-pending}"
+  local graphify_phrase="${10:-run /graphify . when you want a project graph}"
   local workspace="$(_dotsync_agent_short_path "$project_root")"
   local cleanup_phrase="$session_line"
   local memory_phrase="$memory_line"
@@ -190,6 +204,7 @@ _dotsync_agent_preflight() {
   print -P "  %F{244}${rule}%f"
   _dotsync_agent_stream_row "$accent" active  "workspace" "$workspace"
   _dotsync_agent_stream_row "$accent" "$serena_state" "serena" "$serena_phrase"
+  _dotsync_agent_stream_row "$accent" "$graphify_state" "graphify" "$graphify_phrase"
   _dotsync_agent_stream_row "$accent" pending "context"   "$context"
   _dotsync_agent_stream_row "$accent" pending "cleanup"   "$cleanup_phrase"
   _dotsync_agent_stream_row "$accent" pending "memory"    "$memory_phrase"
@@ -301,6 +316,9 @@ claude() {
     serena_state="warn"
     serena_phrase="project config missing"
   fi
+  local graphify_info="$(_dotsync_agent_graphify_preflight_state)"
+  local graphify_state="${graphify_info%%|*}"
+  local graphify_phrase="${graphify_info#*|}"
 
   if (( interactive )); then
     _dotsync_agent_preflight 141 "claude" "$project_root" \
@@ -308,7 +326,9 @@ claude() {
       "memory reset files=${mem_deleted}" \
       "claude-code" \
       "$serena_state" \
-      "$serena_phrase"
+      "$serena_phrase" \
+      "$graphify_state" \
+      "$graphify_phrase"
   fi
 
   if ! _dotsync_agent_ensure_serena "claude" "$project_root"; then
@@ -373,6 +393,9 @@ codex() {
     serena_state="warn"
     serena_phrase="project config missing"
   fi
+  local graphify_info="$(_dotsync_agent_graphify_preflight_state)"
+  local graphify_state="${graphify_info%%|*}"
+  local graphify_phrase="${graphify_info#*|}"
 
   if (( interactive )); then
     _dotsync_agent_preflight 081 "codex" "$project_root" \
@@ -380,7 +403,9 @@ codex() {
       "memory reset files=${mem_deleted}" \
       "codex" \
       "$serena_state" \
-      "$serena_phrase"
+      "$serena_phrase" \
+      "$graphify_state" \
+      "$graphify_phrase"
   fi
 
   if ! _dotsync_agent_ensure_serena "codex" "$project_root"; then

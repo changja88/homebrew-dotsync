@@ -57,6 +57,21 @@ def test_render_zsh_shim_preserves_agent_cleanup_preflight():
     assert "jq -e" in text
 
 
+def test_render_zsh_shim_includes_graphify_status_guidance():
+    text = render_zsh_shim(
+        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
+        python_executable=Path("/repo/.venv/bin/python3"),
+        codex_binary=Path("/opt/homebrew/bin/codex"),
+        claude_binary=Path("/opt/homebrew/bin/claude"),
+    )
+
+    assert "_dotsync_agent_graphify_available" in text
+    assert "_dotsync_agent_graphify_preflight_state" in text
+    assert "command -v graphify" in text
+    assert "graphify" in text
+    assert "/graphify ." in text
+
+
 def test_render_zsh_shim_defers_clear_to_launcher_after_codex_cleanup():
     text = render_zsh_shim(
         launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
@@ -116,8 +131,12 @@ def test_render_zsh_shim_prompts_for_serena_after_preflight_before_cleanup():
     codex_body = text.split("\ncodex() {", 1)[1]
     claude_body = text.split("\nclaude() {", 1)[1].split("\ncodex() {", 1)[0]
 
+    assert "_dotsync_agent_graphify_preflight_state" in codex_body
+    assert codex_body.index("_dotsync_agent_graphify_preflight_state") < codex_body.index("_dotsync_agent_preflight")
     assert codex_body.index("_dotsync_agent_preflight") < codex_body.index("_dotsync_agent_ensure_serena")
     assert codex_body.index("_dotsync_agent_ensure_serena") < codex_body.index("_dotsync_agent_cleanup_codex")
+    assert "_dotsync_agent_graphify_preflight_state" in claude_body
+    assert claude_body.index("_dotsync_agent_graphify_preflight_state") < claude_body.index("_dotsync_agent_preflight")
     assert claude_body.index("_dotsync_agent_preflight") < claude_body.index("_dotsync_agent_ensure_serena")
     assert claude_body.index("_dotsync_agent_ensure_serena") < claude_body.index("_dotsync_agent_cleanup_claude")
 
@@ -247,6 +266,91 @@ def test_zsh_shim_should_manage_only_tty_no_arg_agent_starts(tmp_path):
     assert "managed_empty=0" in result.stdout
     assert "managed_args=1" in result.stdout
     assert "managed_notty=1" in result.stdout
+
+
+@pytest.mark.no_subprocess_block
+def test_zsh_shim_marks_graphify_installed_in_preflight(tmp_path):
+    shim_path = tmp_path / "shim.zsh"
+    shim_path.write_text(
+        render_zsh_shim(
+            launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
+            python_executable=Path("/usr/bin/python3"),
+            codex_binary=Path("/opt/homebrew/bin/codex"),
+            claude_binary=Path("/opt/homebrew/bin/claude"),
+        )
+    )
+    path_dir = tmp_path / "bin"
+    path_dir.mkdir()
+    graphify = path_dir / "graphify"
+    graphify.write_text("#!/bin/sh\nexit 0\n")
+    graphify.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "zsh",
+            "-fc",
+            (
+                f"source {shim_path}; "
+                f"PATH={path_dir}:$PATH; "
+                'graphify_info="$(_dotsync_agent_graphify_preflight_state)"; '
+                'graphify_state="${graphify_info%%|*}"; '
+                'graphify_phrase="${graphify_info#*|}"; '
+                f"_dotsync_agent_preflight 081 codex {tmp_path} "
+                "'sessions total=0 delete=0 keep=0' "
+                "'memory reset files=0' "
+                "codex active 'managed by scoped launcher' "
+                '"$graphify_state" "$graphify_phrase" </dev/null'
+            ),
+        ],
+        env={**os.environ, "HOME": str(tmp_path)},
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert "graphify" in result.stdout
+    assert "installed . run /graphify . when you want a project graph" in result.stdout
+
+
+@pytest.mark.no_subprocess_block
+def test_zsh_shim_marks_graphify_missing_in_preflight(tmp_path):
+    shim_path = tmp_path / "shim.zsh"
+    shim_path.write_text(
+        render_zsh_shim(
+            launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
+            python_executable=Path("/usr/bin/python3"),
+            codex_binary=Path("/opt/homebrew/bin/codex"),
+            claude_binary=Path("/opt/homebrew/bin/claude"),
+        )
+    )
+    empty_path = tmp_path / "empty-bin"
+    empty_path.mkdir()
+
+    result = subprocess.run(
+        [
+            "zsh",
+            "-fc",
+            (
+                f"source {shim_path}; "
+                f"PATH={empty_path}; "
+                'graphify_info="$(_dotsync_agent_graphify_preflight_state)"; '
+                'graphify_state="${graphify_info%%|*}"; '
+                'graphify_phrase="${graphify_info#*|}"; '
+                f"_dotsync_agent_preflight 081 codex {tmp_path} "
+                "'sessions total=0 delete=0 keep=0' "
+                "'memory reset files=0' "
+                "codex active 'managed by scoped launcher' "
+                '"$graphify_state" "$graphify_phrase" </dev/null'
+            ),
+        ],
+        env={**os.environ, "HOME": str(tmp_path)},
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert "graphify" in result.stdout
+    assert "not installed . install graphify, then run /graphify ." in result.stdout
 
 
 @pytest.mark.no_subprocess_block
