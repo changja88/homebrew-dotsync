@@ -20,28 +20,64 @@ from local_dev.serena_mcp_management.serena_mcp.server import (
 def test_ensure_server_reuses_healthy_record(monkeypatch, tmp_path):
     scope = Scope(tmp_path, "codex")
     record = ServerRecord(
-        server_pid=os.getpid(),
+        server_pid=111,
         mcp_url="http://127.0.0.1:9000/mcp",
         dashboard_url="http://127.0.0.1:24000",
         project_root=str(tmp_path.resolve()),
         client_type="codex",
         started_at=1.0,
         leases={},
+        upstream_mcp_url="http://127.0.0.1:9001/mcp",
+        proxy_pid=222,
     )
     with locked_registry(scope) as registry:
         registry.record = record
 
     lease = Lease("lease-a", os.getpid(), 10.0)
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.server_is_healthy", lambda r, s: True)
+    checked_pids = []
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.server.pid_is_alive",
+        lambda pid: checked_pids.append(pid) or True,
+    )
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.http_endpoint_alive", lambda url: True)
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.server.dashboard_matches_project",
+        lambda dashboard_url, project_root: True,
+    )
     popen_calls = []
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server._start_serena_process", lambda *a, **k: popen_calls.append(a))
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.ensure_watchdog", lambda scope: None)
 
     assert ensure_server(scope, lease).mcp_url == record.mcp_url
+    assert checked_pids == [111, 222]
     assert popen_calls == []
     with locked_registry(scope) as registry:
         assert registry.record is not None
         assert "lease-a" in registry.record.leases
+
+
+def test_server_health_rejects_legacy_direct_record_without_proxy_metadata(monkeypatch, tmp_path):
+    scope = Scope(tmp_path, "codex")
+    record = ServerRecord(
+        server_pid=111,
+        mcp_url="http://127.0.0.1:9000/mcp",
+        dashboard_url="http://127.0.0.1:24000",
+        project_root=str(tmp_path.resolve()),
+        client_type="codex",
+        started_at=1.0,
+        leases={},
+        upstream_mcp_url=None,
+        proxy_pid=None,
+    )
+
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.pid_is_alive", lambda pid: True)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.http_endpoint_alive", lambda url: True)
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.server.dashboard_matches_project",
+        lambda dashboard_url, project_root: True,
+    )
+
+    assert server.server_is_healthy(record, scope) is False
 
 
 def test_ensure_server_replaces_unhealthy_record(monkeypatch, tmp_path):

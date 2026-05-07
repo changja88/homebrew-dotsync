@@ -50,9 +50,11 @@ def server_is_healthy(record: ServerRecord, scope: Scope) -> bool:
         return False
     if record.client_type != scope.client_type:
         return False
+    if record.proxy_pid is None or not record.upstream_mcp_url:
+        return False
     return (
         pid_is_alive(record.server_pid)
-        and (record.proxy_pid is None or pid_is_alive(record.proxy_pid))
+        and pid_is_alive(record.proxy_pid)
         and http_endpoint_alive(record.mcp_url)
         and dashboard_matches_project(record.dashboard_url, scope.project_root)
     )
