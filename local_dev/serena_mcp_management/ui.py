@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sys
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal, TextIO
 
@@ -113,3 +114,36 @@ class BoxRenderer:
                 self._stream.write(f"\x1b[{self._last_line_count}A\x1b[J")
                 self._stream.flush()
                 self._last_line_count = 0
+
+
+class SpinnerTicker:
+    """Periodically calls ``on_tick`` from a daemon thread until stopped."""
+
+    def __init__(
+        self,
+        *,
+        on_tick: Callable[[int], None],
+        interval: float = 0.1,
+    ) -> None:
+        self._on_tick = on_tick
+        self._interval = interval
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=1.0)
+
+    def _loop(self) -> None:
+        frame = 0
+        while not self._stop_event.wait(self._interval):
+            frame += 1
+            self._on_tick(frame)
