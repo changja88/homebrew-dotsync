@@ -10,12 +10,20 @@ concerns:
 """
 from __future__ import annotations
 
+import os
 import re
 import sys
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal, TextIO
+
+try:
+    import termios
+    import tty
+    _RAW_TTY_AVAILABLE = True
+except ImportError:  # pragma: no cover - non-Unix
+    _RAW_TTY_AVAILABLE = False
 
 
 PhaseKind = Literal["preflight", "serena-init", "launch-prep", "summary"]
@@ -49,10 +57,12 @@ class BoxModel:
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 _BOX_WIDTH = 60
 
-# gum-inspired palette (charmbracelet/gum). Use 256-color escapes so the
-# accents stay legible on both light and dark terminals.
-PINK = "38;5;205"  # hot pink, used for primary accents
-PURPLE = "38;5;99"  # purple, used for spinners and count keywords
+# charmbracelet palette (gum/huh). Use truecolor (24-bit) escapes so the
+# accents land on the exact charm hues rather than the closest 256-colour
+# approximation.
+PINK = "38;2;255;6;183"  # #FF06B7, charm hot pink
+PURPLE = "38;2;135;75;253"  # #874BFD, charm vivid violet (huh focus tone)
+MINT = "38;2;0;215;175"  # #00D7AF, charm mint -- legible label colour
 
 
 def _ansi(code: str, text: str) -> str:
@@ -121,7 +131,7 @@ def render_box(model: BoxModel, *, spin_frame: int = 0) -> str:
     lines.append("  " + _border("─"))
     for item in model.items:
         marker = _marker_for(item.status, spin_frame=spin_frame)
-        label = _ansi("90", f"{item.label:<10}")
+        label = _ansi(MINT, f"{item.label:<10}")
         lines.append(f"  {marker} {label}  {item.value}")
     lines.append("  " + _border("─"))
     return "\n".join(lines) + "\n"
@@ -195,29 +205,117 @@ class SpinnerTicker:
 # Prompt implementation
 
 
+def _read_yes_no_arrow(
+    question: str,
+    *,
+    default: bool,
+    stream: TextIO,
+    fd: int,
+) -> bool:
+    """huh-inspired arrow-key yes/no select.
+
+    Renders two option lines, lets the user move the cursor with up/down
+    arrows (or k/j), and confirms with Enter. Returns True for Yes.
+    """
+    options = ("Yes", "No")
+    cursor = 0 if default else 1
+
+    def render(initial: bool) -> None:
+        if not initial:
+            # Move cursor back to the start of the prompt block and erase.
+            stream.write("\x1b[3A\x1b[J")
+        stream.write(f"  \x1b[{PURPLE}m?\x1b[0m {question}\n")
+        for index, label in enumerate(options):
+            if index == cursor:
+                stream.write(
+                    f"    \x1b[{PURPLE}m▶\x1b[0m \x1b[{PURPLE}m{label}\x1b[0m\n"
+                )
+            else:
+                stream.write(f"      \x1b[90m{label}\x1b[0m\n")
+        stream.flush()
+
+    render(initial=True)
+    old_attrs = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        while True:
+            ch = os.read(fd, 1).decode(errors="replace")
+            if ch == "\x1b":
+                seq = os.read(fd, 2).decode(errors="replace")
+                if seq == "[A" and cursor > 0:
+                    cursor -= 1
+                    render(initial=False)
+                elif seq == "[B" and cursor < len(options) - 1:
+                    cursor += 1
+                    render(initial=False)
+            elif ch in ("k", "K") and cursor > 0:
+                cursor -= 1
+                render(initial=False)
+            elif ch in ("j", "J") and cursor < len(options) - 1:
+                cursor += 1
+                render(initial=False)
+            elif ch in ("\r", "\n"):
+                break
+            elif ch in ("y", "Y"):
+                cursor = 0
+                break
+            elif ch in ("n", "N"):
+                cursor = 1
+                break
+            elif ch == "\x03":  # Ctrl+C
+                raise KeyboardInterrupt
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
+
+    # Collapse the prompt block to a single confirmation line.
+    stream.write("\x1b[3A\x1b[J")
+    chosen = options[cursor]
+    stream.write(
+        f"  \x1b[{PURPLE}m?\x1b[0m {question} \x1b[{PURPLE}m{chosen}\x1b[0m\n"
+    )
+    stream.flush()
+    return cursor == 0
+
+
 def confirm(
     question: str,
     *,
     default: bool,
     stream: TextIO | None = None,
-    input_fn: Callable[[], str] = input,
+    input_fn: Callable[[], str] | None = None,
 ) -> bool:
     """Prompt for a yes/no confirmation.
+
+    When ``input_fn`` is left at its default and stdin is a TTY, render a
+    huh-inspired arrow-key selector (Up/Down/k/j to move, Enter to confirm,
+    y/n shortcuts also accepted). Otherwise fall back to a single-line
+    text prompt that reads from ``input_fn`` (defaults to builtin input).
 
     Args:
         question: The prompt text.
         default: The default value if user presses Enter without input.
         stream: Output stream (defaults to sys.stdout).
-        input_fn: Input function (defaults to builtin input).
+        input_fn: Optional input function. Passing one forces line-input
+            mode (used by tests and non-interactive callers).
 
     Returns:
-        True if user answered yes/y, False otherwise.
+        True if user answered yes, False otherwise.
     """
     out = stream if stream is not None else sys.stdout
+
+    if input_fn is None and _RAW_TTY_AVAILABLE:
+        try:
+            fd = sys.stdin.fileno()
+        except (AttributeError, ValueError, OSError):
+            fd = -1
+        if fd >= 0 and os.isatty(fd):
+            return _read_yes_no_arrow(question, default=default, stream=out, fd=fd)
+
+    reader = input_fn if input_fn is not None else input
     suffix = "[Y/n]" if default else "[y/N]"
     out.write(f"  > {question} {suffix} ")
     out.flush()
-    reply = input_fn().strip().lower()
+    reply = reader().strip().lower()
     if not reply:
         return default
     return reply in {"y", "yes"}

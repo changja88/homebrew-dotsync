@@ -42,3 +42,14 @@ def test_confirm_accepts_yes_no_words():
                    input_fn=lambda: next(answers_yes)) is True
     assert confirm("?", default=True, stream=stream,
                    input_fn=lambda: next(answers_no)) is False
+
+
+def test_confirm_falls_back_to_line_mode_when_input_fn_supplied():
+    # Even with input_fn=None style callers, providing input_fn explicitly
+    # must keep the simple line prompt and never try to grab stdin in raw
+    # mode -- the test environment has no controlling terminal.
+    stream = io.StringIO()
+    confirm("Run?", default=True, stream=stream, input_fn=lambda: "y")
+    assert "[Y/n]" in stream.getvalue()
+    # No huh-style ▶ marker should appear when not in arrow-select mode.
+    assert "▶" not in stream.getvalue()
