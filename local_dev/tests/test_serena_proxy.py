@@ -143,7 +143,7 @@ def test_proxy_filters_hop_by_hop_headers_named_by_connection():
             }
             assert "connection" not in forwarded_headers
             assert "x-debug-hop" not in forwarded_headers
-            assert "host" not in forwarded_headers
+            assert forwarded_headers["host"] == f"127.0.0.1:{upstream.server_port}"
 
 
 def test_proxy_opens_upstream_connection_without_read_timeout(monkeypatch):
@@ -160,6 +160,57 @@ def test_proxy_opens_upstream_connection_without_read_timeout(monkeypatch):
     )
 
     assert timeouts == [None]
+
+
+def test_proxy_does_not_send_error_after_response_streaming_starts(monkeypatch):
+    handler_class = proxy.handler_for("http://127.0.0.1:12345/mcp")
+    handler = object.__new__(handler_class)
+    events: list[tuple[str, object]] = []
+    send_error_calls: list[tuple[int, str]] = []
+
+    class StreamingFailureResponse:
+        status = 200
+
+        def getheaders(self):
+            return [("Content-Type", "text/event-stream")]
+
+        def read(self, size=-1):
+            raise OSError("stream read failed after headers")
+
+    class FakeConnection:
+        def putrequest(self, *args, **kwargs):
+            return None
+
+        def putheader(self, *args):
+            return None
+
+        def endheaders(self, body=None):
+            return None
+
+        def getresponse(self):
+            return StreamingFailureResponse()
+
+        def close(self):
+            events.append(("close", None))
+
+    handler.headers = {}
+    handler.send_response = lambda status: events.append(("send_response", status))
+    handler.send_header = lambda name, value: events.append(("send_header", name))
+    handler.end_headers = lambda: events.append(("end_headers", None))
+    handler.send_error = lambda status, message: send_error_calls.append(
+        (status, message)
+    )
+    monkeypatch.setattr(
+        proxy,
+        "_open_upstream_connection",
+        lambda upstream: FakeConnection(),
+    )
+
+    handler._forward("GET", None)
+
+    assert ("end_headers", None) in events
+    assert send_error_calls == []
+    assert ("close", None) in events
 
 
 def test_proxy_forwards_get_to_upstream():

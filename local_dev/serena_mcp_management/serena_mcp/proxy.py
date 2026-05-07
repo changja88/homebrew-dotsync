@@ -56,6 +56,10 @@ class _Upstream:
         path = self.parsed_url.path or "/"
         return urlunparse(("", "", path, "", self.parsed_url.query, ""))
 
+    @property
+    def authority(self) -> str:
+        return f"{self.parsed_url.hostname}:{self.parsed_url.port}"
+
 
 class _ReadableResponse(Protocol):
     def read(self, size: int = -1) -> bytes:
@@ -83,22 +87,28 @@ def handler_for(upstream_url: str) -> type[BaseHTTPRequestHandler]:
         def _forward(self, method: str, body: bytes | None) -> None:
             connection = None
             try:
-                connection = _open_upstream_connection(upstream)
-                _send_upstream_request(
-                    connection,
-                    upstream,
-                    method,
-                    body,
-                    self.headers.items(),
-                )
-                response = connection.getresponse()
-                self._send_upstream_response(
-                    response.status,
-                    response.getheaders(),
-                    response,
-                )
-            except (OSError, http.client.HTTPException):
-                self.send_error(502, "Bad Gateway")
+                try:
+                    connection = _open_upstream_connection(upstream)
+                    _send_upstream_request(
+                        connection,
+                        upstream,
+                        method,
+                        body,
+                        self.headers.items(),
+                    )
+                    response = connection.getresponse()
+                except (OSError, http.client.HTTPException):
+                    self.send_error(502, "Bad Gateway")
+                    return
+
+                try:
+                    self._send_upstream_response(
+                        response.status,
+                        response.getheaders(),
+                        response,
+                    )
+                except (OSError, http.client.HTTPException):
+                    return
             finally:
                 if connection is not None:
                     connection.close()
@@ -178,6 +188,7 @@ def _send_upstream_request(
         skip_host=True,
         skip_accept_encoding=True,
     )
+    connection.putheader("Host", upstream.authority)
     for name, value in _headers_for_upstream(headers):
         connection.putheader(name, value)
     connection.endheaders(body)
