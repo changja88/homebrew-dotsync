@@ -11,7 +11,7 @@ from pathlib import Path
 
 from local_dev.serena_mcp_management.serena_mcp.health import pid_is_alive
 from local_dev.serena_mcp_management.serena_mcp.paths import Scope
-from local_dev.serena_mcp_management.serena_mcp.registry import locked_registry, stale_lease_ids
+from local_dev.serena_mcp_management.serena_mcp.registry import ServerRecord, locked_registry, stale_lease_ids
 
 HEARTBEAT_INTERVAL_SECONDS = 5.0
 LEASE_TIMEOUT_SECONDS = 30.0
@@ -43,7 +43,7 @@ def cleanup_once(scope: Scope, *, now: float, lease_timeout_seconds: float) -> b
             registry.record.leases.pop(lease_id, None)
         if registry.record.leases:
             return True
-        _terminate_pid(registry.record.server_pid)
+        _terminate_record(registry.record)
         registry.record = None
         return False
 
@@ -56,7 +56,7 @@ def shutdown_if_no_leases(scope: Scope) -> bool:
             return False
         if registry.record.leases:
             return True
-        _terminate_pid(registry.record.server_pid)
+        _terminate_record(registry.record)
         registry.record = None
         return False
 
@@ -85,7 +85,7 @@ def release_lease_and_shutdown_if_empty(scope: Scope, lease_id: str) -> Shutdown
                 server_was_running=True,
                 server_stopped=False,
             )
-        _terminate_pid(registry.record.server_pid)
+        _terminate_record(registry.record)
         registry.record = None
         return ShutdownStats(
             sessions_before=sessions_before,
@@ -145,6 +145,12 @@ def _pythonpath_with_repo_root(current: str | None) -> str:
     if repo_root in parts:
         return current
     return os.pathsep.join([repo_root, current])
+
+
+def _terminate_record(record: ServerRecord) -> None:
+    if record.proxy_pid is not None:
+        _terminate_pid(record.proxy_pid)
+    _terminate_pid(record.server_pid)
 
 
 def _terminate_pid(pid: int) -> None:
