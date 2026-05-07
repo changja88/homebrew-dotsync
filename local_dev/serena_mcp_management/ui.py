@@ -49,9 +49,20 @@ class BoxModel:
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 _BOX_WIDTH = 60
 
+# gum-inspired palette (charmbracelet/gum). Use 256-color escapes so the
+# accents stay legible on both light and dark terminals.
+PINK = "38;5;205"  # hot pink, used for primary accents
+PURPLE = "38;5;99"  # purple, used for spinners and count keywords
+
 
 def _ansi(code: str, text: str) -> str:
     return f"\x1b[{code}m{text}\x1b[0m"
+
+
+def style_spinner(frame: int) -> str:
+    """Return the spinner glyph for ``frame`` styled with the purple accent."""
+    glyph = SPINNER_FRAMES[frame % len(SPINNER_FRAMES)]
+    return _ansi(PURPLE, glyph)
 
 
 _COUNT_KEYWORDS = sorted(
@@ -70,27 +81,25 @@ _COUNT_KEYWORDS = sorted(
 
 
 def style_count(phrase: str) -> str:
-    """Colorize digits (cyan) and known count keywords (yellow) in a count phrase.
+    """Colorize digits (pink) and count keywords (purple) using the gum palette.
 
     Plain phrase in, ANSI-formatted phrase out. Unmatched substrings pass through.
     Used by launcher for preflight/summary cleanup and memory rows.
     """
     if not phrase:
         return phrase
-    # Color digits first.
-    result = re.sub(r"\d+", lambda m: _ansi("36", m.group(0)), phrase)
-    # Color keywords (longest first to avoid partial overlap).
+    result = re.sub(r"\d+", lambda m: _ansi(PINK, m.group(0)), phrase)
     for kw in _COUNT_KEYWORDS:
-        result = result.replace(kw, _ansi("33", kw))
+        result = result.replace(kw, _ansi(PURPLE, kw))
     return result
 
 
 def _marker_for(status: ItemStatus, *, spin_frame: int = 0) -> str:
     if status == "spin":
         frame = SPINNER_FRAMES[spin_frame % len(SPINNER_FRAMES)]
-        return _ansi("36", frame)
+        return _ansi(PURPLE, frame)
     if status == "done":
-        return _ansi("32", "✓")
+        return _ansi(PINK, "✓")
     if status == "warn":
         return _ansi("33", "!")
     if status == "skip":
@@ -108,7 +117,7 @@ def render_box(model: BoxModel, *, spin_frame: int = 0) -> str:
     lines: list[str] = []
     lines.append("  " + _border("─"))
     header = f"{model.title}  ·  {model.phase}"
-    lines.append("  " + _ansi("1;36", header))
+    lines.append("  " + _ansi(f"1;{PINK}", header))
     lines.append("  " + _border("─"))
     for item in model.items:
         marker = _marker_for(item.status, spin_frame=spin_frame)
