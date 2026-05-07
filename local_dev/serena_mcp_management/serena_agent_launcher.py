@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -11,7 +12,9 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -25,6 +28,139 @@ from local_dev.serena_mcp_management.serena_mcp.watchdog import (
     ShutdownStats,
     release_lease_and_shutdown_if_empty,
 )
+from local_dev.serena_mcp_management.ui import (
+    PINK,
+    PURPLE,
+    BoxModel,
+    BoxRenderer,
+    Item,
+    SpinnerTicker,
+    confirm,
+    style_count,
+    style_spinner,
+)
+
+
+@dataclass
+class CleanupResult:
+    """Result of a cleanup operation."""
+
+    deleted: int
+    memory_files_reset: int
+
+
+@dataclass
+class LaunchPrepSummary:
+    """Summary of the v2 launch-prep phase."""
+
+    cleanup_deleted: int
+    cleanup_memory_files_reset: int
+
+
+def _jq_available() -> bool:
+    """Check if jq is available in the system."""
+    return shutil.which("jq") is not None
+
+
+def _claude_project_dir() -> Path:
+    """Get the Claude project directory for the current working directory."""
+    cwd = os.getcwd()
+    encoded = cwd.replace("/", "-")
+    return Path(os.path.expanduser("~/.claude/projects")) / encoded
+
+
+def _run_cleanup_claude(proj_dir: Path) -> CleanupResult:
+    """Clean up old Claude sessions and memory files.
+
+    Deletes:
+    - *.jsonl files older than 3 days (find -mtime +3)
+    - Per-jsonl UUID directories (named after jsonl stem)
+    - Entire memory directory at the end
+
+    Returns:
+        CleanupResult with deleted count and memory files reset count.
+    """
+    deleted = 0
+    memory_files_reset = 0
+    mem_dir = proj_dir / "memory"
+
+    # Count memory files BEFORE deletion
+    if mem_dir.is_dir():
+        memory_files_reset = sum(1 for _ in mem_dir.rglob("*") if _.is_file())
+
+    if proj_dir.is_dir():
+        cutoff = time.time() - 3 * 86400  # 3 days in seconds
+        for jsonl in proj_dir.glob("*.jsonl"):
+            if jsonl.stat().st_mtime < cutoff:
+                # Delete the .jsonl file
+                uuid_dir = proj_dir / jsonl.stem
+                jsonl.unlink(missing_ok=True)
+                # Delete the corresponding UUID directory
+                if uuid_dir.is_dir():
+                    shutil.rmtree(uuid_dir, ignore_errors=True)
+                deleted += 1
+
+        # Delete the entire memory directory
+        if mem_dir.is_dir():
+            shutil.rmtree(mem_dir, ignore_errors=True)
+
+    return CleanupResult(deleted=deleted, memory_files_reset=memory_files_reset)
+
+
+def _run_cleanup_codex(codex_home: Path, cwd: str) -> CleanupResult:
+    """Clean up old Codex sessions and memory files.
+
+    Sessions are scanned only if jq is available.
+    Matches sessions where:
+    - type == "session_meta"
+    - payload.cwd == cwd
+    - mtime > 3 days
+
+    Always deletes memories directory at the end.
+
+    Returns:
+        CleanupResult with deleted count and memory files reset count.
+    """
+    deleted = 0
+    memory_files_reset = 0
+    sessions_dir = codex_home / "sessions"
+    mem_dir = codex_home / "memories"
+
+    # Count memory files BEFORE deletion
+    if mem_dir.is_dir():
+        memory_files_reset = sum(1 for _ in mem_dir.rglob("*") if _.is_file())
+
+    # Only scan sessions if jq is available
+    if sessions_dir.is_dir() and _jq_available():
+        cutoff = time.time() - 3 * 86400  # 3 days in seconds
+        for jsonl in sessions_dir.glob("*.jsonl"):
+            # Check if file matches the jq filter: type == "session_meta" && payload.cwd == $cwd
+            try:
+                proc = subprocess.run(
+                    ["jq", "-e", "--arg", "cwd", cwd,
+                     "select(.type == \"session_meta\" and .payload.cwd == $cwd)",
+                     str(jsonl)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+                if proc.returncode != 0:
+                    # Filter didn't match
+                    continue
+            except FileNotFoundError:
+                # jq not found, skip this file
+                continue
+
+            # Check if file is old enough
+            if jsonl.stat().st_mtime < cutoff:
+                jsonl.unlink(missing_ok=True)
+                deleted += 1
+
+    # Always delete the entire memories directory
+    if mem_dir.is_dir():
+        shutil.rmtree(mem_dir, ignore_errors=True)
+
+    return CleanupResult(deleted=deleted, memory_files_reset=memory_files_reset)
 
 
 def infer_client_type(program_name: str) -> str:
@@ -101,36 +237,6 @@ def build_child_command(
     raise RuntimeError(f"unsupported client type: {client_type}")
 
 
-def format_launch_status(*, client_type: str, project_root: str, mcp_url: str) -> str:
-    """Return the visible launch status line for interactive agent starts."""
-
-    return f"serena launcher: {client_type} project={project_root} mcp={mcp_url}"
-
-
-def format_shutdown_status(stats: ShutdownStats) -> str:
-    """Return the visible shutdown status row for interactive agent exits."""
-
-    if not stats.server_was_running:
-        server_state = "none"
-    elif stats.server_stopped:
-        server_state = "stopped"
-    else:
-        server_state = "kept"
-    detail = (
-        f"sessions_before={stats.sessions_before} "
-        f"closed={stats.sessions_closed} "
-        f"remaining={stats.sessions_remaining} "
-        f"server={server_state}"
-    )
-    return f"  * {'serena':<10} {'done':<10}. {detail}"
-
-
-def format_mcp_progress_status(state: str, detail: str) -> str:
-    """Return a visible MCP startup progress row."""
-
-    phase = "mcp" if state == "pending" else state
-    return f"  * {'serena':<10} {phase:<10}. {detail}"
-
 
 def clear_terminal_before_child() -> None:
     """Clear the preflight/progress terminal output before opening the agent TUI."""
@@ -155,23 +261,165 @@ def main(argv: list[str] | None = None) -> int:
     """Run the scoped Serena launcher."""
 
     args = list(sys.argv[1:] if argv is None else argv)
+    return _main_v2(args)
+
+
+def _run_launch_prep_v2(
+    *,
+    stream: TextIO | None = None,
+) -> LaunchPrepSummary:
+    """Run the v2 launch-prep phase with cleanup execution.
+
+    This phase:
+    1. Detects the client type and runs cleanup (claude or codex)
+    2. Outputs the cleanup results in a formatted row
+    3. Returns a summary of what was cleaned
+
+    Returns:
+        LaunchPrepSummary with cleanup counts.
+    """
+    out = stream if stream is not None else sys.stdout
+    client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
+
+    if client == "claude":
+        result = _run_cleanup_claude(_claude_project_dir())
+    else:
+        codex_home = Path(
+            os.environ.get("CODEX_HOME", os.path.expanduser("~/.codex"))
+        )
+        result = _run_cleanup_codex(codex_home, os.getcwd())
+
+    out.write(
+        f"  ✓ cleanup     {result.deleted} deleted . "
+        f"{result.memory_files_reset} memory files reset\n"
+    )
+    out.flush()
+
+    return LaunchPrepSummary(
+        cleanup_deleted=result.deleted,
+        cleanup_memory_files_reset=result.memory_files_reset,
+    )
+
+
+def _start_mcp_with_spinner(
+    *,
+    scope,
+    lease,
+    stream: TextIO | None = None,
+):
+    """Start the MCP server with a spinner ticker for visual feedback.
+
+    This function wraps ensure_server with a spinner that updates in-place
+    while the server is starting. On success, displays the MCP URL. On
+    failure, displays the error message.
+
+    Args:
+        scope: The Scope object for the server.
+        lease: The Lease object for the server.
+        stream: Output stream (defaults to sys.stdout).
+
+    Returns:
+        The server record on success.
+
+    Raises:
+        Any exception from ensure_server.
+    """
+    out = stream if stream is not None else sys.stdout
+    out.write(f"  \x1b[{PURPLE}m·\x1b[0m serena     preparing scoped server")
+    out.flush()
+    frame_state = {"frame": 0}
+
+    def on_tick(frame: int) -> None:
+        frame_state["frame"] = frame
+        out.write(f"\r  {style_spinner(frame)} serena     preparing scoped server")
+        out.flush()
+
+    ticker = SpinnerTicker(on_tick=on_tick, interval=0.1)
+    ticker.start()
+    try:
+        record = ensure_server(scope, lease)
+    except Exception as exc:
+        ticker.stop()
+        out.write(f"\r  \x1b[33m!\x1b[0m serena     failed     . {exc}\n")
+        out.flush()
+        raise
+    ticker.stop()
+    out.write(f"\r  \x1b[{PINK}m✓\x1b[0m serena     ready      . {record.mcp_url}\n")
+    out.flush()
+    return record
+
+
+def _format_duration(seconds: float) -> str:
+    minutes = int(seconds // 60)
+    secs = int(seconds - minutes * 60)
+    if minutes == 0:
+        return f"{secs}s"
+    return f"{minutes}m {secs}s"
+
+
+def _render_summary_v2(
+    *,
+    stream,
+    client: str,
+    duration_seconds: float,
+    cleanup_deleted: int,
+    cleanup_memory_files_reset: int,
+    mcp_lifecycle: str,
+    warnings: list[str],
+) -> None:
+    items = [
+        Item(id="duration", label="duration",
+             value=_format_duration(duration_seconds), status="done"),
+        Item(id="cleanup", label="cleanup",
+             value=style_count(
+                 f"{cleanup_deleted} deleted . "
+                 f"{cleanup_memory_files_reset} memory files reset"
+             ),
+             status="done"),
+        Item(id="mcp", label="serena", value=f"server {mcp_lifecycle}", status="done"),
+    ]
+    for index, message in enumerate(warnings):
+        items.append(Item(id=f"warn-{index}", label="warning",
+                          value=message, status="warn"))
+    model = BoxModel(phase="summary", title=client, items=items)
+    BoxRenderer(stream=stream).draw(model)
+
+
+def _main_v2(args: list[str]) -> int:
+    """v2 box-model TUI flow."""
+    started_at = time.time()
+    warnings: list[str] = []
+    interactive = os.environ.get("SERENA_AGENT_INTERACTIVE") == "1"
+    out = sys.stdout
+
+    if interactive:
+        rc = _run_preflight_v2()
+        if rc != 0:
+            return rc
+
+    serena_state = _run_serena_init_v2() if interactive else "managed"
+    if serena_state in {"skipped", "failed"}:
+        warnings.append(f"serena project create {serena_state}")
+        client_type = infer_client_type(os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0]))
+        real_binary = find_real_binary(client_type)
+        return int(subprocess.run([real_binary, *args]).returncode)
+
+    summary_state = _run_launch_prep_v2() if interactive else None
+
     client_type = infer_client_type(os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0]))
     project_root = _project_root_from_environment() or find_project_root(Path.cwd())
     scope = Scope(project_root, client_type)
     lease_id = str(uuid.uuid4())
     lease = Lease(lease_id, os.getpid(), time.time())
-    if _interactive_launch():
-        print(format_mcp_progress_status("pending", "preparing scoped server"), flush=True)
-    record = ensure_server(scope, lease)
-    if _interactive_launch():
-        print(format_mcp_progress_status("ready", record.mcp_url), flush=True)
+
+    record = _start_mcp_with_spinner(scope=scope, lease=lease) if interactive \
+        else ensure_server(scope, lease)
+
     stop = threading.Event()
     cleanup: Callable[[], None] = lambda: None
     child: subprocess.Popen | None = None
     heartbeat = threading.Thread(
-        target=_heartbeat_loop,
-        args=(scope, lease_id, stop),
-        daemon=True,
+        target=_heartbeat_loop, args=(scope, lease_id, stop), daemon=True,
     )
     heartbeat.start()
 
@@ -183,15 +431,6 @@ def main(argv: list[str] | None = None) -> int:
             mcp_url=record.mcp_url,
             child_args=args,
         )
-        if not args and sys.stderr.isatty() and os.environ.get("SERENA_AGENT_QUIET") != "1":
-            print(
-                format_launch_status(
-                    client_type=client_type,
-                    project_root=str(project_root),
-                    mcp_url=record.mcp_url,
-                ),
-                file=sys.stderr,
-            )
         open_dashboard_if_requested(record.dashboard_url)
         if os.environ.get("SERENA_AGENT_CLEAR_BEFORE_CHILD") == "1":
             clear_terminal_before_child()
@@ -204,13 +443,39 @@ def main(argv: list[str] | None = None) -> int:
 
         for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             signal.signal(signum, shutdown)
-        return int(child.wait())
+        rc = int(child.wait())
     finally:
         stop.set()
         cleanup()
-        stats = _remove_lease_and_shutdown_if_empty(scope, lease_id)
-        if stats is not None and os.environ.get("SERENA_AGENT_INTERACTIVE") == "1":
-            print(format_shutdown_status(stats))
+        if interactive:
+            try:
+                stats = _stop_mcp_with_spinner(scope=scope, lease_id=lease_id)
+            except Exception:
+                stats = None
+        else:
+            stats = _remove_lease_and_shutdown_if_empty(scope, lease_id)
+
+    if interactive:
+        if stats is None:
+            mcp_lifecycle = "unknown"
+        elif stats.server_stopped:
+            mcp_lifecycle = "stopped"
+        elif stats.server_was_running:
+            mcp_lifecycle = f"kept ({stats.sessions_remaining} sessions)"
+        else:
+            mcp_lifecycle = "none"
+        cleanup_deleted = summary_state.cleanup_deleted if summary_state else 0
+        cleanup_memory = summary_state.cleanup_memory_files_reset if summary_state else 0
+        _render_summary_v2(
+            stream=out,
+            client=client_type,
+            duration_seconds=time.time() - started_at,
+            cleanup_deleted=cleanup_deleted,
+            cleanup_memory_files_reset=cleanup_memory,
+            mcp_lifecycle=mcp_lifecycle,
+            warnings=warnings,
+        )
+    return rc
 
 
 def _project_root_from_environment() -> Path | None:
@@ -220,8 +485,188 @@ def _project_root_from_environment() -> Path | None:
     return Path(value).resolve()
 
 
-def _interactive_launch() -> bool:
-    return os.environ.get("SERENA_AGENT_INTERACTIVE") == "1"
+
+def _short_path(path: str) -> str:
+    """Convert an absolute path to a tilde-abbreviated version."""
+    home = os.path.expanduser("~")
+    if path.startswith(home):
+        return "~" + path[len(home):]
+    return path
+
+
+def _preflight_box() -> BoxModel:
+    """Build a BoxModel for the v2 preflight phase."""
+    client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
+    project_root = os.environ.get("SERENA_AGENT_PROJECT_ROOT", "")
+    cleanup_value = os.environ.get("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "")
+    memory_value = os.environ.get("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "")
+    serena_status = os.environ.get("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    graphify_status = os.environ.get("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "installed")
+
+    serena_value = (
+        "managed by scoped launcher"
+        if serena_status == "managed"
+        else "project config missing"
+    )
+    serena_item_status = "done" if serena_status == "managed" else "warn"
+    if graphify_status == "installed":
+        graphify_value = "initialized . post-commit + post-checkout hooks installed"
+        graphify_item_status = "done"
+    elif graphify_status == "hook-missing":
+        graphify_value = "hooks not installed . run \"graphify hook install\""
+        graphify_item_status = "warn"
+    else:
+        graphify_value = (
+            "not installed . install graphify, then run /graphify when you want a project graph"
+        )
+        graphify_item_status = "warn"
+
+    items = [
+        Item(
+            id="workspace",
+            label="workspace",
+            value=_short_path(project_root),
+            status="info",
+        ),
+        Item(id="serena", label="serena", value=serena_value, status=serena_item_status),
+        Item(
+            id="graphify",
+            label="graphify",
+            value=graphify_value,
+            status=graphify_item_status,
+        ),
+        Item(
+            id="context",
+            label="context",
+            value="claude-code" if client == "claude" else "codex",
+            status="info",
+        ),
+        Item(id="cleanup", label="cleanup", value=style_count(cleanup_value), status="info"),
+        Item(id="memory", label="memory", value=style_count(memory_value), status="info"),
+    ]
+    return BoxModel(phase="preflight", title=client, items=items)
+
+
+def _graphify_hook_install(project_root: Path) -> int:
+    """Run `graphify hook install` for the given project root.
+
+    Returns the exit code. 2 indicates graphify is not on PATH.
+    """
+    if shutil.which("graphify") is None:
+        return 2
+    proc = subprocess.run(
+        ["graphify", "hook", "install"],
+        cwd=str(project_root),
+        check=False,
+    )
+    return proc.returncode
+
+
+def _run_preflight_v2(
+    *,
+    stream: TextIO | None = None,
+    input_fn: Callable[[], str] | None = None,
+    install_graphify_hooks: Callable[[Path], int] | None = None,
+) -> int:
+    """Run the v2 preflight phase with confirmation prompt.
+
+    Returns:
+        0 if interactive mode is off or user confirms, 130 if user aborts.
+    """
+    if os.environ.get("SERENA_AGENT_INTERACTIVE") != "1":
+        return 0
+    out = stream if stream is not None else sys.stdout
+    install_fn = install_graphify_hooks or _graphify_hook_install
+    renderer = BoxRenderer(stream=out)
+    model = _preflight_box()
+    renderer.draw(model)
+
+    graphify_status = os.environ.get("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "installed")
+    if graphify_status == "hook-missing":
+        if confirm(
+            "Install graphify hooks for this project?",
+            default=True,
+            stream=out,
+            input_fn=input_fn,
+        ):
+            project_root = Path(
+                os.environ.get("SERENA_AGENT_PROJECT_ROOT", ".")
+            ).resolve()
+            rc = install_fn(project_root)
+            graphify_item = next(item for item in model.items if item.id == "graphify")
+            if rc == 0:
+                graphify_item.status = "done"
+                graphify_item.value = "initialized . post-commit + post-checkout hooks installed"
+            else:
+                graphify_item.status = "warn"
+                graphify_item.value = f"hook install failed (exit {rc})"
+            renderer.draw(model)
+
+    if not confirm(
+        f"Run {model.title}?",
+        default=True,
+        stream=out,
+        input_fn=input_fn,
+    ):
+        return 130
+    return 0
+
+
+def _serena_project_create(project_root: Path) -> int:
+    """Run `serena project create <root>` feeding default answers via `yes ""`.
+
+    Returns:
+        0 on success, non-zero on failure.
+    """
+    if shutil.which("serena") is None:
+        return 2
+    yes_proc = subprocess.Popen(["yes", ""], stdout=subprocess.PIPE)
+    try:
+        proc = subprocess.run(
+            ["serena", "project", "create", str(project_root)],
+            stdin=yes_proc.stdout,
+            check=False,
+        )
+    finally:
+        if yes_proc.stdout is not None:
+            yes_proc.stdout.close()
+        yes_proc.terminate()
+        yes_proc.wait()
+    return proc.returncode
+
+
+def _run_serena_init_v2(
+    *,
+    stream: TextIO | None = None,
+    input_fn: Callable[[], str] | None = None,
+) -> str:
+    """Run optional v2 serena-init phase.
+
+    Returns one of: 'managed', 'created', 'skipped', 'failed'.
+    """
+    serena_status = os.environ.get("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    if serena_status != "missing":
+        return "managed"
+
+    out = stream if stream is not None else sys.stdout
+    project_root = Path(os.environ.get("SERENA_AGENT_PROJECT_ROOT", ".")).resolve()
+
+    if not confirm(
+        "Initialize Serena for this project?",
+        default=False,
+        stream=out,
+        input_fn=input_fn,
+    ):
+        out.write("  ! serena    skipped   . launching without Serena project config\n")
+        out.flush()
+        return "skipped"
+
+    rc = _serena_project_create(project_root)
+    if rc != 0 or not (project_root / ".serena" / "project.yml").exists():
+        out.write("  ! serena    failed    . launching without Serena project config\n")
+        out.flush()
+        return "failed"
+    return "created"
 
 
 def _heartbeat_loop(scope: Scope, lease_id: str, stop: threading.Event) -> None:
@@ -234,6 +679,38 @@ def _heartbeat_loop(scope: Scope, lease_id: str, stop: threading.Event) -> None:
 
 def _remove_lease_and_shutdown_if_empty(scope: Scope, lease_id: str) -> ShutdownStats:
     return release_lease_and_shutdown_if_empty(scope, lease_id)
+
+
+def _stop_mcp_with_spinner(
+    *,
+    scope,
+    lease_id: str,
+    stream=None,
+    shutdown_fn=None,
+):
+    """Run lease release + MCP shutdown with a single-line spinner."""
+    out = stream if stream is not None else sys.stdout
+    fn = shutdown_fn if shutdown_fn is not None else _remove_lease_and_shutdown_if_empty
+    out.write(f"  \x1b[{PURPLE}m·\x1b[0m serena     stopping scoped server")
+    out.flush()
+
+    def on_tick(frame: int) -> None:
+        out.write(f"\r  {style_spinner(frame)} serena     stopping scoped server")
+        out.flush()
+
+    ticker = SpinnerTicker(on_tick=on_tick, interval=0.1)
+    ticker.start()
+    try:
+        stats = fn(scope, lease_id)
+    except Exception as exc:
+        ticker.stop()
+        out.write(f"\r  \x1b[33m!\x1b[0m serena     shutdown failed . {exc}\n")
+        out.flush()
+        raise
+    ticker.stop()
+    out.write(f"\r  \x1b[{PINK}m✓\x1b[0m serena     stopped scoped server\n")
+    out.flush()
+    return stats
 
 
 if __name__ == "__main__":
