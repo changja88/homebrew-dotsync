@@ -57,12 +57,12 @@ class BoxModel:
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 _BOX_WIDTH = 60
 
-# charmbracelet palette (gum/huh). Use truecolor (24-bit) escapes so the
-# accents land on the exact charm hues rather than the closest 256-colour
-# approximation.
-PINK = "38;2;255;6;183"  # #FF06B7, charm hot pink
-PURPLE = "38;2;135;75;253"  # #874BFD, charm vivid violet (huh focus tone)
-MINT = "38;2;0;215;175"  # #00D7AF, charm mint -- legible label colour
+# charmbracelet/huh dark theme (ThemeCharm). Truecolor escapes pinned to
+# the exact hex values from huh/theme.go so the accents match the screenshots
+# in the huh README rather than 256-colour approximations.
+PINK = "38;2;247;128;226"  # #F780E2, huh fuchsia (cursor / button accent)
+PURPLE = "38;2;117;113;249"  # #7571F9, huh indigo (title / focused tone)
+MINT = "38;2;2;191;135"  # #02BF87, huh selected-option green (legible label)
 
 
 def _ansi(code: str, text: str) -> str:

@@ -1,11 +1,12 @@
 from local_dev.serena_mcp_management.ui import MINT, PINK, PURPLE, style_count
 
 
-def test_palette_uses_charm_truecolor_hexes():
-    # PINK = #FF06B7, PURPLE = #874BFD, MINT = #00D7AF -- charm/huh tones
-    assert PINK == "38;2;255;6;183"
-    assert PURPLE == "38;2;135;75;253"
-    assert MINT == "38;2;0;215;175"
+def test_palette_uses_huh_truecolor_hexes():
+    # huh/theme.go ThemeCharm dark: indigo #7571F9, fuchsia #F780E2,
+    # selected-option green #02BF87.
+    assert PINK == "38;2;247;128;226"
+    assert PURPLE == "38;2;117;113;249"
+    assert MINT == "38;2;2;191;135"
 
 
 def test_style_count_colors_digits_pink():

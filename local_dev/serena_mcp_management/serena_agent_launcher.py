@@ -565,7 +565,7 @@ def _graphify_hook_install(project_root: Path) -> int:
 def _run_preflight_v2(
     *,
     stream: TextIO | None = None,
-    input_fn: Callable[[], str] = input,
+    input_fn: Callable[[], str] | None = None,
     install_graphify_hooks: Callable[[Path], int] | None = None,
 ) -> int:
     """Run the v2 preflight phase with confirmation prompt.
@@ -638,7 +638,7 @@ def _serena_project_create(project_root: Path) -> int:
 def _run_serena_init_v2(
     *,
     stream: TextIO | None = None,
-    input_fn: Callable[[], str] = input,
+    input_fn: Callable[[], str] | None = None,
 ) -> str:
     """Run optional v2 serena-init phase.
 
