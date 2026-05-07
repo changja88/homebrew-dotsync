@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import ParseResult, urlparse, urlunparse
 from urllib.request import Request, urlopen
@@ -52,6 +53,11 @@ class _Upstream:
         ))
 
 
+class _ReadableResponse(Protocol):
+    def read(self, size: int = -1) -> bytes:
+        ...
+
+
 def handler_for(upstream_url: str) -> type[BaseHTTPRequestHandler]:
     """Return an HTTP handler class that proxies safe MCP methods upstream."""
 
@@ -79,9 +85,9 @@ def handler_for(upstream_url: str) -> type[BaseHTTPRequestHandler]:
             )
             try:
                 with urlopen(request, timeout=30) as response:
-                    self._send_upstream_response(response.status, response.headers.items(), response.read())
+                    self._send_upstream_response(response.status, response.headers.items(), response)
             except HTTPError as exc:
-                self._send_upstream_response(exc.code, exc.headers.items(), exc.read())
+                self._send_upstream_response(exc.code, exc.headers.items(), exc)
             except URLError:
                 self.send_error(502, "Bad Gateway")
 
@@ -89,15 +95,15 @@ def handler_for(upstream_url: str) -> type[BaseHTTPRequestHandler]:
             self,
             status: int,
             headers: Iterable[tuple[str, str]],
-            body: bytes,
+            response: _ReadableResponse,
         ) -> None:
             self.send_response(status)
             for name, value in _forwardable_headers(headers):
-                if name.lower() != "content-length":
-                    self.send_header(name, value)
-            self.send_header("Content-Length", str(len(body)))
+                self.send_header(name, value)
             self.end_headers()
-            self.wfile.write(body)
+            while chunk := _read_response_chunk(response):
+                self.wfile.write(chunk)
+                self.wfile.flush()
 
     return SerenaProxyHandler
 
@@ -143,6 +149,12 @@ def _forwardable_headers(headers: Iterable[tuple[str, str]]) -> Iterable[tuple[s
     for name, value in headers:
         if name.lower() not in _HOP_BY_HOP_HEADERS:
             yield name, value
+
+
+def _read_response_chunk(response: _ReadableResponse) -> bytes:
+    if hasattr(response, "read1"):
+        return response.read1(64 * 1024)
+    return response.read(64 * 1024)
 
 
 if __name__ == "__main__":

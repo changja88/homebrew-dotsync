@@ -1,4 +1,5 @@
 import json
+import queue
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import Request, urlopen
@@ -8,6 +9,7 @@ from local_dev.serena_mcp_management.serena_mcp.proxy import handler_for
 
 class UpstreamHandler(BaseHTTPRequestHandler):
     events: list[tuple[str, str, bytes]] = []
+    release_get: threading.Event | None = None
 
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
@@ -23,6 +25,9 @@ class UpstreamHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
         self.wfile.write(b"event: message\ndata: ok\n\n")
+        self.wfile.flush()
+        if self.__class__.release_get is not None:
+            self.__class__.release_get.wait(timeout=5)
 
     def do_DELETE(self):
         body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
@@ -36,6 +41,7 @@ class UpstreamHandler(BaseHTTPRequestHandler):
 
 def _start_upstream():
     UpstreamHandler.events = []
+    UpstreamHandler.release_get = None
     server = ThreadingHTTPServer(("127.0.0.1", 0), UpstreamHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -86,6 +92,34 @@ def test_proxy_forwards_get_to_upstream():
     assert UpstreamHandler.events == [("GET", "/mcp", b"")]
     proxy.shutdown()
     upstream.shutdown()
+
+
+def test_proxy_streams_get_bytes_before_upstream_closes():
+    first_event = b"event: message\ndata: ok\n\n"
+    release_get = threading.Event()
+    upstream = _start_upstream()
+    UpstreamHandler.release_get = release_get
+    upstream_url = f"http://127.0.0.1:{upstream.server_port}/mcp"
+    proxy = _start_proxy(upstream_url)
+    proxy_url = f"http://127.0.0.1:{proxy.server_port}/mcp"
+    results = queue.Queue()
+
+    def read_first_event():
+        with urlopen(proxy_url, timeout=2) as response:
+            results.put(response.read(len(first_event)))
+
+    client_thread = threading.Thread(target=read_first_event, daemon=True)
+    client_thread.start()
+
+    try:
+        assert results.get(timeout=0.5) == first_event
+    finally:
+        release_get.set()
+        client_thread.join(timeout=2)
+        proxy.shutdown()
+        upstream.shutdown()
+
+    assert UpstreamHandler.events == [("GET", "/mcp", b"")]
 
 
 def test_proxy_suppresses_delete_without_touching_upstream():
