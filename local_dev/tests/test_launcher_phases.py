@@ -94,3 +94,56 @@ def test_v2_preflight_marks_serena_warn_when_missing(monkeypatch):
     answers = iter(["y"])
     launcher._run_preflight_v2(stream=out, input_fn=lambda: next(answers))
     assert "project config missing" in out.getvalue()
+
+
+def test_v2_serena_init_skip_returns_skipped_status(monkeypatch, tmp_path):
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
+    out = io.StringIO()
+    answers = iter(["n"])  # Skip
+    result = launcher._run_serena_init_v2(stream=out, input_fn=lambda: next(answers))
+    assert result == "skipped"
+    assert "Initialize" in out.getvalue()
+
+
+def test_v2_serena_init_no_op_when_serena_present(monkeypatch, tmp_path):
+    (tmp_path / ".serena").mkdir()
+    (tmp_path / ".serena" / "project.yml").write_text("project: test\n")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    out = io.StringIO()
+    result = launcher._run_serena_init_v2(stream=out, input_fn=lambda: pytest.fail("no input"))
+    assert result == "managed"
+    assert out.getvalue() == ""
+
+
+def test_v2_serena_init_create_calls_serena_cli(monkeypatch, tmp_path):
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
+
+    captured = {}
+
+    def fake_create(project_root):
+        captured["root"] = project_root
+        # simulate Serena writing project.yml
+        (project_root / ".serena").mkdir(exist_ok=True)
+        (project_root / ".serena" / "project.yml").write_text("ok\n")
+        return 0
+
+    monkeypatch.setattr(launcher, "_serena_project_create", fake_create, raising=False)
+    out = io.StringIO()
+    answers = iter(["y"])
+    result = launcher._run_serena_init_v2(stream=out, input_fn=lambda: next(answers))
+    assert result == "created"
+    assert captured["root"] == tmp_path
+
+
+def test_v2_serena_init_create_failure_returns_failed(monkeypatch, tmp_path):
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
+    monkeypatch.setattr(launcher, "_serena_project_create",
+                        lambda project_root: 1, raising=False)
+    out = io.StringIO()
+    answers = iter(["y"])
+    result = launcher._run_serena_init_v2(stream=out, input_fn=lambda: next(answers))
+    assert result == "failed"

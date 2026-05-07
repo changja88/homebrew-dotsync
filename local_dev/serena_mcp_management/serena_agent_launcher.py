@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -332,6 +333,63 @@ def _run_preflight_v2(
     ):
         return 130
     return 0
+
+
+def _serena_project_create(project_root: Path) -> int:
+    """Run `serena project create <root>` feeding default answers via `yes ""`.
+
+    Returns:
+        0 on success, non-zero on failure.
+    """
+    if shutil.which("serena") is None:
+        return 2
+    yes_proc = subprocess.Popen(["yes", ""], stdout=subprocess.PIPE)
+    try:
+        proc = subprocess.run(
+            ["serena", "project", "create", str(project_root)],
+            stdin=yes_proc.stdout,
+            check=False,
+        )
+    finally:
+        if yes_proc.stdout is not None:
+            yes_proc.stdout.close()
+        yes_proc.terminate()
+        yes_proc.wait()
+    return proc.returncode
+
+
+def _run_serena_init_v2(
+    *,
+    stream: TextIO | None = None,
+    input_fn: Callable[[], str] = input,
+) -> str:
+    """Run optional v2 serena-init phase.
+
+    Returns one of: 'managed', 'created', 'skipped', 'failed'.
+    """
+    serena_status = os.environ.get("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    if serena_status != "missing":
+        return "managed"
+
+    out = stream if stream is not None else sys.stdout
+    project_root = Path(os.environ.get("SERENA_AGENT_PROJECT_ROOT", ".")).resolve()
+
+    if not confirm(
+        "Initialize Serena for this project?",
+        default=False,
+        stream=out,
+        input_fn=input_fn,
+    ):
+        out.write("  ! serena    skipped   . launching without Serena project config\n")
+        out.flush()
+        return "skipped"
+
+    rc = _serena_project_create(project_root)
+    if rc != 0 or not (project_root / ".serena" / "project.yml").exists():
+        out.write("  ! serena    failed    . launching without Serena project config\n")
+        out.flush()
+        return "failed"
+    return "created"
 
 
 def _heartbeat_loop(scope: Scope, lease_id: str, stop: threading.Event) -> None:
