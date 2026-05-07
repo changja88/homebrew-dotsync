@@ -84,6 +84,7 @@ tmp/
 
 # --- Local design / planning docs (kept local, not pushed) --------------
 docs/superpowers/
+.worktrees/
 
 # --- Local agent/tool state ---------------------------------------------
 .serena/
