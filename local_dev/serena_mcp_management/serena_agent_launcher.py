@@ -12,6 +12,7 @@ import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
+from typing import TextIO
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -24,6 +25,12 @@ from local_dev.serena_mcp_management.serena_mcp.watchdog import (
     HEARTBEAT_INTERVAL_SECONDS,
     ShutdownStats,
     release_lease_and_shutdown_if_empty,
+)
+from local_dev.serena_mcp_management.ui import (
+    BoxModel,
+    BoxRenderer,
+    Item,
+    confirm,
 )
 
 
@@ -243,6 +250,88 @@ def _project_root_from_environment() -> Path | None:
 
 def _interactive_launch() -> bool:
     return os.environ.get("SERENA_AGENT_INTERACTIVE") == "1"
+
+
+def _short_path(path: str) -> str:
+    """Convert an absolute path to a tilde-abbreviated version."""
+    home = os.path.expanduser("~")
+    if path.startswith(home):
+        return "~" + path[len(home):]
+    return path
+
+
+def _preflight_box() -> BoxModel:
+    """Build a BoxModel for the v2 preflight phase."""
+    client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
+    project_root = os.environ.get("SERENA_AGENT_PROJECT_ROOT", "")
+    cleanup_value = os.environ.get("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "")
+    memory_value = os.environ.get("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "")
+    serena_status = os.environ.get("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    graphify_status = os.environ.get("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "installed")
+
+    serena_value = (
+        "managed by scoped launcher"
+        if serena_status == "managed"
+        else "project config missing"
+    )
+    serena_item_status = "done" if serena_status == "managed" else "warn"
+    graphify_value = (
+        "installed . run /graphify . when you want a project graph"
+        if graphify_status == "installed"
+        else "not installed . install graphify, then run /graphify ."
+    )
+    graphify_item_status = "done" if graphify_status == "installed" else "warn"
+
+    items = [
+        Item(
+            id="workspace",
+            label="workspace",
+            value=_short_path(project_root),
+            status="done",
+        ),
+        Item(id="serena", label="serena", value=serena_value, status=serena_item_status),
+        Item(
+            id="graphify",
+            label="graphify",
+            value=graphify_value,
+            status=graphify_item_status,
+        ),
+        Item(
+            id="context",
+            label="context",
+            value="claude-code" if client == "claude" else "codex",
+            status="done",
+        ),
+        Item(id="cleanup", label="cleanup", value=cleanup_value, status="done"),
+        Item(id="memory", label="memory", value=memory_value, status="done"),
+    ]
+    return BoxModel(phase="preflight", title=client, items=items)
+
+
+def _run_preflight_v2(
+    *,
+    stream: TextIO | None = None,
+    input_fn: Callable[[], str] = input,
+) -> int:
+    """Run the v2 preflight phase with confirmation prompt.
+
+    Returns:
+        0 if interactive mode is off or user confirms, 130 if user aborts.
+    """
+    if os.environ.get("SERENA_AGENT_INTERACTIVE") != "1":
+        return 0
+    out = stream if stream is not None else sys.stdout
+    renderer = BoxRenderer(stream=out)
+    model = _preflight_box()
+    renderer.draw(model)
+    if not confirm(
+        f"Run {model.title}?",
+        default=True,
+        stream=out,
+        input_fn=input_fn,
+    ):
+        return 130
+    return 0
 
 
 def _heartbeat_loop(scope: Scope, lease_id: str, stop: threading.Event) -> None:
