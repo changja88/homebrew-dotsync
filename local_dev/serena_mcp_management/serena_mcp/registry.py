@@ -35,6 +35,8 @@ class ServerRecord:
     started_at: float
     leases: dict[str, Lease]
     watchdog_pid: int | None = None
+    upstream_mcp_url: str | None = None
+    proxy_pid: int | None = None
 
 
 @dataclass(slots=True)

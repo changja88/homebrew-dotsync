@@ -1,3 +1,4 @@
+import json
 import os
 import time
 
@@ -42,6 +43,53 @@ def test_registry_missing_file_loads_no_record(tmp_path):
 
     with locked_registry(scope) as registry:
         assert registry.record is None
+
+
+def test_registry_loads_old_record_without_proxy_fields(tmp_path):
+    scope = Scope(tmp_path, "codex")
+    path = tmp_path / ".serena" / "dotsync-mcp" / "codex" / "registry.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({
+            "version": 1,
+            "record": {
+                "server_pid": 123,
+                "mcp_url": "http://127.0.0.1:9000/mcp",
+                "dashboard_url": "http://127.0.0.1:24000",
+                "project_root": str(tmp_path.resolve()),
+                "client_type": "codex",
+                "started_at": 1.0,
+                "leases": {},
+            },
+        })
+    )
+
+    with locked_registry(scope) as registry:
+        assert registry.record is not None
+        assert registry.record.upstream_mcp_url is None
+        assert registry.record.proxy_pid is None
+
+
+def test_registry_persists_proxy_fields(tmp_path):
+    scope = Scope(tmp_path, "codex")
+    with locked_registry(scope) as registry:
+        registry.record = ServerRecord(
+            server_pid=123,
+            mcp_url="http://127.0.0.1:9001/mcp",
+            dashboard_url="http://127.0.0.1:24000",
+            project_root=str(tmp_path.resolve()),
+            client_type="codex",
+            started_at=1.0,
+            leases={},
+            upstream_mcp_url="http://127.0.0.1:9000/mcp",
+            proxy_pid=456,
+        )
+
+    with locked_registry(scope) as registry:
+        assert registry.record is not None
+        assert registry.record.mcp_url == "http://127.0.0.1:9001/mcp"
+        assert registry.record.upstream_mcp_url == "http://127.0.0.1:9000/mcp"
+        assert registry.record.proxy_pid == 456
 
 
 def test_registry_treats_corrupt_json_as_no_record(tmp_path):
