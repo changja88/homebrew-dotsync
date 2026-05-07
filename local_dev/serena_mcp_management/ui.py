@@ -91,7 +91,7 @@ _COUNT_KEYWORDS = sorted(
 
 
 def style_count(phrase: str) -> str:
-    """Colorize digits (pink) and count keywords (purple) using the gum palette.
+    """Colorize digits (pink) and count keywords (purple) using the huh palette.
 
     Plain phrase in, ANSI-formatted phrase out. Unmatched substrings pass through.
     Used by launcher for preflight/summary cleanup and memory rows.

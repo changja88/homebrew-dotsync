@@ -30,7 +30,6 @@ def test_main_always_dispatches_to_v2(monkeypatch):
 
 
 def test_main_dispatches_to_v2_regardless_of_tui_env(monkeypatch):
-    monkeypatch.delenv("SERENA_AGENT_TUI", raising=False)
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     called = {}
 
@@ -45,7 +44,6 @@ def test_main_dispatches_to_v2_regardless_of_tui_env(monkeypatch):
 
 
 def test_v2_preflight_renders_box_with_cleanup_and_serena(monkeypatch):
-    monkeypatch.setenv("SERENA_AGENT_TUI", "v2")
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
@@ -67,7 +65,6 @@ def test_v2_preflight_renders_box_with_cleanup_and_serena(monkeypatch):
 
 
 def test_v2_preflight_returns_zero_on_run_confirm(monkeypatch):
-    monkeypatch.setenv("SERENA_AGENT_TUI", "v2")
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
@@ -84,7 +81,6 @@ def test_v2_preflight_returns_zero_on_run_confirm(monkeypatch):
 
 
 def test_v2_preflight_marks_graphify_hook_missing(monkeypatch):
-    monkeypatch.setenv("SERENA_AGENT_TUI", "v2")
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
@@ -109,7 +105,6 @@ def test_v2_preflight_marks_graphify_hook_missing(monkeypatch):
 
 
 def test_v2_preflight_runs_graphify_hook_install_when_user_confirms(monkeypatch):
-    monkeypatch.setenv("SERENA_AGENT_TUI", "v2")
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
@@ -139,7 +134,6 @@ def test_v2_preflight_runs_graphify_hook_install_when_user_confirms(monkeypatch)
 
 
 def test_v2_preflight_skips_graphify_hook_prompt_when_already_installed(monkeypatch):
-    monkeypatch.setenv("SERENA_AGENT_TUI", "v2")
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
@@ -166,7 +160,6 @@ def test_v2_preflight_skips_graphify_hook_prompt_when_already_installed(monkeypa
 
 
 def test_v2_preflight_marks_serena_warn_when_missing(monkeypatch):
-    monkeypatch.setenv("SERENA_AGENT_TUI", "v2")
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
@@ -277,7 +270,6 @@ def test_v2_run_cleanup_codex_skips_when_jq_missing(tmp_path, monkeypatch):
 
 
 def test_v2_launch_prep_runs_cleanup_and_renders_done_row(tmp_path, monkeypatch):
-    monkeypatch.setenv("SERENA_AGENT_TUI", "v2")
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
@@ -404,7 +396,6 @@ def test_v2_shutdown_with_spinner_propagates_exception(monkeypatch):
 
 
 def test_v2_main_returns_child_exit_code(monkeypatch, tmp_path):
-    monkeypatch.setenv("SERENA_AGENT_TUI", "v2")
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "0")
