@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from urllib.error import URLError
 from urllib.parse import urlparse
@@ -21,6 +22,31 @@ def pid_is_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def process_identity(pid: int) -> str | None:
+    """Return process start time and command text, or None if unusable."""
+
+    if pid <= 0:
+        return None
+    try:
+        proc = subprocess.run(
+            ["ps", "-o", "stat=", "-o", "lstart=", "-o", "command=", "-p", str(pid)],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    line = proc.stdout.strip()
+    if not line:
+        return None
+    stat, _, rest = line.partition(" ")
+    if "Z" in stat:
+        return None
+    return rest.strip() or None
 
 
 def http_endpoint_alive(url: str, *, timeout: float = 1.0) -> bool:

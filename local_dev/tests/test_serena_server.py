@@ -132,7 +132,8 @@ def test_ensure_server_refreshes_initial_lease_after_slow_startup(monkeypatch, t
         def __init__(self, pid):
             self.pid = pid
 
-    lease = Lease("lease-a", os.getpid(), 1.0)
+    launcher_identity = "Fri May  8 10:00:00 2026 /usr/bin/python launcher"
+    lease = Lease("lease-a", os.getpid(), 1.0, launcher_identity)
     ports = iter([9001, 9002])
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.server_is_healthy", lambda r, s: False)
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server._find_free_port_with_host_lock", lambda: next(ports))
@@ -153,7 +154,9 @@ def test_ensure_server_refreshes_initial_lease_after_slow_startup(monkeypatch, t
         assert registry.record.proxy_pid == 222
         assert registry.record.upstream_mcp_url == "http://127.0.0.1:9001/mcp"
         assert registry.record.mcp_url == "http://127.0.0.1:9002/mcp"
-        assert registry.record.leases["lease-a"].heartbeat_at == 100.0
+        stored_lease = registry.record.leases["lease-a"]
+        assert stored_lease.heartbeat_at == 100.0
+        assert stored_lease.launcher_identity == launcher_identity
 
 
 def test_start_healthy_server_exposes_proxy_url_and_tracks_upstream(monkeypatch, tmp_path):

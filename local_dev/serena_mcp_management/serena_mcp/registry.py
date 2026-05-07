@@ -21,6 +21,7 @@ class Lease:
     lease_id: str
     launcher_pid: int
     heartbeat_at: float
+    launcher_identity: str | None = None
 
 
 @dataclass(slots=True)

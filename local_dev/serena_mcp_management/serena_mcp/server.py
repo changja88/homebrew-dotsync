@@ -233,7 +233,12 @@ def _looks_like_dashboard_line(line: str) -> bool:
 
 
 def _fresh_lease(lease: Lease) -> Lease:
-    return Lease(lease.lease_id, lease.launcher_pid, time.time())
+    return Lease(
+        lease_id=lease.lease_id,
+        launcher_pid=lease.launcher_pid,
+        heartbeat_at=time.time(),
+        launcher_identity=lease.launcher_identity,
+    )
 
 
 def _wait_until_healthy(record: ServerRecord, scope: Scope, *, timeout: float = 20.0) -> None:

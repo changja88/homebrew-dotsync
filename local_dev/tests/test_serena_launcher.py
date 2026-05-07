@@ -1,14 +1,34 @@
 import os
 import subprocess
+import threading
+import time
 
 import pytest
 
 from local_dev.serena_mcp_management.serena_agent_launcher import (
+    _touch_lease_if_record_exists,
     build_child_command,
     find_real_binary,
     infer_client_type,
 )
+from local_dev.serena_mcp_management.serena_mcp.paths import Scope
+from local_dev.serena_mcp_management.serena_mcp.registry import Lease, ServerRecord, locked_registry
 from local_dev.serena_mcp_management.serena_mcp.watchdog import ShutdownStats
+
+
+@pytest.fixture(autouse=True)
+def stub_launcher_lease_factory(monkeypatch):
+    """Keep launcher-flow tests from invoking the macOS process probe."""
+
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_agent_launcher.make_launcher_lease",
+        lambda lease_id, now=None: Lease(
+            lease_id,
+            os.getpid(),
+            time.time() if now is None else now,
+            "test launcher identity",
+        ),
+    )
 
 
 def test_infer_client_type_from_program_name():
@@ -61,6 +81,115 @@ def test_build_claude_command_does_not_swallow_positional_args():
     assert cmd[1].startswith("--mcp-config=")
     assert cmd[2:] == ["mcp", "list"]
     cleanup()
+
+
+def test_touch_lease_if_record_exists_reattaches_missing_lease(monkeypatch, tmp_path):
+    scope = Scope(tmp_path, "codex")
+    now = 123.0
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_agent_launcher.make_launcher_lease",
+        lambda lease_id, now=None: Lease(lease_id, 4321, now, "launcher identity"),
+    )
+    with locked_registry(scope) as registry:
+        registry.record = ServerRecord(
+            server_pid=111,
+            mcp_url="http://127.0.0.1:9000/mcp",
+            dashboard_url="http://127.0.0.1:24000",
+            project_root=str(tmp_path.resolve()),
+            client_type="codex",
+            started_at=time.time(),
+            leases={},
+        )
+
+    touched = _touch_lease_if_record_exists(scope, "lease-a", threading.Event(), now=now)
+
+    assert touched is True
+    with locked_registry(scope) as registry:
+        assert registry.record is not None
+        assert registry.record.leases["lease-a"] == Lease(
+            "lease-a",
+            4321,
+            now,
+            "launcher identity",
+        )
+
+
+def test_touch_lease_if_record_exists_refuses_when_stop_is_set(monkeypatch, tmp_path):
+    scope = Scope(tmp_path, "codex")
+    stop = threading.Event()
+    stop.set()
+    calls = []
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_agent_launcher.make_launcher_lease",
+        lambda lease_id, now=None: calls.append((lease_id, now)) or Lease(lease_id, 4321, now),
+    )
+    with locked_registry(scope) as registry:
+        registry.record = ServerRecord(
+            server_pid=111,
+            mcp_url="http://127.0.0.1:9000/mcp",
+            dashboard_url="http://127.0.0.1:24000",
+            project_root=str(tmp_path.resolve()),
+            client_type="codex",
+            started_at=time.time(),
+            leases={},
+        )
+
+    touched = _touch_lease_if_record_exists(scope, "lease-a", stop, now=123.0)
+
+    assert touched is False
+    assert calls == []
+    with locked_registry(scope) as registry:
+        assert registry.record is not None
+        assert registry.record.leases == {}
+
+
+def test_initial_launcher_lease_includes_launcher_identity(monkeypatch, tmp_path):
+    monkeypatch.delenv("SERENA_AGENT_INTERACTIVE", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".git").mkdir()
+
+    class Record:
+        mcp_url = "http://127.0.0.1:9000/mcp"
+        dashboard_url = "http://127.0.0.1:9001"
+
+    class Proc:
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
+
+        def terminate(self):
+            pass
+
+    leases = []
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_agent_launcher.make_launcher_lease",
+        lambda lease_id, now=None: Lease(lease_id, 4321, now or 123.0, "launcher identity"),
+    )
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_agent_launcher.ensure_server",
+        lambda scope, lease: leases.append(lease) or Record(),
+    )
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_agent_launcher.find_real_binary",
+        lambda client: "/opt/homebrew/bin/codex",
+    )
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_agent_launcher._remove_lease_and_shutdown_if_empty",
+        lambda scope, lease_id: None,
+    )
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_agent_launcher.subprocess.Popen",
+        lambda cmd, cwd=None: Proc(),
+    )
+
+    from local_dev.serena_mcp_management.serena_agent_launcher import main
+
+    assert main([]) == 0
+    assert leases
+    assert leases[0].launcher_identity == "launcher identity"
 
 
 

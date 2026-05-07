@@ -1,11 +1,13 @@
 import json
 import os
+from types import SimpleNamespace
 
 from local_dev.serena_mcp_management.serena_mcp.health import (
     dashboard_matches_project,
     http_endpoint_alive,
     normalize_dashboard_url,
     pid_is_alive,
+    process_identity,
 )
 
 
@@ -26,6 +28,74 @@ class Response:
 
 def test_pid_is_alive_for_current_process():
     assert pid_is_alive(os.getpid()) is True
+
+
+def test_process_identity_returns_start_time_and_command_from_ps(monkeypatch):
+    def fake_run(cmd, check, text, capture_output):
+        assert cmd == ["ps", "-o", "stat=", "-o", "lstart=", "-o", "command=", "-p", "1234"]
+        assert check is False
+        assert text is True
+        assert capture_output is True
+        return SimpleNamespace(
+            returncode=0,
+            stdout="S Fri May  8 10:00:00 2026 /usr/bin/python launcher --flag\n",
+        )
+
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.health.subprocess.run", fake_run)
+
+    assert process_identity(1234) == "Fri May  8 10:00:00 2026 /usr/bin/python launcher --flag"
+
+
+def test_process_identity_returns_none_for_zombie_status(monkeypatch):
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.health.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="Z Fri May  8 10:00:00 2026 /usr/bin/python launcher\n",
+        ),
+    )
+
+    assert process_identity(1234) is None
+
+
+def test_process_identity_returns_none_for_empty_output(monkeypatch):
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.health.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="\n"),
+    )
+
+    assert process_identity(1234) is None
+
+
+def test_process_identity_returns_none_for_nonzero_ps_exit(monkeypatch):
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.health.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout="", stderr="ps: 999: No such process"),
+    )
+
+    assert process_identity(999) is None
+
+
+def test_process_identity_preserves_long_command_text(monkeypatch):
+    command = "/usr/bin/python -c " + " ".join(["print('launcher identity survives')"] * 20)
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.health.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=f"S Fri May  8 10:00:00 2026 {command}\n",
+        ),
+    )
+
+    assert process_identity(1234) == f"Fri May  8 10:00:00 2026 {command}"
+
+
+def test_process_identity_returns_none_when_ps_cannot_run(monkeypatch):
+    def fake_run(*args, **kwargs):
+        raise OSError("ps unavailable")
+
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.health.subprocess.run", fake_run)
+
+    assert process_identity(1234) is None
 
 
 def test_http_endpoint_alive_posts_json(monkeypatch):

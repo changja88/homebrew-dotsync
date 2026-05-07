@@ -21,11 +21,12 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from local_dev.serena_mcp_management.serena_mcp.paths import Scope, find_project_root
-from local_dev.serena_mcp_management.serena_mcp.registry import Lease, locked_registry, touch_lease
+from local_dev.serena_mcp_management.serena_mcp.registry import locked_registry, touch_lease
 from local_dev.serena_mcp_management.serena_mcp.server import ensure_server
 from local_dev.serena_mcp_management.serena_mcp.watchdog import (
     HEARTBEAT_INTERVAL_SECONDS,
     ShutdownStats,
+    make_launcher_lease,
     release_lease_and_shutdown_if_empty,
 )
 from local_dev.serena_mcp_management.ui import (
@@ -410,7 +411,7 @@ def _main_v2(args: list[str]) -> int:
     project_root = _project_root_from_environment() or find_project_root(Path.cwd())
     scope = Scope(project_root, client_type)
     lease_id = str(uuid.uuid4())
-    lease = Lease(lease_id, os.getpid(), time.time())
+    lease = make_launcher_lease(lease_id)
 
     record = _start_mcp_with_spinner(scope=scope, lease=lease) if interactive \
         else ensure_server(scope, lease)
@@ -671,10 +672,24 @@ def _run_serena_init_v2(
 
 def _heartbeat_loop(scope: Scope, lease_id: str, stop: threading.Event) -> None:
     while not stop.wait(HEARTBEAT_INTERVAL_SECONDS):
-        with locked_registry(scope) as registry:
-            if registry.record is None or lease_id not in registry.record.leases:
-                return
-            touch_lease(registry, Lease(lease_id, os.getpid(), time.time()))
+        if not _touch_lease_if_record_exists(scope, lease_id, stop):
+            return
+
+
+def _touch_lease_if_record_exists(
+    scope: Scope,
+    lease_id: str,
+    stop: threading.Event,
+    *,
+    now: float | None = None,
+) -> bool:
+    """Refresh or reattach this launcher's lease if its server record still exists."""
+
+    with locked_registry(scope) as registry:
+        if registry.record is None or stop.is_set():
+            return False
+        touch_lease(registry, make_launcher_lease(lease_id, now=now))
+        return True
 
 
 def _remove_lease_and_shutdown_if_empty(scope: Scope, lease_id: str) -> ShutdownStats:

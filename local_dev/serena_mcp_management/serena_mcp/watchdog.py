@@ -9,9 +9,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from local_dev.serena_mcp_management.serena_mcp.health import pid_is_alive
+from local_dev.serena_mcp_management.serena_mcp.health import pid_is_alive, process_identity
 from local_dev.serena_mcp_management.serena_mcp.paths import Scope
-from local_dev.serena_mcp_management.serena_mcp.registry import ServerRecord, locked_registry, stale_lease_ids
+from local_dev.serena_mcp_management.serena_mcp.registry import Lease, ServerRecord, locked_registry
 
 HEARTBEAT_INTERVAL_SECONDS = 5.0
 LEASE_TIMEOUT_SECONDS = 30.0
@@ -30,22 +30,44 @@ class ShutdownStats:
 
 
 def cleanup_once(scope: Scope, *, now: float, lease_timeout_seconds: float) -> bool:
-    """Prune stale leases and stop the server when none remain."""
+    """Prune dead stale leases and stop the server when none remain.
+
+    A stale heartbeat alone is not enough to remove an identity-matched live
+    launcher. macOS sleep/wake can pause both heartbeat and watchdog processes
+    long enough for wall-clock time to exceed the timeout.
+    """
 
     with locked_registry(scope) as registry:
         if registry.record is None:
             return False
-        for lease_id in stale_lease_ids(
-            registry,
-            now=now,
-            timeout_seconds=lease_timeout_seconds,
-        ):
+        for lease_id, lease in list(registry.record.leases.items()):
+            if now - lease.heartbeat_at <= lease_timeout_seconds:
+                continue
+            if launcher_process_matches(lease):
+                lease.heartbeat_at = now
+                continue
             registry.record.leases.pop(lease_id, None)
         if registry.record.leases:
             return True
         _terminate_record(registry.record)
         registry.record = None
         return False
+
+
+def make_launcher_lease(lease_id: str, *, now: float | None = None) -> Lease:
+    """Create a lease for the current launcher process."""
+
+    timestamp = time.time() if now is None else now
+    pid = os.getpid()
+    return Lease(lease_id, pid, timestamp, process_identity(pid))
+
+
+def launcher_process_matches(lease: Lease) -> bool:
+    """Return true if the lease still belongs to the original live launcher."""
+
+    if lease.launcher_identity is None:
+        return pid_is_alive(lease.launcher_pid)
+    return process_identity(lease.launcher_pid) == lease.launcher_identity
 
 
 def shutdown_if_no_leases(scope: Scope) -> bool:

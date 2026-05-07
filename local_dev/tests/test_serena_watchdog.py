@@ -59,6 +59,111 @@ def test_cleanup_once_removes_stale_last_lease_and_stops_proxy_then_upstream(mon
     assert terminated == [222, 12345]
 
 
+def test_cleanup_once_refreshes_stale_live_identity_matched_lease(monkeypatch, tmp_path):
+    scope = Scope(tmp_path, "claude")
+    terminated = []
+    now = time.time()
+    launcher_identity = "Fri May  8 10:00:00 2026 /usr/bin/python launcher"
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.watchdog._terminate_pid", terminated.append)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.watchdog.pid_is_alive", lambda pid: False)
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.watchdog.process_identity",
+        lambda pid: launcher_identity if pid == 1234 else None,
+        raising=False,
+    )
+    with locked_registry(scope) as registry:
+        registry.record = ServerRecord(
+            server_pid=111,
+            mcp_url="http://127.0.0.1:9000/mcp",
+            dashboard_url="http://127.0.0.1:24000",
+            project_root=str(tmp_path.resolve()),
+            client_type="claude",
+            started_at=now - 3600,
+            leases={"sleeping": Lease("sleeping", 1234, now - 3600, launcher_identity)},
+            upstream_mcp_url="http://127.0.0.1:9001/mcp",
+            proxy_pid=222,
+        )
+
+    keep_running = cleanup_once(scope, now=now, lease_timeout_seconds=30)
+
+    assert keep_running is True
+    assert terminated == []
+    with locked_registry(scope) as registry:
+        assert registry.record is not None
+        assert set(registry.record.leases) == {"sleeping"}
+        assert registry.record.leases["sleeping"].heartbeat_at == now
+
+
+def test_cleanup_once_drops_stale_wrong_identity_last_lease(monkeypatch, tmp_path):
+    scope = Scope(tmp_path, "claude")
+    terminated = []
+    now = time.time()
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.watchdog._terminate_pid", terminated.append)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.watchdog.pid_is_alive", lambda pid: True)
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.watchdog.process_identity",
+        lambda pid: "different launcher identity",
+        raising=False,
+    )
+    with locked_registry(scope) as registry:
+        registry.record = ServerRecord(
+            server_pid=111,
+            mcp_url="http://127.0.0.1:9000/mcp",
+            dashboard_url="http://127.0.0.1:24000",
+            project_root=str(tmp_path.resolve()),
+            client_type="claude",
+            started_at=now - 3600,
+            leases={"stale": Lease("stale", 1234, now - 3600, "original launcher identity")},
+            upstream_mcp_url="http://127.0.0.1:9001/mcp",
+            proxy_pid=222,
+        )
+
+    keep_running = cleanup_once(scope, now=now, lease_timeout_seconds=30)
+
+    assert keep_running is False
+    assert terminated == [222, 111]
+    with locked_registry(scope) as registry:
+        assert registry.record is None
+
+
+def test_cleanup_once_keeps_stale_live_identity_and_drops_dead_identity_none_lease(monkeypatch, tmp_path):
+    scope = Scope(tmp_path, "claude")
+    terminated = []
+    now = time.time()
+    live_identity = "Fri May  8 10:00:00 2026 /usr/bin/python launcher"
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.watchdog._terminate_pid", terminated.append)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.watchdog.pid_is_alive", lambda pid: True)
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.watchdog.process_identity",
+        lambda pid: live_identity if pid == 1234 else None,
+        raising=False,
+    )
+    with locked_registry(scope) as registry:
+        registry.record = ServerRecord(
+            server_pid=111,
+            mcp_url="http://127.0.0.1:9000/mcp",
+            dashboard_url="http://127.0.0.1:24000",
+            project_root=str(tmp_path.resolve()),
+            client_type="claude",
+            started_at=now - 3600,
+            leases={
+                "live": Lease("live", 1234, now - 3600, live_identity),
+                "dead": Lease("dead", 5678, now - 3600, "original dead identity"),
+            },
+            upstream_mcp_url="http://127.0.0.1:9001/mcp",
+            proxy_pid=222,
+        )
+
+    keep_running = cleanup_once(scope, now=now, lease_timeout_seconds=30)
+
+    assert keep_running is True
+    assert terminated == []
+    with locked_registry(scope) as registry:
+        assert registry.record is not None
+        assert set(registry.record.leases) == {"live"}
+        assert registry.record.leases["live"].heartbeat_at == now
+
+
 def test_cleanup_once_keeps_active_lease(monkeypatch, tmp_path):
     scope = Scope(tmp_path, "claude")
     terminated = []
