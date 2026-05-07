@@ -83,7 +83,7 @@ def test_v2_preflight_returns_zero_on_run_confirm(monkeypatch):
     assert "not installed" in out.getvalue()  # graphify warn surfaced
 
 
-def test_v2_preflight_marks_graphify_not_initialized(monkeypatch):
+def test_v2_preflight_marks_graphify_hook_missing(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_TUI", "v2")
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
@@ -91,15 +91,78 @@ def test_v2_preflight_marks_graphify_not_initialized(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "not-initialized")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "hook-missing")
 
     out = io.StringIO()
-    answers = iter(["y"])
-    launcher._run_preflight_v2(stream=out, input_fn=lambda: next(answers))
+    # Decline the hook install prompt, then decline the run prompt to avoid
+    # exercising downstream phases.
+    answers = iter(["n", "n"])
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        install_graphify_hooks=lambda project_root: 0,
+    )
     text = _strip_ansi(out.getvalue())
-    assert "not initialized" in text
-    assert "/graphify" in text
-    assert "not installed" not in text  # this row is "not initialized", not missing
+    assert "hooks not installed" in text
+    assert "graphify hook install" in text
+    assert "not installed" not in text.split("hooks not installed")[0]
+
+
+def test_v2_preflight_runs_graphify_hook_install_when_user_confirms(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_TUI", "v2")
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "hook-missing")
+
+    install_calls: list = []
+
+    def fake_install(project_root):
+        install_calls.append(project_root)
+        return 0
+
+    out = io.StringIO()
+    answers = iter(["y", "n"])  # accept hook install, decline running the agent
+    rc = launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        install_graphify_hooks=fake_install,
+    )
+    text = _strip_ansi(out.getvalue())
+    assert install_calls, "graphify hook install should have been invoked"
+    assert "Install graphify hooks" in text
+    assert "initialized" in text
+    assert rc == 130  # declined run -> abort
+
+
+def test_v2_preflight_skips_graphify_hook_prompt_when_already_installed(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_TUI", "v2")
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "installed")
+
+    install_calls: list = []
+
+    def fake_install(project_root):
+        install_calls.append(project_root)
+        return 0
+
+    out = io.StringIO()
+    answers = iter(["n"])  # only one prompt expected: the run confirmation
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        install_graphify_hooks=fake_install,
+    )
+    assert install_calls == []
+    assert "Install graphify hooks" not in out.getvalue()
 
 
 def test_v2_preflight_marks_serena_warn_when_missing(monkeypatch):

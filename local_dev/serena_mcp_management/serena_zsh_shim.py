@@ -92,10 +92,15 @@ _dotsync_agent_graphify_available() {
   command -v graphify >/dev/null 2>&1
 }
 
-_dotsync_agent_graphify_initialized() {
+_dotsync_agent_graphify_hooks_installed() {
   local project_root="$1"
+  local pc="$project_root/.git/hooks/post-commit"
+  local pco="$project_root/.git/hooks/post-checkout"
 
-  [[ -f "$project_root/graphify-out/graph.json" ]]
+  [[ -f "$pc" && -f "$pco" ]] || return 1
+  grep -q "graphify-hook-start" "$pc" 2>/dev/null || return 1
+  grep -q "graphify-checkout-hook-start" "$pco" 2>/dev/null || return 1
+  return 0
 }
 
 claude() {
@@ -128,8 +133,8 @@ claude() {
   local graphify_status="installed"
   if ! _dotsync_agent_graphify_available; then
     graphify_status="missing"
-  elif ! _dotsync_agent_graphify_initialized "$project_root"; then
-    graphify_status="not-initialized"
+  elif ! _dotsync_agent_graphify_hooks_installed "$project_root"; then
+    graphify_status="hook-missing"
   fi
 
   SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE="$cleanup_phrase" \
@@ -195,8 +200,8 @@ codex() {
   local graphify_status="installed"
   if ! _dotsync_agent_graphify_available; then
     graphify_status="missing"
-  elif ! _dotsync_agent_graphify_initialized "$project_root"; then
-    graphify_status="not-initialized"
+  elif ! _dotsync_agent_graphify_hooks_installed "$project_root"; then
+    graphify_status="hook-missing"
   fi
 
   SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE="$cleanup_phrase" \

@@ -47,7 +47,7 @@ def test_render_zsh_shim_includes_graphify_status_guidance():
     assert "graphify" in text
 
 
-def test_render_zsh_shim_marks_graphify_not_initialized_for_project():
+def test_render_zsh_shim_marks_graphify_hook_missing_for_project():
     text = render_zsh_shim(
         launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
         python_executable=Path("/repo/.venv/bin/python3"),
@@ -55,15 +55,19 @@ def test_render_zsh_shim_marks_graphify_not_initialized_for_project():
         claude_binary=Path("/opt/homebrew/bin/claude"),
     )
 
-    # Status detection must include a project-scoped initialization probe
-    # so the preflight row reflects per-project state rather than mere PATH
-    # presence of the graphify binary.
-    assert "_dotsync_agent_graphify_initialized" in text
-    assert "graphify-out/graph.json" in text
-    assert 'graphify_status="not-initialized"' in text
+    # Status detection must include a project-scoped hook probe so the
+    # preflight row reflects per-project state rather than mere PATH
+    # presence of the graphify binary. The hook check inspects the
+    # graphify-installed git hooks rather than the graph.json artifact.
+    assert "_dotsync_agent_graphify_hooks_installed" in text
+    assert ".git/hooks/post-commit" in text
+    assert ".git/hooks/post-checkout" in text
+    assert "graphify-hook-start" in text
+    assert "graphify-checkout-hook-start" in text
+    assert 'graphify_status="hook-missing"' in text
 
 
-def test_render_zsh_shim_runs_graphify_initialized_against_project_root():
+def test_render_zsh_shim_runs_graphify_hooks_check_against_project_root():
     text = render_zsh_shim(
         launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
         python_executable=Path("/repo/.venv/bin/python3"),
@@ -73,7 +77,7 @@ def test_render_zsh_shim_runs_graphify_initialized_against_project_root():
 
     # The probe must accept the resolved project root (not $PWD) so that the
     # status reflects the same scope used elsewhere in the preflight.
-    assert '_dotsync_agent_graphify_initialized "$project_root"' in text
+    assert '_dotsync_agent_graphify_hooks_installed "$project_root"' in text
 
 
 def test_render_zsh_shim_defers_clear_to_launcher_after_codex_cleanup():

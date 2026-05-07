@@ -25,6 +25,18 @@ When `.serena/project.yml` is absent, the preflight marks Serena as `warn` and a
   > Initialize Serena for this project? [y/N]
 ```
 
+When `graphify` is on PATH but the project's git hooks haven't been installed,
+the preflight marks the graphify row as `warn` and an extra prompt appears
+before the `Run` confirmation:
+
+```
+  > Install graphify hooks for this project? [Y/n]
+```
+
+Accepting runs `graphify hook install` from the project root and updates the
+graphify row to `initialized` in place; declining leaves the row as
+`hooks not installed`.
+
 ## Launch-prep
 
 After the preflight confirmation (and optional Serena initialization), the box updates:

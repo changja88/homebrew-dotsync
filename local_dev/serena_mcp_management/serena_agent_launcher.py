@@ -512,8 +512,8 @@ def _preflight_box() -> BoxModel:
     if graphify_status == "installed":
         graphify_value = "initialized"
         graphify_item_status = "done"
-    elif graphify_status == "not-initialized":
-        graphify_value = "not initialized . run /graphify to build the project graph"
+    elif graphify_status == "hook-missing":
+        graphify_value = "hooks not installed . run \"graphify hook install\""
         graphify_item_status = "warn"
     else:
         graphify_value = (
@@ -547,10 +547,26 @@ def _preflight_box() -> BoxModel:
     return BoxModel(phase="preflight", title=client, items=items)
 
 
+def _graphify_hook_install(project_root: Path) -> int:
+    """Run `graphify hook install` for the given project root.
+
+    Returns the exit code. 2 indicates graphify is not on PATH.
+    """
+    if shutil.which("graphify") is None:
+        return 2
+    proc = subprocess.run(
+        ["graphify", "hook", "install"],
+        cwd=str(project_root),
+        check=False,
+    )
+    return proc.returncode
+
+
 def _run_preflight_v2(
     *,
     stream: TextIO | None = None,
     input_fn: Callable[[], str] = input,
+    install_graphify_hooks: Callable[[Path], int] | None = None,
 ) -> int:
     """Run the v2 preflight phase with confirmation prompt.
 
@@ -560,9 +576,32 @@ def _run_preflight_v2(
     if os.environ.get("SERENA_AGENT_INTERACTIVE") != "1":
         return 0
     out = stream if stream is not None else sys.stdout
+    install_fn = install_graphify_hooks or _graphify_hook_install
     renderer = BoxRenderer(stream=out)
     model = _preflight_box()
     renderer.draw(model)
+
+    graphify_status = os.environ.get("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "installed")
+    if graphify_status == "hook-missing":
+        if confirm(
+            "Install graphify hooks for this project?",
+            default=True,
+            stream=out,
+            input_fn=input_fn,
+        ):
+            project_root = Path(
+                os.environ.get("SERENA_AGENT_PROJECT_ROOT", ".")
+            ).resolve()
+            rc = install_fn(project_root)
+            graphify_item = next(item for item in model.items if item.id == "graphify")
+            if rc == 0:
+                graphify_item.status = "done"
+                graphify_item.value = "initialized"
+            else:
+                graphify_item.status = "warn"
+                graphify_item.value = f"hook install failed (exit {rc})"
+            renderer.draw(model)
+
     if not confirm(
         f"Run {model.title}?",
         default=True,
