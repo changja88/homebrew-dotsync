@@ -147,3 +147,34 @@ class SpinnerTicker:
         while not self._stop_event.wait(self._interval):
             frame += 1
             self._on_tick(frame)
+
+
+# Prompt implementation
+
+
+def confirm(
+    question: str,
+    *,
+    default: bool,
+    stream: TextIO | None = None,
+    input_fn: Callable[[], str] = input,
+) -> bool:
+    """Prompt for a yes/no confirmation.
+
+    Args:
+        question: The prompt text.
+        default: The default value if user presses Enter without input.
+        stream: Output stream (defaults to sys.stdout).
+        input_fn: Input function (defaults to builtin input).
+
+    Returns:
+        True if user answered yes/y, False otherwise.
+    """
+    out = stream if stream is not None else sys.stdout
+    suffix = "[Y/n]" if default else "[y/N]"
+    out.write(f"  > {question} {suffix} ")
+    out.flush()
+    reply = input_fn().strip().lower()
+    if not reply:
+        return default
+    return reply in {"y", "yes"}
