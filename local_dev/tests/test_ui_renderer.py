@@ -110,6 +110,17 @@ def test_box_renderer_clear_emits_cursor_up_and_erase():
     assert "J" in chunk
 
 
+def test_render_box_uses_info_marker_for_info_items():
+    model = BoxModel(
+        phase="preflight",
+        title="codex",
+        items=[Item(id="workspace", label="workspace",
+                    value="~/repo", status="info")],
+    )
+    text = render_box(model)
+    assert "·" in text
+
+
 def test_box_renderer_clear_resets_line_count_for_next_draw():
     stream = io.StringIO()
     renderer = BoxRenderer(stream=stream)

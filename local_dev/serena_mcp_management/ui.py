@@ -18,7 +18,7 @@ from typing import Literal, TextIO
 
 
 PhaseKind = Literal["preflight", "serena-init", "launch-prep", "summary"]
-ItemStatus = Literal["pending", "spin", "done", "warn", "skip"]
+ItemStatus = Literal["pending", "spin", "done", "warn", "skip", "info"]
 
 
 @dataclass
@@ -63,6 +63,8 @@ def _marker_for(status: ItemStatus, *, spin_frame: int = 0) -> str:
         return _ansi("33", "!")
     if status == "skip":
         return _ansi("90", "-")
+    if status == "info":
+        return _ansi("90", "·")
     return _ansi("90", "o")  # pending
 
 

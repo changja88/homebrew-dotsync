@@ -511,7 +511,7 @@ def _preflight_box() -> BoxModel:
             id="workspace",
             label="workspace",
             value=_short_path(project_root),
-            status="done",
+            status="info",
         ),
         Item(id="serena", label="serena", value=serena_value, status=serena_item_status),
         Item(
@@ -524,10 +524,10 @@ def _preflight_box() -> BoxModel:
             id="context",
             label="context",
             value="claude-code" if client == "claude" else "codex",
-            status="done",
+            status="info",
         ),
-        Item(id="cleanup", label="cleanup", value=cleanup_value, status="done"),
-        Item(id="memory", label="memory", value=memory_value, status="done"),
+        Item(id="cleanup", label="cleanup", value=cleanup_value, status="info"),
+        Item(id="memory", label="memory", value=memory_value, status="info"),
     ]
     return BoxModel(phase="preflight", title=client, items=items)
 

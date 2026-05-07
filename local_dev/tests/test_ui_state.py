@@ -52,6 +52,7 @@ def test_phase_kinds_match_spec():
 
 
 def test_item_statuses_match_spec():
-    valid: set[ItemStatus] = {"pending", "spin", "done", "warn", "skip"}
+    valid: set[ItemStatus] = {"pending", "spin", "done", "warn", "skip", "info"}
     assert "pending" in valid
     assert "warn" in valid
+    assert "info" in valid
