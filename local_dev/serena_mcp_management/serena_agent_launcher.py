@@ -234,42 +234,6 @@ def build_child_command(
     raise RuntimeError(f"unsupported client type: {client_type}")
 
 
-def format_launch_status(*, client_type: str, project_root: str, mcp_url: str) -> str:
-    """Return the visible launch status line for interactive agent starts."""
-
-    return f"serena launcher: {client_type} project={project_root} mcp={mcp_url}"
-
-
-def format_shutdown_status(stats: ShutdownStats) -> str:
-    """Return the visible shutdown status row for interactive agent exits."""
-
-    if not stats.server_was_running:
-        server_state = "none"
-    elif stats.server_stopped:
-        server_state = "stopped"
-    else:
-        server_state = "kept"
-    detail = (
-        f"sessions_before={stats.sessions_before} "
-        f"closed={stats.sessions_closed} "
-        f"remaining={stats.sessions_remaining} "
-        f"server={server_state}"
-    )
-    return f"  * {'serena':<10} {'done':<10}. {detail}"
-
-
-def format_shutdown_progress_status(detail: str) -> str:
-    """Return a visible MCP shutdown progress row."""
-
-    return f"  * {'serena':<10} {'shutdown':<10}. {detail}"
-
-
-def format_mcp_progress_status(state: str, detail: str) -> str:
-    """Return a visible MCP startup progress row."""
-
-    phase = "mcp" if state == "pending" else state
-    return f"  * {'serena':<10} {phase:<10}. {detail}"
-
 
 def clear_terminal_before_child() -> None:
     """Clear the preflight/progress terminal output before opening the agent TUI."""
@@ -510,9 +474,6 @@ def _project_root_from_environment() -> Path | None:
         return None
     return Path(value).resolve()
 
-
-def _interactive_launch() -> bool:
-    return os.environ.get("SERENA_AGENT_INTERACTIVE") == "1"
 
 
 def _short_path(path: str) -> str:

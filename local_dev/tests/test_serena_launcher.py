@@ -6,9 +6,6 @@ import pytest
 from local_dev.serena_mcp_management.serena_agent_launcher import (
     build_child_command,
     find_real_binary,
-    format_shutdown_status,
-    format_shutdown_progress_status,
-    format_launch_status,
     infer_client_type,
 )
 from local_dev.serena_mcp_management.serena_mcp.watchdog import ShutdownStats
@@ -65,57 +62,6 @@ def test_build_claude_command_does_not_swallow_positional_args():
     assert cmd[2:] == ["mcp", "list"]
     cleanup()
 
-
-def test_format_launch_status_shows_client_project_and_mcp_url():
-    assert format_launch_status(
-        client_type="claude",
-        project_root="/repo",
-        mcp_url="http://127.0.0.1:9122/mcp",
-    ) == "serena launcher: claude project=/repo mcp=http://127.0.0.1:9122/mcp"
-
-
-def test_format_shutdown_status_matches_agent_event_style():
-    assert format_shutdown_status(
-        ShutdownStats(
-            sessions_before=3,
-            sessions_closed=1,
-            sessions_remaining=2,
-            server_was_running=True,
-            server_stopped=False,
-        )
-    ) == "  * serena     done      . sessions_before=3 closed=1 remaining=2 server=kept"
-
-
-def test_format_shutdown_status_reports_stopped_server():
-    assert format_shutdown_status(
-        ShutdownStats(
-            sessions_before=1,
-            sessions_closed=1,
-            sessions_remaining=0,
-            server_was_running=True,
-            server_stopped=True,
-        )
-    ) == "  * serena     done      . sessions_before=1 closed=1 remaining=0 server=stopped"
-
-
-def test_format_shutdown_progress_status_matches_agent_event_style():
-    assert (
-        format_shutdown_progress_status("stopping scoped MCP server")
-        == "  * serena     shutdown  . stopping scoped MCP server"
-    )
-
-
-def test_format_mcp_progress_status_matches_agent_event_style():
-    import local_dev.serena_mcp_management.serena_agent_launcher as launcher
-
-    assert (
-        launcher.format_mcp_progress_status("pending", "preparing scoped server")
-        == "  * serena     mcp       . preparing scoped server"
-    )
-    assert (
-        launcher.format_mcp_progress_status("ready", "http://127.0.0.1:9000/mcp")
-        == "  * serena     ready     . http://127.0.0.1:9000/mcp"
-    )
 
 
 def test_launcher_prints_mcp_progress_and_clears_before_child(monkeypatch, tmp_path, capsys):
