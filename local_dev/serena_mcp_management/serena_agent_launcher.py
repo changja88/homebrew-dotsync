@@ -29,13 +29,15 @@ from local_dev.serena_mcp_management.serena_mcp.watchdog import (
     release_lease_and_shutdown_if_empty,
 )
 from local_dev.serena_mcp_management.ui import (
+    PINK,
+    PURPLE,
     BoxModel,
     BoxRenderer,
     Item,
-    SPINNER_FRAMES,
     SpinnerTicker,
     confirm,
     style_count,
+    style_spinner,
 )
 
 
@@ -323,14 +325,13 @@ def _start_mcp_with_spinner(
         Any exception from ensure_server.
     """
     out = stream if stream is not None else sys.stdout
-    out.write("  · serena     preparing scoped server")
+    out.write(f"  \x1b[{PURPLE}m·\x1b[0m serena     preparing scoped server")
     out.flush()
     frame_state = {"frame": 0}
 
     def on_tick(frame: int) -> None:
         frame_state["frame"] = frame
-        spinner = SPINNER_FRAMES[frame % len(SPINNER_FRAMES)]
-        out.write(f"\r  {spinner} serena     preparing scoped server")
+        out.write(f"\r  {style_spinner(frame)} serena     preparing scoped server")
         out.flush()
 
     ticker = SpinnerTicker(on_tick=on_tick, interval=0.1)
@@ -339,11 +340,11 @@ def _start_mcp_with_spinner(
         record = ensure_server(scope, lease)
     except Exception as exc:
         ticker.stop()
-        out.write(f"\r  ! serena     failed     . {exc}\n")
+        out.write(f"\r  \x1b[33m!\x1b[0m serena     failed     . {exc}\n")
         out.flush()
         raise
     ticker.stop()
-    out.write(f"\r  ✓ serena     ready      . {record.mcp_url}\n")
+    out.write(f"\r  \x1b[{PINK}m✓\x1b[0m serena     ready      . {record.mcp_url}\n")
     out.flush()
     return record
 
@@ -646,12 +647,11 @@ def _stop_mcp_with_spinner(
     """Run lease release + MCP shutdown with a single-line spinner."""
     out = stream if stream is not None else sys.stdout
     fn = shutdown_fn if shutdown_fn is not None else _remove_lease_and_shutdown_if_empty
-    out.write("  · serena     stopping scoped server")
+    out.write(f"  \x1b[{PURPLE}m·\x1b[0m serena     stopping scoped server")
     out.flush()
 
     def on_tick(frame: int) -> None:
-        spinner = SPINNER_FRAMES[frame % len(SPINNER_FRAMES)]
-        out.write(f"\r  {spinner} serena     stopping scoped server")
+        out.write(f"\r  {style_spinner(frame)} serena     stopping scoped server")
         out.flush()
 
     ticker = SpinnerTicker(on_tick=on_tick, interval=0.1)
@@ -660,11 +660,11 @@ def _stop_mcp_with_spinner(
         stats = fn(scope, lease_id)
     except Exception as exc:
         ticker.stop()
-        out.write(f"\r  ! serena     shutdown failed . {exc}\n")
+        out.write(f"\r  \x1b[33m!\x1b[0m serena     shutdown failed . {exc}\n")
         out.flush()
         raise
     ticker.stop()
-    out.write(f"\r  ✓ serena     stopped scoped server\n")
+    out.write(f"\r  \x1b[{PINK}m✓\x1b[0m serena     stopped scoped server\n")
     out.flush()
     return stats
 
