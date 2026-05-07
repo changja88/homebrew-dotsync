@@ -57,6 +57,27 @@ class BoxModel:
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 _BOX_WIDTH = 60
 
+# Pre-rendered figlet (standard font) banners for the known agent clients.
+# Inspired by the oh-my-zsh post-install banner; rendered with
+# `figlet -f standard <client>` and stored as raw string tuples so the
+# backslashes survive verbatim.
+_HEADER_ART: dict[str, tuple[str, ...]] = {
+    "codex": (
+        r"               _           ",
+        r"  ___ ___   __| | _____  __",
+        r" / __/ _ \ / _` |/ _ \ \/ /",
+        r"| (_| (_) | (_| |  __/>  < ",
+        " \\___\\___/ \\__,_|\\___/_/\\_\\",
+    ),
+    "claude": (
+        r"      _                 _      ",
+        r"  ___| | __ _ _   _  __| | ___ ",
+        " / __| |/ _` | | | |/ _` |/ _ \\",
+        r"| (__| | (_| | |_| | (_| |  __/",
+        r" \___|_|\__,_|\__,_|\__,_|\___|",
+    ),
+}
+
 # charmbracelet/huh dark theme (ThemeCharm). Truecolor escapes pinned to
 # the exact hex values from huh/theme.go so the accents match the screenshots
 # in the huh README rather than 256-colour approximations.
@@ -126,8 +147,17 @@ def _border(char: str) -> str:
 def render_box(model: BoxModel, *, spin_frame: int = 0) -> str:
     lines: list[str] = []
     lines.append("  " + _border("─"))
-    header = f"{model.title}  ·  {model.phase}"
-    lines.append("  " + _ansi(f"1;{PINK}", header))
+    art = _HEADER_ART.get(model.title)
+    if art is not None:
+        for art_line in art:
+            lines.append("  " + _ansi(f"1;{PURPLE}", art_line))
+        phase_label = _ansi(PINK, f"·  {model.phase}")
+        # Right-align the phase label inside the box width.
+        pad = max(0, _BOX_WIDTH - len(art[-1]) - len(model.phase) - 4)
+        lines.append("  " + " " * (len(art[-1]) + pad) + phase_label)
+    else:
+        header = f"{model.title}  ·  {model.phase}"
+        lines.append("  " + _ansi(f"1;{PINK}", header))
     lines.append("  " + _border("─"))
     for item in model.items:
         marker = _marker_for(item.status, spin_frame=spin_frame)

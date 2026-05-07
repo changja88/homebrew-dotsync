@@ -8,10 +8,19 @@ from local_dev.serena_mcp_management.ui import (
 )
 
 
-def test_render_box_includes_title_and_phase_label():
+def test_render_box_includes_title_art_and_phase_label():
     model = BoxModel(phase="preflight", title="codex", items=[])
     text = render_box(model)
-    assert "codex" in text
+    # Known clients render as a figlet banner instead of plain text title.
+    # Use a unique fragment of the codex art as a fingerprint.
+    assert "___ ___" in text
+    assert "preflight" in text
+
+
+def test_render_box_falls_back_to_plain_title_for_unknown_client():
+    model = BoxModel(phase="preflight", title="other-client", items=[])
+    text = render_box(model)
+    assert "other-client" in text
     assert "preflight" in text
 
 
@@ -76,9 +85,10 @@ def test_box_renderer_first_draw_writes_text_only():
     model = BoxModel(phase="preflight", title="codex", items=[])
     renderer.draw(model)
     output = stream.getvalue()
-    assert "codex" in output
+    # codex art fingerprint sits inside the rendered box.
+    assert "___ ___" in output
     # no cursor movement (up/erase) before first frame; color codes ok
-    prefix = output[: output.find("codex")]
+    prefix = output[: output.find("___ ___")]
     assert "A\x1b[J" not in prefix  # cursor-up + erase sequence should not appear
 
 

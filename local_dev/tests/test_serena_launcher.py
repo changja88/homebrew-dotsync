@@ -265,7 +265,8 @@ def test_launcher_prints_shutdown_stats_for_interactive_agent(monkeypatch, tmp_p
     output = capsys.readouterr().out
     # v2 renders a summary box on exit, not the v1 event-style lines
     assert "summary" in output
-    assert "codex" in output
+    # codex figlet banner is part of the summary box header
+    assert "___ ___" in output
 
 
 def test_launcher_uses_project_root_from_zsh_adapter(monkeypatch, tmp_path):
