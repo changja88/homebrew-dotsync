@@ -510,9 +510,9 @@ def _preflight_box() -> BoxModel:
     )
     serena_item_status = "done" if serena_status == "managed" else "warn"
     graphify_value = (
-        "installed . run /graphify . when you want a project graph"
+        "installed"
         if graphify_status == "installed"
-        else "not installed . install graphify, then run /graphify ."
+        else "not installed . install graphify, then run /graphify when you want a project graph"
     )
     graphify_item_status = "done" if graphify_status == "installed" else "warn"
 

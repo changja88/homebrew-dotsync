@@ -10,7 +10,7 @@ The Python launcher renders a single ANSI box that updates in place across phase
   ────────────────────────────────────────────────────────────
   ✓ workspace   ~/Desktop/homebrew-dotsync
   ✓ serena      managed by scoped launcher
-  ✓ graphify    installed . run /graphify . when you want a project graph
+  ✓ graphify    installed
   ✓ context     codex
   ✓ cleanup     0 to delete . 103 to keep
   ✓ memory      0 files to reset
