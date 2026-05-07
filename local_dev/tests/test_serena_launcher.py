@@ -129,6 +129,7 @@ def test_launcher_prints_mcp_progress_and_clears_before_child(monkeypatch, tmp_p
 
 
 def test_launcher_status_can_be_suppressed_by_zsh_adapter(monkeypatch, tmp_path, capsys):
+    monkeypatch.delenv("SERENA_AGENT_INTERACTIVE", raising=False)
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".git").mkdir()
 
@@ -268,6 +269,7 @@ def test_launcher_prints_shutdown_stats_for_interactive_agent(monkeypatch, tmp_p
 
 
 def test_launcher_uses_project_root_from_zsh_adapter(monkeypatch, tmp_path):
+    monkeypatch.delenv("SERENA_AGENT_INTERACTIVE", raising=False)
     displayed_root = tmp_path / "project"
     cwd = displayed_root / "nested"
     cwd.mkdir(parents=True)
@@ -318,6 +320,7 @@ def test_find_real_binary_rejects_missing_env_override(monkeypatch):
 
 
 def test_launcher_registers_and_removes_codex_lease(monkeypatch, tmp_path):
+    monkeypatch.delenv("SERENA_AGENT_INTERACTIVE", raising=False)
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".git").mkdir()
 
@@ -350,6 +353,7 @@ def test_launcher_registers_and_removes_codex_lease(monkeypatch, tmp_path):
 
 
 def test_signal_handler_defers_registry_cleanup_to_finally(monkeypatch, tmp_path):
+    monkeypatch.delenv("SERENA_AGENT_INTERACTIVE", raising=False)
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".git").mkdir()
 
