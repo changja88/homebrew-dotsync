@@ -47,6 +47,35 @@ def test_render_zsh_shim_includes_graphify_status_guidance():
     assert "graphify" in text
 
 
+def test_render_zsh_shim_marks_graphify_not_initialized_for_project():
+    text = render_zsh_shim(
+        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
+        python_executable=Path("/repo/.venv/bin/python3"),
+        codex_binary=Path("/opt/homebrew/bin/codex"),
+        claude_binary=Path("/opt/homebrew/bin/claude"),
+    )
+
+    # Status detection must include a project-scoped initialization probe
+    # so the preflight row reflects per-project state rather than mere PATH
+    # presence of the graphify binary.
+    assert "_dotsync_agent_graphify_initialized" in text
+    assert "graphify-out/graph.json" in text
+    assert 'graphify_status="not-initialized"' in text
+
+
+def test_render_zsh_shim_runs_graphify_initialized_against_project_root():
+    text = render_zsh_shim(
+        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
+        python_executable=Path("/repo/.venv/bin/python3"),
+        codex_binary=Path("/opt/homebrew/bin/codex"),
+        claude_binary=Path("/opt/homebrew/bin/claude"),
+    )
+
+    # The probe must accept the resolved project root (not $PWD) so that the
+    # status reflects the same scope used elsewhere in the preflight.
+    assert '_dotsync_agent_graphify_initialized "$project_root"' in text
+
+
 def test_render_zsh_shim_defers_clear_to_launcher_after_codex_cleanup():
     text = render_zsh_shim(
         launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),

@@ -92,6 +92,12 @@ _dotsync_agent_graphify_available() {
   command -v graphify >/dev/null 2>&1
 }
 
+_dotsync_agent_graphify_initialized() {
+  local project_root="$1"
+
+  [[ -f "$project_root/graphify-out/graph.json" ]]
+}
+
 claude() {
   local interactive=0
   [[ -t 0 && -t 1 ]] && interactive=1
@@ -120,7 +126,11 @@ claude() {
   local serena_status="managed"
   _dotsync_agent_serena_project_available "$project_root" || serena_status="missing"
   local graphify_status="installed"
-  _dotsync_agent_graphify_available || graphify_status="missing"
+  if ! _dotsync_agent_graphify_available; then
+    graphify_status="missing"
+  elif ! _dotsync_agent_graphify_initialized "$project_root"; then
+    graphify_status="not-initialized"
+  fi
 
   SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE="$cleanup_phrase" \
   SERENA_AGENT_PREFLIGHT_MEMORY_VALUE="$memory_phrase" \
@@ -183,7 +193,11 @@ codex() {
   local serena_status="managed"
   _dotsync_agent_serena_project_available "$project_root" || serena_status="missing"
   local graphify_status="installed"
-  _dotsync_agent_graphify_available || graphify_status="missing"
+  if ! _dotsync_agent_graphify_available; then
+    graphify_status="missing"
+  elif ! _dotsync_agent_graphify_initialized "$project_root"; then
+    graphify_status="not-initialized"
+  fi
 
   SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE="$cleanup_phrase" \
   SERENA_AGENT_PREFLIGHT_MEMORY_VALUE="$memory_phrase" \

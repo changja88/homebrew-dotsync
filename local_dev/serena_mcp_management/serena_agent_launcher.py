@@ -509,12 +509,17 @@ def _preflight_box() -> BoxModel:
         else "project config missing"
     )
     serena_item_status = "done" if serena_status == "managed" else "warn"
-    graphify_value = (
-        "installed"
-        if graphify_status == "installed"
-        else "not installed . install graphify, then run /graphify when you want a project graph"
-    )
-    graphify_item_status = "done" if graphify_status == "installed" else "warn"
+    if graphify_status == "installed":
+        graphify_value = "initialized"
+        graphify_item_status = "done"
+    elif graphify_status == "not-initialized":
+        graphify_value = "not initialized . run /graphify to build the project graph"
+        graphify_item_status = "warn"
+    else:
+        graphify_value = (
+            "not installed . install graphify, then run /graphify when you want a project graph"
+        )
+        graphify_item_status = "warn"
 
     items = [
         Item(

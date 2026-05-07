@@ -83,6 +83,25 @@ def test_v2_preflight_returns_zero_on_run_confirm(monkeypatch):
     assert "not installed" in out.getvalue()  # graphify warn surfaced
 
 
+def test_v2_preflight_marks_graphify_not_initialized(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_TUI", "v2")
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "not-initialized")
+
+    out = io.StringIO()
+    answers = iter(["y"])
+    launcher._run_preflight_v2(stream=out, input_fn=lambda: next(answers))
+    text = _strip_ansi(out.getvalue())
+    assert "not initialized" in text
+    assert "/graphify" in text
+    assert "not installed" not in text  # this row is "not initialized", not missing
+
+
 def test_v2_preflight_marks_serena_warn_when_missing(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_TUI", "v2")
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
