@@ -10,8 +10,10 @@ concerns:
 """
 from __future__ import annotations
 
+import sys
+import threading
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, TextIO
 
 
 PhaseKind = Literal["preflight", "serena-init", "launch-prep", "summary"]
@@ -79,3 +81,35 @@ def render_box(model: BoxModel, *, spin_frame: int = 0) -> str:
         lines.append(f"  {marker} {label}  {item.value}")
     lines.append("  " + _border("─"))
     return "\n".join(lines) + "\n"
+
+
+class BoxRenderer:
+    """Renders a BoxModel and updates it in-place on subsequent draws.
+
+    Uses ANSI cursor-up and erase-below escape sequences to overwrite the
+    previous box in-place. Thread-safe via internal lock.
+    """
+
+    def __init__(self, stream: TextIO | None = None) -> None:
+        self._stream = stream if stream is not None else sys.stdout
+        self._last_line_count = 0
+        self._lock = threading.Lock()
+
+    def draw(self, model: BoxModel, *, spin_frame: int = 0) -> None:
+        """Draw the box, updating in-place if previously drawn."""
+        text = render_box(model, spin_frame=spin_frame)
+        line_count = text.count("\n")
+        with self._lock:
+            if self._last_line_count > 0:
+                self._stream.write(f"\x1b[{self._last_line_count}A\x1b[J")
+            self._stream.write(text)
+            self._stream.flush()
+            self._last_line_count = line_count
+
+    def clear(self) -> None:
+        """Clear the box by moving cursor up and erasing."""
+        with self._lock:
+            if self._last_line_count > 0:
+                self._stream.write(f"\x1b[{self._last_line_count}A\x1b[J")
+                self._stream.flush()
+                self._last_line_count = 0

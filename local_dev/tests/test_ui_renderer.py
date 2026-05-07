@@ -1,5 +1,8 @@
+import io
+
 from local_dev.serena_mcp_management.ui import (
     BoxModel,
+    BoxRenderer,
     Item,
     render_box,
 )
@@ -65,3 +68,54 @@ def test_render_box_spin_frame_cycles_through_braille_set():
 def test_render_box_ends_with_newline():
     model = BoxModel(phase="preflight", title="codex", items=[])
     assert render_box(model).endswith("\n")
+
+
+def test_box_renderer_first_draw_writes_text_only():
+    stream = io.StringIO()
+    renderer = BoxRenderer(stream=stream)
+    model = BoxModel(phase="preflight", title="codex", items=[])
+    renderer.draw(model)
+    output = stream.getvalue()
+    assert "codex" in output
+    # no cursor movement (up/erase) before first frame; color codes ok
+    prefix = output[: output.find("codex")]
+    assert "A\x1b[J" not in prefix  # cursor-up + erase sequence should not appear
+
+
+def test_box_renderer_second_draw_emits_cursor_up_for_previous_lines():
+    stream = io.StringIO()
+    renderer = BoxRenderer(stream=stream)
+    model = BoxModel(
+        phase="preflight",
+        title="codex",
+        items=[Item(id="workspace", label="workspace", value="~/repo")],
+    )
+    renderer.draw(model)
+    first_len = len(stream.getvalue())
+    renderer.draw(model)
+    second_chunk = stream.getvalue()[first_len:]
+    assert "\x1b[" in second_chunk
+    assert "A" in second_chunk  # cursor up
+    assert "J" in second_chunk  # erase below
+
+
+def test_box_renderer_clear_emits_cursor_up_and_erase():
+    stream = io.StringIO()
+    renderer = BoxRenderer(stream=stream)
+    renderer.draw(BoxModel(phase="preflight", title="codex", items=[]))
+    cleared_at = len(stream.getvalue())
+    renderer.clear()
+    chunk = stream.getvalue()[cleared_at:]
+    assert "A" in chunk
+    assert "J" in chunk
+
+
+def test_box_renderer_clear_resets_line_count_for_next_draw():
+    stream = io.StringIO()
+    renderer = BoxRenderer(stream=stream)
+    renderer.draw(BoxModel(phase="preflight", title="codex", items=[]))
+    renderer.clear()
+    after_clear = len(stream.getvalue())
+    renderer.draw(BoxModel(phase="preflight", title="codex", items=[]))
+    third_chunk = stream.getvalue()[after_clear:]
+    assert "A" not in third_chunk  # treats next draw as first frame
