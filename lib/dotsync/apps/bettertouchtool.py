@@ -212,12 +212,39 @@ class BetterTouchToolApp(App):
         return AppPlan(self.name, "from", changes, self.description)
 
     def plan_to(self, target_dir: Path) -> AppPlan:
+        # Mirror plan_from: ask status() whether each preset's live BTT state
+        # already matches the stored bytes (UUID-normalized hash). Without
+        # this, plan_to always reported "update" — even immediately after
+        # sync_from — because BTT preset state lives in BTT's app DB, not on
+        # disk, so a naive stored-exists check can never tell apart "needs
+        # import" from "already in sync".
+        status = self.status(target_dir)
+
+        if status.state == "unknown":
+            details = status.details or "cannot preview live BetterTouchTool presets"
+            return AppPlan(
+                self.name,
+                "to",
+                [Change("presets/", "unknown", details=details)],
+                self.description,
+            )
+
+        dirty = {
+            item.strip()
+            for item in status.details.split(",")
+            if item.strip()
+        }
         changes: list[Change] = []
         for preset in self.presets:
             label = f"presets/{preset}.bttpreset"
             stored = self._stored(target_dir, preset)
             dest = Path(f"BetterTouchTool:{preset}")
-            kind = "update" if stored.exists() else "missing-source"
+            if not stored.exists():
+                kind = "missing-source"
+            elif status.state == "missing" or f"{preset}.bttpreset" in dirty:
+                kind = "update"
+            else:
+                kind = "unchanged"
             changes.append(Change(label, kind, source=stored, dest=dest))
         return AppPlan(self.name, "to", changes, self.description)
 

@@ -184,31 +184,82 @@ def test_plan_to_reports_missing_preset(tmp_path):
     assert plan.changes[0].label == "presets/Missing.bttpreset"
 
 
-def test_plan_to_reports_existing_preset_as_update(tmp_path):
+def _make_btt_subprocess(stored_text_per_preset: dict[str, str]):
+    """Mock subprocess.run so each `export_preset "<name>" outputPath "..."`
+    call writes the configured text for that preset name. Used to drive
+    BTT's status() (and plan_from / plan_to via status()) deterministically."""
+    def fake_run(*args, **kwargs):
+        class R:
+            returncode = 0
+            stdout = "done"
+            stderr = ""
+        cmd = args[0]
+        joined = " ".join(cmd)
+        for token in cmd:
+            if "outputPath" in token:
+                import re
+                m = re.search(r'outputPath "([^"]+)"', token)
+                if m:
+                    out = Path(m.group(1))
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    for preset, text in stored_text_per_preset.items():
+                        if preset in joined:
+                            out.write_text(text)
+                            break
+        return R()
+    return fake_run
+
+
+def test_plan_to_reports_unchanged_when_live_matches_stored(tmp_path):
+    """After `dotsync from`, every preset's live BTT state matches the stored
+    bytes (modulo BTTPresetUUID, which status() normalizes). plan_to MUST
+    surface that as 'unchanged' — otherwise `dotsync to` immediately after
+    `dotsync from` falsely shows every BTT preset needing an update.
+    Regression: plan_to used to skip the live-vs-stored comparison entirely
+    and always returned 'update' whenever the stored file existed."""
     target = tmp_path / "configs"
     stored = target / "bettertouchtool" / "presets" / "Master_bt.bttpreset"
     stored.parent.mkdir(parents=True)
     stored.write_text("<bttpreset/>")
 
-    plan = BetterTouchToolApp(presets=["Master_bt"]).plan_to(target)
+    fake_run = _make_btt_subprocess({"Master_bt": "<bttpreset/>"})
+    with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=fake_run):
+        plan = BetterTouchToolApp(presets=["Master_bt"]).plan_to(target)
+
+    assert plan.changes[0].kind == "unchanged"
+    assert plan.has_changes is False
+
+
+def test_plan_to_reports_update_when_live_differs_from_stored(tmp_path):
+    target = tmp_path / "configs"
+    stored = target / "bettertouchtool" / "presets" / "Master_bt.bttpreset"
+    stored.parent.mkdir(parents=True)
+    stored.write_text("<bttpreset>STORED</bttpreset>")
+
+    fake_run = _make_btt_subprocess({"Master_bt": "<bttpreset>LIVE</bttpreset>"})
+    with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=fake_run):
+        plan = BetterTouchToolApp(presets=["Master_bt"]).plan_to(target)
 
     assert plan.changes[0].kind == "update"
     assert plan.has_changes is True
 
 
-def test_plan_to_ignores_pseudo_destination_file_collision(tmp_path, monkeypatch):
+def test_plan_to_reports_unknown_when_btt_not_running(tmp_path, monkeypatch):
+    """Mirror plan_from: if BTT isn't running we can't export live state,
+    so we can't know whether the import would change anything. Surface
+    'unknown' instead of confidently claiming 'update'."""
     target = tmp_path / "configs"
     stored = target / "bettertouchtool" / "presets" / "Master_bt.bttpreset"
     stored.parent.mkdir(parents=True)
     stored.write_text("<bttpreset/>")
-    cwd = tmp_path / "cwd"
-    cwd.mkdir()
-    (cwd / "BetterTouchTool:Master_bt").write_text("<bttpreset/>")
-    monkeypatch.chdir(cwd)
 
-    plan = BetterTouchToolApp(presets=["Master_bt"]).plan_to(target)
+    app = BetterTouchToolApp(presets=["Master_bt"])
+    monkeypatch.setattr(app, "status", lambda target_dir: AppStatus("unknown", "BTT not running"))
 
-    assert plan.changes[0].kind == "update"
+    plan = app.plan_to(target)
+
+    assert plan.changes[0].kind == "unknown"
+    assert "BTT not running" in plan.changes[0].details
 
 
 def test_plan_from_reports_unknown_when_btt_status_unknown(tmp_path, monkeypatch):
