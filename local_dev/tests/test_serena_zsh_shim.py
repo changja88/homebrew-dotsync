@@ -97,8 +97,9 @@ def test_render_zsh_shim_defers_clear_to_launcher_after_codex_cleanup():
 
     assert "printf '\\e[3J\\e[H\\e[2J'" not in codex_body
     assert 'SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"' in codex_body
-    assert codex_body.index("_dotsync_agent_cleanup_codex") < codex_body.index('SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"')
-    assert codex_body.index('SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"') < codex_body.index('"$SERENA_AGENT_PYTHON" "$SERENA_AGENT_LAUNCHER" "$@"')
+    # v1 ordering: cleanup → CLEAR_BEFORE_CHILD → launcher (use rindex to find v1 occurrence, not v2 block)
+    assert codex_body.index("_dotsync_agent_cleanup_codex") < codex_body.rindex('SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"')
+    assert codex_body.rindex('SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"') < codex_body.rindex('"$SERENA_AGENT_PYTHON" "$SERENA_AGENT_LAUNCHER" "$@"')
 
 
 def test_render_zsh_shim_defers_clear_to_launcher_after_claude_cleanup():
@@ -113,8 +114,9 @@ def test_render_zsh_shim_defers_clear_to_launcher_after_claude_cleanup():
 
     assert "printf '\\e[3J\\e[H\\e[2J'" not in claude_body
     assert 'SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"' in claude_body
-    assert claude_body.index("_dotsync_agent_cleanup_claude") < claude_body.index('SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"')
-    assert claude_body.index('SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"') < claude_body.index('"$SERENA_AGENT_PYTHON" "$SERENA_AGENT_LAUNCHER" "$@"')
+    # v1 ordering: cleanup → CLEAR_BEFORE_CHILD → launcher (use rindex to find v1 occurrence, not v2 block)
+    assert claude_body.index("_dotsync_agent_cleanup_claude") < claude_body.rindex('SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"')
+    assert claude_body.rindex('SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"') < claude_body.rindex('"$SERENA_AGENT_PYTHON" "$SERENA_AGENT_LAUNCHER" "$@"')
 
 
 def test_render_zsh_shim_does_not_depend_on_path_wrapper_installation():
@@ -595,6 +597,35 @@ def test_zsh_shim_cli_installs_into_selected_rc_path(monkeypatch, tmp_path, caps
     output = capsys.readouterr().out
     assert f"installed Serena zsh shim into {rc_path}" in output
     assert "_dotsync_agent_ensure_serena" in rc_path.read_text()
+
+
+def test_render_zsh_shim_packs_v2_env_vars_when_tui_v2():
+    text = render_zsh_shim(
+        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
+        python_executable=Path("/repo/.venv/bin/python3"),
+        codex_binary=Path("/opt/homebrew/bin/codex"),
+        claude_binary=Path("/opt/homebrew/bin/claude"),
+    )
+    # v2 dispatch must read SERENA_AGENT_TUI and skip drawing helpers
+    assert 'SERENA_AGENT_TUI' in text
+    # v2 path packs the four contract env vars
+    assert "SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE" in text
+    assert "SERENA_AGENT_PREFLIGHT_MEMORY_VALUE" in text
+    assert "SERENA_AGENT_PREFLIGHT_SERENA_STATUS" in text
+    assert "SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS" in text
+
+
+def test_render_zsh_shim_v1_path_still_present():
+    text = render_zsh_shim(
+        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
+        python_executable=Path("/repo/.venv/bin/python3"),
+        codex_binary=Path("/opt/homebrew/bin/codex"),
+        claude_binary=Path("/opt/homebrew/bin/claude"),
+    )
+    assert "_dotsync_agent_preflight" in text  # v1 helpers retained during stage 1
+    assert "_dotsync_agent_ensure_serena" in text
+    assert "_dotsync_agent_cleanup_codex" in text
+    assert "_dotsync_agent_cleanup_claude" in text
 
 
 def _write_zsh_fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:

@@ -431,6 +431,28 @@ claude() {
   local graphify_state="${graphify_info%%|*}"
   local graphify_phrase="${graphify_info#*|}"
 
+  if [[ "${SERENA_AGENT_TUI:-}" == "v2" ]]; then
+    local cleanup_phrase="${deleted} to delete . ${kept} to keep"
+    local memory_phrase="${mem_deleted} files to reset"
+    local serena_status_v2="managed"
+    _dotsync_agent_serena_project_available "$project_root" || serena_status_v2="missing"
+    local graphify_status_v2="installed"
+    _dotsync_agent_graphify_available || graphify_status_v2="missing"
+
+    SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE="$cleanup_phrase" \
+    SERENA_AGENT_PREFLIGHT_MEMORY_VALUE="$memory_phrase" \
+    SERENA_AGENT_PREFLIGHT_SERENA_STATUS="$serena_status_v2" \
+    SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS="$graphify_status_v2" \
+    SERENA_AGENT_CLIENT=claude \
+    SERENA_AGENT_QUIET=1 \
+    SERENA_AGENT_INTERACTIVE="$interactive" \
+    SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive" \
+    SERENA_AGENT_PROJECT_ROOT="$project_root" \
+    SERENA_REAL_CLAUDE=__CLAUDE_BINARY__ \
+    "$SERENA_AGENT_PYTHON" "$SERENA_AGENT_LAUNCHER" "$@"
+    return $?
+  fi
+
   if (( interactive )); then
     _dotsync_agent_preflight 141 "claude" "$project_root" \
       "sessions total=${total} delete=${deleted} keep=${kept}" \
@@ -507,6 +529,33 @@ codex() {
   local graphify_info="$(_dotsync_agent_graphify_preflight_state)"
   local graphify_state="${graphify_info%%|*}"
   local graphify_phrase="${graphify_info#*|}"
+
+  if [[ "${SERENA_AGENT_TUI:-}" == "v2" ]]; then
+    local cleanup_phrase=""
+    if [[ "$session_line" == "sessions scan=skip"* ]]; then
+      cleanup_phrase="scan skipped (jq missing)"
+    else
+      cleanup_phrase="${deleted} to delete . ${kept} to keep"
+    fi
+    local memory_phrase="${mem_deleted} files to reset"
+    local serena_status_v2="managed"
+    _dotsync_agent_serena_project_available "$project_root" || serena_status_v2="missing"
+    local graphify_status_v2="installed"
+    _dotsync_agent_graphify_available || graphify_status_v2="missing"
+
+    SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE="$cleanup_phrase" \
+    SERENA_AGENT_PREFLIGHT_MEMORY_VALUE="$memory_phrase" \
+    SERENA_AGENT_PREFLIGHT_SERENA_STATUS="$serena_status_v2" \
+    SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS="$graphify_status_v2" \
+    SERENA_AGENT_CLIENT=codex \
+    SERENA_AGENT_QUIET=1 \
+    SERENA_AGENT_INTERACTIVE="$interactive" \
+    SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive" \
+    SERENA_AGENT_PROJECT_ROOT="$project_root" \
+    SERENA_REAL_CODEX=__CODEX_BINARY__ \
+    "$SERENA_AGENT_PYTHON" "$SERENA_AGENT_LAUNCHER" "$@"
+    return $?
+  fi
 
   if (( interactive )); then
     _dotsync_agent_preflight 081 "codex" "$project_root" \
