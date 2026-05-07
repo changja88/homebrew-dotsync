@@ -510,7 +510,7 @@ def _preflight_box() -> BoxModel:
     )
     serena_item_status = "done" if serena_status == "managed" else "warn"
     if graphify_status == "installed":
-        graphify_value = "initialized"
+        graphify_value = "initialized . post-commit + post-checkout hooks installed"
         graphify_item_status = "done"
     elif graphify_status == "hook-missing":
         graphify_value = "hooks not installed . run \"graphify hook install\""
@@ -596,7 +596,7 @@ def _run_preflight_v2(
             graphify_item = next(item for item in model.items if item.id == "graphify")
             if rc == 0:
                 graphify_item.status = "done"
-                graphify_item.value = "initialized"
+                graphify_item.value = "initialized . post-commit + post-checkout hooks installed"
             else:
                 graphify_item.status = "warn"
                 graphify_item.value = f"hook install failed (exit {rc})"

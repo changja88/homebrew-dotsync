@@ -57,10 +57,14 @@ def test_v2_preflight_renders_box_with_cleanup_and_serena(monkeypatch):
 
     rc = launcher._run_preflight_v2(stream=out, input_fn=lambda: next(answers))
     text = out.getvalue()
-    assert "0 to delete . 103 to keep" in _strip_ansi(text)
-    assert "0 files to reset" in _strip_ansi(text)
+    plain = _strip_ansi(text)
+    assert "0 to delete . 103 to keep" in plain
+    assert "0 files to reset" in plain
     assert "preflight" in text
     assert "codex" in text
+    # graphify row should reveal which git hooks are installed, not just "initialized"
+    assert "post-commit" in plain
+    assert "post-checkout" in plain
     assert rc == 130  # abort -> non-zero
 
 
@@ -130,6 +134,8 @@ def test_v2_preflight_runs_graphify_hook_install_when_user_confirms(monkeypatch)
     assert install_calls, "graphify hook install should have been invoked"
     assert "Install graphify hooks" in text
     assert "initialized" in text
+    assert "post-commit" in text
+    assert "post-checkout" in text
     assert rc == 130  # declined run -> abort
 
 
