@@ -72,6 +72,19 @@ def test_render_zsh_shim_includes_graphify_status_guidance():
     assert "/graphify ." in text
 
 
+def test_render_zsh_shim_includes_optional_gum_ui_helpers():
+    text = render_zsh_shim(
+        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
+        python_executable=Path("/repo/.venv/bin/python3"),
+        codex_binary=Path("/opt/homebrew/bin/codex"),
+        claude_binary=Path("/opt/homebrew/bin/claude"),
+    )
+
+    assert "_dotsync_agent_gum_available" in text
+    assert "_dotsync_agent_gum_preflight" in text
+    assert "brew install gum" in text
+
+
 def test_render_zsh_shim_defers_clear_to_launcher_after_codex_cleanup():
     text = render_zsh_shim(
         launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
@@ -133,6 +146,10 @@ def test_render_zsh_shim_prompts_for_serena_after_preflight_before_cleanup():
 
     assert "_dotsync_agent_graphify_preflight_state" in codex_body
     assert codex_body.index("_dotsync_agent_graphify_preflight_state") < codex_body.index("_dotsync_agent_preflight")
+    assert "_dotsync_agent_preflight" in codex_body
+    assert "_dotsync_agent_preflight" in claude_body
+    assert "|| return $?" in codex_body
+    assert "|| return $?" in claude_body
     assert codex_body.index("_dotsync_agent_preflight") < codex_body.index("_dotsync_agent_ensure_serena")
     assert codex_body.index("_dotsync_agent_ensure_serena") < codex_body.index("_dotsync_agent_cleanup_codex")
     assert "_dotsync_agent_graphify_preflight_state" in claude_body
@@ -354,6 +371,107 @@ def test_zsh_shim_marks_graphify_missing_in_preflight(tmp_path):
 
 
 @pytest.mark.no_subprocess_block
+def test_zsh_shim_uses_gum_preflight_when_available_and_forced(tmp_path):
+    shim_path = tmp_path / "shim.zsh"
+    shim_path.write_text(
+        render_zsh_shim(
+            launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
+            python_executable=Path("/usr/bin/python3"),
+            codex_binary=Path("/opt/homebrew/bin/codex"),
+            claude_binary=Path("/opt/homebrew/bin/claude"),
+        )
+    )
+    path_dir = tmp_path / "bin"
+    path_dir.mkdir()
+    gum = path_dir / "gum"
+    gum.write_text(
+        "#!/bin/sh\n"
+        "printf 'GUM %s' \"$1\"\n"
+        "shift\n"
+        "for arg in \"$@\"; do printf ' %s' \"$arg\"; done\n"
+        "printf '\\n'\n"
+        "exit 0\n"
+    )
+    gum.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "zsh",
+            "-fc",
+            (
+                f"source {shim_path}; "
+                "_dotsync_agent_preflight 081 codex "
+                f"{tmp_path} "
+                "'sessions total=2 delete=1 keep=1' "
+                "'memory reset files=0' "
+                "codex active 'managed by scoped launcher' "
+                "pending 'available . /graphify .'"
+            ),
+        ],
+        env={
+            **os.environ,
+            "HOME": str(tmp_path),
+            "PATH": f"{path_dir}:/bin:/usr/bin",
+            "DOTSYNC_AGENT_FORCE_GUM": "1",
+        },
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert "GUM style --foreground 212 --border-foreground 212 --border double --align center" in result.stdout
+    assert "--width 50 --margin 1 2 --padding 2 4" in result.stdout
+    assert "codex" in result.stdout
+    assert "Serena MCP managed" in result.stdout
+    assert "graphify: available . /graphify ." in result.stdout
+    assert "context: codex" in result.stdout
+    assert "cleanup: 1 to delete . 1 to keep" in result.stdout
+    assert "memory: 0 files to reset" in result.stdout
+    assert "GUM log --level info --prefix serena managed by scoped launcher" not in result.stdout
+    assert "GUM log --level info --prefix graphify" not in result.stdout
+    assert "GUM confirm Run codex?" in result.stdout
+
+
+@pytest.mark.no_subprocess_block
+def test_zsh_shim_gum_setup_decline_skips_serena_project(tmp_path):
+    shim_path, real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
+    path_dir = tmp_path / "path"
+    path_dir.mkdir()
+    gum = path_dir / "gum"
+    gum.write_text(
+        "#!/bin/sh\n"
+        "printf 'GUM %s' \"$1\"\n"
+        "shift\n"
+        "for arg in \"$@\"; do printf ' %s' \"$arg\"; done\n"
+        "printf '\\n'\n"
+        "exit 1\n"
+    )
+    gum.chmod(0o755)
+
+    result = subprocess.run(
+        [
+            "/bin/zsh",
+            "-fc",
+            f"source {shim_path}; _dotsync_agent_ensure_serena codex {tmp_path} || codex --help",
+        ],
+        env={
+            **os.environ,
+            "HOME": str(tmp_path),
+            "PATH": f"{path_dir}:/bin:/usr/bin",
+            "DOTSYNC_AGENT_FORCE_GUM": "1",
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "GUM confirm Initialize Serena for this project?" in result.stdout
+    assert "launching codex without Serena project config" in result.stdout
+    assert result.stdout.endswith(f"REAL {real_codex} --help\n")
+
+
+@pytest.mark.no_subprocess_block
 def test_zsh_shim_declines_missing_project_config_and_runs_real_binary(tmp_path):
     shim_path, real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
     path_dir = tmp_path / "path"
@@ -461,7 +579,7 @@ def test_install_zshrc_shim_replaces_managed_block(tmp_path):
     text = rc_path.read_text()
     assert "before\n" in text
     assert "after\n" in text
-    assert "old" not in text
+    assert "\nold\n" not in text
     assert "_dotsync_agent_ensure_serena" in text
     assert (tmp_path / ".zshrc.dotsync-serena.bak").read_text().startswith("before\n")
 

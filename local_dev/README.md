@@ -31,13 +31,16 @@ make local-serena-shim
 ```
 
 Interactive no-argument `codex` / `claude` launches show the existing
-preflight first, including cleanup and memory reset counts. If the project root
-does not have `.serena/project.yml`, the preflight marks Serena as
-`project config missing`; after the user confirms the preflight, the shim asks
-whether to run `serena project create <project-root>`. Declining that prompt
-launches the real agent binary without Serena project config. When project
-creation runs, additional Serena language prompts receive the default answer so
-optional language servers are not enabled accidentally.
+preflight first, including cleanup and memory reset counts. If `gum` is
+installed, the preflight uses `gum style`, `gum log`, and `gum confirm` for a
+decision-first terminal flow. If `gum` is missing, the shim prints
+`install: brew install gum` and falls back to the existing text preflight. If
+the project root does not have `.serena/project.yml`, the preflight marks
+Serena as `project config missing`; after the user confirms the preflight, the
+shim asks whether to run `serena project create <project-root>`. Declining that
+prompt launches the real agent binary without Serena project config. When
+project creation runs, additional Serena language prompts receive the default
+answer so optional language servers are not enabled accidentally.
 
 The preflight also reports whether `graphify` is installed. This is guidance
 only: the shim does not install Graphify, run Graphify, or create

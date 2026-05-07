@@ -100,6 +100,25 @@ _dotsync_agent_graphify_preflight_state() {
   fi
 }
 
+_dotsync_agent_gum_available() {
+  command -v gum >/dev/null 2>&1
+}
+
+_dotsync_agent_use_gum() {
+  if [[ -n "${DOTSYNC_AGENT_FORCE_GUM:-}" ]]; then
+    _dotsync_agent_gum_available
+    return $?
+  fi
+
+  [[ -t 0 && -t 1 ]] && _dotsync_agent_gum_available
+}
+
+_dotsync_agent_gum_missing_hint() {
+  _dotsync_agent_gum_available && return 0
+
+  print -P "  %F{226}!%f gum       missing   . install: brew install gum"
+}
+
 _dotsync_agent_create_serena_project() {
   local project_root="$1"
 
@@ -113,6 +132,27 @@ _dotsync_agent_ensure_serena() {
   local reply=""
 
   _dotsync_agent_serena_project_available "$project_root" && return 0
+
+  if _dotsync_agent_use_gum; then
+    if gum confirm "Initialize Serena for this project?" \
+      --affirmative "Initialize" \
+      --negative "Skip" \
+      --default=false \
+      --no-show-help; then
+      if ! _dotsync_agent_create_serena_project "$project_root"; then
+        print -P "  %F{226}!%f serena    skipped   . project setup failed; launching ${client} without Serena project config"
+        return 1
+      fi
+      if ! _dotsync_agent_serena_project_available "$project_root"; then
+        print -P "  %F{226}!%f serena    skipped   . project config still missing; launching ${client} without Serena project config"
+        return 1
+      fi
+      return 0
+    fi
+
+    print -P "  %F{226}!%f serena    skipped   . launching ${client} without Serena project config"
+    return 1
+  fi
 
   print -nP "  %F{226}!%f serena    missing   . initialize this project? [y/N] "
   read -r reply
@@ -172,6 +212,70 @@ _dotsync_agent_stream_row() {
   print -P -- "$value"
 }
 
+_dotsync_agent_gum_preflight() {
+  local accent="$1"
+  local client="$2"
+  local project_root="$3"
+  local session_line="$4"
+  local memory_line="$5"
+  local context="$6"
+  local serena_state="${7:-active}"
+  local serena_phrase="${8:-managed by scoped launcher}"
+  local graphify_state="${9:-pending}"
+  local graphify_phrase="${10:-run /graphify . when you want a project graph}"
+  local workspace="$(_dotsync_agent_short_path "$project_root")"
+  local cleanup_phrase="$session_line"
+  local memory_phrase="$memory_line"
+  local summary=""
+  local graphify_line=""
+  local serena_level="info"
+  local graphify_level="info"
+
+  if [[ "$session_line" == "sessions scan=skip"* ]]; then
+    cleanup_phrase="scan skipped (jq missing)"
+  elif [[ "$session_line" =~ "delete=([0-9]+) keep=([0-9]+)" ]]; then
+    cleanup_phrase="${match[1]} to delete . ${match[2]} to keep"
+  fi
+
+  if [[ "$memory_line" =~ "files=([0-9]+)" ]]; then
+    memory_phrase="${match[1]} files to reset"
+  fi
+
+  [[ "$serena_state" == "warn" ]] && serena_level="warn"
+  [[ "$graphify_state" == "warn" ]] && graphify_level="warn"
+  if [[ "$serena_state" == "warn" ]]; then
+    summary="Serena project config missing"
+  else
+    summary="Serena MCP managed"
+  fi
+  graphify_line="graphify: ${graphify_phrase}"
+
+  print
+  gum style \
+    --foreground 212 \
+    --border-foreground 212 \
+    --border double \
+    --align center \
+    --width 50 \
+    --margin "1 2" \
+    --padding "2 4" \
+    "${client}" \
+    "${workspace}" \
+    "" \
+    "${summary}" \
+    "" \
+    "${graphify_line}" \
+    "context: ${context}" \
+    "cleanup: ${cleanup_phrase}" \
+    "memory: ${memory_phrase}"
+  print
+  gum confirm "Run ${client}?" \
+    --affirmative "Run" \
+    --negative "Abort" \
+    --default \
+    --no-show-help
+}
+
 _dotsync_agent_preflight() {
   local accent="$1"
   local client="$2"
@@ -186,6 +290,13 @@ _dotsync_agent_preflight() {
   local workspace="$(_dotsync_agent_short_path "$project_root")"
   local cleanup_phrase="$session_line"
   local memory_phrase="$memory_line"
+
+  if _dotsync_agent_use_gum; then
+    _dotsync_agent_gum_preflight "$@"
+    return $?
+  fi
+
+  _dotsync_agent_gum_missing_hint
 
   # Existing preflight contract: show sessions delete/keep and memory reset.
   if [[ "$session_line" == "sessions scan=skip"* ]]; then
@@ -328,7 +439,7 @@ claude() {
       "$serena_state" \
       "$serena_phrase" \
       "$graphify_state" \
-      "$graphify_phrase"
+      "$graphify_phrase" || return $?
   fi
 
   if ! _dotsync_agent_ensure_serena "claude" "$project_root"; then
@@ -405,7 +516,7 @@ codex() {
       "$serena_state" \
       "$serena_phrase" \
       "$graphify_state" \
-      "$graphify_phrase"
+      "$graphify_phrase" || return $?
   fi
 
   if ! _dotsync_agent_ensure_serena "codex" "$project_root"; then
