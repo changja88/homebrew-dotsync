@@ -209,3 +209,37 @@ def test_v2_launch_prep_runs_cleanup_and_renders_done_row(tmp_path, monkeypatch)
     assert "0 deleted . 0 memory files reset" in text
     assert summary.cleanup_deleted == 0
     assert summary.cleanup_memory_files_reset == 0
+
+
+def test_v2_start_mcp_with_spinner_returns_record_on_success(monkeypatch, tmp_path):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+
+    fake_record = mock.Mock()
+    fake_record.mcp_url = "http://127.0.0.1:9999/mcp"
+    fake_record.dashboard_url = "http://127.0.0.1:9999/"
+    monkeypatch.setattr(launcher, "ensure_server",
+                        lambda scope, lease: fake_record, raising=False)
+
+    out = io.StringIO()
+    record = launcher._start_mcp_with_spinner(
+        scope=mock.Mock(),
+        lease=mock.Mock(),
+        stream=out,
+    )
+    assert record is fake_record
+    text = out.getvalue()
+    assert "http://127.0.0.1:9999/mcp" in text
+
+
+def test_v2_start_mcp_with_spinner_raises_on_failure(monkeypatch):
+    def boom(scope, lease):
+        raise RuntimeError("server unhealthy")
+    monkeypatch.setattr(launcher, "ensure_server", boom, raising=False)
+
+    out = io.StringIO()
+    with pytest.raises(RuntimeError, match="server unhealthy"):
+        launcher._start_mcp_with_spinner(scope=mock.Mock(), lease=mock.Mock(),
+                                         stream=out)
+    text = out.getvalue()
+    assert "server unhealthy" in text or "preparing" in text

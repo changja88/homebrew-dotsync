@@ -32,6 +32,8 @@ from local_dev.serena_mcp_management.ui import (
     BoxModel,
     BoxRenderer,
     Item,
+    SPINNER_FRAMES,
+    SpinnerTicker,
     confirm,
 )
 
@@ -395,6 +397,55 @@ def _run_launch_prep_v2(
         cleanup_deleted=result.deleted,
         cleanup_memory_files_reset=result.memory_files_reset,
     )
+
+
+def _start_mcp_with_spinner(
+    *,
+    scope,
+    lease,
+    stream: TextIO | None = None,
+):
+    """Start the MCP server with a spinner ticker for visual feedback.
+
+    This function wraps ensure_server with a spinner that updates in-place
+    while the server is starting. On success, displays the MCP URL. On
+    failure, displays the error message.
+
+    Args:
+        scope: The Scope object for the server.
+        lease: The Lease object for the server.
+        stream: Output stream (defaults to sys.stdout).
+
+    Returns:
+        The server record on success.
+
+    Raises:
+        Any exception from ensure_server.
+    """
+    out = stream if stream is not None else sys.stdout
+    out.write("  · serena     preparing scoped server")
+    out.flush()
+    frame_state = {"frame": 0}
+
+    def on_tick(frame: int) -> None:
+        frame_state["frame"] = frame
+        spinner = SPINNER_FRAMES[frame % len(SPINNER_FRAMES)]
+        out.write(f"\r  {spinner} serena     preparing scoped server")
+        out.flush()
+
+    ticker = SpinnerTicker(on_tick=on_tick, interval=0.1)
+    ticker.start()
+    try:
+        record = ensure_server(scope, lease)
+    except Exception as exc:
+        ticker.stop()
+        out.write(f"\r  ! serena     failed     . {exc}\n")
+        out.flush()
+        raise
+    ticker.stop()
+    out.write(f"\r  ✓ serena     ready      . {record.mcp_url}\n")
+    out.flush()
+    return record
 
 
 def _main_v2(args: list[str]) -> int:
