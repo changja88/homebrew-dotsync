@@ -31,30 +31,7 @@ def test_render_zsh_shim_defines_codex_and_claude_functions():
     assert "SERENA_REAL_CLAUDE=/opt/homebrew/bin/claude" in text
     assert '"$SERENA_AGENT_PYTHON" "$SERENA_AGENT_LAUNCHER" "$@"' in text
     assert "_dotsync_agent_serena_project_available" in text
-    assert "_dotsync_agent_ensure_serena" in text
-    assert "serena project create" in text
     assert '--effort xhigh' not in text
-
-
-def test_render_zsh_shim_preserves_agent_cleanup_preflight():
-    text = render_zsh_shim(
-        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
-        python_executable=Path("/repo/.venv/bin/python3"),
-        codex_binary=Path("/opt/homebrew/bin/codex"),
-        claude_binary=Path("/opt/homebrew/bin/claude"),
-    )
-
-    assert "cleanup" in text
-    assert "memory" in text
-    assert "read -r reply" in text
-    assert "_dotsync_agent_cleanup_codex" in text
-    assert "_dotsync_agent_cleanup_claude" in text
-    assert "sessions delete/keep" in text
-    assert "memory reset" in text
-    assert "find \"$HOME/.claude/projects" in text
-    assert "find \"$codex_home/memories\"" in text
-    assert "session_meta" in text
-    assert "jq -e" in text
 
 
 def test_render_zsh_shim_includes_graphify_status_guidance():
@@ -66,23 +43,8 @@ def test_render_zsh_shim_includes_graphify_status_guidance():
     )
 
     assert "_dotsync_agent_graphify_available" in text
-    assert "_dotsync_agent_graphify_preflight_state" in text
     assert "command -v graphify" in text
     assert "graphify" in text
-    assert "/graphify ." in text
-
-
-def test_render_zsh_shim_includes_optional_gum_ui_helpers():
-    text = render_zsh_shim(
-        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
-        python_executable=Path("/repo/.venv/bin/python3"),
-        codex_binary=Path("/opt/homebrew/bin/codex"),
-        claude_binary=Path("/opt/homebrew/bin/claude"),
-    )
-
-    assert "_dotsync_agent_gum_available" in text
-    assert "_dotsync_agent_gum_preflight" in text
-    assert "brew install gum" in text
 
 
 def test_render_zsh_shim_defers_clear_to_launcher_after_codex_cleanup():
@@ -97,9 +59,8 @@ def test_render_zsh_shim_defers_clear_to_launcher_after_codex_cleanup():
 
     assert "printf '\\e[3J\\e[H\\e[2J'" not in codex_body
     assert 'SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"' in codex_body
-    # v1 ordering: cleanup → CLEAR_BEFORE_CHILD → launcher (use rindex to find v1 occurrence, not v2 block)
-    assert codex_body.index("_dotsync_agent_cleanup_codex") < codex_body.rindex('SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"')
-    assert codex_body.rindex('SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"') < codex_body.rindex('"$SERENA_AGENT_PYTHON" "$SERENA_AGENT_LAUNCHER" "$@"')
+    assert 'SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"' in codex_body
+    assert codex_body.index('SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"') < codex_body.index('"$SERENA_AGENT_PYTHON" "$SERENA_AGENT_LAUNCHER" "$@"')
 
 
 def test_render_zsh_shim_defers_clear_to_launcher_after_claude_cleanup():
@@ -114,9 +75,7 @@ def test_render_zsh_shim_defers_clear_to_launcher_after_claude_cleanup():
 
     assert "printf '\\e[3J\\e[H\\e[2J'" not in claude_body
     assert 'SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"' in claude_body
-    # v1 ordering: cleanup → CLEAR_BEFORE_CHILD → launcher (use rindex to find v1 occurrence, not v2 block)
-    assert claude_body.index("_dotsync_agent_cleanup_claude") < claude_body.rindex('SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"')
-    assert claude_body.rindex('SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"') < claude_body.rindex('"$SERENA_AGENT_PYTHON" "$SERENA_AGENT_LAUNCHER" "$@"')
+    assert claude_body.index('SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"') < claude_body.index('"$SERENA_AGENT_PYTHON" "$SERENA_AGENT_LAUNCHER" "$@"')
 
 
 def test_render_zsh_shim_does_not_depend_on_path_wrapper_installation():
@@ -135,31 +94,6 @@ def test_render_zsh_shim_does_not_depend_on_path_wrapper_installation():
     assert "_configure_claude_serena_mcp" not in text
 
 
-def test_render_zsh_shim_prompts_for_serena_after_preflight_before_cleanup():
-    text = render_zsh_shim(
-        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
-        python_executable=Path("/repo/.venv/bin/python3"),
-        codex_binary=Path("/opt/homebrew/bin/codex"),
-        claude_binary=Path("/opt/homebrew/bin/claude"),
-    )
-
-    codex_body = text.split("\ncodex() {", 1)[1]
-    claude_body = text.split("\nclaude() {", 1)[1].split("\ncodex() {", 1)[0]
-
-    assert "_dotsync_agent_graphify_preflight_state" in codex_body
-    assert codex_body.index("_dotsync_agent_graphify_preflight_state") < codex_body.index("_dotsync_agent_preflight")
-    assert "_dotsync_agent_preflight" in codex_body
-    assert "_dotsync_agent_preflight" in claude_body
-    assert "|| return $?" in codex_body
-    assert "|| return $?" in claude_body
-    assert codex_body.index("_dotsync_agent_preflight") < codex_body.index("_dotsync_agent_ensure_serena")
-    assert codex_body.index("_dotsync_agent_ensure_serena") < codex_body.index("_dotsync_agent_cleanup_codex")
-    assert "_dotsync_agent_graphify_preflight_state" in claude_body
-    assert claude_body.index("_dotsync_agent_graphify_preflight_state") < claude_body.index("_dotsync_agent_preflight")
-    assert claude_body.index("_dotsync_agent_preflight") < claude_body.index("_dotsync_agent_ensure_serena")
-    assert claude_body.index("_dotsync_agent_ensure_serena") < claude_body.index("_dotsync_agent_cleanup_claude")
-
-
 def test_render_zsh_shim_marks_missing_serena_project_in_preflight():
     text = render_zsh_shim(
         launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
@@ -168,8 +102,11 @@ def test_render_zsh_shim_marks_missing_serena_project_in_preflight():
         claude_binary=Path("/opt/homebrew/bin/claude"),
     )
 
-    assert "project config missing" in text
-    assert "managed by scoped launcher" in text
+    # The shim detects serena availability and sets SERENA_AGENT_PREFLIGHT_SERENA_STATUS
+    # to "managed" or "missing" — the text representation is handled by the Python launcher.
+    assert "SERENA_AGENT_PREFLIGHT_SERENA_STATUS" in text
+    assert 'serena_status="managed"' in text
+    assert 'serena_status="missing"' in text
 
 
 def test_zsh_shim_cli_prints_installed_launcher_snippet(monkeypatch, capsys):
@@ -287,279 +224,6 @@ def test_zsh_shim_should_manage_only_tty_no_arg_agent_starts(tmp_path):
     assert "managed_notty=1" in result.stdout
 
 
-@pytest.mark.no_subprocess_block
-def test_zsh_shim_marks_graphify_installed_in_preflight(tmp_path):
-    shim_path = tmp_path / "shim.zsh"
-    shim_path.write_text(
-        render_zsh_shim(
-            launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
-            python_executable=Path("/usr/bin/python3"),
-            codex_binary=Path("/opt/homebrew/bin/codex"),
-            claude_binary=Path("/opt/homebrew/bin/claude"),
-        )
-    )
-    path_dir = tmp_path / "bin"
-    path_dir.mkdir()
-    graphify = path_dir / "graphify"
-    graphify.write_text("#!/bin/sh\nexit 0\n")
-    graphify.chmod(0o755)
-
-    result = subprocess.run(
-        [
-            "zsh",
-            "-fc",
-            (
-                f"source {shim_path}; "
-                f"PATH={path_dir}:$PATH; "
-                'graphify_info="$(_dotsync_agent_graphify_preflight_state)"; '
-                'graphify_state="${graphify_info%%|*}"; '
-                'graphify_phrase="${graphify_info#*|}"; '
-                f"_dotsync_agent_preflight 081 codex {tmp_path} "
-                "'sessions total=0 delete=0 keep=0' "
-                "'memory reset files=0' "
-                "codex active 'managed by scoped launcher' "
-                '"$graphify_state" "$graphify_phrase" </dev/null'
-            ),
-        ],
-        env={**os.environ, "HOME": str(tmp_path)},
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-
-    assert "graphify" in result.stdout
-    assert "installed . run /graphify . when you want a project graph" in result.stdout
-
-
-@pytest.mark.no_subprocess_block
-def test_zsh_shim_marks_graphify_missing_in_preflight(tmp_path):
-    shim_path = tmp_path / "shim.zsh"
-    shim_path.write_text(
-        render_zsh_shim(
-            launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
-            python_executable=Path("/usr/bin/python3"),
-            codex_binary=Path("/opt/homebrew/bin/codex"),
-            claude_binary=Path("/opt/homebrew/bin/claude"),
-        )
-    )
-    empty_path = tmp_path / "empty-bin"
-    empty_path.mkdir()
-
-    result = subprocess.run(
-        [
-            "zsh",
-            "-fc",
-            (
-                f"source {shim_path}; "
-                f"PATH={empty_path}; "
-                'graphify_info="$(_dotsync_agent_graphify_preflight_state)"; '
-                'graphify_state="${graphify_info%%|*}"; '
-                'graphify_phrase="${graphify_info#*|}"; '
-                f"_dotsync_agent_preflight 081 codex {tmp_path} "
-                "'sessions total=0 delete=0 keep=0' "
-                "'memory reset files=0' "
-                "codex active 'managed by scoped launcher' "
-                '"$graphify_state" "$graphify_phrase" </dev/null'
-            ),
-        ],
-        env={**os.environ, "HOME": str(tmp_path)},
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-
-    assert "graphify" in result.stdout
-    assert "not installed . install graphify, then run /graphify ." in result.stdout
-
-
-@pytest.mark.no_subprocess_block
-def test_zsh_shim_uses_gum_preflight_when_available_and_forced(tmp_path):
-    shim_path = tmp_path / "shim.zsh"
-    shim_path.write_text(
-        render_zsh_shim(
-            launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
-            python_executable=Path("/usr/bin/python3"),
-            codex_binary=Path("/opt/homebrew/bin/codex"),
-            claude_binary=Path("/opt/homebrew/bin/claude"),
-        )
-    )
-    path_dir = tmp_path / "bin"
-    path_dir.mkdir()
-    gum = path_dir / "gum"
-    gum.write_text(
-        "#!/bin/sh\n"
-        "printf 'GUM %s' \"$1\"\n"
-        "shift\n"
-        "for arg in \"$@\"; do printf ' %s' \"$arg\"; done\n"
-        "printf '\\n'\n"
-        "exit 0\n"
-    )
-    gum.chmod(0o755)
-
-    result = subprocess.run(
-        [
-            "zsh",
-            "-fc",
-            (
-                f"source {shim_path}; "
-                "_dotsync_agent_preflight 081 codex "
-                f"{tmp_path} "
-                "'sessions total=2 delete=1 keep=1' "
-                "'memory reset files=0' "
-                "codex active 'managed by scoped launcher' "
-                "pending 'available . /graphify .'"
-            ),
-        ],
-        env={
-            **os.environ,
-            "HOME": str(tmp_path),
-            "PATH": f"{path_dir}:/bin:/usr/bin",
-            "DOTSYNC_AGENT_FORCE_GUM": "1",
-        },
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-
-    assert "GUM style --foreground 212 --border-foreground 212 --border double --align center" in result.stdout
-    assert "--width 50 --margin 1 2 --padding 2 4" in result.stdout
-    assert "codex" in result.stdout
-    assert "Serena MCP managed" in result.stdout
-    assert "graphify: available . /graphify ." in result.stdout
-    assert "context: codex" in result.stdout
-    assert "cleanup: 1 to delete . 1 to keep" in result.stdout
-    assert "memory: 0 files to reset" in result.stdout
-    assert "GUM log --level info --prefix serena managed by scoped launcher" not in result.stdout
-    assert "GUM log --level info --prefix graphify" not in result.stdout
-    assert "GUM confirm Run codex?" in result.stdout
-
-
-@pytest.mark.no_subprocess_block
-def test_zsh_shim_gum_setup_decline_skips_serena_project(tmp_path):
-    shim_path, real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
-    path_dir = tmp_path / "path"
-    path_dir.mkdir()
-    gum = path_dir / "gum"
-    gum.write_text(
-        "#!/bin/sh\n"
-        "printf 'GUM %s' \"$1\"\n"
-        "shift\n"
-        "for arg in \"$@\"; do printf ' %s' \"$arg\"; done\n"
-        "printf '\\n'\n"
-        "exit 1\n"
-    )
-    gum.chmod(0o755)
-
-    result = subprocess.run(
-        [
-            "/bin/zsh",
-            "-fc",
-            f"source {shim_path}; _dotsync_agent_ensure_serena codex {tmp_path} || codex --help",
-        ],
-        env={
-            **os.environ,
-            "HOME": str(tmp_path),
-            "PATH": f"{path_dir}:/bin:/usr/bin",
-            "DOTSYNC_AGENT_FORCE_GUM": "1",
-        },
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0
-    assert "GUM confirm Initialize Serena for this project?" in result.stdout
-    assert "launching codex without Serena project config" in result.stdout
-    assert result.stdout.endswith(f"REAL {real_codex} --help\n")
-
-
-@pytest.mark.no_subprocess_block
-def test_zsh_shim_declines_missing_project_config_and_runs_real_binary(tmp_path):
-    shim_path, real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
-    path_dir = tmp_path / "path"
-    path_dir.mkdir()
-
-    result = subprocess.run(
-        [
-            "/bin/zsh",
-            "-fc",
-            f"source {shim_path}; _dotsync_agent_ensure_serena codex {tmp_path} </dev/null || codex --help",
-        ],
-        env={**os.environ, "HOME": str(tmp_path), "PATH": f"{path_dir}:/bin:/usr/bin"},
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0
-    assert "launching codex without Serena project config" in result.stdout
-    assert result.stdout.endswith(f"REAL {real_codex} --help\n")
-
-
-@pytest.mark.no_subprocess_block
-def test_zsh_shim_creates_missing_project_config_when_confirmed(tmp_path):
-    shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
-    path_dir = tmp_path / "path"
-    path_dir.mkdir()
-    serena = path_dir / "serena"
-    serena.write_text(
-        "#!/bin/sh\n"
-        "printf 'SERENA %s\\n' \"$*\"\n"
-        "mkdir -p \"$3/.serena\"\n"
-        "printf 'name: test\\n' > \"$3/.serena/project.yml\"\n"
-    )
-    serena.chmod(0o755)
-
-    result = subprocess.run(
-        [
-            "/bin/zsh",
-            "-fc",
-            f"source {shim_path}; printf 'y\\n' | _dotsync_agent_ensure_serena codex {tmp_path}",
-        ],
-        env={**os.environ, "HOME": str(tmp_path), "PATH": f"{path_dir}:/bin:/usr/bin"},
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0
-    assert f"SERENA project create {tmp_path}" in result.stdout
-    assert (tmp_path / ".serena" / "project.yml").exists()
-
-
-@pytest.mark.no_subprocess_block
-def test_zsh_shim_accepts_serena_project_create_defaults_for_extra_language_prompts(tmp_path):
-    shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
-    path_dir = tmp_path / "path"
-    path_dir.mkdir()
-    serena = path_dir / "serena"
-    serena.write_text(
-        "#!/bin/sh\n"
-        "printf 'Enable ruby (1.39%% of source files)? [y/N] '\n"
-        "IFS= read -r reply || exit 7\n"
-        "[ -z \"$reply\" ] || exit 8\n"
-        "mkdir -p \"$3/.serena\"\n"
-        "printf 'languages:\\n- python\\n' > \"$3/.serena/project.yml\"\n"
-    )
-    serena.chmod(0o755)
-
-    result = subprocess.run(
-        [
-            "/bin/zsh",
-            "-fc",
-            f"source {shim_path}; printf 'y\\n' | _dotsync_agent_ensure_serena codex {tmp_path}",
-        ],
-        env={**os.environ, "HOME": str(tmp_path), "PATH": f"{path_dir}:/bin:/usr/bin"},
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0
-    assert "Enable ruby" in result.stdout
-    assert (tmp_path / ".serena" / "project.yml").read_text() == "languages:\n- python\n"
-
-
 def test_install_zshrc_shim_replaces_managed_block(tmp_path):
     rc_path = tmp_path / ".zshrc"
     rc_path.write_text(
@@ -582,7 +246,6 @@ def test_install_zshrc_shim_replaces_managed_block(tmp_path):
     assert "before\n" in text
     assert "after\n" in text
     assert "\nold\n" not in text
-    assert "_dotsync_agent_ensure_serena" in text
     assert (tmp_path / ".zshrc.dotsync-serena.bak").read_text().startswith("before\n")
 
 
@@ -596,36 +259,32 @@ def test_zsh_shim_cli_installs_into_selected_rc_path(monkeypatch, tmp_path, caps
 
     output = capsys.readouterr().out
     assert f"installed Serena zsh shim into {rc_path}" in output
-    assert "_dotsync_agent_ensure_serena" in rc_path.read_text()
+    assert "SERENA_AGENT_LAUNCHER" in rc_path.read_text()
 
 
-def test_render_zsh_shim_packs_v2_env_vars_when_tui_v2():
+def test_render_zsh_shim_packs_preflight_env_vars():
     text = render_zsh_shim(
         launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
         python_executable=Path("/repo/.venv/bin/python3"),
         codex_binary=Path("/opt/homebrew/bin/codex"),
         claude_binary=Path("/opt/homebrew/bin/claude"),
     )
-    # v2 dispatch must read SERENA_AGENT_TUI and skip drawing helpers
-    assert 'SERENA_AGENT_TUI' in text
-    # v2 path packs the four contract env vars
     assert "SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE" in text
     assert "SERENA_AGENT_PREFLIGHT_MEMORY_VALUE" in text
     assert "SERENA_AGENT_PREFLIGHT_SERENA_STATUS" in text
     assert "SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS" in text
 
 
-def test_render_zsh_shim_v1_path_still_present():
+def test_render_zsh_shim_no_longer_references_gum():
     text = render_zsh_shim(
         launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
         python_executable=Path("/repo/.venv/bin/python3"),
         codex_binary=Path("/opt/homebrew/bin/codex"),
         claude_binary=Path("/opt/homebrew/bin/claude"),
     )
-    assert "_dotsync_agent_preflight" in text  # v1 helpers retained during stage 1
-    assert "_dotsync_agent_ensure_serena" in text
-    assert "_dotsync_agent_cleanup_codex" in text
-    assert "_dotsync_agent_cleanup_claude" in text
+    assert "gum" not in text
+    assert "_dotsync_agent_preflight" not in text
+    assert "_dotsync_agent_cleanup_claude" not in text
 
 
 def _write_zsh_fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:

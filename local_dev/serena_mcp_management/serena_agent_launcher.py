@@ -294,72 +294,7 @@ def main(argv: list[str] | None = None) -> int:
     """Run the scoped Serena launcher."""
 
     args = list(sys.argv[1:] if argv is None else argv)
-    if os.environ.get("SERENA_AGENT_TUI") == "v2":
-        return _main_v2(args)
-    return _main_v1(args)
-
-
-def _main_v1(args: list[str]) -> int:
-    """Existing flow. Behavior preserved exactly."""
-
-    client_type = infer_client_type(os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0]))
-    project_root = _project_root_from_environment() or find_project_root(Path.cwd())
-    scope = Scope(project_root, client_type)
-    lease_id = str(uuid.uuid4())
-    lease = Lease(lease_id, os.getpid(), time.time())
-    if _interactive_launch():
-        print(format_mcp_progress_status("pending", "preparing scoped server"), flush=True)
-    record = ensure_server(scope, lease)
-    if _interactive_launch():
-        print(format_mcp_progress_status("ready", record.mcp_url), flush=True)
-    stop = threading.Event()
-    cleanup: Callable[[], None] = lambda: None
-    child: subprocess.Popen | None = None
-    heartbeat = threading.Thread(
-        target=_heartbeat_loop,
-        args=(scope, lease_id, stop),
-        daemon=True,
-    )
-    heartbeat.start()
-
-    try:
-        real_binary = find_real_binary(client_type)
-        cmd, cleanup = build_child_command(
-            client_type=client_type,
-            real_binary=real_binary,
-            mcp_url=record.mcp_url,
-            child_args=args,
-        )
-        if not args and sys.stderr.isatty() and os.environ.get("SERENA_AGENT_QUIET") != "1":
-            print(
-                format_launch_status(
-                    client_type=client_type,
-                    project_root=str(project_root),
-                    mcp_url=record.mcp_url,
-                ),
-                file=sys.stderr,
-            )
-        open_dashboard_if_requested(record.dashboard_url)
-        if os.environ.get("SERENA_AGENT_CLEAR_BEFORE_CHILD") == "1":
-            clear_terminal_before_child()
-        child = subprocess.Popen(cmd, cwd=str(project_root))
-
-        def shutdown(signum=None, frame=None):
-            stop.set()
-            if child is not None and child.poll() is None:
-                child.terminate()
-
-        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-            signal.signal(signum, shutdown)
-        return int(child.wait())
-    finally:
-        if _interactive_launch():
-            print(format_shutdown_progress_status("stopping scoped MCP server"), flush=True)
-        stop.set()
-        cleanup()
-        stats = _remove_lease_and_shutdown_if_empty(scope, lease_id)
-        if stats is not None and os.environ.get("SERENA_AGENT_INTERACTIVE") == "1":
-            print(format_shutdown_status(stats))
+    return _main_v2(args)
 
 
 def _run_launch_prep_v2(
