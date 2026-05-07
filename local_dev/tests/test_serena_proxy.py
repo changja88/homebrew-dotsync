@@ -1,19 +1,23 @@
+import http.client
 import json
 import queue
 import threading
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import Request, urlopen
 
-from local_dev.serena_mcp_management.serena_mcp.proxy import handler_for
+from local_dev.serena_mcp_management.serena_mcp import proxy
 
 
 class UpstreamHandler(BaseHTTPRequestHandler):
     events: list[tuple[str, str, bytes]] = []
+    headers_seen: list[dict[str, str]] = []
     release_get: threading.Event | None = None
 
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
         self.__class__.events.append(("POST", self.path, body))
+        self.__class__.headers_seen.append(dict(self.headers.items()))
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -21,6 +25,7 @@ class UpstreamHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.__class__.events.append(("GET", self.path, b""))
+        self.__class__.headers_seen.append(dict(self.headers.items()))
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
@@ -41,99 +46,174 @@ class UpstreamHandler(BaseHTTPRequestHandler):
 
 def _start_upstream():
     UpstreamHandler.events = []
+    UpstreamHandler.headers_seen = []
     UpstreamHandler.release_get = None
     server = ThreadingHTTPServer(("127.0.0.1", 0), UpstreamHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    return server
+    return server, thread
 
 
 def _start_proxy(upstream_url: str):
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(upstream_url))
+    server = ThreadingHTTPServer(("127.0.0.1", 0), proxy.handler_for(upstream_url))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    return server
+    return server, thread
+
+
+@contextmanager
+def running_upstream():
+    server, thread = _start_upstream()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+@contextmanager
+def running_proxy(upstream_url: str):
+    server, thread = _start_proxy(upstream_url)
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def _read_queue_result(
+    results: queue.Queue[bytes | BaseException],
+    timeout: float,
+) -> bytes:
+    result = results.get(timeout=timeout)
+    if isinstance(result, BaseException):
+        raise result
+    return result
 
 
 def test_proxy_forwards_post_to_upstream():
-    upstream = _start_upstream()
-    upstream_url = f"http://127.0.0.1:{upstream.server_port}/mcp"
-    proxy = _start_proxy(upstream_url)
-    proxy_url = f"http://127.0.0.1:{proxy.server_port}/mcp"
+    with running_upstream() as upstream:
+        upstream_url = f"http://127.0.0.1:{upstream.server_port}/mcp"
+        with running_proxy(upstream_url) as proxy_server:
+            proxy_url = f"http://127.0.0.1:{proxy_server.server_port}/mcp"
 
-    request = Request(
-        proxy_url,
-        data=json.dumps({"jsonrpc": "2.0", "id": 1}).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
+            request = Request(
+                proxy_url,
+                data=json.dumps({"jsonrpc": "2.0", "id": 1}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+
+            with urlopen(request, timeout=2) as response:
+                assert response.status == 200
+                assert response.read() == b'{"ok": true}'
+
+            assert UpstreamHandler.events == [
+                ("POST", "/mcp", b'{"jsonrpc": "2.0", "id": 1}')
+            ]
+
+
+def test_proxy_filters_hop_by_hop_headers_named_by_connection():
+    with running_upstream() as upstream:
+        upstream_url = f"http://127.0.0.1:{upstream.server_port}/mcp"
+        with running_proxy(upstream_url) as proxy_server:
+            connection = http.client.HTTPConnection(
+                "127.0.0.1",
+                proxy_server.server_port,
+                timeout=2,
+            )
+            connection.putrequest("POST", "/mcp", skip_host=True)
+            connection.putheader("Connection", "X-Debug-Hop")
+            connection.putheader("Host", "client-supplied.example")
+            connection.putheader("X-Debug-Hop", "secret")
+            connection.putheader("Content-Length", "2")
+
+            try:
+                connection.endheaders(b"{}")
+                response = connection.getresponse()
+                assert response.status == 200
+            finally:
+                connection.close()
+
+            forwarded_headers = {
+                name.lower(): value
+                for name, value in UpstreamHandler.headers_seen[-1].items()
+            }
+            assert "connection" not in forwarded_headers
+            assert "x-debug-hop" not in forwarded_headers
+            assert "host" not in forwarded_headers
+
+
+def test_proxy_opens_upstream_connection_without_read_timeout(monkeypatch):
+    timeouts: list[object] = []
+
+    class FakeHTTPConnection:
+        def __init__(self, host, port, timeout=None):
+            timeouts.append(timeout)
+
+    monkeypatch.setattr(proxy.http.client, "HTTPConnection", FakeHTTPConnection)
+
+    proxy._open_upstream_connection(
+        proxy._Upstream.from_url("http://127.0.0.1:12345/mcp")
     )
 
-    with urlopen(request, timeout=2) as response:
-        assert response.status == 200
-        assert response.read() == b'{"ok": true}'
-
-    assert UpstreamHandler.events == [
-        ("POST", "/mcp", b'{"jsonrpc": "2.0", "id": 1}')
-    ]
-    proxy.shutdown()
-    upstream.shutdown()
+    assert timeouts == [None]
 
 
 def test_proxy_forwards_get_to_upstream():
-    upstream = _start_upstream()
-    upstream_url = f"http://127.0.0.1:{upstream.server_port}/mcp"
-    proxy = _start_proxy(upstream_url)
-    proxy_url = f"http://127.0.0.1:{proxy.server_port}/mcp"
+    with running_upstream() as upstream:
+        upstream_url = f"http://127.0.0.1:{upstream.server_port}/mcp"
+        with running_proxy(upstream_url) as proxy_server:
+            proxy_url = f"http://127.0.0.1:{proxy_server.server_port}/mcp"
 
-    with urlopen(proxy_url, timeout=2) as response:
-        assert response.status == 200
-        assert response.read() == b"event: message\ndata: ok\n\n"
+            with urlopen(proxy_url, timeout=2) as response:
+                assert response.status == 200
+                assert response.read() == b"event: message\ndata: ok\n\n"
 
-    assert UpstreamHandler.events == [("GET", "/mcp", b"")]
-    proxy.shutdown()
-    upstream.shutdown()
+            assert UpstreamHandler.events == [("GET", "/mcp", b"")]
 
 
 def test_proxy_streams_get_bytes_before_upstream_closes():
     first_event = b"event: message\ndata: ok\n\n"
     release_get = threading.Event()
-    upstream = _start_upstream()
-    UpstreamHandler.release_get = release_get
-    upstream_url = f"http://127.0.0.1:{upstream.server_port}/mcp"
-    proxy = _start_proxy(upstream_url)
-    proxy_url = f"http://127.0.0.1:{proxy.server_port}/mcp"
-    results = queue.Queue()
+    with running_upstream() as upstream:
+        UpstreamHandler.release_get = release_get
+        upstream_url = f"http://127.0.0.1:{upstream.server_port}/mcp"
+        with running_proxy(upstream_url) as proxy_server:
+            proxy_url = f"http://127.0.0.1:{proxy_server.server_port}/mcp"
+            results: queue.Queue[bytes | BaseException] = queue.Queue()
 
-    def read_first_event():
-        with urlopen(proxy_url, timeout=2) as response:
-            results.put(response.read(len(first_event)))
+            def read_first_event():
+                try:
+                    with urlopen(proxy_url, timeout=2) as response:
+                        results.put(response.read(len(first_event)))
+                except BaseException as exc:
+                    results.put(exc)
 
-    client_thread = threading.Thread(target=read_first_event, daemon=True)
-    client_thread.start()
+            client_thread = threading.Thread(target=read_first_event, daemon=True)
+            client_thread.start()
 
-    try:
-        assert results.get(timeout=0.5) == first_event
-    finally:
-        release_get.set()
-        client_thread.join(timeout=2)
-        proxy.shutdown()
-        upstream.shutdown()
+            try:
+                assert _read_queue_result(results, timeout=0.5) == first_event
+            finally:
+                release_get.set()
+                client_thread.join(timeout=2)
 
-    assert UpstreamHandler.events == [("GET", "/mcp", b"")]
+            assert UpstreamHandler.events == [("GET", "/mcp", b"")]
 
 
 def test_proxy_suppresses_delete_without_touching_upstream():
-    upstream = _start_upstream()
-    upstream_url = f"http://127.0.0.1:{upstream.server_port}/mcp"
-    proxy = _start_proxy(upstream_url)
-    proxy_url = f"http://127.0.0.1:{proxy.server_port}/mcp"
+    with running_upstream() as upstream:
+        upstream_url = f"http://127.0.0.1:{upstream.server_port}/mcp"
+        with running_proxy(upstream_url) as proxy_server:
+            proxy_url = f"http://127.0.0.1:{proxy_server.server_port}/mcp"
 
-    request = Request(proxy_url, method="DELETE")
+            request = Request(proxy_url, method="DELETE")
 
-    with urlopen(request, timeout=2) as response:
-        assert response.status == 200
-        assert response.read() == b""
+            with urlopen(request, timeout=2) as response:
+                assert response.status == 200
+                assert response.read() == b""
 
-    assert UpstreamHandler.events == []
-    proxy.shutdown()
-    upstream.shutdown()
+            assert UpstreamHandler.events == []

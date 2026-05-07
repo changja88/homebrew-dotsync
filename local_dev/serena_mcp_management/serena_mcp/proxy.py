@@ -2,15 +2,14 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Protocol
-from urllib.error import HTTPError, URLError
 from urllib.parse import ParseResult, urlparse, urlunparse
-from urllib.request import Request, urlopen
 
 
 _HOP_BY_HOP_HEADERS = {
@@ -52,6 +51,11 @@ class _Upstream:
             "",
         ))
 
+    @property
+    def request_target(self) -> str:
+        path = self.parsed_url.path or "/"
+        return urlunparse(("", "", path, "", self.parsed_url.query, ""))
+
 
 class _ReadableResponse(Protocol):
     def read(self, size: int = -1) -> bytes:
@@ -77,19 +81,27 @@ def handler_for(upstream_url: str) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
 
         def _forward(self, method: str, body: bytes | None) -> None:
-            request = Request(
-                upstream.url,
-                data=body,
-                headers=dict(_forwardable_headers(self.headers.items())),
-                method=method,
-            )
+            connection = None
             try:
-                with urlopen(request, timeout=30) as response:
-                    self._send_upstream_response(response.status, response.headers.items(), response)
-            except HTTPError as exc:
-                self._send_upstream_response(exc.code, exc.headers.items(), exc)
-            except URLError:
+                connection = _open_upstream_connection(upstream)
+                _send_upstream_request(
+                    connection,
+                    upstream,
+                    method,
+                    body,
+                    self.headers.items(),
+                )
+                response = connection.getresponse()
+                self._send_upstream_response(
+                    response.status,
+                    response.getheaders(),
+                    response,
+                )
+            except (OSError, http.client.HTTPException):
                 self.send_error(502, "Bad Gateway")
+            finally:
+                if connection is not None:
+                    connection.close()
 
         def _send_upstream_response(
             self,
@@ -145,10 +157,62 @@ def main() -> int:
     return 0
 
 
-def _forwardable_headers(headers: Iterable[tuple[str, str]]) -> Iterable[tuple[str, str]]:
-    for name, value in headers:
-        if name.lower() not in _HOP_BY_HOP_HEADERS:
+def _open_upstream_connection(upstream: _Upstream) -> http.client.HTTPConnection:
+    return http.client.HTTPConnection(
+        upstream.parsed_url.hostname,
+        upstream.parsed_url.port,
+        timeout=None,
+    )
+
+
+def _send_upstream_request(
+    connection: http.client.HTTPConnection,
+    upstream: _Upstream,
+    method: str,
+    body: bytes | None,
+    headers: Iterable[tuple[str, str]],
+) -> None:
+    connection.putrequest(
+        method,
+        upstream.request_target,
+        skip_host=True,
+        skip_accept_encoding=True,
+    )
+    for name, value in _headers_for_upstream(headers):
+        connection.putheader(name, value)
+    connection.endheaders(body)
+
+
+def _headers_for_upstream(
+    headers: Iterable[tuple[str, str]],
+) -> Iterable[tuple[str, str]]:
+    header_items = tuple(headers)
+    blocked_headers = _headers_listed_by_connection(header_items)
+    for name, value in header_items:
+        if name.lower() not in blocked_headers and name.lower() != "host":
             yield name, value
+
+
+def _forwardable_headers(
+    headers: Iterable[tuple[str, str]],
+) -> Iterable[tuple[str, str]]:
+    header_items = tuple(headers)
+    blocked_headers = _headers_listed_by_connection(header_items)
+    for name, value in header_items:
+        if name.lower() not in blocked_headers:
+            yield name, value
+
+
+def _headers_listed_by_connection(headers: Iterable[tuple[str, str]]) -> set[str]:
+    blocked_headers = set(_HOP_BY_HOP_HEADERS)
+    for name, value in headers:
+        if name.lower() == "connection":
+            blocked_headers.update(
+                header_name.strip().lower()
+                for header_name in value.split(",")
+                if header_name.strip()
+            )
+    return blocked_headers
 
 
 def _read_response_chunk(response: _ReadableResponse) -> bytes:
