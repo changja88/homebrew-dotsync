@@ -12,6 +12,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
@@ -33,6 +34,128 @@ from local_dev.serena_mcp_management.ui import (
     Item,
     confirm,
 )
+
+
+@dataclass
+class CleanupResult:
+    """Result of a cleanup operation."""
+
+    deleted: int
+    memory_files_reset: int
+
+
+@dataclass
+class LaunchPrepSummary:
+    """Summary of the v2 launch-prep phase."""
+
+    cleanup_deleted: int
+    cleanup_memory_files_reset: int
+
+
+def _jq_available() -> bool:
+    """Check if jq is available in the system."""
+    return shutil.which("jq") is not None
+
+
+def _claude_project_dir() -> Path:
+    """Get the Claude project directory for the current working directory."""
+    cwd = os.getcwd()
+    encoded = cwd.replace("/", "-")
+    return Path(os.path.expanduser("~/.claude/projects")) / encoded
+
+
+def _run_cleanup_claude(proj_dir: Path) -> CleanupResult:
+    """Clean up old Claude sessions and memory files.
+
+    Deletes:
+    - *.jsonl files older than 3 days (find -mtime +3)
+    - Per-jsonl UUID directories (named after jsonl stem)
+    - Entire memory directory at the end
+
+    Returns:
+        CleanupResult with deleted count and memory files reset count.
+    """
+    deleted = 0
+    memory_files_reset = 0
+    mem_dir = proj_dir / "memory"
+
+    # Count memory files BEFORE deletion
+    if mem_dir.is_dir():
+        memory_files_reset = sum(1 for _ in mem_dir.rglob("*") if _.is_file())
+
+    if proj_dir.is_dir():
+        cutoff = time.time() - 3 * 86400  # 3 days in seconds
+        for jsonl in proj_dir.glob("*.jsonl"):
+            if jsonl.stat().st_mtime < cutoff:
+                # Delete the .jsonl file
+                uuid_dir = proj_dir / jsonl.stem
+                jsonl.unlink(missing_ok=True)
+                # Delete the corresponding UUID directory
+                if uuid_dir.is_dir():
+                    shutil.rmtree(uuid_dir, ignore_errors=True)
+                deleted += 1
+
+        # Delete the entire memory directory
+        if mem_dir.is_dir():
+            shutil.rmtree(mem_dir, ignore_errors=True)
+
+    return CleanupResult(deleted=deleted, memory_files_reset=memory_files_reset)
+
+
+def _run_cleanup_codex(codex_home: Path, cwd: str) -> CleanupResult:
+    """Clean up old Codex sessions and memory files.
+
+    Sessions are scanned only if jq is available.
+    Matches sessions where:
+    - type == "session_meta"
+    - payload.cwd == cwd
+    - mtime > 3 days
+
+    Always deletes memories directory at the end.
+
+    Returns:
+        CleanupResult with deleted count and memory files reset count.
+    """
+    deleted = 0
+    memory_files_reset = 0
+    sessions_dir = codex_home / "sessions"
+    mem_dir = codex_home / "memories"
+
+    # Count memory files BEFORE deletion
+    if mem_dir.is_dir():
+        memory_files_reset = sum(1 for _ in mem_dir.rglob("*") if _.is_file())
+
+    # Only scan sessions if jq is available
+    if sessions_dir.is_dir() and _jq_available():
+        cutoff = time.time() - 3 * 86400  # 3 days in seconds
+        for jsonl in sessions_dir.glob("*.jsonl"):
+            # Check if file matches the jq filter: type == "session_meta" && payload.cwd == $cwd
+            try:
+                proc = subprocess.run(
+                    ["jq", "-e", "--arg", "cwd", cwd,
+                     "select(.type == \"session_meta\" and .payload.cwd == $cwd)",
+                     str(jsonl)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+                if proc.returncode != 0:
+                    # Filter didn't match
+                    continue
+            except FileNotFoundError:
+                # jq not found, skip this file
+                continue
+
+            # Check if file is old enough
+            if jsonl.stat().st_mtime < cutoff:
+                jsonl.unlink(missing_ok=True)
+                deleted += 1
+
+    # Always delete the entire memories directory
+    if mem_dir.is_dir():
+        shutil.rmtree(mem_dir, ignore_errors=True)
+
+    return CleanupResult(deleted=deleted, memory_files_reset=memory_files_reset)
 
 
 def infer_client_type(program_name: str) -> str:
@@ -235,6 +358,43 @@ def _main_v1(args: list[str]) -> int:
         stats = _remove_lease_and_shutdown_if_empty(scope, lease_id)
         if stats is not None and os.environ.get("SERENA_AGENT_INTERACTIVE") == "1":
             print(format_shutdown_status(stats))
+
+
+def _run_launch_prep_v2(
+    *,
+    stream: TextIO | None = None,
+) -> LaunchPrepSummary:
+    """Run the v2 launch-prep phase with cleanup execution.
+
+    This phase:
+    1. Detects the client type and runs cleanup (claude or codex)
+    2. Outputs the cleanup results in a formatted row
+    3. Returns a summary of what was cleaned
+
+    Returns:
+        LaunchPrepSummary with cleanup counts.
+    """
+    out = stream if stream is not None else sys.stdout
+    client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
+
+    if client == "claude":
+        result = _run_cleanup_claude(_claude_project_dir())
+    else:
+        codex_home = Path(
+            os.environ.get("CODEX_HOME", os.path.expanduser("~/.codex"))
+        )
+        result = _run_cleanup_codex(codex_home, os.getcwd())
+
+    out.write(
+        f"  ✓ cleanup     {result.deleted} deleted . "
+        f"{result.memory_files_reset} memory files reset\n"
+    )
+    out.flush()
+
+    return LaunchPrepSummary(
+        cleanup_deleted=result.deleted,
+        cleanup_memory_files_reset=result.memory_files_reset,
+    )
 
 
 def _main_v2(args: list[str]) -> int:

@@ -1,5 +1,6 @@
 import io
 import os
+import time
 from unittest import mock
 
 import pytest
@@ -147,3 +148,64 @@ def test_v2_serena_init_create_failure_returns_failed(monkeypatch, tmp_path):
     answers = iter(["y"])
     result = launcher._run_serena_init_v2(stream=out, input_fn=lambda: next(answers))
     assert result == "failed"
+
+
+def _make_old_file(path):
+    """Write a file and set its mtime to 4 days ago."""
+    path.write_text("x")
+    old = time.time() - 4 * 86400
+    os.utime(path, (old, old))
+
+
+def test_v2_run_cleanup_claude_deletes_old_jsonl(tmp_path, monkeypatch):
+    proj_dir = tmp_path / ".claude" / "projects" / "-repo"
+    proj_dir.mkdir(parents=True)
+    old = proj_dir / "abc.jsonl"
+    _make_old_file(old)
+    fresh = proj_dir / "fresh.jsonl"
+    fresh.write_text("x")
+    mem = proj_dir / "memory"
+    mem.mkdir()
+    (mem / "m1.txt").write_text("x")
+
+    result = launcher._run_cleanup_claude(proj_dir)
+    assert result.deleted == 1
+    assert result.memory_files_reset == 1
+    assert not old.exists()
+    assert fresh.exists()
+    assert not mem.exists()
+
+
+def test_v2_run_cleanup_codex_skips_when_jq_missing(tmp_path, monkeypatch):
+    codex_home = tmp_path / ".codex"
+    sessions = codex_home / "sessions"
+    sessions.mkdir(parents=True)
+    (sessions / "a.jsonl").write_text("{}\n")
+    mem = codex_home / "memories"
+    mem.mkdir()
+    (mem / "m.txt").write_text("x")
+
+    monkeypatch.setattr(launcher, "_jq_available", lambda: False, raising=False)
+    result = launcher._run_cleanup_codex(codex_home, "/repo")
+    assert result.deleted == 0
+    assert result.memory_files_reset == 1
+    assert not mem.exists()
+
+
+def test_v2_launch_prep_runs_cleanup_and_renders_done_row(tmp_path, monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_TUI", "v2")
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    proj_dir = tmp_path / ".claude" / "projects" / "-x"
+    proj_dir.mkdir(parents=True)
+    monkeypatch.setattr(launcher, "_claude_project_dir",
+                        lambda: proj_dir, raising=False)
+
+    out = io.StringIO()
+    summary = launcher._run_launch_prep_v2(stream=out)
+    text = out.getvalue()
+    assert "cleanup" in text
+    assert "0 deleted . 0 memory files reset" in text
+    assert summary.cleanup_deleted == 0
+    assert summary.cleanup_memory_files_reset == 0
