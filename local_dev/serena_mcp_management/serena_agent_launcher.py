@@ -446,7 +446,13 @@ def _main_v2(args: list[str]) -> int:
     finally:
         stop.set()
         cleanup()
-        stats = _remove_lease_and_shutdown_if_empty(scope, lease_id)
+        if interactive:
+            try:
+                stats = _stop_mcp_with_spinner(scope=scope, lease_id=lease_id)
+            except Exception:
+                stats = None
+        else:
+            stats = _remove_lease_and_shutdown_if_empty(scope, lease_id)
 
     if interactive:
         if stats is None:
@@ -628,6 +634,39 @@ def _heartbeat_loop(scope: Scope, lease_id: str, stop: threading.Event) -> None:
 
 def _remove_lease_and_shutdown_if_empty(scope: Scope, lease_id: str) -> ShutdownStats:
     return release_lease_and_shutdown_if_empty(scope, lease_id)
+
+
+def _stop_mcp_with_spinner(
+    *,
+    scope,
+    lease_id: str,
+    stream=None,
+    shutdown_fn=None,
+):
+    """Run lease release + MCP shutdown with a single-line spinner."""
+    out = stream if stream is not None else sys.stdout
+    fn = shutdown_fn if shutdown_fn is not None else _remove_lease_and_shutdown_if_empty
+    out.write("  · serena     stopping scoped server")
+    out.flush()
+
+    def on_tick(frame: int) -> None:
+        spinner = SPINNER_FRAMES[frame % len(SPINNER_FRAMES)]
+        out.write(f"\r  {spinner} serena     stopping scoped server")
+        out.flush()
+
+    ticker = SpinnerTicker(on_tick=on_tick, interval=0.1)
+    ticker.start()
+    try:
+        stats = fn(scope, lease_id)
+    except Exception as exc:
+        ticker.stop()
+        out.write(f"\r  ! serena     shutdown failed . {exc}\n")
+        out.flush()
+        raise
+    ticker.stop()
+    out.write(f"\r  ✓ serena     stopped scoped server\n")
+    out.flush()
+    return stats
 
 
 if __name__ == "__main__":

@@ -281,6 +281,46 @@ def test_v2_render_summary_includes_warnings():
     assert "serena project create skipped" in out.getvalue()
 
 
+def test_v2_shutdown_with_spinner_outputs_progress_then_done(monkeypatch):
+    monkeypatch.delenv("SERENA_AGENT_INTERACTIVE", raising=False)
+
+    fake_stats = mock.Mock(
+        sessions_before=1, sessions_closed=1, sessions_remaining=0,
+        server_was_running=True, server_stopped=True,
+    )
+
+    out = io.StringIO()
+    stats = launcher._stop_mcp_with_spinner(
+        scope=mock.Mock(),
+        lease_id="lease-1",
+        stream=out,
+        shutdown_fn=lambda scope, lease_id: fake_stats,
+    )
+    assert stats is fake_stats
+    text = out.getvalue()
+    # spinner emitted "stopping" line, replaced with done line on completion
+    assert "stopping" in text
+    assert "stopped" in text or "done" in text
+
+
+def test_v2_shutdown_with_spinner_propagates_exception(monkeypatch):
+    monkeypatch.delenv("SERENA_AGENT_INTERACTIVE", raising=False)
+
+    def boom(scope, lease_id):
+        raise RuntimeError("shutdown failed")
+
+    out = io.StringIO()
+    with pytest.raises(RuntimeError, match="shutdown failed"):
+        launcher._stop_mcp_with_spinner(
+            scope=mock.Mock(),
+            lease_id="lease-1",
+            stream=out,
+            shutdown_fn=boom,
+        )
+    text = out.getvalue()
+    assert "stopping" in text or "shutdown failed" in text
+
+
 def test_v2_main_returns_child_exit_code(monkeypatch, tmp_path):
     monkeypatch.setenv("SERENA_AGENT_TUI", "v2")
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
