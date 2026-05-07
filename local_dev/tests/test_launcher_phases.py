@@ -243,3 +243,64 @@ def test_v2_start_mcp_with_spinner_raises_on_failure(monkeypatch):
                                          stream=out)
     text = out.getvalue()
     assert "server unhealthy" in text or "preparing" in text
+
+
+def test_v2_render_summary_box_includes_duration_and_cleanup():
+    out = io.StringIO()
+    summary = launcher._render_summary_v2(
+        stream=out,
+        client="codex",
+        duration_seconds=125.0,
+        cleanup_deleted=2,
+        cleanup_memory_files_reset=10,
+        mcp_lifecycle="stopped",
+        warnings=[],
+    )
+    assert summary is None  # writes to stream, no return
+    text = out.getvalue()
+    assert "summary" in text
+    assert "2m 5s" in text or "125" in text
+    assert "2 deleted" in text
+    assert "10 memory files reset" in text
+    assert "stopped" in text
+
+
+def test_v2_render_summary_includes_warnings():
+    out = io.StringIO()
+    launcher._render_summary_v2(
+        stream=out,
+        client="claude",
+        duration_seconds=10.0,
+        cleanup_deleted=0,
+        cleanup_memory_files_reset=0,
+        mcp_lifecycle="kept",
+        warnings=["serena project create skipped"],
+    )
+    assert "serena project create skipped" in out.getvalue()
+
+
+def test_v2_main_returns_child_exit_code(monkeypatch, tmp_path):
+    monkeypatch.setenv("SERENA_AGENT_TUI", "v2")
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "0")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "installed")
+
+    fake_record = mock.Mock()
+    fake_record.mcp_url = "http://127.0.0.1:0/mcp"
+    fake_record.dashboard_url = ""
+    monkeypatch.setattr(launcher, "ensure_server",
+                        lambda scope, lease: fake_record, raising=False)
+    monkeypatch.setattr(launcher, "find_real_binary",
+                        lambda client: "/usr/bin/true", raising=False)
+    monkeypatch.setattr(launcher, "_remove_lease_and_shutdown_if_empty",
+                        lambda scope, lease_id: mock.Mock(
+                            sessions_before=1, sessions_closed=1, sessions_remaining=0,
+                            server_was_running=True, server_stopped=True),
+                        raising=False)
+
+    rc = launcher._main_v2([])
+    assert rc == 0

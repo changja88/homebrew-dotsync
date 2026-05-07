@@ -448,9 +448,125 @@ def _start_mcp_with_spinner(
     return record
 
 
+def _format_duration(seconds: float) -> str:
+    minutes = int(seconds // 60)
+    secs = int(seconds - minutes * 60)
+    if minutes == 0:
+        return f"{secs}s"
+    return f"{minutes}m {secs}s"
+
+
+def _render_summary_v2(
+    *,
+    stream,
+    client: str,
+    duration_seconds: float,
+    cleanup_deleted: int,
+    cleanup_memory_files_reset: int,
+    mcp_lifecycle: str,
+    warnings: list[str],
+) -> None:
+    items = [
+        Item(id="duration", label="duration",
+             value=_format_duration(duration_seconds), status="done"),
+        Item(id="cleanup", label="cleanup",
+             value=(f"{cleanup_deleted} deleted . "
+                    f"{cleanup_memory_files_reset} memory files reset"),
+             status="done"),
+        Item(id="mcp", label="serena", value=f"server {mcp_lifecycle}", status="done"),
+    ]
+    for index, message in enumerate(warnings):
+        items.append(Item(id=f"warn-{index}", label="warning",
+                          value=message, status="warn"))
+    model = BoxModel(phase="summary", title=client, items=items)
+    BoxRenderer(stream=stream).draw(model)
+
+
 def _main_v2(args: list[str]) -> int:
-    """v2 box-model TUI flow. Filled out in subsequent tasks."""
-    raise NotImplementedError("v2 will be implemented in tasks 7-11")
+    """v2 box-model TUI flow."""
+    started_at = time.time()
+    warnings: list[str] = []
+    interactive = os.environ.get("SERENA_AGENT_INTERACTIVE") == "1"
+    out = sys.stdout
+
+    if interactive:
+        rc = _run_preflight_v2()
+        if rc != 0:
+            return rc
+
+    serena_state = _run_serena_init_v2() if interactive else "managed"
+    if serena_state in {"skipped", "failed"}:
+        warnings.append(f"serena project create {serena_state}")
+        client_type = infer_client_type(os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0]))
+        real_binary = find_real_binary(client_type)
+        return int(subprocess.run([real_binary, *args]).returncode)
+
+    summary_state = _run_launch_prep_v2() if interactive else None
+
+    client_type = infer_client_type(os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0]))
+    project_root = _project_root_from_environment() or find_project_root(Path.cwd())
+    scope = Scope(project_root, client_type)
+    lease_id = str(uuid.uuid4())
+    lease = Lease(lease_id, os.getpid(), time.time())
+
+    record = _start_mcp_with_spinner(scope=scope, lease=lease) if interactive \
+        else ensure_server(scope, lease)
+
+    stop = threading.Event()
+    cleanup: Callable[[], None] = lambda: None
+    child: subprocess.Popen | None = None
+    heartbeat = threading.Thread(
+        target=_heartbeat_loop, args=(scope, lease_id, stop), daemon=True,
+    )
+    heartbeat.start()
+
+    try:
+        real_binary = find_real_binary(client_type)
+        cmd, cleanup = build_child_command(
+            client_type=client_type,
+            real_binary=real_binary,
+            mcp_url=record.mcp_url,
+            child_args=args,
+        )
+        open_dashboard_if_requested(record.dashboard_url)
+        if os.environ.get("SERENA_AGENT_CLEAR_BEFORE_CHILD") == "1":
+            clear_terminal_before_child()
+        child = subprocess.Popen(cmd, cwd=str(project_root))
+
+        def shutdown(signum=None, frame=None):
+            stop.set()
+            if child is not None and child.poll() is None:
+                child.terminate()
+
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(signum, shutdown)
+        rc = int(child.wait())
+    finally:
+        stop.set()
+        cleanup()
+        stats = _remove_lease_and_shutdown_if_empty(scope, lease_id)
+
+    if interactive:
+        if stats is None:
+            mcp_lifecycle = "unknown"
+        elif stats.server_stopped:
+            mcp_lifecycle = "stopped"
+        elif stats.server_was_running:
+            mcp_lifecycle = f"kept ({stats.sessions_remaining} sessions)"
+        else:
+            mcp_lifecycle = "none"
+        cleanup_deleted = summary_state.cleanup_deleted if summary_state else 0
+        cleanup_memory = summary_state.cleanup_memory_files_reset if summary_state else 0
+        _render_summary_v2(
+            stream=out,
+            client=client_type,
+            duration_seconds=time.time() - started_at,
+            cleanup_deleted=cleanup_deleted,
+            cleanup_memory_files_reset=cleanup_memory,
+            mcp_lifecycle=mcp_lifecycle,
+            warnings=warnings,
+        )
+    return rc
 
 
 def _project_root_from_environment() -> Path | None:
