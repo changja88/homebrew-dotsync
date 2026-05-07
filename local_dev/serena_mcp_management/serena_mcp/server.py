@@ -8,6 +8,7 @@ import select
 import signal
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -21,6 +22,8 @@ from local_dev.serena_mcp_management.serena_mcp.paths import Scope, state_dir_fo
 from local_dev.serena_mcp_management.serena_mcp.registry import Lease, ServerRecord, locked_registry, touch_lease
 from local_dev.serena_mcp_management.serena_mcp.watchdog import ensure_watchdog
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
 
 def ensure_server(scope: Scope, initial_lease: Lease) -> ServerRecord:
     """Return a healthy server for a scope and atomically register a lease."""
@@ -32,7 +35,7 @@ def ensure_server(scope: Scope, initial_lease: Lease) -> ServerRecord:
             record = registry.record
         else:
             if registry.record:
-                _terminate_pid(registry.record.server_pid)
+                _terminate_record(registry.record)
                 registry.record = None
             record = _start_healthy_server(scope, fresh_lease)
             registry.record = record
@@ -49,6 +52,7 @@ def server_is_healthy(record: ServerRecord, scope: Scope) -> bool:
         return False
     return (
         pid_is_alive(record.server_pid)
+        and (record.proxy_pid is None or pid_is_alive(record.proxy_pid))
         and http_endpoint_alive(record.mcp_url)
         and dashboard_matches_project(record.dashboard_url, scope.project_root)
     )
@@ -67,23 +71,31 @@ def serena_context_for(client_type: str) -> str:
 def _start_healthy_server(scope: Scope, initial_lease: Lease) -> ServerRecord:
     last_error: Exception | None = None
     for _attempt in range(3):
-        port = _find_free_port_with_host_lock()
-        proc = _start_serena_process(scope, port)
+        upstream_port = _find_free_port_with_host_lock()
+        proc = _start_serena_process(scope, upstream_port)
+        proxy_proc = None
         try:
+            upstream_mcp_url = f"http://127.0.0.1:{upstream_port}/mcp"
             dashboard_url = _discover_dashboard_url(proc)
+            proxy_port = _find_free_port_with_host_lock()
+            proxy_proc = _start_proxy_process(scope, proxy_port, upstream_mcp_url)
             record = ServerRecord(
                 server_pid=proc.pid,
-                mcp_url=f"http://127.0.0.1:{port}/mcp",
+                mcp_url=f"http://127.0.0.1:{proxy_port}/mcp",
                 dashboard_url=dashboard_url,
                 project_root=str(scope.project_root),
                 client_type=scope.client_type,
                 started_at=time.time(),
                 leases={initial_lease.lease_id: initial_lease},
+                upstream_mcp_url=upstream_mcp_url,
+                proxy_pid=proxy_proc.pid,
             )
             _wait_until_healthy(record, scope)
             return record
-        except RuntimeError as exc:
+        except Exception as exc:
             last_error = exc
+            if proxy_proc is not None:
+                _terminate_pid(proxy_proc.pid)
             _terminate_pid(proc.pid)
     raise RuntimeError(f"failed to start healthy Serena MCP server: {last_error}")
 
@@ -132,6 +144,34 @@ def _start_serena_process(scope: Scope, port: int) -> subprocess.Popen:
                 "false",
             ],
             cwd=str(scope.project_root),
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+    proc.dotsync_log_path = log_path
+    return proc
+
+
+def _start_proxy_process(scope: Scope, port: int, upstream_url: str) -> subprocess.Popen:
+    log_path = state_dir_for(scope) / "serena-proxy.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w") as log:
+        proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "local_dev.serena_mcp_management.serena_mcp.proxy",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+                "--upstream-url",
+                upstream_url,
+                "--log-path",
+                str(log_path),
+            ],
+            cwd=str(REPO_ROOT),
             stdout=log,
             stderr=subprocess.STDOUT,
             text=True,
@@ -201,6 +241,12 @@ def _wait_until_healthy(record: ServerRecord, scope: Scope, *, timeout: float = 
             return
         time.sleep(0.25)
     raise RuntimeError("Serena MCP server did not become healthy")
+
+
+def _terminate_record(record: ServerRecord) -> None:
+    if record.proxy_pid is not None:
+        _terminate_pid(record.proxy_pid)
+    _terminate_pid(record.server_pid)
 
 
 def _terminate_pid(pid: int) -> None:
