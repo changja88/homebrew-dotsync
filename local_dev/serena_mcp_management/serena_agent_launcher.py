@@ -161,6 +161,14 @@ def main(argv: list[str] | None = None) -> int:
     """Run the scoped Serena launcher."""
 
     args = list(sys.argv[1:] if argv is None else argv)
+    if os.environ.get("SERENA_AGENT_TUI") == "v2":
+        return _main_v2(args)
+    return _main_v1(args)
+
+
+def _main_v1(args: list[str]) -> int:
+    """Existing flow. Behavior preserved exactly."""
+
     client_type = infer_client_type(os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0]))
     project_root = _project_root_from_environment() or find_project_root(Path.cwd())
     scope = Scope(project_root, client_type)
@@ -219,6 +227,11 @@ def main(argv: list[str] | None = None) -> int:
         stats = _remove_lease_and_shutdown_if_empty(scope, lease_id)
         if stats is not None and os.environ.get("SERENA_AGENT_INTERACTIVE") == "1":
             print(format_shutdown_status(stats))
+
+
+def _main_v2(args: list[str]) -> int:
+    """v2 box-model TUI flow. Filled out in subsequent tasks."""
+    raise NotImplementedError("v2 will be implemented in tasks 7-11")
 
 
 def _project_root_from_environment() -> Path | None:
