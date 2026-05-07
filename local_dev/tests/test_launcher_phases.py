@@ -1,11 +1,18 @@
 import io
 import os
+import re
 import time
 from unittest import mock
 
 import pytest
 
 from local_dev.serena_mcp_management import serena_agent_launcher as launcher
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(s: str) -> str:
+    return _ANSI_ESCAPE_RE.sub("", s)
 
 
 def test_main_always_dispatches_to_v2(monkeypatch):
@@ -52,8 +59,8 @@ def test_v2_preflight_renders_box_with_cleanup_and_serena(monkeypatch):
 
     rc = launcher._run_preflight_v2(stream=out, input_fn=lambda: next(answers))
     text = out.getvalue()
-    assert "0 to delete . 103 to keep" in text
-    assert "0 files to reset" in text
+    assert "0 to delete . 103 to keep" in _strip_ansi(text)
+    assert "0 files to reset" in _strip_ansi(text)
     assert "preflight" in text
     assert "codex" in text
     assert rc == 130  # abort -> non-zero
@@ -254,9 +261,9 @@ def test_v2_render_summary_box_includes_duration_and_cleanup():
     assert summary is None  # writes to stream, no return
     text = out.getvalue()
     assert "summary" in text
-    assert "2m 5s" in text or "125" in text
-    assert "2 deleted" in text
-    assert "10 memory files reset" in text
+    assert "2m 5s" in _strip_ansi(text) or "125" in _strip_ansi(text)
+    assert "2 deleted" in _strip_ansi(text)
+    assert "10 memory files reset" in _strip_ansi(text)
     assert "stopped" in text
 
 

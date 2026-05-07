@@ -35,6 +35,7 @@ from local_dev.serena_mcp_management.ui import (
     SPINNER_FRAMES,
     SpinnerTicker,
     confirm,
+    style_count,
 )
 
 
@@ -369,8 +370,10 @@ def _render_summary_v2(
         Item(id="duration", label="duration",
              value=_format_duration(duration_seconds), status="done"),
         Item(id="cleanup", label="cleanup",
-             value=(f"{cleanup_deleted} deleted . "
-                    f"{cleanup_memory_files_reset} memory files reset"),
+             value=style_count(
+                 f"{cleanup_deleted} deleted . "
+                 f"{cleanup_memory_files_reset} memory files reset"
+             ),
              status="done"),
         Item(id="mcp", label="serena", value=f"server {mcp_lifecycle}", status="done"),
     ]
@@ -526,8 +529,8 @@ def _preflight_box() -> BoxModel:
             value="claude-code" if client == "claude" else "codex",
             status="info",
         ),
-        Item(id="cleanup", label="cleanup", value=cleanup_value, status="info"),
-        Item(id="memory", label="memory", value=memory_value, status="info"),
+        Item(id="cleanup", label="cleanup", value=style_count(cleanup_value), status="info"),
+        Item(id="memory", label="memory", value=style_count(memory_value), status="info"),
     ]
     return BoxModel(phase="preflight", title=client, items=items)
 

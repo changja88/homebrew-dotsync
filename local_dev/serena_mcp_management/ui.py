@@ -10,6 +10,7 @@ concerns:
 """
 from __future__ import annotations
 
+import re
 import sys
 import threading
 from collections.abc import Callable
@@ -51,6 +52,37 @@ _BOX_WIDTH = 60
 
 def _ansi(code: str, text: str) -> str:
     return f"\x1b[{code}m{text}\x1b[0m"
+
+
+_COUNT_KEYWORDS = sorted(
+    [
+        "memory files reset",
+        "files to reset",
+        "scan skipped",
+        "to delete",
+        "to keep",
+        "deleted",
+        "kept",
+    ],
+    key=len,
+    reverse=True,
+)
+
+
+def style_count(phrase: str) -> str:
+    """Colorize digits (cyan) and known count keywords (yellow) in a count phrase.
+
+    Plain phrase in, ANSI-formatted phrase out. Unmatched substrings pass through.
+    Used by launcher for preflight/summary cleanup and memory rows.
+    """
+    if not phrase:
+        return phrase
+    # Color digits first.
+    result = re.sub(r"\d+", lambda m: _ansi("36", m.group(0)), phrase)
+    # Color keywords (longest first to avoid partial overlap).
+    for kw in _COUNT_KEYWORDS:
+        result = result.replace(kw, _ansi("33", kw))
+    return result
 
 
 def _marker_for(status: ItemStatus, *, spin_frame: int = 0) -> str:
