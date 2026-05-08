@@ -29,6 +29,14 @@ DIM_ANSI = "\033[2m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
 
+# --- gradient palette (shared visual identity with the launcher TUI) -------
+# The launcher's serena_mcp_management.ui pins the same hex values; keep these
+# in sync when the brand palette evolves.
+PINK_RGB = (247, 128, 226)    # #F780E2 huh fuchsia
+MID_RGB = (192, 105, 240)     # #C069F0 perceptual midpoint
+PURPLE_RGB = (117, 113, 249)  # #7571F9 huh indigo
+_GRADIENT_PERIOD = 80         # cells per full pink→mid→purple→mid→pink cycle
+
 # --- glyphs -----------------------------------------------------------------
 
 GLYPH_STEP = "▸"           # section bullet
@@ -93,6 +101,56 @@ def _box_top(width: int) -> str:
 
 def _box_bottom(width: int) -> str:
     return _wrap(DIM_ANSI, f"{GLYPH_BOX_BL}{GLYPH_HORIZ * (width + 2)}{GLYPH_BOX_BR}")
+
+
+# --- gradient helpers -------------------------------------------------------
+
+def _lerp_rgb(
+    a: "tuple[int, int, int]", b: "tuple[int, int, int]", t: float
+) -> "tuple[int, int, int]":
+    return (
+        int(a[0] + (b[0] - a[0]) * t),
+        int(a[1] + (b[1] - a[1]) * t),
+        int(a[2] + (b[2] - a[2]) * t),
+    )
+
+
+def gradient_color(pos: int) -> "tuple[int, int, int]":
+    """Pink → mid → purple → mid → pink, indexed by cell position."""
+    p = (pos % _GRADIENT_PERIOD) / _GRADIENT_PERIOD
+    if p < 0.25:
+        return _lerp_rgb(PINK_RGB, MID_RGB, p / 0.25)
+    if p < 0.5:
+        return _lerp_rgb(MID_RGB, PURPLE_RGB, (p - 0.25) / 0.25)
+    if p < 0.75:
+        return _lerp_rgb(PURPLE_RGB, MID_RGB, (p - 0.5) / 0.25)
+    return _lerp_rgb(MID_RGB, PINK_RGB, (p - 0.75) / 0.25)
+
+
+def gradient_line(line: str) -> str:
+    """Color each non-space cell of ``line`` with the brand gradient.
+
+    Whitespace is left uncolored; consecutive cells of the same color
+    collapse into a single escape. Honors NO_COLOR.
+    """
+    if not _color_enabled():
+        return line
+    out: list[str] = []
+    last: "tuple[int, int, int] | None" = None
+    colored = False
+    for i, ch in enumerate(line):
+        if ch == " ":
+            out.append(" ")
+            continue
+        color = gradient_color(i)
+        if color != last:
+            out.append(f"\033[1;38;2;{color[0]};{color[1]};{color[2]}m")
+            last = color
+            colored = True
+        out.append(ch)
+    if colored:
+        out.append(RESET)
+    return "".join(out)
 
 
 # --- format_* (return strings; testable) ------------------------------------

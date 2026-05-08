@@ -69,11 +69,12 @@ _HEADER_ART: dict[str, tuple[str, ...]] = {
         r"  ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝",
     ),
     "claude": (
-        r"      _                 _      ",
-        r"  ___| | __ _ _   _  __| | ___ ",
-        " / __| |/ _` | | | |/ _` |/ _ \\",
-        r"| (__| | (_| | |_| | (_| |  __/",
-        r" \___|_|\__,_|\__,_|\__,_|\___|",
+        r"  ██████╗██╗      █████╗ ██╗   ██╗██████╗ ███████╗",
+        r" ██╔════╝██║     ██╔══██╗██║   ██║██╔══██╗██╔════╝",
+        r" ██║     ██║     ███████║██║   ██║██║  ██║█████╗  ",
+        r" ██║     ██║     ██╔══██║██║   ██║██║  ██║██╔══╝  ",
+        r" ╚██████╗███████╗██║  ██║╚██████╔╝██████╔╝███████╗",
+        r"  ╚═════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚══════╝",
     ),
 }
 
@@ -83,6 +84,18 @@ _HEADER_ART: dict[str, tuple[str, ...]] = {
 PINK = "38;2;247;128;226"  # #F780E2, huh fuchsia (cursor / button accent)
 PURPLE = "38;2;117;113;249"  # #7571F9, huh indigo (title / focused tone)
 MINT = "38;2;2;191;135"  # #02BF87, huh selected-option green (legible label)
+
+# RGB endpoints for the cell-by-cell title gradient. Mid is the perceptual
+# midpoint between huh fuchsia and indigo, used so the gradient never crosses
+# through gray.
+_PINK_RGB = (247, 128, 226)
+_MID_RGB = (192, 105, 240)
+_PURPLE_RGB = (117, 113, 249)
+
+# Length of one full pink → mid → purple → mid → pink cycle, in cells. Picked
+# slightly larger than the widest banner (~50 cells) so a single line shows
+# roughly one and a quarter cycles.
+_GRADIENT_PERIOD = 80
 
 
 def _ansi(code: str, text: str) -> str:
@@ -139,32 +152,74 @@ def _marker_for(status: ItemStatus, *, spin_frame: int = 0) -> str:
     return _ansi("90", "o")  # pending
 
 
-def _border(char: str) -> str:
-    return _ansi("90", char * _BOX_WIDTH)
+def _lerp_rgb(
+    a: tuple[int, int, int], b: tuple[int, int, int], t: float
+) -> tuple[int, int, int]:
+    return (
+        int(a[0] + (b[0] - a[0]) * t),
+        int(a[1] + (b[1] - a[1]) * t),
+        int(a[2] + (b[2] - a[2]) * t),
+    )
+
+
+def _gradient_color(pos: int) -> tuple[int, int, int]:
+    """Pink → mid → purple → mid → pink, indexed by cell position."""
+    p = (pos % _GRADIENT_PERIOD) / _GRADIENT_PERIOD
+    if p < 0.25:
+        return _lerp_rgb(_PINK_RGB, _MID_RGB, p / 0.25)
+    if p < 0.5:
+        return _lerp_rgb(_MID_RGB, _PURPLE_RGB, (p - 0.25) / 0.25)
+    if p < 0.75:
+        return _lerp_rgb(_PURPLE_RGB, _MID_RGB, (p - 0.5) / 0.25)
+    return _lerp_rgb(_MID_RGB, _PINK_RGB, (p - 0.75) / 0.25)
+
+
+def _gradient_line(line: str) -> str:
+    """Paint one art line cell-by-cell with the static gradient.
+
+    Whitespace is left uncolored so the box clip area stays visually clean,
+    and consecutive cells of the same color collapse into a single escape to
+    keep the rendered byte count low.
+    """
+    out: list[str] = []
+    last: tuple[int, int, int] | None = None
+    colored = False
+    for i, ch in enumerate(line):
+        if ch == " ":
+            out.append(" ")
+            continue
+        color = _gradient_color(i)
+        if color != last:
+            out.append(f"\x1b[1;38;2;{color[0]};{color[1]};{color[2]}m")
+            last = color
+            colored = True
+        out.append(ch)
+    if colored:
+        out.append("\x1b[0m")
+    return "".join(out)
 
 
 def render_box(model: BoxModel, *, spin_frame: int = 0) -> str:
     lines: list[str] = []
-    lines.append("  " + _border("─"))
+    # Double border (pink + purple) — outline-offset look from concept 02.
+    lines.append("  " + _ansi(PINK, "─" * _BOX_WIDTH))
+    lines.append("  " + _ansi(PURPLE, "─" * _BOX_WIDTH))
     art = _HEADER_ART.get(model.title)
     if art is not None:
-        midpoint = (len(art) + 1) // 2
-        for index, art_line in enumerate(art):
-            color = PINK if index < midpoint else PURPLE
-            lines.append("  " + _ansi(f"1;{color}", art_line))
+        for art_line in art:
+            lines.append("  " + _gradient_line(art_line))
         phase_label = _ansi(PINK, f"·  {model.phase}")
-        # Right-align the phase label inside the box width.
         pad = max(0, _BOX_WIDTH - len(art[-1]) - len(model.phase) - 4)
         lines.append("  " + " " * (len(art[-1]) + pad) + phase_label)
     else:
         header = f"{model.title}  ·  {model.phase}"
         lines.append("  " + _ansi(f"1;{PINK}", header))
-    lines.append("  " + _border("─"))
     for item in model.items:
         marker = _marker_for(item.status, spin_frame=spin_frame)
         label = _ansi(MINT, f"{item.label:<10}")
         lines.append(f"  {marker} {label}  {item.value}")
-    lines.append("  " + _border("─"))
+    lines.append("  " + _ansi(PURPLE, "─" * _BOX_WIDTH))
+    lines.append("  " + _ansi(PINK, "─" * _BOX_WIDTH))
     return "\n".join(lines) + "\n"
 
 

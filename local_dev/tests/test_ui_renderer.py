@@ -1,4 +1,5 @@
 import io
+import re
 
 from local_dev.serena_mcp_management.ui import (
     BoxModel,
@@ -10,19 +11,29 @@ from local_dev.serena_mcp_management.ui import (
 )
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
+
 def test_render_box_includes_title_art_and_phase_label():
     model = BoxModel(phase="preflight", title="codex", items=[])
     text = render_box(model)
+    plain = _strip_ansi(text)
     # Known clients render as a block ASCII banner instead of plain text title.
-    assert "██████╗" in text
-    assert "╚═════╝" in text
-    assert "preflight" in text
+    assert "██████╗" in plain
+    assert "╚═════╝" in plain
+    assert "preflight" in plain
 
 
 def test_render_box_colors_known_title_art_pink_and_purple():
     model = BoxModel(phase="preflight", title="codex", items=[])
     text = render_box(model)
-    assert f"\x1b[1;{PINK}m" in text
+    # Both palette accents must appear: PINK shows up on the outer border
+    # (non-bold), PURPLE reaches its endpoint at the gradient mid-cell.
+    assert f"\x1b[{PINK}m" in text
     assert f"\x1b[1;{PURPLE}m" in text
 
 
@@ -95,9 +106,10 @@ def test_box_renderer_first_draw_writes_text_only():
     renderer.draw(model)
     output = stream.getvalue()
     # codex art fingerprint sits inside the rendered box.
-    assert "██████╗" in output
+    assert "██████╗" in _strip_ansi(output)
     # no cursor movement (up/erase) before first frame; color codes ok
-    prefix = output[: output.find("██████╗")]
+    plain = _strip_ansi(output)
+    prefix = output[: output.find(plain[plain.find("██████╗"):plain.find("██████╗")+1])]
     assert "A\x1b[J" not in prefix  # cursor-up + erase sequence should not appear
 
 
@@ -149,3 +161,36 @@ def test_box_renderer_clear_resets_line_count_for_next_draw():
     renderer.draw(BoxModel(phase="preflight", title="codex", items=[]))
     third_chunk = stream.getvalue()[after_clear:]
     assert "A" not in third_chunk  # treats next draw as first frame
+
+
+# ----- Holographic Shimmer (concept 02) ---------------------------------------
+
+
+def test_render_box_claude_uses_ansi_shadow_block_font():
+    """claude is unified with codex on the ANSI Shadow block font."""
+    model = BoxModel(phase="preflight", title="claude", items=[])
+    plain = _strip_ansi(render_box(model))
+    assert "██████╗" in plain
+    assert "╚═════╝" in plain
+
+
+def test_render_box_applies_horizontal_gradient_per_cell():
+    """Each art line is colored cell-by-cell, producing many distinct stops."""
+    model = BoxModel(phase="preflight", title="codex", items=[])
+    text = render_box(model)
+    truecolor = re.findall(r"\x1b\[1;38;2;\d+;\d+;\d+m", text)
+    # Plenty of distinct interpolated stops, not a single line-wide color.
+    assert len(set(truecolor)) >= 8
+
+
+def test_render_box_uses_double_top_and_bottom_border():
+    """Top and bottom borders are doubled (pink line + purple line)."""
+    model = BoxModel(phase="preflight", title="codex", items=[])
+    text = render_box(model)
+    lines = text.split("\n")
+    assert "─" in _strip_ansi(lines[0])
+    assert "─" in _strip_ansi(lines[1])
+    assert f"\x1b[{PINK}m" in lines[0] or f"\x1b[1;{PINK}m" in lines[0]
+    assert f"\x1b[{PURPLE}m" in lines[1] or f"\x1b[1;{PURPLE}m" in lines[1]
+
+

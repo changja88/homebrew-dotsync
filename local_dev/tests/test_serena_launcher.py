@@ -394,8 +394,11 @@ def test_launcher_prints_shutdown_stats_for_interactive_agent(monkeypatch, tmp_p
     output = capsys.readouterr().out
     # v2 renders a summary box on exit, not the v1 event-style lines
     assert "summary" in output
-    # codex block banner is part of the summary box header
-    assert "██████╗" in output
+    # codex block banner is part of the summary box header. Strip ANSI escapes
+    # because the title now ships as a per-cell pink↔purple gradient.
+    import re as _re
+    plain = _re.sub(r"\x1b\[[0-9;]*m", "", output)
+    assert "██████╗" in plain
 
 
 def test_launcher_uses_project_root_from_zsh_adapter(monkeypatch, tmp_path):
