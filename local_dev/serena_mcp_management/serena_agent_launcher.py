@@ -37,6 +37,7 @@ from local_dev.serena_mcp_management.ui import (
     Item,
     SpinnerTicker,
     confirm,
+    render_inline_row,
     style_count,
     style_spinner,
 )
@@ -686,10 +687,9 @@ def _run_preflight_v2(
     client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
     project_root = Path(os.environ.get("SERENA_AGENT_PROJECT_ROOT", ".")).resolve()
 
-    # The box is rendered upstream by _render_preflight_overview_v2; here we only
-    # keep a renderer/model around for in-place re-renders after install changes.
-    renderer = BoxRenderer(stream=out)
-    model = _preflight_box()
+    def _emit(label: str, value: str, *, ok: bool) -> None:
+        out.write(render_inline_row(label, value, status="done" if ok else "warn"))
+        out.flush()
 
     global_status = os.environ.get(
         "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS", "unknown"
@@ -703,17 +703,13 @@ def _run_preflight_v2(
             input_fn=input_fn,
         ):
             rc = install_global_fn(client)
-            item = next(i for i in model.items if i.id == "graphify-global")
             if rc == 0:
-                item.status = "done"
                 if client == "claude":
-                    item.value = "user skill at ~/.claude/skills/graphify"
+                    _emit("graphify global", "user skill at ~/.claude/skills/graphify", ok=True)
                 else:
-                    item.value = "user skill at ~/.agents/skills/graphify"
+                    _emit("graphify global", "user skill at ~/.agents/skills/graphify", ok=True)
             else:
-                item.status = "warn"
-                item.value = f"global install failed (exit {rc})"
-            renderer.draw(model)
+                _emit("graphify global", f"global install failed (exit {rc})", ok=False)
 
     integration_status = os.environ.get(
         "SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS", "unknown"
@@ -730,18 +726,17 @@ def _run_preflight_v2(
             input_fn=input_fn,
         ):
             rc = install_integration_fn(project_root, client)
-            item = next(i for i in model.items if i.id == "graphify-integration")
             if rc == 0:
                 integration_present = True
-                item.status = "done"
                 if client == "claude":
-                    item.value = "CLAUDE.md + .claude/settings.json registered"
+                    _emit("graphify integration",
+                          "CLAUDE.md + .claude/settings.json registered", ok=True)
                 else:
-                    item.value = "AGENTS.md + .codex/hooks.json registered"
+                    _emit("graphify integration",
+                          "AGENTS.md + .codex/hooks.json registered", ok=True)
             else:
-                item.status = "warn"
-                item.value = f"integration install failed (exit {rc})"
-            renderer.draw(model)
+                _emit("graphify integration",
+                      f"integration install failed (exit {rc})", ok=False)
 
     hook_status = os.environ.get(
         "SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS", "unknown"
@@ -754,14 +749,11 @@ def _run_preflight_v2(
             input_fn=input_fn,
         ):
             rc = install_hook_fn(project_root)
-            item = next(i for i in model.items if i.id == "graphify-hook")
             if rc == 0:
-                item.status = "done"
-                item.value = "post-commit + post-checkout hooks installed"
+                _emit("graphify hook",
+                      "post-commit + post-checkout hooks installed", ok=True)
             else:
-                item.status = "warn"
-                item.value = f"hook install failed (exit {rc})"
-            renderer.draw(model)
+                _emit("graphify hook", f"hook install failed (exit {rc})", ok=False)
 
     return 0
 
@@ -769,9 +761,13 @@ def _run_preflight_v2(
 def _render_preflight_overview_v2(*, stream: TextIO | None = None) -> None:
     """Draw the preflight box once as the workspace overview, before any prompts.
 
-    Subsequent steps (serena init, graphify prompts) print below the box. The
-    box itself is not re-drawn here — only post-install changes inside
-    `_run_preflight_v2` re-render via their own renderer.
+    The box is drawn exactly once. Subsequent steps (serena init, graphify
+    prompts, install results) print as plain lines below the box — never as
+    a redrawn box. Redrawing would push the original overview out of view
+    and flash the banner art again right before the final 'Run <client>?'
+    prompt; instead, post-install state changes inside `_run_preflight_v2`
+    are surfaced with `render_inline_row` so the chronological flow stays
+    intact and the visual style still matches the box's row format.
     """
     if os.environ.get("SERENA_AGENT_INTERACTIVE") != "1":
         return

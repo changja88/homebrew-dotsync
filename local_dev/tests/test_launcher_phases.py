@@ -369,6 +369,45 @@ def test_v2_preflight_graphify_global_install_failure_marks_warn(monkeypatch):
     assert "global install failed (exit 7)" in text
 
 
+def test_v2_preflight_does_not_redraw_box_after_install(monkeypatch):
+    """install 성공/실패 직후의 결과는 inline 한 줄로만 surface해야 한다 — 박스를
+    통째로 다시 그리면 (a) 화면 위쪽의 원래 overview 박스가 밀려 올라가고
+    (b) ASCII art 배너가 'Run <client>?' 직전에 또 한 번 깜빡인다.
+    실제 사용자 보고된 증상: 한 세션에서 박스가 두 번 그려졌다.
+
+    이 테스트는 _run_preflight_v2가 BoxRenderer를 안 쓰고 inline 출력만 한다는 걸
+    배너 art (██████)와 박스 테두리 (── 60자)가 안 나타나는 것으로 검증한다.
+    """
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch, integration="missing", hook="missing")
+
+    out = io.StringIO()
+    answers = iter(["y", "y"])  # accept integration, accept hooks
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        install_graphify_integration=lambda project_root, client: 0,
+        install_graphify_hooks=lambda project_root: 0,
+    )
+    text = _strip_ansi(out.getvalue())
+    # No banner art (claude block font) should appear — that only belongs to
+    # the box rendered upstream by _render_preflight_overview_v2.
+    assert "██████" not in text, (
+        "preflight must surface install results inline, not by redrawing "
+        "the entire box (which flashes the banner art again)"
+    )
+    # No long box border either.
+    assert "─" * 60 not in text
+    # And the success messages must still surface as inline status lines.
+    assert "CLAUDE.md + .claude/settings.json registered" in text
+    assert "post-commit + post-checkout hooks installed" in text
+
+
 def test_v2_preflight_marks_serena_warn_when_missing(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")

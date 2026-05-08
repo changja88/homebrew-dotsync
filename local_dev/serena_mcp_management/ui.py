@@ -199,6 +199,20 @@ def _gradient_line(line: str) -> str:
     return "".join(out)
 
 
+def render_inline_row(label: str, value: str, *, status: ItemStatus) -> str:
+    """Render one BoxModel-style row as a standalone line (no surrounding box).
+
+    Used by the launcher to surface post-install state changes below the
+    preflight overview. Redrawing the full box would flash the banner art
+    again and push the original overview out of view; an inline row keeps
+    the chronological flow intact and matches the row format inside the
+    box so the visual style stays consistent.
+    """
+    marker = _marker_for(status)
+    label_text = _ansi(MINT, f"{label:<10}")
+    return f"  {marker} {label_text}  {value}\n"
+
+
 def render_box(model: BoxModel, *, spin_frame: int = 0) -> str:
     lines: list[str] = []
     # Double border (pink + purple) — outline-offset look from concept 02.
