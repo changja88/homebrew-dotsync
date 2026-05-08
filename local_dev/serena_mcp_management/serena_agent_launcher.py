@@ -838,7 +838,7 @@ def _run_serena_init_v2(
 
     if not confirm(
         "Initialize Serena for this project?",
-        default=False,
+        default=True,
         stream=out,
         input_fn=input_fn,
     ):
