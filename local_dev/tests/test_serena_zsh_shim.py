@@ -8,6 +8,7 @@ from local_dev.serena_mcp_management.serena_zsh_shim import (
     install_zshrc_shim,
     main,
     render_zsh_shim,
+    uninstall_zshrc_shim,
 )
 
 
@@ -34,7 +35,7 @@ def test_render_zsh_shim_defines_codex_and_claude_functions():
     assert '--effort xhigh' not in text
 
 
-def test_render_zsh_shim_includes_graphify_status_guidance():
+def test_render_zsh_shim_defines_graphify_split_helpers():
     text = render_zsh_shim(
         launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
         python_executable=Path("/repo/.venv/bin/python3"),
@@ -42,32 +43,58 @@ def test_render_zsh_shim_includes_graphify_status_guidance():
         claude_binary=Path("/opt/homebrew/bin/claude"),
     )
 
-    assert "_dotsync_agent_graphify_available" in text
-    assert "command -v graphify" in text
-    assert "graphify" in text
-
-
-def test_render_zsh_shim_marks_graphify_hook_missing_for_project():
-    text = render_zsh_shim(
-        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
-        python_executable=Path("/repo/.venv/bin/python3"),
-        codex_binary=Path("/opt/homebrew/bin/codex"),
-        claude_binary=Path("/opt/homebrew/bin/claude"),
-    )
-
-    # Status detection must include a project-scoped hook probe so the
-    # preflight row reflects per-project state rather than mere PATH
-    # presence of the graphify binary. The hook check inspects the
-    # graphify-installed git hooks rather than the graph.json artifact.
+    # The four preflight rows must be checked individually, otherwise a
+    # missing global skill or graph cannot surface. A single combined
+    # probe was insufficient and showed false ✓ when run outside a project.
+    assert "_dotsync_agent_graphify_global_installed" in text
+    assert "_dotsync_agent_graphify_graph_built" in text
+    assert "_dotsync_agent_graphify_integration_installed" in text
     assert "_dotsync_agent_graphify_hooks_installed" in text
-    assert ".git/hooks/post-commit" in text
-    assert ".git/hooks/post-checkout" in text
-    assert "graphify-hook-start" in text
-    assert "graphify-checkout-hook-start" in text
-    assert 'graphify_status="hook-missing"' in text
 
 
-def test_render_zsh_shim_runs_graphify_hooks_check_against_project_root():
+def test_render_zsh_shim_graphify_global_helper_branches_on_client():
+    text = render_zsh_shim(
+        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
+        python_executable=Path("/repo/.venv/bin/python3"),
+        codex_binary=Path("/opt/homebrew/bin/codex"),
+        claude_binary=Path("/opt/homebrew/bin/claude"),
+    )
+
+    # The user-level skill lives under ~/.claude/skills/graphify for claude
+    # and ~/.agents/skills/graphify for codex.
+    assert "$HOME/.claude/skills/graphify" in text
+    assert "$HOME/.agents/skills/graphify" in text
+
+
+def test_render_zsh_shim_graphify_graph_helper_checks_graph_json():
+    text = render_zsh_shim(
+        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
+        python_executable=Path("/repo/.venv/bin/python3"),
+        codex_binary=Path("/opt/homebrew/bin/codex"),
+        claude_binary=Path("/opt/homebrew/bin/claude"),
+    )
+
+    # The graph row reflects whether `graphify` ran in this project root.
+    assert "graphify-out/graph.json" in text
+
+
+def test_render_zsh_shim_graphify_integration_helper_branches_on_client():
+    text = render_zsh_shim(
+        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
+        python_executable=Path("/repo/.venv/bin/python3"),
+        codex_binary=Path("/opt/homebrew/bin/codex"),
+        claude_binary=Path("/opt/homebrew/bin/claude"),
+    )
+
+    # claude integration: CLAUDE.md + .claude/settings.json
+    # codex integration: AGENTS.md + .codex/hooks.json
+    assert "CLAUDE.md" in text
+    assert ".claude/settings.json" in text
+    assert "AGENTS.md" in text
+    assert ".codex/hooks.json" in text
+
+
+def test_render_zsh_shim_graphify_hooks_check_uses_project_root():
     text = render_zsh_shim(
         launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
         python_executable=Path("/repo/.venv/bin/python3"),
@@ -78,6 +105,10 @@ def test_render_zsh_shim_runs_graphify_hooks_check_against_project_root():
     # The probe must accept the resolved project root (not $PWD) so that the
     # status reflects the same scope used elsewhere in the preflight.
     assert '_dotsync_agent_graphify_hooks_installed "$project_root"' in text
+    assert ".git/hooks/post-commit" in text
+    assert ".git/hooks/post-checkout" in text
+    assert "graphify-hook-start" in text
+    assert "graphify-checkout-hook-start" in text
 
 
 def test_render_zsh_shim_defers_clear_to_launcher_after_codex_cleanup():
@@ -282,6 +313,78 @@ def test_install_zshrc_shim_replaces_managed_block(tmp_path):
     assert (tmp_path / ".zshrc.dotsync-serena.bak").read_text().startswith("before\n")
 
 
+def test_uninstall_zshrc_shim_removes_managed_block_and_writes_backup(tmp_path):
+    rc_path = tmp_path / ".zshrc"
+    rc_path.write_text(
+        "before\n"
+        "# >>> dotsync serena agent launcher >>>\n"
+        "managed body\n"
+        "# <<< dotsync serena agent launcher <<<\n"
+        "after\n"
+    )
+
+    backup_path = uninstall_zshrc_shim(rc_path=rc_path)
+
+    text = rc_path.read_text()
+    # The managed block is gone; surrounding lines untouched.
+    assert "managed body" not in text
+    assert "dotsync serena agent launcher" not in text
+    assert "before\n" in text
+    assert "after\n" in text
+    # Backup uses the same convention as install.
+    assert backup_path == tmp_path / ".zshrc.dotsync-serena.bak"
+    backup_text = backup_path.read_text()
+    assert "managed body" in backup_text
+    assert "dotsync serena agent launcher" in backup_text
+
+
+def test_uninstall_zshrc_shim_idempotent_when_block_absent(tmp_path):
+    rc_path = tmp_path / ".zshrc"
+    original = "alias ll='ls -lah'\nexport FOO=bar\n"
+    rc_path.write_text(original)
+
+    backup_path = uninstall_zshrc_shim(rc_path=rc_path)
+
+    # Idempotent: file content unchanged, no error raised, backup still written
+    # so the operation always leaves a recoverable snapshot.
+    assert rc_path.read_text() == original
+    assert backup_path.read_text() == original
+
+
+def test_uninstall_zshrc_shim_noop_when_rc_missing(tmp_path):
+    rc_path = tmp_path / ".zshrc"
+    # rc file does not exist; uninstall must not crash and must not create one.
+    backup_path = uninstall_zshrc_shim(rc_path=rc_path)
+
+    assert not rc_path.exists()
+    assert backup_path is None
+
+
+def test_zsh_shim_cli_uninstalls_managed_block(monkeypatch, tmp_path, capsys):
+    rc_path = tmp_path / ".zshrc"
+    rc_path.write_text(
+        "keep\n"
+        "# >>> dotsync serena agent launcher >>>\n"
+        "managed body\n"
+        "# <<< dotsync serena agent launcher <<<\n"
+        "tail\n"
+    )
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_zsh_shim.shutil.which", lambda name: f"/opt/homebrew/bin/{name}")
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_zsh_shim.sys.executable", "/opt/homebrew/bin/python3.12")
+
+    assert main(["--uninstall-zshrc", "--rc-path", str(rc_path)]) == 0
+
+    text = rc_path.read_text()
+    assert "managed body" not in text
+    assert "dotsync serena agent launcher" not in text
+    assert "keep\n" in text
+    assert "tail\n" in text
+    output = capsys.readouterr().out
+    # Confirmation message tells the user what happened so they don't have to
+    # diff their rc file to be sure.
+    assert f"removed Serena zsh shim from {rc_path}" in output
+
+
 def test_zsh_shim_cli_installs_into_selected_rc_path(monkeypatch, tmp_path, capsys):
     rc_path = tmp_path / ".zshrc"
     rc_path.write_text("existing\n")
@@ -305,7 +408,14 @@ def test_render_zsh_shim_packs_preflight_env_vars():
     assert "SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE" in text
     assert "SERENA_AGENT_PREFLIGHT_MEMORY_VALUE" in text
     assert "SERENA_AGENT_PREFLIGHT_SERENA_STATUS" in text
-    assert "SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS" in text
+    # The launcher reads four split graphify statuses; the old combined
+    # SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS is no longer consumed and must
+    # not be exported (otherwise reviewers will assume it still drives UI).
+    assert "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS" in text
+    assert "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS" in text
+    assert "SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS" in text
+    assert "SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS" in text
+    assert "SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS=" not in text
 
 
 def test_render_zsh_shim_no_longer_references_gum():

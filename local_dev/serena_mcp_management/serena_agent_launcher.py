@@ -539,16 +539,16 @@ def _preflight_box() -> BoxModel:
     serena_status = os.environ.get("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
 
     global_status = os.environ.get(
-        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS", "installed"
+        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS", "unknown"
     )
     graph_status = os.environ.get(
-        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS", "built"
+        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS", "unknown"
     )
     integration_status = os.environ.get(
-        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS", "installed"
+        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS", "unknown"
     )
     hook_status = os.environ.get(
-        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS", "installed"
+        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS", "unknown"
     )
 
     serena_value = (
@@ -682,7 +682,7 @@ def _run_preflight_v2(
     renderer.draw(model)
 
     global_status = os.environ.get(
-        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS", "installed"
+        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS", "unknown"
     )
     if global_status == "missing":
         cmd = "graphify install" if client == "claude" else "graphify install --platform codex"
@@ -706,7 +706,7 @@ def _run_preflight_v2(
             renderer.draw(model)
 
     integration_status = os.environ.get(
-        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS", "installed"
+        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS", "unknown"
     )
     if integration_status == "missing":
         cmd = (
@@ -732,7 +732,7 @@ def _run_preflight_v2(
             renderer.draw(model)
 
     hook_status = os.environ.get(
-        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS", "installed"
+        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS", "unknown"
     )
     if hook_status == "missing":
         if confirm(

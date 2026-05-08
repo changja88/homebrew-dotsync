@@ -52,6 +52,34 @@ def _set_graphify_env(monkeypatch, *, global_="installed", graph="built",
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS", hook)
 
 
+def test_v2_preflight_marks_all_graphify_rows_warn_when_env_missing(monkeypatch):
+    """When the shim does not export status env vars, the launcher must not
+    silently render ✓. Treating "no info" as "installed" hides real issues —
+    e.g. running codex outside any project showed all four rows green even
+    though graphify-out/, AGENTS.md, and .codex/hooks.json did not exist.
+    """
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    for var in (
+        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS",
+        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS",
+        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS",
+        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    box = launcher._preflight_box()
+    rows = {item.id: item for item in box.items}
+    assert rows["graphify-global"].status == "warn"
+    assert rows["graphify-graph"].status == "warn"
+    assert rows["graphify-integration"].status == "warn"
+    assert rows["graphify-hook"].status == "warn"
+
+
 def test_v2_preflight_renders_box_with_cleanup_and_serena(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")

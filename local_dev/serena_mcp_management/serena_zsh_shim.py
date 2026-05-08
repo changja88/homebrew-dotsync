@@ -92,6 +92,32 @@ _dotsync_agent_graphify_available() {
   command -v graphify >/dev/null 2>&1
 }
 
+_dotsync_agent_graphify_global_installed() {
+  local client="$1"
+  case "$client" in
+    claude) [[ -d "$HOME/.claude/skills/graphify" ]] ;;
+    *)      [[ -d "$HOME/.agents/skills/graphify" ]] ;;
+  esac
+}
+
+_dotsync_agent_graphify_graph_built() {
+  local project_root="$1"
+  [[ -f "$project_root/graphify-out/graph.json" ]]
+}
+
+_dotsync_agent_graphify_integration_installed() {
+  local project_root="$1"
+  local client="$2"
+  case "$client" in
+    claude)
+      [[ -f "$project_root/CLAUDE.md" && -f "$project_root/.claude/settings.json" ]]
+      ;;
+    *)
+      [[ -f "$project_root/AGENTS.md" && -f "$project_root/.codex/hooks.json" ]]
+      ;;
+  esac
+}
+
 _dotsync_agent_graphify_hooks_installed() {
   local project_root="$1"
   local pc="$project_root/.git/hooks/post-commit"
@@ -130,17 +156,22 @@ claude() {
   local memory_phrase="${mem_deleted} files to reset"
   local serena_status="managed"
   _dotsync_agent_serena_project_available "$project_root" || serena_status="missing"
-  local graphify_status="installed"
-  if ! _dotsync_agent_graphify_available; then
-    graphify_status="missing"
-  elif ! _dotsync_agent_graphify_hooks_installed "$project_root"; then
-    graphify_status="hook-missing"
-  fi
+  local graphify_global_status="installed"
+  _dotsync_agent_graphify_global_installed claude || graphify_global_status="missing"
+  local graphify_graph_status="built"
+  _dotsync_agent_graphify_graph_built "$project_root" || graphify_graph_status="missing"
+  local graphify_integration_status="installed"
+  _dotsync_agent_graphify_integration_installed "$project_root" claude || graphify_integration_status="missing"
+  local graphify_hook_status="installed"
+  _dotsync_agent_graphify_hooks_installed "$project_root" || graphify_hook_status="missing"
 
   SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE="$cleanup_phrase" \
   SERENA_AGENT_PREFLIGHT_MEMORY_VALUE="$memory_phrase" \
   SERENA_AGENT_PREFLIGHT_SERENA_STATUS="$serena_status" \
-  SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS="$graphify_status" \
+  SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS="$graphify_global_status" \
+  SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS="$graphify_graph_status" \
+  SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS="$graphify_integration_status" \
+  SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS="$graphify_hook_status" \
   SERENA_AGENT_CLIENT=claude \
   SERENA_AGENT_QUIET=1 \
   SERENA_AGENT_INTERACTIVE="$interactive" \
@@ -197,17 +228,22 @@ codex() {
   local memory_phrase="${mem_deleted} files to reset"
   local serena_status="managed"
   _dotsync_agent_serena_project_available "$project_root" || serena_status="missing"
-  local graphify_status="installed"
-  if ! _dotsync_agent_graphify_available; then
-    graphify_status="missing"
-  elif ! _dotsync_agent_graphify_hooks_installed "$project_root"; then
-    graphify_status="hook-missing"
-  fi
+  local graphify_global_status="installed"
+  _dotsync_agent_graphify_global_installed codex || graphify_global_status="missing"
+  local graphify_graph_status="built"
+  _dotsync_agent_graphify_graph_built "$project_root" || graphify_graph_status="missing"
+  local graphify_integration_status="installed"
+  _dotsync_agent_graphify_integration_installed "$project_root" codex || graphify_integration_status="missing"
+  local graphify_hook_status="installed"
+  _dotsync_agent_graphify_hooks_installed "$project_root" || graphify_hook_status="missing"
 
   SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE="$cleanup_phrase" \
   SERENA_AGENT_PREFLIGHT_MEMORY_VALUE="$memory_phrase" \
   SERENA_AGENT_PREFLIGHT_SERENA_STATUS="$serena_status" \
-  SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS="$graphify_status" \
+  SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS="$graphify_global_status" \
+  SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS="$graphify_graph_status" \
+  SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS="$graphify_integration_status" \
+  SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS="$graphify_hook_status" \
   SERENA_AGENT_CLIENT=codex \
   SERENA_AGENT_QUIET=1 \
   SERENA_AGENT_INTERACTIVE="$interactive" \
@@ -269,6 +305,37 @@ def install_zshrc_shim(
     return backup_path
 
 
+def uninstall_zshrc_shim(*, rc_path: Path) -> Path | None:
+    """Remove the managed Serena agent block from a zsh rc file.
+
+    Idempotent: returns ``None`` and does nothing if the rc file does not
+    exist. Otherwise always writes a ``.dotsync-serena.bak`` snapshot of the
+    original file (even when the block is absent) so the operation always
+    leaves a recoverable backup, mirroring ``install_zshrc_shim``.
+    """
+
+    if not rc_path.exists():
+        return None
+    original = rc_path.read_text()
+    backup_path = rc_path.with_name(f"{rc_path.name}.dotsync-serena.bak")
+    backup_path.write_text(original)
+    rc_path.write_text(_strip_managed_block(original))
+    return backup_path
+
+
+def _strip_managed_block(text: str) -> str:
+    start = text.find(START_MARKER)
+    end = text.find(END_MARKER)
+    if start == -1 or end == -1 or start >= end:
+        return text
+    end += len(END_MARKER)
+    # Swallow a trailing newline from the block so we don't leave a blank
+    # line where the block used to be.
+    if end < len(text) and text[end] == "\n":
+        end += 1
+    return text[:start] + text[end:]
+
+
 def _replace_managed_block(text: str, snippet: str) -> str:
     start = text.find(START_MARKER)
     end = text.find(END_MARKER)
@@ -290,12 +357,22 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--install-zshrc", action="store_true", help="replace the managed block in a zsh rc file")
+    parser.add_argument("--uninstall-zshrc", action="store_true", help="remove the managed block from a zsh rc file")
     parser.add_argument("--rc-path", type=Path, default=Path.home() / ".zshrc", help="zsh rc file to update")
     args = parser.parse_args(argv)
     launcher_path = Path(__file__).resolve().with_name("serena_agent_launcher.py")
     python_executable = default_python_executable()
     codex_binary = default_binary_path("codex")
     claude_binary = default_binary_path("claude")
+    if args.uninstall_zshrc:
+        rc = args.rc_path.expanduser()
+        backup_path = uninstall_zshrc_shim(rc_path=rc)
+        if backup_path is None:
+            print(f"no zsh rc file at {rc}; nothing to remove")
+        else:
+            print(f"removed Serena zsh shim from {rc}")
+            print(f"backup written to {backup_path}")
+        return 0
     if args.install_zshrc:
         backup_path = install_zshrc_shim(
             rc_path=args.rc_path.expanduser(),
