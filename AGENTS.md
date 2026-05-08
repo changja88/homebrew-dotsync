@@ -15,6 +15,20 @@ two closely related deliverables:
 `dotsync` is a macOS-only CLI for syncing selected app configuration files
 between local app locations and one user-chosen sync folder.
 
+> **`local_dev/` is unrelated to `dotsync`.** Anything under `local_dev/` is an
+> internal-only development tool (currently a Serena/graphify-aware
+> codex/claude launcher) that merely co-lives in this checkout. It is not
+> packaged by the Homebrew formula, shares no runtime code with
+> `lib/dotsync/`, and must not appear in the public `README.md` or in the root
+> `Makefile`'s `make help`. Its own targets and docs live inside that
+> directory (`local_dev/Makefile`, `local_dev/README.md`). Do not bundle
+> `local_dev` changes with `dotsync` changes in the same commit.
+> **The runtime copy lives at `~/Desktop/dotsync_config/agent_launcher/` and
+> `~/.zshrc` only references that stable location — promote dev edits via
+> `make -C local_dev install-shim`, which mirrors the dev tree there and
+> rewrites the managed block in `~/.zshrc` in one step (no separate deploy
+> command; this is a local copy, not an external publish).**
+
 ## Core Architecture
 
 - `lib/dotsync/cli.py` owns argparse command dispatch for `welcome`, `init`,

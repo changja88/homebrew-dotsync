@@ -9,6 +9,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 1. **`dotsync` Python CLI** (`lib/dotsync/`, 진입점 `bin/dotsync`) — stdlib만 사용해 macOS 앱 설정(Claude Code, Ghostty, BetterTouchTool, zsh)을 사용자가 지정한 폴더와 양방향으로 sync하는 도구.
 2. **Homebrew formula** (`Formula/dotsync.rb`) — `brew install changja88/dotsync/dotsync`로 위 CLI를 설치하기 위한 정의 파일.
 
+> **`local_dev/`는 dotsync와 무관하다.** `local_dev/` 이하 모든 코드/문서/Makefile은 이 저장소에 동거할 뿐인 별개 내부 개발용 도구(현재는 Serena/graphify-aware codex/claude launcher 한 종)다. Homebrew formula에 packaging되지 않고, dotsync 본체(`lib/dotsync/`)와 import 관계가 없으며, 공개 README/루트 Makefile에 노출되지 않는다. `local_dev` 작업은 그 폴더 안의 `Makefile`/`README.md`에 닫혀 있어야 하고, dotsync 본체 변경과 같은 commit에 섞지 않는다. **runtime은 `~/Desktop/dotsync_config/agent_launcher/`에 mirror되며 `~/.zshrc`는 그 안정 위치만 가리킨다 — 코드 변경을 셸에 반영하려면 `make -C local_dev install-shim` 한 번으로 mirror + zshrc 갱신이 끝난다 (별도 deploy 단계 없음, 외부 배포 아님).** 자세한 가이드는 `local_dev/README.md` 참조.
+
 ## 아키텍처
 
 CLI는 **단일 패키지 + plugin 스타일 앱 레지스트리** 구조를 따른다.
