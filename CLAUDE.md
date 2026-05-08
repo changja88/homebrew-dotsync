@@ -94,3 +94,13 @@ formula의 `sha256`을 **절대 추측해서 채우지 말 것** — 항상 GitH
 ## Python 버전
 
 런타임 타겟은 **Python 3.12+** (`pyproject.toml`의 `requires-python` 및 formula의 `python@3.12`와 일치). `Formula/dotsync.rb`의 install 블록은 `bin/dotsync`의 shebang을 `python@3.12`의 `opt_bin/python3.12`로 핀하므로, 사용자 시스템의 `python3`이 어떤 버전이든 dotsync는 항상 3.12로 실행된다.
+
+## graphify
+
+This project has a graphify knowledge graph at graphify-out/.
+
+Rules:
+- Before answering architecture or codebase questions, read graphify-out/GRAPH_REPORT.md for god nodes and community structure
+- If graphify-out/wiki/index.md exists, navigate it instead of reading raw files
+- For cross-module "how does X relate to Y" questions, prefer `graphify query "<question>"`, `graphify path "<A>" "<B>"`, or `graphify explain "<concept>"` over grep — these traverse the graph's EXTRACTED + INFERRED edges instead of scanning files
+- After modifying code files in this session, run `graphify update .` to keep the graph current (AST-only, no API cost)

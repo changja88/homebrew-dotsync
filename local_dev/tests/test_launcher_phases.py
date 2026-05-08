@@ -43,6 +43,15 @@ def test_main_dispatches_to_v2_regardless_of_tui_env(monkeypatch):
     assert called["v2"] == []
 
 
+def _set_graphify_env(monkeypatch, *, global_="installed", graph="built",
+                       integration="installed", hook="installed"):
+    """Helper: set the four graphify preflight env vars in one call."""
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS", global_)
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS", graph)
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS", integration)
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS", hook)
+
+
 def test_v2_preflight_renders_box_with_cleanup_and_serena(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
@@ -50,7 +59,7 @@ def test_v2_preflight_renders_box_with_cleanup_and_serena(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 103 to keep")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "installed")
+    _set_graphify_env(monkeypatch)
 
     out = io.StringIO()
     answers = iter(["n"])  # Abort
@@ -62,7 +71,12 @@ def test_v2_preflight_renders_box_with_cleanup_and_serena(monkeypatch):
     assert "0 files to reset" in plain
     assert "preflight" in text
     assert "codex" in text
-    # graphify row should reveal which git hooks are installed, not just "initialized"
+    # All four graphify rows render with their distinct labels.
+    assert "graphify global" in plain
+    assert "graphify graph" in plain
+    assert "graphify integration" in plain
+    assert "graphify hook" in plain
+    # The hook row reveals which git hooks are installed, not just "initialized".
     assert "post-commit" in plain
     assert "post-checkout" in plain
     assert rc == 130  # abort -> non-zero
@@ -75,13 +89,18 @@ def test_v2_preflight_returns_zero_on_run_confirm(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "missing")
+    _set_graphify_env(monkeypatch, global_="missing")
 
     out = io.StringIO()
-    answers = iter(["y"])
-    rc = launcher._run_preflight_v2(stream=out, input_fn=lambda: next(answers))
+    # Decline the global install prompt, then accept running the agent.
+    answers = iter(["n", "y"])
+    rc = launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        install_graphify_global=lambda client: 0,
+    )
     assert rc == 0
-    assert "not installed" in out.getvalue()  # graphify warn surfaced
+    assert "not installed" in out.getvalue()  # graphify global warn surfaced
 
 
 def test_v2_preflight_marks_graphify_hook_missing(monkeypatch):
@@ -91,7 +110,7 @@ def test_v2_preflight_marks_graphify_hook_missing(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "hook-missing")
+    _set_graphify_env(monkeypatch, hook="missing")
 
     out = io.StringIO()
     # Decline the hook install prompt, then decline the run prompt to avoid
@@ -105,7 +124,6 @@ def test_v2_preflight_marks_graphify_hook_missing(monkeypatch):
     text = _strip_ansi(out.getvalue())
     assert "hooks not installed" in text
     assert "graphify hook install" in text
-    assert "not installed" not in text.split("hooks not installed")[0]
 
 
 def test_v2_preflight_runs_graphify_hook_install_when_user_confirms(monkeypatch):
@@ -115,7 +133,7 @@ def test_v2_preflight_runs_graphify_hook_install_when_user_confirms(monkeypatch)
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "hook-missing")
+    _set_graphify_env(monkeypatch, hook="missing")
 
     install_calls: list = []
 
@@ -133,9 +151,8 @@ def test_v2_preflight_runs_graphify_hook_install_when_user_confirms(monkeypatch)
     text = _strip_ansi(out.getvalue())
     assert install_calls, "graphify hook install should have been invoked"
     assert "Install graphify hooks" in text
-    assert "initialized" in text
-    assert "post-commit" in text
-    assert "post-checkout" in text
+    # After successful install, the hook row flips to the done variant.
+    assert "post-commit + post-checkout hooks installed" in text
     assert rc == 130  # declined run -> abort
 
 
@@ -146,7 +163,7 @@ def test_v2_preflight_skips_graphify_hook_prompt_when_already_installed(monkeypa
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "installed")
+    _set_graphify_env(monkeypatch)
 
     install_calls: list = []
 
@@ -165,6 +182,159 @@ def test_v2_preflight_skips_graphify_hook_prompt_when_already_installed(monkeypa
     assert "Install graphify hooks" not in out.getvalue()
 
 
+def test_v2_preflight_graphify_global_missing_claude_offers_auto_install(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch, global_="missing")
+
+    install_calls: list = []
+
+    def fake_install(client):
+        install_calls.append(client)
+        return 0
+
+    out = io.StringIO()
+    answers = iter(["y", "n"])  # accept global install, decline running
+    rc = launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        install_graphify_global=fake_install,
+    )
+    text = _strip_ansi(out.getvalue())
+    assert install_calls == ["claude"]
+    assert "graphify install" in text
+    assert "user skill at ~/.claude/skills/graphify" in text  # post-install row
+    assert rc == 130
+
+
+def test_v2_preflight_graphify_global_missing_codex_uses_platform_codex(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch, global_="missing")
+
+    install_calls: list = []
+
+    def fake_install(client):
+        install_calls.append(client)
+        return 0
+
+    out = io.StringIO()
+    answers = iter(["y", "n"])
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        install_graphify_global=fake_install,
+    )
+    text = _strip_ansi(out.getvalue())
+    assert install_calls == ["codex"]
+    assert "graphify install --platform codex" in text
+    assert "user skill at ~/.agents/skills/graphify" in text
+
+
+def test_v2_preflight_graphify_graph_missing_shows_hint_no_callback(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch, graph="missing")
+
+    out = io.StringIO()
+    answers = iter(["n"])  # only the run-confirm prompt — no auto-install for graph
+    launcher._run_preflight_v2(stream=out, input_fn=lambda: next(answers))
+    text = _strip_ansi(out.getvalue())
+    assert "no graph" in text
+    assert "/graphify ." in text
+
+
+def test_v2_preflight_graphify_integration_missing_claude_offers_install(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch, integration="missing")
+
+    install_calls: list = []
+
+    def fake_install(project_root, client):
+        install_calls.append((project_root, client))
+        return 0
+
+    out = io.StringIO()
+    answers = iter(["y", "n"])  # accept integration install, decline running
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        install_graphify_integration=fake_install,
+    )
+    text = _strip_ansi(out.getvalue())
+    assert len(install_calls) == 1
+    project_root, client = install_calls[0]
+    assert client == "claude"
+    assert str(project_root).endswith("/repo")
+    assert "graphify claude install" in text
+    assert "CLAUDE.md + .claude/settings.json registered" in text
+
+
+def test_v2_preflight_graphify_integration_missing_codex_uses_codex_subcommand(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch, integration="missing")
+
+    install_calls: list = []
+
+    def fake_install(project_root, client):
+        install_calls.append(client)
+        return 0
+
+    out = io.StringIO()
+    answers = iter(["y", "n"])
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        install_graphify_integration=fake_install,
+    )
+    text = _strip_ansi(out.getvalue())
+    assert install_calls == ["codex"]
+    assert "graphify codex install" in text
+    assert "AGENTS.md + .codex/hooks.json registered" in text
+
+
+def test_v2_preflight_graphify_global_install_failure_marks_warn(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch, global_="missing")
+
+    out = io.StringIO()
+    answers = iter(["y", "n"])
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        install_graphify_global=lambda client: 7,
+    )
+    text = _strip_ansi(out.getvalue())
+    assert "global install failed (exit 7)" in text
+
+
 def test_v2_preflight_marks_serena_warn_when_missing(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
@@ -172,7 +342,7 @@ def test_v2_preflight_marks_serena_warn_when_missing(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "installed")
+    _set_graphify_env(monkeypatch)
 
     out = io.StringIO()
     answers = iter(["y"])
@@ -408,7 +578,7 @@ def test_v2_main_returns_child_exit_code(monkeypatch, tmp_path):
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "installed")
+    _set_graphify_env(monkeypatch)
 
     fake_record = mock.Mock()
     fake_record.mcp_url = "http://127.0.0.1:0/mcp"

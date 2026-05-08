@@ -495,6 +495,41 @@ def _short_path(path: str) -> str:
     return path
 
 
+def _graphify_global_value(client: str, status: str) -> tuple[str, str]:
+    """Return (value, item_status) for the graphify global preflight row."""
+    if status == "installed":
+        if client == "claude":
+            return "user skill at ~/.claude/skills/graphify", "done"
+        return "user skill at ~/.agents/skills/graphify", "done"
+    cmd = "graphify install" if client == "claude" else "graphify install --platform codex"
+    return f'not installed . run "{cmd}"', "warn"
+
+
+def _graphify_graph_value(client: str, status: str) -> tuple[str, str]:
+    """Return (value, item_status) for the graphify graph preflight row."""
+    if status == "built":
+        return "graphify-out/graph.json present", "done"
+    invocation = "/graphify ." if client == "claude" else "$graphify ."
+    return f'no graph . run "{invocation}" in your agent session', "warn"
+
+
+def _graphify_integration_value(client: str, status: str) -> tuple[str, str]:
+    """Return (value, item_status) for the graphify integration preflight row."""
+    if status == "installed":
+        if client == "claude":
+            return "CLAUDE.md + .claude/settings.json registered", "done"
+        return "AGENTS.md + .codex/hooks.json registered", "done"
+    cmd = "graphify claude install" if client == "claude" else "graphify codex install"
+    return f'not configured . run "{cmd}"', "warn"
+
+
+def _graphify_hook_value(status: str) -> tuple[str, str]:
+    """Return (value, item_status) for the graphify hook preflight row."""
+    if status == "installed":
+        return "post-commit + post-checkout hooks installed", "done"
+    return 'hooks not installed . run "graphify hook install"', "warn"
+
+
 def _preflight_box() -> BoxModel:
     """Build a BoxModel for the v2 preflight phase."""
     client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
@@ -502,7 +537,19 @@ def _preflight_box() -> BoxModel:
     cleanup_value = os.environ.get("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "")
     memory_value = os.environ.get("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "")
     serena_status = os.environ.get("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
-    graphify_status = os.environ.get("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "installed")
+
+    global_status = os.environ.get(
+        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS", "installed"
+    )
+    graph_status = os.environ.get(
+        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS", "built"
+    )
+    integration_status = os.environ.get(
+        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS", "installed"
+    )
+    hook_status = os.environ.get(
+        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS", "installed"
+    )
 
     serena_value = (
         "managed by scoped launcher"
@@ -510,17 +557,13 @@ def _preflight_box() -> BoxModel:
         else "project config missing"
     )
     serena_item_status = "done" if serena_status == "managed" else "warn"
-    if graphify_status == "installed":
-        graphify_value = "initialized . post-commit + post-checkout hooks installed"
-        graphify_item_status = "done"
-    elif graphify_status == "hook-missing":
-        graphify_value = "hooks not installed . run \"graphify hook install\""
-        graphify_item_status = "warn"
-    else:
-        graphify_value = (
-            "not installed . install graphify, then run /graphify when you want a project graph"
-        )
-        graphify_item_status = "warn"
+
+    global_value, global_item_status = _graphify_global_value(client, global_status)
+    graph_value, graph_item_status = _graphify_graph_value(client, graph_status)
+    integration_value, integration_item_status = _graphify_integration_value(
+        client, integration_status
+    )
+    hook_value, hook_item_status = _graphify_hook_value(hook_status)
 
     items = [
         Item(
@@ -531,10 +574,28 @@ def _preflight_box() -> BoxModel:
         ),
         Item(id="serena", label="serena", value=serena_value, status=serena_item_status),
         Item(
-            id="graphify",
-            label="graphify",
-            value=graphify_value,
-            status=graphify_item_status,
+            id="graphify-global",
+            label="graphify global",
+            value=global_value,
+            status=global_item_status,
+        ),
+        Item(
+            id="graphify-graph",
+            label="graphify graph",
+            value=graph_value,
+            status=graph_item_status,
+        ),
+        Item(
+            id="graphify-integration",
+            label="graphify integration",
+            value=integration_value,
+            status=integration_item_status,
+        ),
+        Item(
+            id="graphify-hook",
+            label="graphify hook",
+            value=hook_value,
+            status=hook_item_status,
         ),
         Item(
             id="context",
@@ -563,10 +624,42 @@ def _graphify_hook_install(project_root: Path) -> int:
     return proc.returncode
 
 
+def _graphify_global_install(client: str) -> int:
+    """Run `graphify install` (or `graphify install --platform codex`) for the user.
+
+    Returns the exit code. 2 indicates graphify is not on PATH.
+    """
+    if shutil.which("graphify") is None:
+        return 2
+    cmd = ["graphify", "install"]
+    if client == "codex":
+        cmd.extend(["--platform", "codex"])
+    proc = subprocess.run(cmd, check=False)
+    return proc.returncode
+
+
+def _graphify_integration_install(project_root: Path, client: str) -> int:
+    """Run `graphify {claude,codex} install` inside the project.
+
+    Returns the exit code. 2 indicates graphify is not on PATH.
+    """
+    if shutil.which("graphify") is None:
+        return 2
+    subcommand = "claude" if client == "claude" else "codex"
+    proc = subprocess.run(
+        ["graphify", subcommand, "install"],
+        cwd=str(project_root),
+        check=False,
+    )
+    return proc.returncode
+
+
 def _run_preflight_v2(
     *,
     stream: TextIO | None = None,
     input_fn: Callable[[], str] | None = None,
+    install_graphify_global: Callable[[str], int] | None = None,
+    install_graphify_integration: Callable[[Path, str], int] | None = None,
     install_graphify_hooks: Callable[[Path], int] | None = None,
 ) -> int:
     """Run the v2 preflight phase with confirmation prompt.
@@ -577,30 +670,85 @@ def _run_preflight_v2(
     if os.environ.get("SERENA_AGENT_INTERACTIVE") != "1":
         return 0
     out = stream if stream is not None else sys.stdout
-    install_fn = install_graphify_hooks or _graphify_hook_install
+    install_global_fn = install_graphify_global or _graphify_global_install
+    install_integration_fn = install_graphify_integration or _graphify_integration_install
+    install_hook_fn = install_graphify_hooks or _graphify_hook_install
+
+    client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
+    project_root = Path(os.environ.get("SERENA_AGENT_PROJECT_ROOT", ".")).resolve()
+
     renderer = BoxRenderer(stream=out)
     model = _preflight_box()
     renderer.draw(model)
 
-    graphify_status = os.environ.get("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "installed")
-    if graphify_status == "hook-missing":
+    global_status = os.environ.get(
+        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS", "installed"
+    )
+    if global_status == "missing":
+        cmd = "graphify install" if client == "claude" else "graphify install --platform codex"
+        if confirm(
+            f"Run `{cmd}` to install the graphify skill globally?",
+            default=True,
+            stream=out,
+            input_fn=input_fn,
+        ):
+            rc = install_global_fn(client)
+            item = next(i for i in model.items if i.id == "graphify-global")
+            if rc == 0:
+                item.status = "done"
+                if client == "claude":
+                    item.value = "user skill at ~/.claude/skills/graphify"
+                else:
+                    item.value = "user skill at ~/.agents/skills/graphify"
+            else:
+                item.status = "warn"
+                item.value = f"global install failed (exit {rc})"
+            renderer.draw(model)
+
+    integration_status = os.environ.get(
+        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS", "installed"
+    )
+    if integration_status == "missing":
+        cmd = (
+            "graphify claude install" if client == "claude" else "graphify codex install"
+        )
+        if confirm(
+            f"Run `{cmd}` to wire graphify into this project?",
+            default=True,
+            stream=out,
+            input_fn=input_fn,
+        ):
+            rc = install_integration_fn(project_root, client)
+            item = next(i for i in model.items if i.id == "graphify-integration")
+            if rc == 0:
+                item.status = "done"
+                if client == "claude":
+                    item.value = "CLAUDE.md + .claude/settings.json registered"
+                else:
+                    item.value = "AGENTS.md + .codex/hooks.json registered"
+            else:
+                item.status = "warn"
+                item.value = f"integration install failed (exit {rc})"
+            renderer.draw(model)
+
+    hook_status = os.environ.get(
+        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS", "installed"
+    )
+    if hook_status == "missing":
         if confirm(
             "Install graphify hooks for this project?",
             default=True,
             stream=out,
             input_fn=input_fn,
         ):
-            project_root = Path(
-                os.environ.get("SERENA_AGENT_PROJECT_ROOT", ".")
-            ).resolve()
-            rc = install_fn(project_root)
-            graphify_item = next(item for item in model.items if item.id == "graphify")
+            rc = install_hook_fn(project_root)
+            item = next(i for i in model.items if i.id == "graphify-hook")
             if rc == 0:
-                graphify_item.status = "done"
-                graphify_item.value = "initialized . post-commit + post-checkout hooks installed"
+                item.status = "done"
+                item.value = "post-commit + post-checkout hooks installed"
             else:
-                graphify_item.status = "warn"
-                graphify_item.value = f"hook install failed (exit {rc})"
+                item.status = "warn"
+                item.value = f"hook install failed (exit {rc})"
             renderer.draw(model)
 
     if not confirm(
