@@ -394,15 +394,24 @@ def _main_v2(args: list[str]) -> int:
     out = sys.stdout
 
     if interactive:
+        _render_preflight_overview_v2()
+
+    serena_state = _run_serena_init_v2() if interactive else "managed"
+
+    if interactive:
         rc = _run_preflight_v2()
         if rc != 0:
             return rc
 
-    serena_state = _run_serena_init_v2() if interactive else "managed"
+    if interactive and not _run_final_confirm_v2():
+        return 130
+
     if serena_state in {"skipped", "failed"}:
         warnings.append(f"serena project create {serena_state}")
         client_type = infer_client_type(os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0]))
         real_binary = find_real_binary(client_type)
+        if os.environ.get("SERENA_AGENT_CLEAR_BEFORE_CHILD") == "1":
+            clear_terminal_before_child()
         return int(subprocess.run([real_binary, *args]).returncode)
 
     summary_state = _run_launch_prep_v2() if interactive else None
@@ -677,9 +686,10 @@ def _run_preflight_v2(
     client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
     project_root = Path(os.environ.get("SERENA_AGENT_PROJECT_ROOT", ".")).resolve()
 
+    # The box is rendered upstream by _render_preflight_overview_v2; here we only
+    # keep a renderer/model around for in-place re-renders after install changes.
     renderer = BoxRenderer(stream=out)
     model = _preflight_box()
-    renderer.draw(model)
 
     global_status = os.environ.get(
         "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS", "unknown"
@@ -708,6 +718,7 @@ def _run_preflight_v2(
     integration_status = os.environ.get(
         "SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS", "unknown"
     )
+    integration_present = integration_status == "installed"
     if integration_status == "missing":
         cmd = (
             "graphify claude install" if client == "claude" else "graphify codex install"
@@ -721,6 +732,7 @@ def _run_preflight_v2(
             rc = install_integration_fn(project_root, client)
             item = next(i for i in model.items if i.id == "graphify-integration")
             if rc == 0:
+                integration_present = True
                 item.status = "done"
                 if client == "claude":
                     item.value = "CLAUDE.md + .claude/settings.json registered"
@@ -734,7 +746,7 @@ def _run_preflight_v2(
     hook_status = os.environ.get(
         "SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS", "unknown"
     )
-    if hook_status == "missing":
+    if hook_status == "missing" and integration_present:
         if confirm(
             "Install graphify hooks for this project?",
             default=True,
@@ -751,14 +763,42 @@ def _run_preflight_v2(
                 item.value = f"hook install failed (exit {rc})"
             renderer.draw(model)
 
-    if not confirm(
-        f"Run {model.title}?",
+    return 0
+
+
+def _render_preflight_overview_v2(*, stream: TextIO | None = None) -> None:
+    """Draw the preflight box once as the workspace overview, before any prompts.
+
+    Subsequent steps (serena init, graphify prompts) print below the box. The
+    box itself is not re-drawn here — only post-install changes inside
+    `_run_preflight_v2` re-render via their own renderer.
+    """
+    if os.environ.get("SERENA_AGENT_INTERACTIVE") != "1":
+        return
+    out = stream if stream is not None else sys.stdout
+    BoxRenderer(stream=out).draw(_preflight_box())
+
+
+def _run_final_confirm_v2(
+    *,
+    stream: TextIO | None = None,
+    input_fn: Callable[[], str] | None = None,
+) -> bool:
+    """Final 'Run <client>?' gate, asked once after every setup question.
+
+    Returns True if interactive mode is off or the user confirms; False if the
+    user declines the launch.
+    """
+    if os.environ.get("SERENA_AGENT_INTERACTIVE") != "1":
+        return True
+    out = stream if stream is not None else sys.stdout
+    client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
+    return confirm(
+        f"Run {client}?",
         default=True,
         stream=out,
         input_fn=input_fn,
-    ):
-        return 130
-    return 0
+    )
 
 
 def _serena_project_create(project_root: Path) -> int:
@@ -815,6 +855,7 @@ def _run_serena_init_v2(
         out.write("  ! serena    failed    . launching without Serena project config\n")
         out.flush()
         return "failed"
+    os.environ["SERENA_AGENT_PREFLIGHT_SERENA_STATUS"] = "managed"
     return "created"
 
 

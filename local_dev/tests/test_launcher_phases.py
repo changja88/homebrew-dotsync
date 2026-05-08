@@ -90,8 +90,12 @@ def test_v2_preflight_renders_box_with_cleanup_and_serena(monkeypatch):
     _set_graphify_env(monkeypatch)
 
     out = io.StringIO()
-    answers = iter(["n"])  # Abort
+    # Everything installed -> no prompts should fire from preflight.
+    answers = iter([])
 
+    # The box itself is now rendered upstream by _render_preflight_overview_v2;
+    # we exercise it here to keep the integration assertions meaningful.
+    launcher._render_preflight_overview_v2(stream=out)
     rc = launcher._run_preflight_v2(stream=out, input_fn=lambda: next(answers))
     text = out.getvalue()
     plain = _strip_ansi(text)
@@ -107,7 +111,7 @@ def test_v2_preflight_renders_box_with_cleanup_and_serena(monkeypatch):
     # The hook row reveals which git hooks are installed, not just "initialized".
     assert "post-commit" in plain
     assert "post-checkout" in plain
-    assert rc == 130  # abort -> non-zero
+    assert rc == 0  # preflight no longer aborts; final 'Run codex?' moved out
 
 
 def test_v2_preflight_returns_zero_on_run_confirm(monkeypatch):
@@ -120,15 +124,14 @@ def test_v2_preflight_returns_zero_on_run_confirm(monkeypatch):
     _set_graphify_env(monkeypatch, global_="missing")
 
     out = io.StringIO()
-    # Decline the global install prompt, then accept running the agent.
-    answers = iter(["n", "y"])
+    # Decline the global install prompt. Preflight no longer asks "Run codex?".
+    answers = iter(["n"])
     rc = launcher._run_preflight_v2(
         stream=out,
         input_fn=lambda: next(answers),
         install_graphify_global=lambda client: 0,
     )
     assert rc == 0
-    assert "not installed" in out.getvalue()  # graphify global warn surfaced
 
 
 def test_v2_preflight_marks_graphify_hook_missing(monkeypatch):
@@ -141,9 +144,9 @@ def test_v2_preflight_marks_graphify_hook_missing(monkeypatch):
     _set_graphify_env(monkeypatch, hook="missing")
 
     out = io.StringIO()
-    # Decline the hook install prompt, then decline the run prompt to avoid
-    # exercising downstream phases.
-    answers = iter(["n", "n"])
+    # Decline the hook install prompt. Preflight no longer asks "Run codex?".
+    answers = iter(["n"])
+    launcher._render_preflight_overview_v2(stream=out)
     launcher._run_preflight_v2(
         stream=out,
         input_fn=lambda: next(answers),
@@ -170,7 +173,7 @@ def test_v2_preflight_runs_graphify_hook_install_when_user_confirms(monkeypatch)
         return 0
 
     out = io.StringIO()
-    answers = iter(["y", "n"])  # accept hook install, decline running the agent
+    answers = iter(["y"])  # accept hook install; preflight no longer gates on run
     rc = launcher._run_preflight_v2(
         stream=out,
         input_fn=lambda: next(answers),
@@ -181,7 +184,7 @@ def test_v2_preflight_runs_graphify_hook_install_when_user_confirms(monkeypatch)
     assert "Install graphify hooks" in text
     # After successful install, the hook row flips to the done variant.
     assert "post-commit + post-checkout hooks installed" in text
-    assert rc == 130  # declined run -> abort
+    assert rc == 0  # preflight always returns 0; abort moved to _run_final_confirm_v2
 
 
 def test_v2_preflight_skips_graphify_hook_prompt_when_already_installed(monkeypatch):
@@ -200,7 +203,8 @@ def test_v2_preflight_skips_graphify_hook_prompt_when_already_installed(monkeypa
         return 0
 
     out = io.StringIO()
-    answers = iter(["n"])  # only one prompt expected: the run confirmation
+    # Everything installed -> no prompts should fire from preflight.
+    answers = iter([])
     launcher._run_preflight_v2(
         stream=out,
         input_fn=lambda: next(answers),
@@ -226,7 +230,7 @@ def test_v2_preflight_graphify_global_missing_claude_offers_auto_install(monkeyp
         return 0
 
     out = io.StringIO()
-    answers = iter(["y", "n"])  # accept global install, decline running
+    answers = iter(["y"])  # accept global install; preflight has no run prompt
     rc = launcher._run_preflight_v2(
         stream=out,
         input_fn=lambda: next(answers),
@@ -236,7 +240,7 @@ def test_v2_preflight_graphify_global_missing_claude_offers_auto_install(monkeyp
     assert install_calls == ["claude"]
     assert "graphify install" in text
     assert "user skill at ~/.claude/skills/graphify" in text  # post-install row
-    assert rc == 130
+    assert rc == 0
 
 
 def test_v2_preflight_graphify_global_missing_codex_uses_platform_codex(monkeypatch):
@@ -255,7 +259,7 @@ def test_v2_preflight_graphify_global_missing_codex_uses_platform_codex(monkeypa
         return 0
 
     out = io.StringIO()
-    answers = iter(["y", "n"])
+    answers = iter(["y"])
     launcher._run_preflight_v2(
         stream=out,
         input_fn=lambda: next(answers),
@@ -277,7 +281,9 @@ def test_v2_preflight_graphify_graph_missing_shows_hint_no_callback(monkeypatch)
     _set_graphify_env(monkeypatch, graph="missing")
 
     out = io.StringIO()
-    answers = iter(["n"])  # only the run-confirm prompt — no auto-install for graph
+    # graph row is informational (no install callback). All other rows installed.
+    answers = iter([])
+    launcher._render_preflight_overview_v2(stream=out)
     launcher._run_preflight_v2(stream=out, input_fn=lambda: next(answers))
     text = _strip_ansi(out.getvalue())
     assert "no graph" in text
@@ -300,7 +306,7 @@ def test_v2_preflight_graphify_integration_missing_claude_offers_install(monkeyp
         return 0
 
     out = io.StringIO()
-    answers = iter(["y", "n"])  # accept integration install, decline running
+    answers = iter(["y"])  # accept integration install
     launcher._run_preflight_v2(
         stream=out,
         input_fn=lambda: next(answers),
@@ -331,7 +337,7 @@ def test_v2_preflight_graphify_integration_missing_codex_uses_codex_subcommand(m
         return 0
 
     out = io.StringIO()
-    answers = iter(["y", "n"])
+    answers = iter(["y"])
     launcher._run_preflight_v2(
         stream=out,
         input_fn=lambda: next(answers),
@@ -353,7 +359,7 @@ def test_v2_preflight_graphify_global_install_failure_marks_warn(monkeypatch):
     _set_graphify_env(monkeypatch, global_="missing")
 
     out = io.StringIO()
-    answers = iter(["y", "n"])
+    answers = iter(["y"])
     launcher._run_preflight_v2(
         stream=out,
         input_fn=lambda: next(answers),
@@ -373,7 +379,10 @@ def test_v2_preflight_marks_serena_warn_when_missing(monkeypatch):
     _set_graphify_env(monkeypatch)
 
     out = io.StringIO()
-    answers = iter(["y"])
+    # Serena row is rendered by the overview; preflight only handles graphify
+    # prompts and stays silent when graphify env is clean.
+    answers = iter([])
+    launcher._render_preflight_overview_v2(stream=out)
     launcher._run_preflight_v2(stream=out, input_fn=lambda: next(answers))
     assert "project config missing" in out.getvalue()
 
@@ -623,3 +632,331 @@ def test_v2_main_returns_child_exit_code(monkeypatch, tmp_path):
 
     rc = launcher._main_v2([])
     assert rc == 0
+
+
+def test_v2_preflight_skips_hook_prompt_when_integration_declined(monkeypatch):
+    """integration_status가 missing이고 사용자가 그 install을 거절하면
+    hook 질문은 나오지 않아야 한다. hooks는 graphify가 프로젝트에 wire-up된
+    뒤에야 의미가 있으므로, integration 없이 hooks만 묻는 건 잘못된 흐름이다.
+    """
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch, integration="missing", hook="missing")
+
+    integration_calls: list = []
+    hook_calls: list = []
+
+    def fake_integration(project_root, client):
+        integration_calls.append(client)
+        return 0
+
+    def fake_hook(project_root):
+        hook_calls.append(project_root)
+        return 0
+
+    out = io.StringIO()
+    # Only one prompt is expected: the integration install (declined).
+    # If a hook prompt fires, this iter exhausts and StopIteration surfaces.
+    answers = iter(["n"])
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        install_graphify_integration=fake_integration,
+        install_graphify_hooks=fake_hook,
+    )
+    text = _strip_ansi(out.getvalue())
+    assert integration_calls == []
+    assert hook_calls == []
+    assert "Install graphify hooks" not in text
+
+
+def test_v2_preflight_skips_hook_prompt_when_integration_install_fails(monkeypatch):
+    """integration install이 실패하면 hook 질문을 묻지 않는다 — integration이
+    실제로 설치되지 않은 상태에서 hook을 깔아도 의미가 없다.
+    """
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch, integration="missing", hook="missing")
+
+    hook_calls: list = []
+
+    out = io.StringIO()
+    # Accept integration install (fails with rc=7), then no hook prompt should fire.
+    answers = iter(["y"])
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        install_graphify_integration=lambda project_root, client: 7,
+        install_graphify_hooks=lambda project_root: hook_calls.append(project_root) or 0,
+    )
+    text = _strip_ansi(out.getvalue())
+    assert hook_calls == []
+    assert "integration install failed" in text
+    assert "Install graphify hooks" not in text
+
+
+def test_v2_preflight_asks_hook_after_successful_integration_install(monkeypatch):
+    """integration install이 성공하면 hook 질문은 정상적으로 이어서 묻는다."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch, integration="missing", hook="missing")
+
+    hook_calls: list = []
+
+    out = io.StringIO()
+    # Accept integration (succeeds), accept hooks too.
+    answers = iter(["y", "y"])
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        install_graphify_integration=lambda project_root, client: 0,
+        install_graphify_hooks=lambda project_root: hook_calls.append(project_root) or 0,
+    )
+    text = _strip_ansi(out.getvalue())
+    assert len(hook_calls) == 1
+    assert "Install graphify hooks" in text
+
+
+def test_v2_preflight_no_longer_asks_run_codex(monkeypatch):
+    """preflight 단계에서는 더 이상 'Run codex?'를 묻지 않는다 — 그 게이트는
+    setup 질문들 + serena init이 모두 끝난 뒤 final-confirm으로 옮겨졌다.
+    """
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch)  # everything installed -> no install prompts
+
+    out = io.StringIO()
+    # If preflight tries to ask anything, this iter exhausts.
+    answers = iter([])
+    rc = launcher._run_preflight_v2(stream=out, input_fn=lambda: next(answers))
+    assert rc == 0
+    assert "Run codex?" not in out.getvalue()
+    assert "Run claude?" not in out.getvalue()
+
+
+def test_v2_final_confirm_yes_returns_true(monkeypatch):
+    """_run_final_confirm_v2는 'Run <client>?' 한 줄만 묻고 True/False를 반환한다."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+
+    out = io.StringIO()
+    answers = iter(["y"])
+    result = launcher._run_final_confirm_v2(stream=out, input_fn=lambda: next(answers))
+    assert result is True
+    assert "Run codex?" in out.getvalue()
+
+
+def test_v2_final_confirm_no_returns_false(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+
+    out = io.StringIO()
+    answers = iter(["n"])
+    result = launcher._run_final_confirm_v2(stream=out, input_fn=lambda: next(answers))
+    assert result is False
+    assert "Run claude?" in out.getvalue()
+
+
+def test_v2_final_confirm_skips_when_non_interactive(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "0")
+
+    out = io.StringIO()
+    # No prompt should be issued when interactive mode is off.
+    result = launcher._run_final_confirm_v2(
+        stream=out, input_fn=lambda: pytest.fail("no input should be requested")
+    )
+    assert result is True
+    assert out.getvalue() == ""
+
+
+def test_v2_main_orders_overview_then_serena_then_setup_then_final_confirm(
+    monkeypatch, tmp_path
+):
+    """전체 흐름의 순서를 검증한다 — 박스 overview가 가장 먼저:
+        0) preflight 박스 렌더 (status overview)
+        1) serena init 질문 (가장 중요한 질문)
+        2) preflight (graphify 질문들)
+        3) final 'Run codex?' 게이트
+    final 게이트에서 No하면 130을 반환하고 child agent는 실행되지 않는다.
+    """
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
+    _set_graphify_env(monkeypatch)  # graphify clean -> no graphify prompts
+
+    call_log: list = []
+
+    def fake_overview(*, stream=None):
+        call_log.append("render_overview")
+
+    def fake_preflight(*, stream=None, input_fn=None,
+                       install_graphify_global=None,
+                       install_graphify_integration=None,
+                       install_graphify_hooks=None):
+        call_log.append("preflight")
+        return 0
+
+    def fake_serena_init(*, stream=None, input_fn=None):
+        call_log.append("serena_init")
+        return "skipped"
+
+    def fake_final_confirm(*, stream=None, input_fn=None):
+        call_log.append("final_confirm")
+        return False  # decline -> abort
+
+    def boom(*args, **kwargs):
+        pytest.fail("agent must not launch when final confirm is declined")
+
+    import subprocess as _subprocess
+    monkeypatch.setattr(launcher, "_render_preflight_overview_v2", fake_overview,
+                        raising=False)
+    monkeypatch.setattr(launcher, "_run_preflight_v2", fake_preflight, raising=False)
+    monkeypatch.setattr(launcher, "_run_serena_init_v2", fake_serena_init, raising=False)
+    monkeypatch.setattr(launcher, "_run_final_confirm_v2", fake_final_confirm,
+                        raising=False)
+    monkeypatch.setattr(launcher, "find_real_binary", boom, raising=False)
+    monkeypatch.setattr(launcher, "ensure_server", boom, raising=False)
+    monkeypatch.setattr(_subprocess, "run",
+                        lambda *a, **k: pytest.fail("subprocess.run should not run"))
+
+    rc = launcher._main_v2([])
+    assert rc == 130
+    assert call_log == ["render_overview", "serena_init", "preflight", "final_confirm"]
+
+
+def test_v2_render_preflight_overview_draws_box_with_all_rows(monkeypatch):
+    """preflight overview는 box 렌더만 담당한다 — 어떤 prompt도 띄우지 않고
+    cleanup/memory/serena/graphify/context 행을 모두 한 번 그린다.
+    """
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 103 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch)
+
+    out = io.StringIO()
+    launcher._render_preflight_overview_v2(stream=out)
+    text = out.getvalue()
+    plain = _strip_ansi(text)
+    assert "0 to delete . 103 to keep" in plain
+    assert "0 files to reset" in plain
+    assert "preflight" in text
+    assert "codex" in text
+    assert "graphify global" in plain
+    assert "graphify graph" in plain
+    assert "graphify integration" in plain
+    assert "graphify hook" in plain
+
+
+def test_v2_render_preflight_overview_skips_when_non_interactive(monkeypatch):
+    """interactive=0이면 overview는 아무 것도 안 그린다."""
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "0")
+
+    out = io.StringIO()
+    launcher._render_preflight_overview_v2(stream=out)
+    assert out.getvalue() == ""
+
+
+def test_v2_run_preflight_v2_does_not_render_box_initially(monkeypatch):
+    """초기 박스 렌더는 _render_preflight_overview_v2가 책임지므로,
+    _run_preflight_v2는 prompt가 없을 때(이미 모두 installed) 어떤 출력도 만들지 않는다.
+    """
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch)
+
+    out = io.StringIO()
+    rc = launcher._run_preflight_v2(stream=out, input_fn=lambda: pytest.fail("no prompt"))
+    assert rc == 0
+    # Without an install change there's nothing for preflight to draw.
+    assert out.getvalue() == ""
+
+
+def test_v2_serena_init_create_promotes_env_status_to_managed(monkeypatch, tmp_path):
+    """serena_init이 새로 .serena/project.yml을 만들면 (created), 다음 단계인
+    preflight 박스가 fresh 상태를 찍을 수 있도록 env 상태를 'managed'로 승격한다.
+    """
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
+
+    def fake_create(project_root):
+        (project_root / ".serena").mkdir(exist_ok=True)
+        (project_root / ".serena" / "project.yml").write_text("ok\n")
+        return 0
+
+    monkeypatch.setattr(launcher, "_serena_project_create", fake_create, raising=False)
+    out = io.StringIO()
+    answers = iter(["y"])
+    result = launcher._run_serena_init_v2(stream=out, input_fn=lambda: next(answers))
+    assert result == "created"
+    assert os.environ.get("SERENA_AGENT_PREFLIGHT_SERENA_STATUS") == "managed"
+
+
+def test_v2_main_clears_terminal_before_child_when_serena_skipped(monkeypatch, tmp_path):
+    """serena init이 skipped/failed라 early-return으로 child를 띄울 때도
+    SERENA_AGENT_CLEAR_BEFORE_CHILD=1이면 화면을 청소해야 한다.
+    그렇지 않으면 codex가 preflight 출력 아래에 그대로 이어붙어 가독성을 망친다.
+    """
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_CLEAR_BEFORE_CHILD", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
+    _set_graphify_env(monkeypatch)
+
+    monkeypatch.setattr(launcher, "_run_preflight_v2",
+                        lambda **kw: 0, raising=False)
+    monkeypatch.setattr(launcher, "_run_serena_init_v2",
+                        lambda **kw: "skipped", raising=False)
+    monkeypatch.setattr(launcher, "_run_final_confirm_v2",
+                        lambda **kw: True, raising=False)
+    monkeypatch.setattr(launcher, "find_real_binary",
+                        lambda client: "/usr/bin/true", raising=False)
+
+    cleared: list = []
+    monkeypatch.setattr(launcher, "clear_terminal_before_child",
+                        lambda: cleared.append(True), raising=False)
+
+    run_calls: list = []
+
+    class _Result:
+        returncode = 0
+
+    def fake_run(cmd, *a, **k):
+        run_calls.append(("run", tuple(cleared)))
+        return _Result()
+
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+
+    rc = launcher._main_v2([])
+    assert rc == 0
+    # The clear must fire BEFORE subprocess.run is invoked.
+    assert run_calls == [("run", (True,))]
