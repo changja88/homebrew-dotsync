@@ -61,11 +61,11 @@ def test_format_welcome_tagline_has_decoration():
     assert out.count("∿∿∿") >= 2
 
 
-def test_format_welcome_uses_gradient_when_color_enabled(monkeypatch):
-    """Each logo line should use a distinct violet shade in color mode."""
+def test_format_welcome_uses_pink_to_purple_gradient_when_color_enabled(monkeypatch):
+    """Logo gradient should move from pink at the top to purple at the bottom."""
     monkeypatch.setattr("dotsync.ui._color_enabled", lambda: True)
     monkeypatch.delenv("NO_COLOR", raising=False)
     out = format_welcome("0.1.0")
-    # Top of gradient (violet-300) and bottom (violet-800) both appear.
-    assert "\033[38;2;196;181;253m" in out
-    assert "\033[38;2;91;33;182m" in out
+    # Top of gradient (pink-300) and bottom (purple-700) both appear.
+    assert "\033[38;2;249;168;212m" in out
+    assert "\033[38;2;126;34;206m" in out

@@ -88,6 +88,9 @@ docs/superpowers/
 
 # --- Local agent/tool state ---------------------------------------------
 .serena/
+graphify-out/cache/
+graphify-out/manifest.json
+graphify-out/cost.json
 
 # --- dotsync's own dogfooding (keep developer's local sync state out of git)
 dotsync.toml

@@ -14,17 +14,17 @@ LOGO_LINES = [
 ]
 LOGO = "\n".join(LOGO_LINES)
 
-# Tailwind violet 300→800 truecolor gradient, top→bottom across the six logo rows.
+# Tailwind pink→purple truecolor gradient, top→bottom across the six logo rows.
 LOGO_GRADIENT = [
-    "\033[38;2;196;181;253m",  # violet-300
-    "\033[38;2;167;139;250m",  # violet-400
-    "\033[38;2;139;92;246m",   # violet-500
-    "\033[38;2;124;58;237m",   # violet-600
-    "\033[38;2;109;40;217m",   # violet-700
-    "\033[38;2;91;33;182m",    # violet-800
+    "\033[38;2;249;168;212m",  # pink-300
+    "\033[38;2;244;114;182m",  # pink-400
+    "\033[38;2;232;121;249m",  # fuchsia-400
+    "\033[38;2;217;70;239m",   # fuchsia-500
+    "\033[38;2;168;85;247m",   # purple-500
+    "\033[38;2;126;34;206m",   # purple-700
 ]
 
-SPARKLE_TOP =    "  ❖  ✷                                                          ⋆  ✷"
+SPARKLE_TOP = "  ❖  ✷                                                          ⋆  ✷"
 SPARKLE_BOTTOM = "  ⋆              ✷                                              ❖"
 TAGLINE_DECO = "∿∿∿"
 
