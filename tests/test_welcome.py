@@ -43,3 +43,29 @@ def test_format_welcome_uses_default_version_when_omitted():
     from dotsync import __version__
     out = format_welcome()
     assert __version__ in out
+
+
+def test_format_welcome_includes_sparkle_frame():
+    """Logo should be wrapped with sparkle decorations on top and bottom."""
+    out = format_welcome("0.1.0")
+    assert "❖" in out
+    assert "✷" in out
+    assert "⋆" in out
+
+
+def test_format_welcome_tagline_has_decoration():
+    """Tagline should be flanked with ∿∿∿ decorations."""
+    out = format_welcome("0.1.0")
+    assert "∿∿∿" in out
+    # Decoration appears on both sides of the tagline
+    assert out.count("∿∿∿") >= 2
+
+
+def test_format_welcome_uses_gradient_when_color_enabled(monkeypatch):
+    """Each logo line should use a distinct violet shade in color mode."""
+    monkeypatch.setattr("dotsync.ui._color_enabled", lambda: True)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    out = format_welcome("0.1.0")
+    # Top of gradient (violet-300) and bottom (violet-800) both appear.
+    assert "\033[38;2;196;181;253m" in out
+    assert "\033[38;2;91;33;182m" in out
