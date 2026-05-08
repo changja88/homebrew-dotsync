@@ -57,17 +57,16 @@ class BoxModel:
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 _BOX_WIDTH = 60
 
-# Pre-rendered figlet (standard font) banners for the known agent clients.
-# Inspired by the oh-my-zsh post-install banner; rendered with
-# `figlet -f standard <client>` and stored as raw string tuples so the
-# backslashes survive verbatim.
+# Pre-rendered block banners for the known agent clients. Kept as raw string
+# tuples so box rendering stays stdlib-only and deterministic.
 _HEADER_ART: dict[str, tuple[str, ...]] = {
     "codex": (
-        r"               _           ",
-        r"  ___ ___   __| | _____  __",
-        r" / __/ _ \ / _` |/ _ \ \/ /",
-        r"| (_| (_) | (_| |  __/>  < ",
-        " \\___\\___/ \\__,_|\\___/_/\\_\\",
+        r"  ██████╗ ██████╗ ██████╗ ███████╗██╗  ██╗",
+        r" ██╔════╝██╔═══██╗██╔══██╗██╔════╝╚██╗██╔╝",
+        r" ██║     ██║   ██║██║  ██║█████╗   ╚███╔╝ ",
+        r" ██║     ██║   ██║██║  ██║██╔══╝   ██╔██╗ ",
+        r" ╚██████╗╚██████╔╝██████╔╝███████╗██╔╝ ██╗",
+        r"  ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝╚═╝  ╚═╝",
     ),
     "claude": (
         r"      _                 _      ",
@@ -149,8 +148,10 @@ def render_box(model: BoxModel, *, spin_frame: int = 0) -> str:
     lines.append("  " + _border("─"))
     art = _HEADER_ART.get(model.title)
     if art is not None:
-        for art_line in art:
-            lines.append("  " + _ansi(f"1;{PURPLE}", art_line))
+        midpoint = (len(art) + 1) // 2
+        for index, art_line in enumerate(art):
+            color = PINK if index < midpoint else PURPLE
+            lines.append("  " + _ansi(f"1;{color}", art_line))
         phase_label = _ansi(PINK, f"·  {model.phase}")
         # Right-align the phase label inside the box width.
         pad = max(0, _BOX_WIDTH - len(art[-1]) - len(model.phase) - 4)

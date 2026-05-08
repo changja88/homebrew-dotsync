@@ -4,6 +4,8 @@ from local_dev.serena_mcp_management.ui import (
     BoxModel,
     BoxRenderer,
     Item,
+    PINK,
+    PURPLE,
     render_box,
 )
 
@@ -11,10 +13,17 @@ from local_dev.serena_mcp_management.ui import (
 def test_render_box_includes_title_art_and_phase_label():
     model = BoxModel(phase="preflight", title="codex", items=[])
     text = render_box(model)
-    # Known clients render as a figlet banner instead of plain text title.
-    # Use a unique fragment of the codex art as a fingerprint.
-    assert "___ ___" in text
+    # Known clients render as a block ASCII banner instead of plain text title.
+    assert "██████╗" in text
+    assert "╚═════╝" in text
     assert "preflight" in text
+
+
+def test_render_box_colors_known_title_art_pink_and_purple():
+    model = BoxModel(phase="preflight", title="codex", items=[])
+    text = render_box(model)
+    assert f"\x1b[1;{PINK}m" in text
+    assert f"\x1b[1;{PURPLE}m" in text
 
 
 def test_render_box_falls_back_to_plain_title_for_unknown_client():
@@ -86,9 +95,9 @@ def test_box_renderer_first_draw_writes_text_only():
     renderer.draw(model)
     output = stream.getvalue()
     # codex art fingerprint sits inside the rendered box.
-    assert "___ ___" in output
+    assert "██████╗" in output
     # no cursor movement (up/erase) before first frame; color codes ok
-    prefix = output[: output.find("___ ___")]
+    prefix = output[: output.find("██████╗")]
     assert "A\x1b[J" not in prefix  # cursor-up + erase sequence should not appear
 
 
