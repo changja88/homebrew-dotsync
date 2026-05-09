@@ -108,14 +108,22 @@ _dotsync_agent_graphify_graph_built() {
 _dotsync_agent_graphify_integration_installed() {
   local project_root="$1"
   local client="$2"
+  local md_file=""
+  local cfg_file=""
   case "$client" in
     claude)
-      [[ -f "$project_root/CLAUDE.md" && -f "$project_root/.claude/settings.json" ]]
+      md_file="$project_root/CLAUDE.md"
+      cfg_file="$project_root/.claude/settings.json"
       ;;
     *)
-      [[ -f "$project_root/AGENTS.md" && -f "$project_root/.codex/hooks.json" ]]
+      md_file="$project_root/AGENTS.md"
+      cfg_file="$project_root/.codex/hooks.json"
       ;;
   esac
+  [[ -f "$md_file" && -f "$cfg_file" ]] || return 1
+  grep -q "graphify-out" "$md_file" 2>/dev/null || return 1
+  grep -q "graphify-out" "$cfg_file" 2>/dev/null || return 1
+  return 0
 }
 
 _dotsync_agent_graphify_hooks_installed() {

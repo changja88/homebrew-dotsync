@@ -94,6 +94,118 @@ def test_render_zsh_shim_graphify_integration_helper_branches_on_client():
     assert ".codex/hooks.json" in text
 
 
+def test_render_zsh_shim_graphify_integration_helper_checks_file_content():
+    """File existence alone is too loose — projects with their own CLAUDE.md
+    or .claude/settings.json (unrelated to graphify) get falsely marked as
+    'integration installed'. The check must also confirm graphify-specific
+    content, mirroring the hook-marker pattern used by hooks_installed.
+    """
+    text = render_zsh_shim(
+        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
+        python_executable=Path("/repo/.venv/bin/python3"),
+        codex_binary=Path("/opt/homebrew/bin/codex"),
+        claude_binary=Path("/opt/homebrew/bin/claude"),
+    )
+
+    # The marker `graphify-out` is referenced by both the markdown section
+    # graphify injects (".../graphify-out/...") and the settings/hook command
+    # it registers (graphify-out/graph.json), so a single grep covers both.
+    assert "grep -q" in text
+    assert "graphify-out" in text
+
+
+@pytest.mark.no_subprocess_block
+def test_zsh_shim_graphify_integration_returns_missing_when_files_lack_graphify(tmp_path):
+    """Empty {} settings.json + dotsync's own CLAUDE.md must NOT be detected
+    as a graphify integration."""
+    shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "CLAUDE.md").write_text("# CLAUDE.md\n\nThis project has nothing to do with graphify.\n")
+    claude_dir = project / ".claude"
+    claude_dir.mkdir()
+    (claude_dir / "settings.json").write_text("{}\n")
+
+    result = subprocess.run(
+        [
+            "zsh",
+            "-fc",
+            (
+                f"source {shim_path}; "
+                f"_dotsync_agent_graphify_integration_installed {project} claude; "
+                "print integration=$?"
+            ),
+        ],
+        env={**os.environ, "HOME": str(tmp_path)},
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert "integration=1" in result.stdout
+
+
+@pytest.mark.no_subprocess_block
+def test_zsh_shim_graphify_integration_returns_installed_when_content_present(tmp_path):
+    """When CLAUDE.md has the `## graphify` section AND .claude/settings.json
+    references graphify-out, the integration is genuinely installed."""
+    shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "CLAUDE.md").write_text(
+        "# CLAUDE.md\n\n## graphify\n\nThis project has a graphify knowledge graph at graphify-out/.\n"
+    )
+    claude_dir = project / ".claude"
+    claude_dir.mkdir()
+    (claude_dir / "settings.json").write_text(
+        '{"hooks":{"PreToolUse":[{"hooks":[{"command":"graphify-out/graph.json"}]}]}}\n'
+    )
+
+    result = subprocess.run(
+        [
+            "zsh",
+            "-fc",
+            (
+                f"source {shim_path}; "
+                f"_dotsync_agent_graphify_integration_installed {project} claude; "
+                "print integration=$?"
+            ),
+        ],
+        env={**os.environ, "HOME": str(tmp_path)},
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert "integration=0" in result.stdout
+
+
+@pytest.mark.no_subprocess_block
+def test_zsh_shim_graphify_integration_codex_returns_missing_when_files_lack_graphify(tmp_path):
+    shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "AGENTS.md").write_text("# AGENTS.md\n\nUnrelated content.\n")
+    codex_dir = project / ".codex"
+    codex_dir.mkdir()
+    (codex_dir / "hooks.json").write_text("{}\n")
+
+    result = subprocess.run(
+        [
+            "zsh",
+            "-fc",
+            (
+                f"source {shim_path}; "
+                f"_dotsync_agent_graphify_integration_installed {project} codex; "
+                "print integration=$?"
+            ),
+        ],
+        env={**os.environ, "HOME": str(tmp_path)},
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert "integration=1" in result.stdout
+
+
 def test_render_zsh_shim_graphify_hooks_check_uses_project_root():
     text = render_zsh_shim(
         launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
