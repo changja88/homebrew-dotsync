@@ -105,10 +105,47 @@ def test_render_zsh_shim_graphify_hooks_check_uses_project_root():
     # The probe must accept the resolved project root (not $PWD) so that the
     # status reflects the same scope used elsewhere in the preflight.
     assert '_dotsync_agent_graphify_hooks_installed "$project_root"' in text
-    assert ".git/hooks/post-commit" in text
-    assert ".git/hooks/post-checkout" in text
+    assert "config core.hooksPath" in text
+    assert 'hooks_dir="$project_root/.git/hooks"' in text
+    assert 'pc="$hooks_dir/post-commit"' in text
+    assert 'pco="$hooks_dir/post-checkout"' in text
     assert "graphify-hook-start" in text
     assert "graphify-checkout-hook-start" in text
+
+
+@pytest.mark.no_subprocess_block
+def test_zsh_shim_graphify_hooks_check_respects_core_hooks_path(tmp_path):
+    shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
+    project = tmp_path / "project"
+    hooks_dir = project / ".githooks"
+    project.mkdir()
+    subprocess.run(["git", "-C", str(project), "init"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(project), "config", "core.hooksPath", ".githooks"],
+        check=True,
+        capture_output=True,
+    )
+    hooks_dir.mkdir(parents=True)
+    (hooks_dir / "post-commit").write_text("#!/bin/sh\n# graphify-hook-start\n")
+    (hooks_dir / "post-checkout").write_text("#!/bin/sh\n# graphify-checkout-hook-start\n")
+
+    result = subprocess.run(
+        [
+            "zsh",
+            "-fc",
+            (
+                f"source {shim_path}; "
+                f"_dotsync_agent_graphify_hooks_installed {project}; "
+                "print hooks=$?"
+            ),
+        ],
+        env={**os.environ, "HOME": str(tmp_path)},
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert "hooks=0" in result.stdout
 
 
 def test_render_zsh_shim_defers_clear_to_launcher_after_codex_cleanup():

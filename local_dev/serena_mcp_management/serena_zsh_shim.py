@@ -120,8 +120,24 @@ _dotsync_agent_graphify_integration_installed() {
 
 _dotsync_agent_graphify_hooks_installed() {
   local project_root="$1"
-  local pc="$project_root/.git/hooks/post-commit"
-  local pco="$project_root/.git/hooks/post-checkout"
+  local hooks_path=""
+  local hooks_dir=""
+  local pc=""
+  local pco=""
+
+  hooks_path="$(git -C "$project_root" config core.hooksPath 2>/dev/null || true)"
+  if [[ -n "$hooks_path" ]]; then
+    case "$hooks_path" in
+      "~"|"~/"*) hooks_dir="${hooks_path/#\~/$HOME}" ;;
+      /*)        hooks_dir="$hooks_path" ;;
+      *)         hooks_dir="$project_root/$hooks_path" ;;
+    esac
+  else
+    hooks_dir="$project_root/.git/hooks"
+  fi
+
+  pc="$hooks_dir/post-commit"
+  pco="$hooks_dir/post-checkout"
 
   [[ -f "$pc" && -f "$pco" ]] || return 1
   grep -q "graphify-hook-start" "$pc" 2>/dev/null || return 1
