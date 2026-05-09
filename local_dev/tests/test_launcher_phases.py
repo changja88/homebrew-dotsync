@@ -849,6 +849,7 @@ def test_v2_main_orders_overview_then_serena_then_setup_then_final_confirm(
         call_log.append("render_overview")
 
     def fake_preflight(*, stream=None, input_fn=None,
+                       serena_state="managed",
                        install_graphify_global=None,
                        install_graphify_integration=None,
                        install_graphify_hooks=None):
@@ -999,3 +1000,196 @@ def test_v2_main_clears_terminal_before_child_when_serena_skipped(monkeypatch, t
     assert rc == 0
     # The clear must fire BEFORE subprocess.run is invoked.
     assert run_calls == [("run", (True,))]
+
+
+# --- Dynamic prompt-default rules -------------------------------------------
+#
+# Rule (per user request):
+#   1. Serena init prompt          -> default=No  (only shown when missing)
+#   2. graphify global install     -> default=No  (only shown when missing)
+#   3. graphify integration install-> default=Yes only if Serena is initialized
+#                                     AND graphify global is installed (either
+#                                     was already, or just got installed in
+#                                     this session); otherwise default=No
+#   4. graphify hook install       -> default=Yes (always)
+#   5. final "Run <client>?"       -> default=Yes (always)
+#
+# Defaults are observable two ways: (a) the [Y/n]/[y/N] suffix written by
+# confirm() and (b) what happens when the user submits an empty line.
+
+
+def test_v2_serena_init_prompt_defaults_to_no(monkeypatch, tmp_path):
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
+    out = io.StringIO()
+    answers = iter([""])  # bare Enter
+    result = launcher._run_serena_init_v2(stream=out, input_fn=lambda: next(answers))
+    assert result == "skipped"
+    assert "[y/N]" in out.getvalue()
+
+
+def test_v2_preflight_graphify_global_prompt_defaults_to_no(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch, global_="missing")
+
+    install_calls: list = []
+    out = io.StringIO()
+    answers = iter([""])  # bare Enter
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        install_graphify_global=lambda client: install_calls.append(client) or 0,
+    )
+    assert install_calls == []
+    assert "[y/N]" in out.getvalue()
+
+
+def test_v2_preflight_graphify_integration_default_no_when_serena_skipped(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
+    _set_graphify_env(monkeypatch, integration="missing")  # global=installed
+
+    integration_calls: list = []
+    out = io.StringIO()
+    answers = iter([""])  # bare Enter on integration prompt
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        serena_state="skipped",
+        install_graphify_integration=lambda root, client:
+            integration_calls.append(client) or 0,
+    )
+    assert integration_calls == []
+    assert "[y/N]" in out.getvalue()
+
+
+def test_v2_preflight_graphify_integration_default_no_when_global_declined(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch, global_="missing", integration="missing")
+
+    integration_calls: list = []
+    out = io.StringIO()
+    # Decline global ("n"), then bare Enter on integration prompt.
+    answers = iter(["n", ""])
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        serena_state="managed",
+        install_graphify_global=lambda client: 0,
+        install_graphify_integration=lambda root, client:
+            integration_calls.append(client) or 0,
+    )
+    assert integration_calls == []
+
+
+def test_v2_preflight_graphify_integration_default_yes_when_serena_and_global_done(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch, integration="missing")  # global=installed
+
+    integration_calls: list = []
+    out = io.StringIO()
+    answers = iter([""])  # bare Enter -> should accept (Yes default)
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        serena_state="managed",
+        install_graphify_integration=lambda root, client:
+            integration_calls.append(client) or 0,
+    )
+    assert integration_calls == ["claude"]
+    assert "[Y/n]" in out.getvalue()
+
+
+def test_v2_preflight_graphify_integration_default_yes_after_just_installing_global(monkeypatch):
+    """If user accepts global install in the same flow, integration treats
+    global as 'done' and defaults to Yes."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch, global_="missing", integration="missing")
+
+    integration_calls: list = []
+    out = io.StringIO()
+    # Accept global ("y"), bare Enter on integration -> should accept (Yes default)
+    answers = iter(["y", ""])
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        serena_state="managed",
+        install_graphify_global=lambda client: 0,
+        install_graphify_integration=lambda root, client:
+            integration_calls.append(client) or 0,
+    )
+    assert integration_calls == ["claude"]
+
+
+def test_v2_preflight_graphify_hook_prompt_defaults_to_yes(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch, hook="missing")  # integration=installed
+
+    hook_calls: list = []
+    out = io.StringIO()
+    answers = iter([""])  # bare Enter
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        install_graphify_hooks=lambda root: hook_calls.append(root) or 0,
+    )
+    assert len(hook_calls) == 1
+    assert "[Y/n]" in out.getvalue()
+
+
+def test_v2_final_confirm_defaults_to_yes(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    out = io.StringIO()
+    answers = iter([""])  # bare Enter
+    result = launcher._run_final_confirm_v2(stream=out, input_fn=lambda: next(answers))
+    assert result is True
+    assert "[Y/n]" in out.getvalue()
+
+
+def test_v2_main_passes_serena_state_to_preflight(monkeypatch, tmp_path):
+    """_main_v2 must forward the result of _run_serena_init_v2 to
+    _run_preflight_v2 so the integration prompt's default reflects whether
+    Serena is initialized."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
+    _set_graphify_env(monkeypatch)
+
+    captured: dict = {}
+
+    def fake_preflight(**kwargs):
+        captured["serena_state"] = kwargs.get("serena_state", "<missing>")
+        return 0
+
+    monkeypatch.setattr(launcher, "_render_preflight_overview_v2",
+                        lambda *, stream=None: None, raising=False)
+    monkeypatch.setattr(launcher, "_run_preflight_v2", fake_preflight, raising=False)
+    monkeypatch.setattr(launcher, "_run_serena_init_v2",
+                        lambda *, stream=None, input_fn=None: "created", raising=False)
+    monkeypatch.setattr(launcher, "_run_final_confirm_v2",
+                        lambda *, stream=None, input_fn=None: False, raising=False)
+
+    rc = launcher._main_v2([])
+    assert rc == 130  # final confirm declined
+    assert captured["serena_state"] == "created"

@@ -400,7 +400,7 @@ def _main_v2(args: list[str]) -> int:
     serena_state = _run_serena_init_v2() if interactive else "managed"
 
     if interactive:
-        rc = _run_preflight_v2()
+        rc = _run_preflight_v2(serena_state=serena_state)
         if rc != 0:
             return rc
 
@@ -668,11 +668,17 @@ def _run_preflight_v2(
     *,
     stream: TextIO | None = None,
     input_fn: Callable[[], str] | None = None,
+    serena_state: str = "managed",
     install_graphify_global: Callable[[str], int] | None = None,
     install_graphify_integration: Callable[[Path, str], int] | None = None,
     install_graphify_hooks: Callable[[Path], int] | None = None,
 ) -> int:
     """Run the v2 preflight phase with confirmation prompt.
+
+    ``serena_state`` is the result returned by ``_run_serena_init_v2``
+    (one of ``managed``/``created``/``skipped``/``failed``). It feeds the
+    integration prompt's dynamic default — graphify integration only
+    defaults to Yes when both Serena and graphify-global are in place.
 
     Returns:
         0 if interactive mode is off or user confirms, 130 if user aborts.
@@ -694,16 +700,18 @@ def _run_preflight_v2(
     global_status = os.environ.get(
         "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS", "unknown"
     )
+    global_done = global_status not in {"missing", "unknown"}
     if global_status == "missing":
         cmd = "graphify install" if client == "claude" else "graphify install --platform codex"
         if confirm(
             f"Run `{cmd}` to install the graphify skill globally?",
-            default=True,
+            default=False,
             stream=out,
             input_fn=input_fn,
         ):
             rc = install_global_fn(client)
             if rc == 0:
+                global_done = True
                 if client == "claude":
                     _emit("graphify global", "user skill at ~/.claude/skills/graphify", ok=True)
                 else:
@@ -719,9 +727,11 @@ def _run_preflight_v2(
         cmd = (
             "graphify claude install" if client == "claude" else "graphify codex install"
         )
+        serena_done = serena_state in {"managed", "created"}
+        integration_default = serena_done and global_done
         if confirm(
             f"Run `{cmd}` to wire graphify into this project?",
-            default=True,
+            default=integration_default,
             stream=out,
             input_fn=input_fn,
         ):
@@ -838,7 +848,7 @@ def _run_serena_init_v2(
 
     if not confirm(
         "Initialize Serena for this project?",
-        default=True,
+        default=False,
         stream=out,
         input_fn=input_fn,
     ):
