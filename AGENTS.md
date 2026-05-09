@@ -16,8 +16,8 @@ two closely related deliverables:
 between local app locations and one user-chosen sync folder.
 
 > **`local_dev/` is unrelated to `dotsync`.** Anything under `local_dev/` is an
-> internal-only development tool (currently a Serena/graphify-aware
-> codex/claude launcher) that merely co-lives in this checkout. It is not
+> internal-only development tool (currently a Serena-aware codex/claude
+> launcher) that merely co-lives in this checkout. It is not
 > packaged by the Homebrew formula, shares no runtime code with
 > `lib/dotsync/`, and must not appear in the public `README.md` or in the root
 > `Makefile`'s `make help`. Its own targets and docs live inside that
