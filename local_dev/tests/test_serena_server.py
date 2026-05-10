@@ -13,7 +13,6 @@ from local_dev.serena_mcp_management.serena_mcp.server import (
     _start_healthy_server,
     _start_serena_process,
     ensure_server,
-    serena_context_for,
 )
 
 
@@ -123,6 +122,47 @@ def test_ensure_server_replaces_unhealthy_record(monkeypatch, tmp_path):
         assert stored_lease.lease_id == lease.lease_id
         assert stored_lease.launcher_pid == lease.launcher_pid
         assert stored_lease.heartbeat_at >= lease.heartbeat_at
+
+
+def test_ensure_server_discards_wrong_project_record_without_terminating_pids(monkeypatch, tmp_path):
+    scope = Scope(tmp_path / "current", "codex")
+    wrong_scope = Scope(tmp_path / "other", "codex")
+    lease = Lease("lease-a", os.getpid(), 10.0)
+    terminated = []
+
+    with locked_registry(scope) as registry:
+        registry.record = ServerRecord(
+            server_pid=111,
+            mcp_url="http://127.0.0.1:9000/mcp",
+            dashboard_url="http://127.0.0.1:24000",
+            project_root=str(wrong_scope.project_root),
+            client_type=wrong_scope.client_type,
+            started_at=1.0,
+            leases={},
+            upstream_mcp_url="http://127.0.0.1:9001/mcp",
+            proxy_pid=222,
+        )
+
+    replacement = ServerRecord(
+        server_pid=333,
+        mcp_url="http://127.0.0.1:9002/mcp",
+        dashboard_url="http://127.0.0.1:24001",
+        project_root=str(scope.project_root),
+        client_type=scope.client_type,
+        started_at=2.0,
+        leases={"lease-a": lease},
+        upstream_mcp_url="http://127.0.0.1:9003/mcp",
+        proxy_pid=444,
+    )
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server._terminate_pid", terminated.append)
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.server._start_healthy_server",
+        lambda scope_arg, lease_arg: replacement,
+    )
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.ensure_watchdog", lambda scope_arg: None)
+
+    assert ensure_server(scope, lease) == replacement
+    assert terminated == []
 
 
 def test_ensure_server_refreshes_initial_lease_after_slow_startup(monkeypatch, tmp_path):
@@ -257,9 +297,130 @@ def test_start_healthy_server_terminates_proxy_and_upstream_when_health_fails(mo
     assert terminated_pids == [222, 111, 224, 113, 226, 115]
 
 
-def test_serena_context_maps_claude_client_to_claude_code():
-    assert serena_context_for("codex") == "codex"
-    assert serena_context_for("claude") == "claude-code"
+def test_ensure_server_terminates_registryless_same_scope_orphan_before_start(monkeypatch, tmp_path):
+    scope = Scope(tmp_path / "repo", "codex")
+    lease = Lease("lease-a", os.getpid(), 10.0)
+    terminated = []
+
+    replacement = ServerRecord(
+        server_pid=333,
+        mcp_url="http://127.0.0.1:9002/mcp",
+        dashboard_url="http://127.0.0.1:24001",
+        project_root=str(scope.project_root),
+        client_type=scope.client_type,
+        started_at=2.0,
+        leases={"lease-a": lease},
+        upstream_mcp_url="http://127.0.0.1:9003/mcp",
+        proxy_pid=444,
+    )
+    orphan = server.SerenaMcpProcess(
+        pid=111,
+        project_root=scope.project_root,
+        context="codex",
+        command="serena start-mcp-server",
+    )
+
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.list_serena_mcp_processes", lambda: [orphan])
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server._terminate_pid", terminated.append)
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.server._start_healthy_server",
+        lambda scope_arg, lease_arg: replacement,
+    )
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.ensure_watchdog", lambda scope_arg: None)
+
+    assert ensure_server(scope, lease) == replacement
+    assert terminated == [111]
+
+
+def test_ensure_server_preserves_other_project_and_other_client_processes(monkeypatch, tmp_path):
+    scope = Scope(tmp_path / "repo", "codex")
+    other_project = Scope(tmp_path / "other", "codex")
+    other_client = Scope(tmp_path / "repo", "claude")
+    lease = Lease("lease-a", os.getpid(), 10.0)
+    terminated = []
+
+    replacement = ServerRecord(
+        server_pid=333,
+        mcp_url="http://127.0.0.1:9002/mcp",
+        dashboard_url="http://127.0.0.1:24001",
+        project_root=str(scope.project_root),
+        client_type=scope.client_type,
+        started_at=2.0,
+        leases={"lease-a": lease},
+        upstream_mcp_url="http://127.0.0.1:9003/mcp",
+        proxy_pid=444,
+    )
+    processes = [
+        server.SerenaMcpProcess(111, other_project.project_root, "codex", "serena start-mcp-server"),
+        server.SerenaMcpProcess(222, other_client.project_root, "claude-code", "serena start-mcp-server"),
+    ]
+
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.list_serena_mcp_processes", lambda: processes)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server._terminate_pid", terminated.append)
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.server._start_healthy_server",
+        lambda scope_arg, lease_arg: replacement,
+    )
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.ensure_watchdog", lambda scope_arg: None)
+
+    ensure_server(scope, lease)
+
+    assert terminated == []
+
+
+def test_ensure_server_reuses_healthy_record_and_cleans_extra_same_scope_upstream(monkeypatch, tmp_path):
+    scope = Scope(tmp_path / "repo", "codex")
+    lease = Lease("lease-a", os.getpid(), 10.0)
+    terminated = []
+    record = ServerRecord(
+        server_pid=111,
+        mcp_url="http://127.0.0.1:9000/mcp",
+        dashboard_url="http://127.0.0.1:24000",
+        project_root=str(scope.project_root),
+        client_type=scope.client_type,
+        started_at=1.0,
+        leases={},
+        upstream_mcp_url="http://127.0.0.1:9001/mcp",
+        proxy_pid=222,
+    )
+    with locked_registry(scope) as registry:
+        registry.record = record
+    processes = [
+        server.SerenaMcpProcess(111, scope.project_root, "codex", "registered"),
+        server.SerenaMcpProcess(333, scope.project_root, "codex", "extra"),
+    ]
+
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.pid_is_alive", lambda pid: True)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.http_endpoint_alive", lambda url: True)
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.server.dashboard_matches_project",
+        lambda dashboard_url, project_root: True,
+    )
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.list_serena_mcp_processes", lambda: processes)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server._terminate_pid", terminated.append)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.ensure_watchdog", lambda scope_arg: None)
+
+    assert ensure_server(scope, lease).server_pid == 111
+    assert terminated == [333]
+
+
+def test_server_terminate_record_delegates_to_shared_termination(monkeypatch):
+    terminated = []
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.terminate_pid", terminated.append)
+
+    server._terminate_record(ServerRecord(
+        server_pid=111,
+        mcp_url="http://127.0.0.1:9000/mcp",
+        dashboard_url="http://127.0.0.1:24000",
+        project_root="/repo",
+        client_type="codex",
+        started_at=1.0,
+        leases={},
+        upstream_mcp_url="http://127.0.0.1:9001/mcp",
+        proxy_pid=222,
+    ))
+
+    assert terminated == [222, 111]
 
 
 def test_start_serena_process_redirects_output_to_scope_log(monkeypatch, tmp_path):

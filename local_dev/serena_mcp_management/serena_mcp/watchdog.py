@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import signal
 import subprocess
 import sys
 import time
@@ -11,7 +10,13 @@ from pathlib import Path
 
 from local_dev.serena_mcp_management.serena_mcp.health import pid_is_alive, process_identity
 from local_dev.serena_mcp_management.serena_mcp.paths import Scope
-from local_dev.serena_mcp_management.serena_mcp.registry import Lease, ServerRecord, locked_registry
+from local_dev.serena_mcp_management.serena_mcp.registry import (
+    Lease,
+    ServerRecord,
+    locked_registry,
+    record_belongs_to_scope,
+)
+from local_dev.serena_mcp_management.serena_mcp.termination import terminate_pid
 
 HEARTBEAT_INTERVAL_SECONDS = 5.0
 LEASE_TIMEOUT_SECONDS = 30.0
@@ -39,6 +44,9 @@ def cleanup_once(scope: Scope, *, now: float, lease_timeout_seconds: float) -> b
 
     with locked_registry(scope) as registry:
         if registry.record is None:
+            return False
+        if not record_belongs_to_scope(registry.record, scope):
+            registry.record = None
             return False
         for lease_id, lease in list(registry.record.leases.items()):
             if now - lease.heartbeat_at <= lease_timeout_seconds:
@@ -76,6 +84,9 @@ def shutdown_if_no_leases(scope: Scope) -> bool:
     with locked_registry(scope) as registry:
         if registry.record is None:
             return False
+        if not record_belongs_to_scope(registry.record, scope):
+            registry.record = None
+            return False
         if registry.record.leases:
             return True
         _terminate_record(registry.record)
@@ -88,6 +99,15 @@ def release_lease_and_shutdown_if_empty(scope: Scope, lease_id: str) -> Shutdown
 
     with locked_registry(scope) as registry:
         if registry.record is None:
+            return ShutdownStats(
+                sessions_before=0,
+                sessions_closed=0,
+                sessions_remaining=0,
+                server_was_running=False,
+                server_stopped=False,
+            )
+        if not record_belongs_to_scope(registry.record, scope):
+            registry.record = None
             return ShutdownStats(
                 sessions_before=0,
                 sessions_closed=0,
@@ -176,29 +196,7 @@ def _terminate_record(record: ServerRecord) -> None:
 
 
 def _terminate_pid(pid: int) -> None:
-    try:
-        os.killpg(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    except PermissionError:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        if not pid_is_alive(pid):
-            return
-        time.sleep(0.1)
-    try:
-        os.killpg(pid, signal.SIGKILL)
-    except ProcessLookupError:
-        return
-    except PermissionError:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            return
+    terminate_pid(pid)
 
 
 if __name__ == "__main__":

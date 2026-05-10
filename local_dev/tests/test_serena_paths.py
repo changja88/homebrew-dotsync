@@ -1,4 +1,11 @@
-from local_dev.serena_mcp_management.serena_mcp.paths import Scope, find_project_root, state_dir_for
+import pytest
+
+from local_dev.serena_mcp_management.serena_mcp.paths import (
+    Scope,
+    find_project_root,
+    serena_context_for,
+    state_dir_for,
+)
 
 
 def test_find_project_root_uses_git_root(tmp_path):
@@ -43,3 +50,13 @@ def test_state_dir_lives_under_project_serena_dir(tmp_path):
     scope = Scope(tmp_path.resolve(), "codex")
 
     assert state_dir_for(scope) == tmp_path.resolve() / ".serena" / "dotsync-mcp" / "codex"
+
+
+def test_serena_context_maps_clients_to_serena_contexts():
+    assert serena_context_for("codex") == "codex"
+    assert serena_context_for("claude") == "claude-code"
+
+
+def test_serena_context_rejects_unknown_client_type():
+    with pytest.raises(ValueError, match="unsupported client type"):
+        serena_context_for("unknown")

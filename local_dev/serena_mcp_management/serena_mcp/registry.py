@@ -91,6 +91,15 @@ def remove_lease(registry: Registry, lease_id: str) -> None:
         registry.record.leases.pop(lease_id, None)
 
 
+def record_belongs_to_scope(record: ServerRecord, scope: Scope) -> bool:
+    """Return true when a registry record belongs to the current scope."""
+
+    return (
+        record.project_root == str(scope.project_root)
+        and record.client_type == scope.client_type
+    )
+
+
 def stale_lease_ids(
     registry: Registry,
     *,

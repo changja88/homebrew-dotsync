@@ -5,7 +5,6 @@ import fcntl
 import os
 import re
 import select
-import signal
 import socket
 import subprocess
 import sys
@@ -18,8 +17,20 @@ from local_dev.serena_mcp_management.serena_mcp.health import (
     normalize_dashboard_url,
     pid_is_alive,
 )
-from local_dev.serena_mcp_management.serena_mcp.paths import Scope, state_dir_for
-from local_dev.serena_mcp_management.serena_mcp.registry import Lease, ServerRecord, locked_registry, touch_lease
+from local_dev.serena_mcp_management.serena_mcp.paths import Scope, serena_context_for, state_dir_for
+from local_dev.serena_mcp_management.serena_mcp.processes import (
+    SerenaMcpProcess,
+    list_serena_mcp_processes,
+    process_matches_scope,
+)
+from local_dev.serena_mcp_management.serena_mcp.registry import (
+    Lease,
+    ServerRecord,
+    locked_registry,
+    record_belongs_to_scope,
+    touch_lease,
+)
+from local_dev.serena_mcp_management.serena_mcp.termination import terminate_pid
 from local_dev.serena_mcp_management.serena_mcp.watchdog import ensure_watchdog
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -30,13 +41,17 @@ def ensure_server(scope: Scope, initial_lease: Lease) -> ServerRecord:
 
     with locked_registry(scope) as registry:
         fresh_lease = _fresh_lease(initial_lease)
+        if registry.record and not record_belongs_to_scope(registry.record, scope):
+            registry.record = None
         if registry.record and server_is_healthy(registry.record, scope):
             touch_lease(registry, fresh_lease)
             record = registry.record
+            _cleanup_same_scope_orphans(scope, preserve_server_pid=record.server_pid)
         else:
             if registry.record:
                 _terminate_record(registry.record)
                 registry.record = None
+            _cleanup_same_scope_orphans(scope, preserve_server_pid=None)
             record = _start_healthy_server(scope, fresh_lease)
             registry.record = record
     ensure_watchdog(scope)
@@ -60,14 +75,13 @@ def server_is_healthy(record: ServerRecord, scope: Scope) -> bool:
     )
 
 
-def serena_context_for(client_type: str) -> str:
-    """Map a launcher client type to the Serena context name."""
-
-    if client_type == "codex":
-        return "codex"
-    if client_type == "claude":
-        return "claude-code"
-    raise ValueError(f"unsupported client type: {client_type}")
+def _cleanup_same_scope_orphans(scope: Scope, *, preserve_server_pid: int | None) -> None:
+    for process in list_serena_mcp_processes():
+        if not process_matches_scope(process, scope):
+            continue
+        if preserve_server_pid is not None and process.pid == preserve_server_pid:
+            continue
+        _terminate_pid(process.pid)
 
 
 def _start_healthy_server(scope: Scope, initial_lease: Lease) -> ServerRecord:
@@ -257,12 +271,4 @@ def _terminate_record(record: ServerRecord) -> None:
 
 
 def _terminate_pid(pid: int) -> None:
-    try:
-        os.killpg(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    except PermissionError:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
+    terminate_pid(pid)

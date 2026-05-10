@@ -187,6 +187,31 @@ def test_cleanup_once_keeps_active_lease(monkeypatch, tmp_path):
     assert terminated == []
 
 
+def test_cleanup_once_discards_wrong_client_record_without_terminating_pids(monkeypatch, tmp_path):
+    scope = Scope(tmp_path / "repo", "codex")
+    wrong_scope = Scope(tmp_path / "repo", "claude")
+    terminated = []
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.watchdog._terminate_pid", terminated.append)
+
+    with locked_registry(scope) as registry:
+        registry.record = ServerRecord(
+            server_pid=111,
+            mcp_url="http://127.0.0.1:9000/mcp",
+            dashboard_url="http://127.0.0.1:24000",
+            project_root=str(wrong_scope.project_root),
+            client_type=wrong_scope.client_type,
+            started_at=1.0,
+            leases={},
+            upstream_mcp_url="http://127.0.0.1:9001/mcp",
+            proxy_pid=222,
+        )
+
+    assert cleanup_once(scope, now=time.time(), lease_timeout_seconds=1) is False
+    assert terminated == []
+    with locked_registry(scope) as registry:
+        assert registry.record is None
+
+
 def test_shutdown_if_no_leases_stops_proxy_then_upstream(monkeypatch, tmp_path):
     scope = Scope(tmp_path, "codex")
     terminated = []
@@ -341,6 +366,27 @@ def test_release_lease_stops_proxy_then_upstream_when_last_lease_exits(monkeypat
     assert terminated == [222, 12345]
     with locked_registry(scope) as registry:
         assert registry.record is None
+
+
+def test_watchdog_terminate_record_delegates_to_shared_termination(monkeypatch):
+    terminated = []
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.watchdog.terminate_pid", terminated.append)
+
+    from local_dev.serena_mcp_management.serena_mcp.watchdog import _terminate_record
+
+    _terminate_record(ServerRecord(
+        server_pid=111,
+        mcp_url="http://127.0.0.1:9000/mcp",
+        dashboard_url="http://127.0.0.1:24000",
+        project_root="/repo",
+        client_type="codex",
+        started_at=1.0,
+        leases={},
+        upstream_mcp_url="http://127.0.0.1:9001/mcp",
+        proxy_pid=222,
+    ))
+
+    assert terminated == [222, 111]
 
 
 def test_ensure_watchdog_does_not_spawn_duplicate_when_pid_alive(monkeypatch, tmp_path):

@@ -8,6 +8,7 @@ from local_dev.serena_mcp_management.serena_mcp.registry import (
     ServerRecord,
     locked_registry,
     remove_lease,
+    record_belongs_to_scope,
     touch_lease,
 )
 
@@ -100,3 +101,37 @@ def test_registry_treats_corrupt_json_as_no_record(tmp_path):
 
     with locked_registry(scope) as registry:
         assert registry.record is None
+
+
+def _record_for_scope(scope: Scope) -> ServerRecord:
+    return ServerRecord(
+        server_pid=111,
+        mcp_url="http://127.0.0.1:9000/mcp",
+        dashboard_url="http://127.0.0.1:24000",
+        project_root=str(scope.project_root),
+        client_type=scope.client_type,
+        started_at=1.0,
+        leases={"lease": Lease("lease", 222, 1.0)},
+        upstream_mcp_url="http://127.0.0.1:9001/mcp",
+        proxy_pid=333,
+    )
+
+
+def test_record_belongs_to_scope_accepts_matching_scope(tmp_path):
+    scope = Scope(tmp_path / "repo", "codex")
+
+    assert record_belongs_to_scope(_record_for_scope(scope), scope) is True
+
+
+def test_record_belongs_to_scope_rejects_wrong_project(tmp_path):
+    scope = Scope(tmp_path / "repo", "codex")
+    record = _record_for_scope(Scope(tmp_path / "other", "codex"))
+
+    assert record_belongs_to_scope(record, scope) is False
+
+
+def test_record_belongs_to_scope_rejects_wrong_client(tmp_path):
+    scope = Scope(tmp_path / "repo", "codex")
+    record = _record_for_scope(Scope(tmp_path / "repo", "claude"))
+
+    assert record_belongs_to_scope(record, scope) is False

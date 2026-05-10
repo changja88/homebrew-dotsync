@@ -34,6 +34,16 @@ class Scope:
         return f"{self.project_root}::{self.client_type}"
 
 
+def serena_context_for(client_type: str) -> str:
+    """Map a launcher client type to the Serena context name."""
+
+    if client_type == "codex":
+        return "codex"
+    if client_type == "claude":
+        return "claude-code"
+    raise ValueError(f"unsupported client type: {client_type}")
+
+
 def find_project_root(cwd: Path) -> Path:
     """Find a project root from a current working directory."""
 
