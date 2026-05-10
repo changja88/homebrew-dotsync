@@ -53,6 +53,50 @@ def _set_graphify_env(monkeypatch, *, global_="installed", graph="built",
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS", hook)
 
 
+def _stub_preflight_inventory(
+    monkeypatch,
+    *,
+    client="codex",
+    sessions_total=174,
+    sessions_to_delete=92,
+    sessions_to_keep=82,
+    memory_total=3,
+    memory_to_reset=3,
+    memory_to_keep=0,
+    criteria="sessions: same cwd + older than 3d . memory: reset all",
+):
+    from pathlib import Path
+
+    from local_dev.serena_mcp_management.session_inventory import (
+        AgentInventory,
+        CountStats,
+    )
+
+    monkeypatch.setattr(
+        launcher,
+        "scan_inventory",
+        lambda **kwargs: AgentInventory(
+            client=client,
+            sessions=CountStats(
+                total=sessions_total,
+                to_delete=sessions_to_delete,
+                to_keep=sessions_to_keep,
+            ),
+            memory=CountStats(
+                total=memory_total,
+                to_reset=memory_to_reset,
+                to_keep=memory_to_keep,
+            ),
+            criteria=criteria,
+            sessions_dir=Path(f"/tmp/{client}/sessions"),
+            memory_dir=Path(f"/tmp/{client}/memories"),
+            session_delete_paths=[],
+            memory_reset=memory_to_reset > 0,
+        ),
+        raising=False,
+    )
+
+
 @pytest.fixture(autouse=True)
 def _stub_global_mcp_snapshot(monkeypatch):
     monkeypatch.setattr(
@@ -78,8 +122,6 @@ def test_v2_preflight_marks_all_graphify_rows_warn_when_env_missing(monkeypatch)
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     for var in (
         "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS",
@@ -97,14 +139,20 @@ def test_v2_preflight_marks_all_graphify_rows_warn_when_env_missing(monkeypatch)
     assert rows["graphify-hook"].status == "warn"
 
 
-def test_v2_preflight_renders_box_with_cleanup_and_serena(monkeypatch):
+def test_v2_preflight_renders_box_with_sessions_and_serena(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 103 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch)
+    _stub_preflight_inventory(
+        monkeypatch,
+        sessions_total=103,
+        sessions_to_delete=0,
+        sessions_to_keep=103,
+        memory_total=0,
+        memory_to_reset=0,
+    )
 
     out = io.StringIO()
     # Everything installed -> no prompts should fire from preflight.
@@ -116,8 +164,8 @@ def test_v2_preflight_renders_box_with_cleanup_and_serena(monkeypatch):
     rc = launcher._run_preflight_v2(stream=out, input_fn=lambda: next(answers))
     text = out.getvalue()
     plain = _strip_ansi(text)
-    assert "0 to delete . 103 to keep" in plain
-    assert "0 files to reset" in plain
+    assert "codex 103 total . 0 to delete . 103 to keep" in plain
+    assert "codex 0 total . 0 to reset . 0 to keep" in plain
     assert "preflight" in text
     assert "codex" in text
     # All four graphify rows render with their distinct labels.
@@ -131,12 +179,95 @@ def test_v2_preflight_renders_box_with_cleanup_and_serena(monkeypatch):
     assert rc == 0  # preflight no longer aborts; final 'Run codex?' moved out
 
 
+def test_v2_preflight_renders_box_with_sessions_memory_and_criteria(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch)
+    _stub_preflight_inventory(monkeypatch)
+
+    out = io.StringIO()
+    launcher._render_preflight_overview_v2(stream=out)
+    plain = _strip_ansi(out.getvalue())
+
+    assert "sessions" in plain
+    assert "codex 174 total . 92 to delete . 82 to keep" in plain
+    assert "memory" in plain
+    assert "codex 3 total . 3 to reset . 0 to keep" in plain
+    assert "criteria" in plain
+    assert "sessions: same cwd + older than 3d . memory: reset all" in plain
+    assert "cleanup" not in plain
+
+
+def test_v2_preflight_uses_real_codex_inventory_for_current_context(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "home"
+    repo = tmp_path / "repo"
+    codex_home = tmp_path / "codex-home"
+    home.mkdir()
+    repo.mkdir()
+    old = codex_home / "sessions" / "2026" / "05" / "01" / "old.jsonl"
+    new = codex_home / "sessions" / "2026" / "05" / "10" / "new.jsonl"
+    other = codex_home / "sessions" / "2026" / "05" / "10" / "other.jsonl"
+    old.parent.mkdir(parents=True)
+    new.parent.mkdir(parents=True, exist_ok=True)
+    old.write_text(f'{{"type":"session_meta","payload":{{"cwd":"{repo}"}}}}\n')
+    new.write_text(f'{{"type":"session_meta","payload":{{"cwd":"{repo}"}}}}\n')
+    other.write_text('{"type":"session_meta","payload":{"cwd":"/other"}}\n')
+    old_time = time.time() - 4 * 86400
+    os.utime(old, (old_time, old_time))
+    os.utime(other, (old_time, old_time))
+    memory_dir = codex_home / "memories"
+    memory_dir.mkdir()
+    (memory_dir / "a.md").write_text("a")
+    (memory_dir / "b.md").write_text("b")
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(repo))
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    monkeypatch.setattr(launcher.os, "getcwd", lambda: str(repo))
+    _set_graphify_env(monkeypatch)
+
+    out = io.StringIO()
+    launcher._render_preflight_overview_v2(stream=out)
+    plain = _strip_ansi(out.getvalue())
+
+    assert "codex 2 total . 1 to delete . 1 to keep" in plain
+    assert "codex 2 total . 2 to reset . 0 to keep" in plain
+    assert "sessions: same cwd + older than 3d . memory: reset all" in plain
+
+
+def test_v2_preflight_inventory_scan_failure_renders_warning_row(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch)
+
+    def fail_scan(**kwargs):
+        raise RuntimeError("inventory unavailable")
+
+    monkeypatch.setattr(launcher, "scan_inventory", fail_scan, raising=False)
+
+    box = launcher._preflight_box()
+    rows = {item.id: item for item in box.items}
+
+    assert rows["sessions"].status == "warn"
+    assert "scan unavailable: inventory unavailable" in rows["sessions"].value
+    assert "codex 0 total . 0 to reset . 0 to keep" in _strip_ansi(
+        rows["memory"].value
+    )
+    assert _strip_ansi(rows["criteria"].value) == "scan unavailable"
+
+
 def test_v2_preflight_returns_zero_on_run_confirm(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch, global_="missing")
 
@@ -155,8 +286,6 @@ def test_v2_preflight_marks_graphify_hook_missing(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch, hook="missing")
 
@@ -178,8 +307,6 @@ def test_v2_preflight_runs_graphify_hook_install_when_user_confirms(monkeypatch)
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch, hook="missing")
 
@@ -208,8 +335,6 @@ def test_v2_preflight_skips_graphify_hook_prompt_when_already_installed(monkeypa
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch)
 
@@ -235,8 +360,6 @@ def test_v2_preflight_graphify_global_missing_claude_offers_auto_install(monkeyp
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch, global_="missing")
 
@@ -264,8 +387,6 @@ def test_v2_preflight_graphify_global_missing_codex_uses_platform_codex(monkeypa
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch, global_="missing")
 
@@ -292,8 +413,6 @@ def test_v2_preflight_graphify_graph_missing_shows_hint_no_callback(monkeypatch)
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch, graph="missing")
 
@@ -311,8 +430,6 @@ def test_v2_preflight_graphify_integration_missing_claude_offers_install(monkeyp
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch, integration="missing")
 
@@ -342,8 +459,6 @@ def test_v2_preflight_graphify_integration_missing_codex_uses_codex_subcommand(m
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch, integration="missing")
 
@@ -370,8 +485,6 @@ def test_v2_preflight_graphify_global_install_failure_marks_warn(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch, global_="missing")
 
@@ -398,8 +511,6 @@ def test_v2_preflight_does_not_redraw_box_after_install(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch, integration="missing", hook="missing")
 
@@ -429,8 +540,6 @@ def test_v2_preflight_marks_serena_warn_when_missing(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
     _set_graphify_env(monkeypatch)
 
@@ -498,12 +607,16 @@ def test_v2_serena_init_create_failure_returns_failed(monkeypatch, tmp_path):
 
 def _make_old_file(path):
     """Write a file and set its mtime to 4 days ago."""
-    path.write_text("x")
+    if not path.exists():
+        path.write_text("x")
     old = time.time() - 4 * 86400
     os.utime(path, (old, old))
 
 
 def test_v2_run_cleanup_claude_deletes_old_jsonl(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setattr(launcher.os, "getcwd", lambda: "/repo")
     proj_dir = tmp_path / ".claude" / "projects" / "-repo"
     proj_dir.mkdir(parents=True)
     old = proj_dir / "abc.jsonl"
@@ -514,7 +627,7 @@ def test_v2_run_cleanup_claude_deletes_old_jsonl(tmp_path, monkeypatch):
     mem.mkdir()
     (mem / "m1.txt").write_text("x")
 
-    result = launcher._run_cleanup_claude(proj_dir)
+    result = launcher._run_cleanup_claude()
     assert result.deleted == 1
     assert result.memory_files_reset == 1
     assert not old.exists()
@@ -522,36 +635,131 @@ def test_v2_run_cleanup_claude_deletes_old_jsonl(tmp_path, monkeypatch):
     assert not mem.exists()
 
 
-def test_v2_run_cleanup_codex_skips_when_jq_missing(tmp_path, monkeypatch):
+def test_v2_run_cleanup_codex_does_not_require_jq(tmp_path):
     codex_home = tmp_path / ".codex"
-    sessions = codex_home / "sessions"
-    sessions.mkdir(parents=True)
-    (sessions / "a.jsonl").write_text("{}\n")
+    old = codex_home / "sessions" / "2026" / "05" / "01" / "rollout-old.jsonl"
+    old.parent.mkdir(parents=True)
+    old.write_text('{"type":"session_meta","payload":{"cwd":"/repo"}}\n')
+    _make_old_file(old)
     mem = codex_home / "memories"
     mem.mkdir()
     (mem / "m.txt").write_text("x")
 
-    monkeypatch.setattr(launcher, "_jq_available", lambda: False, raising=False)
     result = launcher._run_cleanup_codex(codex_home, "/repo")
-    assert result.deleted == 0
+    assert result.deleted == 1
     assert result.memory_files_reset == 1
+    assert not old.exists()
     assert not mem.exists()
+
+
+def test_v2_run_cleanup_codex_uses_default_home_when_codex_home_empty(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CODEX_HOME", "")
+    monkeypatch.setattr(launcher.os, "getcwd", lambda: "/repo")
+    default_home = tmp_path / ".codex"
+    old = default_home / "sessions" / "2026" / "05" / "01" / "rollout-old.jsonl"
+    old.parent.mkdir(parents=True)
+    old.write_text('{"type":"session_meta","payload":{"cwd":"/repo"}}\n')
+    _make_old_file(old)
+    mem = default_home / "memories"
+    mem.mkdir()
+    (mem / "m.txt").write_text("x")
+
+    out = io.StringIO()
+    summary = launcher._run_launch_prep_v2(stream=out)
+
+    assert summary.cleanup_deleted == 1
+    assert summary.cleanup_memory_files_reset == 1
+    assert not old.exists()
+    assert not mem.exists()
+
+
+def test_v2_run_cleanup_codex_expands_tilde_codex_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CODEX_HOME", "~/.codex")
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setattr(launcher.os, "getcwd", lambda: "/repo")
+    codex_home = tmp_path / ".codex"
+    old = codex_home / "sessions" / "2026" / "05" / "01" / "rollout-old.jsonl"
+    old.parent.mkdir(parents=True)
+    old.write_text('{"type":"session_meta","payload":{"cwd":"/repo"}}\n')
+    _make_old_file(old)
+    mem = codex_home / "memories"
+    mem.mkdir()
+    (mem / "m.txt").write_text("x")
+
+    summary = launcher._run_launch_prep_v2(stream=io.StringIO())
+
+    assert summary.cleanup_deleted == 1
+    assert summary.cleanup_memory_files_reset == 1
+    assert not old.exists()
+    assert not mem.exists()
+
+
+def test_v2_launch_prep_claude_ignores_relative_codex_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("CODEX_HOME", "relative-codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setattr(launcher.os, "getcwd", lambda: "/repo")
+    session_dir = tmp_path / ".claude" / "projects" / "-repo"
+    session_dir.mkdir(parents=True)
+    old = session_dir / "abc.jsonl"
+    _make_old_file(old)
+    mem = session_dir / "memory"
+    mem.mkdir()
+    (mem / "m.txt").write_text("x")
+
+    summary = launcher._run_launch_prep_v2(stream=io.StringIO())
+
+    assert summary.cleanup_deleted == 1
+    assert summary.cleanup_memory_files_reset == 1
+    assert not old.exists()
+    assert not mem.exists()
+
+
+def test_v2_launch_prep_rejects_relative_codex_home_before_cleanup(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("CODEX_HOME", "relative-codex")
+    mem = tmp_path / "relative-codex" / "memories"
+    mem.mkdir(parents=True)
+    (mem / "m.txt").write_text("x")
+
+    with pytest.raises(ValueError, match="codex_home must be absolute"):
+        launcher._run_launch_prep_v2(stream=io.StringIO())
+
+    assert mem.exists()
+
+
+def test_v2_launch_prep_rejects_unknown_client_before_cleanup(tmp_path, monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "bad-client")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    codex_home = tmp_path / ".codex"
+    mem = codex_home / "memories"
+    mem.mkdir(parents=True)
+    (mem / "m.txt").write_text("x")
+
+    with pytest.raises(RuntimeError, match="unsupported launcher name"):
+        launcher._run_launch_prep_v2(stream=io.StringIO())
+
+    assert mem.exists()
 
 
 def test_v2_launch_prep_runs_cleanup_and_renders_done_row(tmp_path, monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setattr(launcher.os, "getcwd", lambda: "/x")
     proj_dir = tmp_path / ".claude" / "projects" / "-x"
     proj_dir.mkdir(parents=True)
-    monkeypatch.setattr(launcher, "_claude_project_dir",
-                        lambda: proj_dir, raising=False)
 
     out = io.StringIO()
     summary = launcher._run_launch_prep_v2(stream=out)
     text = out.getvalue()
     assert "cleanup" in text
-    assert "0 deleted . 0 memory files reset" in text
+    assert "0 sessions deleted . 0 memory files reset" in text
     assert summary.cleanup_deleted == 0
     assert summary.cleanup_memory_files_reset == 0
 
@@ -605,7 +813,7 @@ def test_v2_render_summary_box_includes_duration_and_cleanup():
     text = out.getvalue()
     assert "summary" in text
     assert "2m 5s" in _strip_ansi(text) or "125" in _strip_ansi(text)
-    assert "2 deleted" in _strip_ansi(text)
+    assert "2 sessions deleted" in _strip_ansi(text)
     assert "10 memory files reset" in _strip_ansi(text)
     assert "stopped" in text
 
@@ -668,8 +876,6 @@ def test_v2_main_returns_child_exit_code(monkeypatch, tmp_path):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "0")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch)
 
@@ -698,8 +904,6 @@ def test_v2_preflight_skips_hook_prompt_when_integration_declined(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch, integration="missing", hook="missing")
 
@@ -737,8 +941,6 @@ def test_v2_preflight_skips_hook_prompt_when_integration_install_fails(monkeypat
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch, integration="missing", hook="missing")
 
@@ -764,8 +966,6 @@ def test_v2_preflight_asks_hook_after_successful_integration_install(monkeypatch
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch, integration="missing", hook="missing")
 
@@ -792,8 +992,6 @@ def test_v2_preflight_no_longer_asks_run_codex(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch)  # everything installed -> no install prompts
 
@@ -855,8 +1053,6 @@ def test_v2_main_orders_overview_then_serena_then_setup_then_final_confirm(
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
     _set_graphify_env(monkeypatch)  # graphify clean -> no graphify prompts
 
@@ -903,22 +1099,29 @@ def test_v2_main_orders_overview_then_serena_then_setup_then_final_confirm(
 
 def test_v2_render_preflight_overview_draws_box_with_all_rows(monkeypatch):
     """preflight overview는 box 렌더만 담당한다 — 어떤 prompt도 띄우지 않고
-    cleanup/memory/serena/graphify/context 행을 모두 한 번 그린다.
+    sessions/memory/criteria/serena/graphify/context 행을 모두 한 번 그린다.
     """
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 103 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch)
+    _stub_preflight_inventory(
+        monkeypatch,
+        sessions_total=103,
+        sessions_to_delete=0,
+        sessions_to_keep=103,
+        memory_total=0,
+        memory_to_reset=0,
+    )
 
     out = io.StringIO()
     launcher._render_preflight_overview_v2(stream=out)
     text = out.getvalue()
     plain = _strip_ansi(text)
-    assert "0 to delete . 103 to keep" in plain
-    assert "0 files to reset" in plain
+    assert "codex 103 total . 0 to delete . 103 to keep" in plain
+    assert "codex 0 total . 0 to reset . 0 to keep" in plain
+    assert "sessions: same cwd + older than 3d . memory: reset all" in plain
     assert "preflight" in text
     assert "codex" in text
     assert "graphify global" in plain
@@ -930,8 +1133,6 @@ def test_v2_render_preflight_overview_draws_box_with_all_rows(monkeypatch):
 def test_preflight_box_includes_global_serena_mcp_inventory(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch)
     monkeypatch.setattr(
@@ -963,8 +1164,6 @@ def test_preflight_box_includes_global_serena_mcp_inventory(monkeypatch):
 def test_preflight_box_marks_global_serena_mcp_idle_as_info(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch)
     monkeypatch.setattr(
@@ -992,8 +1191,6 @@ def test_preflight_box_marks_global_serena_mcp_idle_as_info(monkeypatch):
 def test_preflight_box_marks_global_serena_mcp_scan_failure_as_warn(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch)
     monkeypatch.setattr(
@@ -1019,8 +1216,6 @@ def test_preflight_box_marks_global_serena_mcp_scan_failure_as_warn(monkeypatch)
 def test_preflight_box_marks_global_serena_mcp_clean_running_as_done(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch)
     monkeypatch.setattr(
@@ -1057,8 +1252,6 @@ def test_v2_run_preflight_v2_does_not_render_box_initially(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch)
 
@@ -1098,8 +1291,6 @@ def test_v2_main_clears_terminal_before_child_when_serena_skipped(monkeypatch, t
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
     monkeypatch.setenv("SERENA_AGENT_CLEAR_BEFORE_CHILD", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
     _set_graphify_env(monkeypatch)
 
@@ -1302,8 +1493,6 @@ def test_v2_main_passes_serena_state_to_preflight(monkeypatch, tmp_path):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
     _set_graphify_env(monkeypatch)
 

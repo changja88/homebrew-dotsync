@@ -111,12 +111,7 @@ def style_spinner(frame: int) -> str:
 _COUNT_KEYWORDS = sorted(
     [
         "memory files reset",
-        "files to reset",
-        "scan skipped",
-        "to delete",
-        "to keep",
-        "deleted",
-        "kept",
+        "sessions deleted",
     ],
     key=len,
     reverse=True,
@@ -127,7 +122,7 @@ def style_count(phrase: str) -> str:
     """Colorize digits (pink) and count keywords (purple) using the huh palette.
 
     Plain phrase in, ANSI-formatted phrase out. Unmatched substrings pass through.
-    Used by launcher for preflight/summary cleanup and memory rows.
+    Used by the launcher summary cleanup row.
     """
     if not phrase:
         return phrase
@@ -135,6 +130,20 @@ def style_count(phrase: str) -> str:
     for kw in _COUNT_KEYWORDS:
         result = result.replace(kw, _ansi(PURPLE, kw))
     return result
+
+
+def style_inventory_counts(phrase: str) -> str:
+    if not phrase:
+        return phrase
+    result = re.sub(r"\d+ to delete", lambda m: _ansi("33", m.group(0)), phrase)
+    result = re.sub(r"\d+ to reset", lambda m: _ansi("33", m.group(0)), result)
+    result = re.sub(r"\d+ to keep", lambda m: _ansi(MINT, m.group(0)), result)
+    result = re.sub(r"\d+(?= total)", lambda m: _ansi(PINK, m.group(0)), result)
+    return result
+
+
+def style_criteria(phrase: str) -> str:
+    return _ansi("90", phrase) if phrase else phrase
 
 
 def style_mcp_inventory(

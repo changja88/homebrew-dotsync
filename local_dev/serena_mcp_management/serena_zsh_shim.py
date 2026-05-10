@@ -172,20 +172,6 @@ claude() {
   fi
 
   local project_root="$(_dotsync_agent_project_root "$PWD")"
-  local proj_dir="$HOME/.claude/projects/${PWD//\//-}"
-  local total=0 deleted=0 kept=0 mem_deleted=0
-
-  if [[ -d "$proj_dir" ]]; then
-    total=$(find "$proj_dir" -maxdepth 1 -name '*.jsonl' 2>/dev/null | wc -l | tr -d ' ')
-    deleted=$(find "$proj_dir" -maxdepth 1 -name '*.jsonl' -mtime +3 2>/dev/null | wc -l | tr -d ' ')
-  fi
-  kept=$(( total - deleted ))
-
-  local mem_dir="$proj_dir/memory"
-  [[ -d "$mem_dir" ]] && mem_deleted=$(find "$mem_dir" -type f 2>/dev/null | wc -l | tr -d ' ')
-
-  local cleanup_phrase="${deleted} to delete . ${kept} to keep"
-  local memory_phrase="${mem_deleted} files to reset"
   local serena_status="managed"
   _dotsync_agent_serena_project_available "$project_root" || serena_status="missing"
   local graphify_global_status="installed"
@@ -197,8 +183,6 @@ claude() {
   local graphify_hook_status="installed"
   _dotsync_agent_graphify_hooks_installed "$project_root" || graphify_hook_status="missing"
 
-  SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE="$cleanup_phrase" \
-  SERENA_AGENT_PREFLIGHT_MEMORY_VALUE="$memory_phrase" \
   SERENA_AGENT_PREFLIGHT_SERENA_STATUS="$serena_status" \
   SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS="$graphify_global_status" \
   SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS="$graphify_graph_status" \
@@ -224,40 +208,6 @@ codex() {
   fi
 
   local project_root="$(_dotsync_agent_project_root "$PWD")"
-  local codex_home="${CODEX_HOME:-$HOME/.codex}"
-  local sessions_dir="$codex_home/sessions"
-  local mem_dir="$codex_home/memories"
-  local total=0 deleted=0 kept=0 mem_deleted=0
-  local can_scan_sessions=1
-
-  if [[ -d "$sessions_dir" ]]; then
-    if ! command -v jq >/dev/null 2>&1; then
-      can_scan_sessions=0
-    else
-      local f=""
-      while IFS= read -r -d '' f; do
-        if jq -e --arg cwd "$PWD" \
-          'select(.type == "session_meta" and .payload.cwd == $cwd)' \
-          "$f" >/dev/null 2>&1; then
-          ((++total))
-          if [[ $(find "$f" -maxdepth 0 -mtime +3 -print 2>/dev/null) == "$f" ]]; then
-            ((++deleted))
-          fi
-        fi
-      done < <(find "$sessions_dir" -type f -name '*.jsonl' -print0 2>/dev/null)
-    fi
-  fi
-  kept=$(( total - deleted ))
-
-  [[ -d "$mem_dir" ]] && mem_deleted=$(find "$mem_dir" -type f 2>/dev/null | wc -l | tr -d ' ')
-
-  local cleanup_phrase=""
-  if (( ! can_scan_sessions )); then
-    cleanup_phrase="scan skipped (jq missing)"
-  else
-    cleanup_phrase="${deleted} to delete . ${kept} to keep"
-  fi
-  local memory_phrase="${mem_deleted} files to reset"
   local serena_status="managed"
   _dotsync_agent_serena_project_available "$project_root" || serena_status="missing"
   local graphify_global_status="installed"
@@ -269,8 +219,6 @@ codex() {
   local graphify_hook_status="installed"
   _dotsync_agent_graphify_hooks_installed "$project_root" || graphify_hook_status="missing"
 
-  SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE="$cleanup_phrase" \
-  SERENA_AGENT_PREFLIGHT_MEMORY_VALUE="$memory_phrase" \
   SERENA_AGENT_PREFLIGHT_SERENA_STATUS="$serena_status" \
   SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS="$graphify_global_status" \
   SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS="$graphify_graph_status" \

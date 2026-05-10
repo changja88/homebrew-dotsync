@@ -31,6 +31,11 @@ from local_dev.serena_mcp_management.serena_mcp.watchdog import (
     make_launcher_lease,
     release_lease_and_shutdown_if_empty,
 )
+from local_dev.serena_mcp_management.session_inventory import (
+    AgentInventory,
+    cleanup_inventory,
+    scan_inventory,
+)
 from local_dev.serena_mcp_management.ui import (
     PINK,
     PURPLE,
@@ -40,7 +45,9 @@ from local_dev.serena_mcp_management.ui import (
     SpinnerTicker,
     confirm,
     render_inline_row,
+    style_criteria,
     style_count,
+    style_inventory_counts,
     style_mcp_inventory,
     style_spinner,
 )
@@ -62,110 +69,82 @@ class LaunchPrepSummary:
     cleanup_memory_files_reset: int
 
 
-def _jq_available() -> bool:
-    """Check if jq is available in the system."""
-    return shutil.which("jq") is not None
+def _codex_home_from_env() -> Path:
+    """Return a safe absolute Codex home path from CODEX_HOME or the default."""
+    value = os.environ.get("CODEX_HOME")
+    codex_home = Path(value).expanduser() if value else Path.home() / ".codex"
+    if not codex_home.is_absolute():
+        raise ValueError("codex_home must be absolute")
+    return codex_home
 
 
-def _claude_project_dir() -> Path:
-    """Get the Claude project directory for the current working directory."""
+def _inventory_for_preflight(client: str, project_root: str) -> AgentInventory:
     cwd = os.getcwd()
-    encoded = cwd.replace("/", "-")
-    return Path(os.path.expanduser("~/.claude/projects")) / encoded
+    codex_home = Path.home() / ".codex" if client == "claude" else _codex_home_from_env()
+    return scan_inventory(
+        client=client,
+        cwd=cwd,
+        project_root=project_root or cwd,
+        home=Path.home(),
+        codex_home=codex_home,
+    )
 
 
-def _run_cleanup_claude(proj_dir: Path) -> CleanupResult:
+def _sessions_value(inventory: AgentInventory) -> str:
+    sessions = inventory.sessions
+    return style_inventory_counts(
+        f"{inventory.client} {sessions.total} total . "
+        f"{sessions.to_delete} to delete . {sessions.to_keep} to keep"
+    )
+
+
+def _memory_value(inventory: AgentInventory) -> str:
+    memory = inventory.memory
+    return style_inventory_counts(
+        f"{inventory.client} {memory.total} total . "
+        f"{memory.to_reset} to reset . {memory.to_keep} to keep"
+    )
+
+
+def _run_cleanup_claude() -> CleanupResult:
     """Clean up old Claude sessions and memory files.
-
-    Deletes:
-    - *.jsonl files older than 3 days (find -mtime +3)
-    - Per-jsonl UUID directories (named after jsonl stem)
-    - Entire memory directory at the end
 
     Returns:
         CleanupResult with deleted count and memory files reset count.
     """
-    deleted = 0
-    memory_files_reset = 0
-    mem_dir = proj_dir / "memory"
+    cwd = os.getcwd()
+    inventory = cleanup_inventory(
+        client="claude",
+        cwd=cwd,
+        project_root=os.environ.get("SERENA_AGENT_PROJECT_ROOT", cwd),
+        home=Path.home(),
+        codex_home=Path.home() / ".codex",
+    )
 
-    # Count memory files BEFORE deletion
-    if mem_dir.is_dir():
-        memory_files_reset = sum(1 for _ in mem_dir.rglob("*") if _.is_file())
-
-    if proj_dir.is_dir():
-        cutoff = time.time() - 3 * 86400  # 3 days in seconds
-        for jsonl in proj_dir.glob("*.jsonl"):
-            if jsonl.stat().st_mtime < cutoff:
-                # Delete the .jsonl file
-                uuid_dir = proj_dir / jsonl.stem
-                jsonl.unlink(missing_ok=True)
-                # Delete the corresponding UUID directory
-                if uuid_dir.is_dir():
-                    shutil.rmtree(uuid_dir, ignore_errors=True)
-                deleted += 1
-
-        # Delete the entire memory directory
-        if mem_dir.is_dir():
-            shutil.rmtree(mem_dir, ignore_errors=True)
-
-    return CleanupResult(deleted=deleted, memory_files_reset=memory_files_reset)
+    return CleanupResult(
+        deleted=inventory.sessions.to_delete,
+        memory_files_reset=inventory.memory.to_reset,
+    )
 
 
 def _run_cleanup_codex(codex_home: Path, cwd: str) -> CleanupResult:
     """Clean up old Codex sessions and memory files.
 
-    Sessions are scanned only if jq is available.
-    Matches sessions where:
-    - type == "session_meta"
-    - payload.cwd == cwd
-    - mtime > 3 days
-
-    Always deletes memories directory at the end.
-
     Returns:
         CleanupResult with deleted count and memory files reset count.
     """
-    deleted = 0
-    memory_files_reset = 0
-    sessions_dir = codex_home / "sessions"
-    mem_dir = codex_home / "memories"
+    inventory = cleanup_inventory(
+        client="codex",
+        cwd=cwd,
+        project_root=os.environ.get("SERENA_AGENT_PROJECT_ROOT", cwd),
+        home=Path.home(),
+        codex_home=codex_home,
+    )
 
-    # Count memory files BEFORE deletion
-    if mem_dir.is_dir():
-        memory_files_reset = sum(1 for _ in mem_dir.rglob("*") if _.is_file())
-
-    # Only scan sessions if jq is available
-    if sessions_dir.is_dir() and _jq_available():
-        cutoff = time.time() - 3 * 86400  # 3 days in seconds
-        for jsonl in sessions_dir.glob("*.jsonl"):
-            # Check if file matches the jq filter: type == "session_meta" && payload.cwd == $cwd
-            try:
-                proc = subprocess.run(
-                    ["jq", "-e", "--arg", "cwd", cwd,
-                     "select(.type == \"session_meta\" and .payload.cwd == $cwd)",
-                     str(jsonl)],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
-                if proc.returncode != 0:
-                    # Filter didn't match
-                    continue
-            except FileNotFoundError:
-                # jq not found, skip this file
-                continue
-
-            # Check if file is old enough
-            if jsonl.stat().st_mtime < cutoff:
-                jsonl.unlink(missing_ok=True)
-                deleted += 1
-
-    # Always delete the entire memories directory
-    if mem_dir.is_dir():
-        shutil.rmtree(mem_dir, ignore_errors=True)
-
-    return CleanupResult(deleted=deleted, memory_files_reset=memory_files_reset)
+    return CleanupResult(
+        deleted=inventory.sessions.to_delete,
+        memory_files_reset=inventory.memory.to_reset,
+    )
 
 
 def infer_client_type(program_name: str) -> str:
@@ -287,15 +266,15 @@ def _run_launch_prep_v2(
     client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
 
     if client == "claude":
-        result = _run_cleanup_claude(_claude_project_dir())
-    else:
-        codex_home = Path(
-            os.environ.get("CODEX_HOME", os.path.expanduser("~/.codex"))
-        )
+        result = _run_cleanup_claude()
+    elif client == "codex":
+        codex_home = _codex_home_from_env()
         result = _run_cleanup_codex(codex_home, os.getcwd())
+    else:
+        raise RuntimeError(f"unsupported launcher name: {client}")
 
     out.write(
-        f"  ✓ cleanup     {result.deleted} deleted . "
+        f"  ✓ cleanup     {result.deleted} sessions deleted . "
         f"{result.memory_files_reset} memory files reset\n"
     )
     out.flush()
@@ -377,7 +356,7 @@ def _render_summary_v2(
              value=_format_duration(duration_seconds), status="done"),
         Item(id="cleanup", label="cleanup",
              value=style_count(
-                 f"{cleanup_deleted} deleted . "
+                 f"{cleanup_deleted} sessions deleted . "
                  f"{cleanup_memory_files_reset} memory files reset"
              ),
              status="done"),
@@ -557,8 +536,6 @@ def _preflight_box() -> BoxModel:
     """Build a BoxModel for the v2 preflight phase."""
     client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
     project_root = os.environ.get("SERENA_AGENT_PROJECT_ROOT", "")
-    cleanup_value = os.environ.get("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "")
-    memory_value = os.environ.get("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "")
     serena_status = os.environ.get("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
 
     global_status = os.environ.get(
@@ -607,6 +584,18 @@ def _preflight_box() -> BoxModel:
         client, integration_status
     )
     hook_value, hook_item_status = _graphify_hook_value(hook_status)
+    try:
+        inventory = _inventory_for_preflight(client, project_root)
+        sessions_value = _sessions_value(inventory)
+        sessions_item_status = "info"
+        memory_value = _memory_value(inventory)
+        criteria_value = style_criteria(inventory.criteria)
+    except Exception as exc:
+        detail = str(exc) or exc.__class__.__name__
+        sessions_value = f"scan unavailable: {detail}"
+        sessions_item_status = "warn"
+        memory_value = style_inventory_counts(f"{client} 0 total . 0 to reset . 0 to keep")
+        criteria_value = style_criteria("scan unavailable")
 
     items = [
         Item(
@@ -652,8 +641,14 @@ def _preflight_box() -> BoxModel:
             value="claude-code" if client == "claude" else "codex",
             status="info",
         ),
-        Item(id="cleanup", label="cleanup", value=style_count(cleanup_value), status="info"),
-        Item(id="memory", label="memory", value=style_count(memory_value), status="info"),
+        Item(
+            id="sessions",
+            label="sessions",
+            value=sessions_value,
+            status=sessions_item_status,
+        ),
+        Item(id="memory", label="memory", value=memory_value, status="info"),
+        Item(id="criteria", label="criteria", value=criteria_value, status="info"),
     ]
     return BoxModel(phase="preflight", title=client, items=items)
 

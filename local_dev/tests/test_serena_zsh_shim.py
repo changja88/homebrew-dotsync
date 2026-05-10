@@ -582,15 +582,13 @@ def test_zsh_shim_cli_installs_into_selected_rc_path(monkeypatch, tmp_path, caps
     assert "SERENA_AGENT_LAUNCHER" in rc_path.read_text()
 
 
-def test_render_zsh_shim_packs_preflight_env_vars():
+def test_render_zsh_shim_packs_preflight_status_env_vars():
     text = render_zsh_shim(
         launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
         python_executable=Path("/repo/.venv/bin/python3"),
         codex_binary=Path("/opt/homebrew/bin/codex"),
         claude_binary=Path("/opt/homebrew/bin/claude"),
     )
-    assert "SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE" in text
-    assert "SERENA_AGENT_PREFLIGHT_MEMORY_VALUE" in text
     assert "SERENA_AGENT_PREFLIGHT_SERENA_STATUS" in text
     # The launcher reads four split graphify statuses; the old combined
     # SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS is no longer consumed and must
@@ -600,6 +598,19 @@ def test_render_zsh_shim_packs_preflight_env_vars():
     assert "SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS" in text
     assert "SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS" in text
     assert "SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS=" not in text
+
+
+def test_render_zsh_shim_no_longer_exports_cleanup_prediction_env():
+    text = render_zsh_shim(
+        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
+        python_executable=Path("/repo/.venv/bin/python3"),
+        codex_binary=Path("/opt/homebrew/bin/codex"),
+        claude_binary=Path("/opt/homebrew/bin/claude"),
+    )
+
+    assert "SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE" not in text
+    assert "SERENA_AGENT_PREFLIGHT_MEMORY_VALUE" not in text
+    assert "jq -e" not in text
 
 
 def test_render_zsh_shim_no_longer_references_gum():

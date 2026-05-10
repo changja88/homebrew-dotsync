@@ -227,8 +227,6 @@ def test_launcher_prints_mcp_progress_and_clears_before_child(monkeypatch, tmp_p
     monkeypatch.setenv("SERENA_AGENT_QUIET", "1")
     monkeypatch.setenv("SERENA_AGENT_CLEAR_BEFORE_CHILD", "1")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "installed")
     # Mock preflight to avoid stdin interaction
@@ -314,8 +312,6 @@ def test_launcher_opens_dashboard_for_interactive_agent(monkeypatch, tmp_path):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "installed")
     # Mock preflight/init/launch-prep to avoid stdin interaction
@@ -373,8 +369,6 @@ def test_launcher_prints_shutdown_stats_for_interactive_agent(monkeypatch, tmp_p
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
     monkeypatch.setenv("SERENA_AGENT_QUIET", "1")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "installed")
     # Mock preflight/init/launch-prep to avoid stdin interaction

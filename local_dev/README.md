@@ -44,12 +44,24 @@ The managed zsh flow is:
 
 Interactive no-argument `codex` / `claude` launches show a single ANSI
 preflight box from the Python launcher: workspace, Serena project status,
-Graphify status (4 rows: global / graph / integration / hook), context,
-cleanup prediction, and memory reset count. After Run/Abort confirmation (and
-an optional Initialize/Skip prompt when `.serena/project.yml` is absent), the
-shim runs cleanup and starts the scoped Serena MCP server while updating the
-same box in place. When the agent TUI exits, a summary box reports session
-duration, cleanup result, MCP lifecycle, and any accumulated warnings.
+machine-wide Serena MCP inventory, Graphify status (4 rows: global / graph /
+integration / hook), context, session inventory, memory inventory, and the
+cleanup criteria. After Run/Abort confirmation (and an optional
+Initialize/Skip prompt when `.serena/project.yml` is absent), the launcher
+runs cleanup and starts the scoped Serena MCP server with inline progress rows
+below the preflight box. When the agent TUI exits, a summary box reports
+session duration, cleanup result, MCP lifecycle, and any accumulated warnings.
+
+The session and memory rows are computed in Python from the current launcher
+context, not predicted by the zsh shim:
+
+| Context | Sessions | Memory | Cleanup criteria |
+|---|---|---|---|
+| `codex` | `$CODEX_HOME/sessions` (`~/.codex/sessions` by default), recursive `*.jsonl` files whose `session_meta.payload.cwd` matches the current working directory | `$CODEX_HOME/memories` (`~/.codex/memories` by default) | Delete matching sessions older than 3 days; reset all Codex memory files. |
+| `claude` | `~/.claude/projects/<encoded cwd>/*.jsonl` | `~/.claude/projects/<encoded project root>/memory` | Delete project sessions older than 3 days; reset all Claude memory files for the project. |
+
+Preflight displays each row as `client total . to delete/reset . to keep`, and
+the final summary uses `N sessions deleted . M memory files reset`.
 
 ## Workflow
 

@@ -1,4 +1,11 @@
-from local_dev.serena_mcp_management.ui import MINT, PINK, PURPLE, style_count
+from local_dev.serena_mcp_management.ui import (
+    MINT,
+    PINK,
+    PURPLE,
+    style_count,
+    style_criteria,
+    style_inventory_counts,
+)
 
 
 def test_palette_uses_huh_truecolor_hexes():
@@ -10,33 +17,37 @@ def test_palette_uses_huh_truecolor_hexes():
 
 
 def test_style_count_colors_digits_pink():
-    result = style_count("0 to delete . 103 to keep")
-    assert f"\x1b[{PINK}m0\x1b[0m" in result
-    assert f"\x1b[{PINK}m103\x1b[0m" in result
+    result = style_count("2 sessions deleted . 10 memory files reset")
+    assert f"\x1b[{PINK}m2\x1b[0m" in result
+    assert f"\x1b[{PINK}m10\x1b[0m" in result
 
 
-def test_style_count_colors_keywords_purple():
-    result = style_count("0 to delete . 103 to keep")
-    assert f"\x1b[{PURPLE}mto delete\x1b[0m" in result
-    assert f"\x1b[{PURPLE}mto keep\x1b[0m" in result
-
-
-def test_style_count_colors_files_reset_keyword():
-    result = style_count("0 files to reset")
-    assert f"\x1b[{PURPLE}mfiles to reset\x1b[0m" in result
-    assert f"\x1b[{PINK}m0\x1b[0m" in result
-
-
-def test_style_count_colors_deleted_and_kept():
-    result = style_count("2 deleted . 10 memory files reset")
-    assert f"\x1b[{PURPLE}mdeleted\x1b[0m" in result
+def test_style_count_colors_summary_keywords_purple():
+    result = style_count("2 sessions deleted . 10 memory files reset")
+    assert f"\x1b[{PURPLE}msessions deleted\x1b[0m" in result
     assert f"\x1b[{PURPLE}mmemory files reset\x1b[0m" in result
-
-
-def test_style_count_colors_scan_skipped():
-    result = style_count("scan skipped (jq missing)")
-    assert f"\x1b[{PURPLE}mscan skipped\x1b[0m" in result
 
 
 def test_style_count_passes_through_unmatched():
     assert style_count("") == ""
+
+
+def test_style_inventory_counts_colors_delete_reset_and_keep_by_meaning():
+    result = style_inventory_counts("codex 174 total . 92 to delete . 82 to keep")
+
+    assert "\x1b[33m92 to delete\x1b[0m" in result
+    assert f"\x1b[{MINT}m82 to keep\x1b[0m" in result
+    assert f"\x1b[{PINK}m174\x1b[0m total" in result
+
+
+def test_style_inventory_counts_colors_reset_by_meaning():
+    result = style_inventory_counts("codex 3 total . 3 to reset . 0 to keep")
+
+    assert "\x1b[33m3 to reset\x1b[0m" in result
+    assert f"\x1b[{MINT}m0 to keep\x1b[0m" in result
+
+
+def test_style_criteria_dims_policy_text():
+    assert style_criteria("sessions: same cwd + older than 3d") == (
+        "\x1b[90msessions: same cwd + older than 3d\x1b[0m"
+    )
