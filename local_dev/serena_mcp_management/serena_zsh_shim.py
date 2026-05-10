@@ -122,7 +122,15 @@ _dotsync_agent_graphify_integration_installed() {
   esac
   [[ -f "$md_file" && -f "$cfg_file" ]] || return 1
   grep -q "graphify-out" "$md_file" 2>/dev/null || return 1
-  grep -q "graphify-out" "$cfg_file" 2>/dev/null || return 1
+  case "$client" in
+    claude)
+      grep -q "graphify-out" "$cfg_file" 2>/dev/null || return 1
+      ;;
+    *)
+      grep -q "graphify" "$cfg_file" 2>/dev/null || return 1
+      grep -q "hook-check" "$cfg_file" 2>/dev/null || return 1
+      ;;
+  esac
   return 0
 }
 

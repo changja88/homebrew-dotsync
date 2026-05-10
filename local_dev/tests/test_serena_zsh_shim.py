@@ -107,11 +107,11 @@ def test_render_zsh_shim_graphify_integration_helper_checks_file_content():
         claude_binary=Path("/opt/homebrew/bin/claude"),
     )
 
-    # The marker `graphify-out` is referenced by both the markdown section
-    # graphify injects (".../graphify-out/...") and the settings/hook command
-    # it registers (graphify-out/graph.json), so a single grep covers both.
+    # The markdown section references `graphify-out`; Codex hook files use
+    # `graphify hook-check`, while Claude settings still mention graphify-out.
     assert "grep -q" in text
     assert "graphify-out" in text
+    assert "hook-check" in text
 
 
 @pytest.mark.no_subprocess_block
@@ -204,6 +204,41 @@ def test_zsh_shim_graphify_integration_codex_returns_missing_when_files_lack_gra
         check=True,
     )
     assert "integration=1" in result.stdout
+
+
+@pytest.mark.no_subprocess_block
+def test_zsh_shim_graphify_integration_codex_returns_installed_when_hook_check_present(tmp_path):
+    shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "AGENTS.md").write_text(
+        "# AGENTS.md\n\n"
+        "## graphify\n\n"
+        "This project has a graphify knowledge graph at graphify-out/.\n"
+    )
+    codex_dir = project / ".codex"
+    codex_dir.mkdir()
+    (codex_dir / "hooks.json").write_text(
+        '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command",'
+        '"command":"/Users/hyun/.local/bin/graphify hook-check"}]}]}}\n'
+    )
+
+    result = subprocess.run(
+        [
+            "zsh",
+            "-fc",
+            (
+                f"source {shim_path}; "
+                f"_dotsync_agent_graphify_integration_installed {project} codex; "
+                "print integration=$?"
+            ),
+        ],
+        env={**os.environ, "HOME": str(tmp_path)},
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert "integration=0" in result.stdout
 
 
 def test_render_zsh_shim_graphify_hooks_check_uses_project_root():
