@@ -44,6 +44,16 @@ def serena_context_for(client_type: str) -> str:
     raise ValueError(f"unsupported client type: {client_type}")
 
 
+def client_type_for_serena_context(context: str) -> str | None:
+    """Map a Serena context name back to a launcher client type."""
+
+    if context == "codex":
+        return "codex"
+    if context == "claude-code":
+        return "claude"
+    return None
+
+
 def find_project_root(cwd: Path) -> Path:
     """Find a project root from a current working directory."""
 

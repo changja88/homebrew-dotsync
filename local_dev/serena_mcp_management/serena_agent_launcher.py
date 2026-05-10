@@ -20,11 +20,13 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from local_dev.serena_mcp_management.serena_mcp.diagnostics import snapshot_global_lifecycle
 from local_dev.serena_mcp_management.serena_mcp.paths import Scope, find_project_root
 from local_dev.serena_mcp_management.serena_mcp.registry import locked_registry, touch_lease
 from local_dev.serena_mcp_management.serena_mcp.server import ensure_server
 from local_dev.serena_mcp_management.serena_mcp.watchdog import (
     HEARTBEAT_INTERVAL_SECONDS,
+    LEASE_TIMEOUT_SECONDS,
     ShutdownStats,
     make_launcher_lease,
     release_lease_and_shutdown_if_empty,
@@ -39,6 +41,7 @@ from local_dev.serena_mcp_management.ui import (
     confirm,
     render_inline_row,
     style_count,
+    style_mcp_inventory,
     style_spinner,
 )
 
@@ -540,6 +543,16 @@ def _graphify_hook_value(status: str) -> tuple[str, str]:
     return 'hooks not installed . run "graphify hook install"', "warn"
 
 
+def _serena_mcp_status(snapshot) -> str:
+    if snapshot.scan_failed:
+        return "warn"
+    if snapshot.orphan_server_count > 0 or snapshot.stale_lease_count > 0:
+        return "warn"
+    if snapshot.ps_server_count == 0:
+        return "info"
+    return "done"
+
+
 def _preflight_box() -> BoxModel:
     """Build a BoxModel for the v2 preflight phase."""
     client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
@@ -567,6 +580,26 @@ def _preflight_box() -> BoxModel:
         else "project config missing"
     )
     serena_item_status = "done" if serena_status == "managed" else "warn"
+    try:
+        mcp_snapshot = snapshot_global_lifecycle(
+            now=time.time(),
+            stale_after_seconds=LEASE_TIMEOUT_SECONDS,
+        )
+        if mcp_snapshot.scan_failed:
+            serena_mcp_value = "scan unavailable"
+            serena_mcp_status = "warn"
+        else:
+            serena_mcp_value = style_mcp_inventory(
+                ps_servers=mcp_snapshot.ps_server_count,
+                managed_servers=mcp_snapshot.managed_server_count,
+                orphan_servers=mcp_snapshot.orphan_server_count,
+                leases=mcp_snapshot.lease_count,
+                stale_leases=mcp_snapshot.stale_lease_count,
+            )
+            serena_mcp_status = _serena_mcp_status(mcp_snapshot)
+    except Exception:
+        serena_mcp_value = "scan unavailable"
+        serena_mcp_status = "warn"
 
     global_value, global_item_status = _graphify_global_value(client, global_status)
     graph_value, graph_item_status = _graphify_graph_value(client, graph_status)
@@ -583,6 +616,12 @@ def _preflight_box() -> BoxModel:
             status="info",
         ),
         Item(id="serena", label="serena", value=serena_value, status=serena_item_status),
+        Item(
+            id="serena-mcp",
+            label="serena mcp",
+            value=serena_mcp_value,
+            status=serena_mcp_status,
+        ),
         Item(
             id="graphify-global",
             label="graphify global",

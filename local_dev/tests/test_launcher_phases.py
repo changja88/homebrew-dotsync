@@ -7,6 +7,7 @@ from unittest import mock
 import pytest
 
 from local_dev.serena_mcp_management import serena_agent_launcher as launcher
+from local_dev.serena_mcp_management.serena_mcp.diagnostics import GlobalLifecycleSnapshot
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -50,6 +51,22 @@ def _set_graphify_env(monkeypatch, *, global_="installed", graph="built",
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS", graph)
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS", integration)
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS", hook)
+
+
+@pytest.fixture(autouse=True)
+def _stub_global_mcp_snapshot(monkeypatch):
+    monkeypatch.setattr(
+        launcher,
+        "snapshot_global_lifecycle",
+        lambda **kwargs: GlobalLifecycleSnapshot(
+            ps_server_count=0,
+            managed_server_count=0,
+            orphan_server_count=0,
+            lease_count=0,
+            stale_lease_count=0,
+        ),
+        raising=False,
+    )
 
 
 def test_v2_preflight_marks_all_graphify_rows_warn_when_env_missing(monkeypatch):
@@ -908,6 +925,120 @@ def test_v2_render_preflight_overview_draws_box_with_all_rows(monkeypatch):
     assert "graphify graph" in plain
     assert "graphify integration" in plain
     assert "graphify hook" in plain
+
+
+def test_preflight_box_includes_global_serena_mcp_inventory(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch)
+    monkeypatch.setattr(
+        launcher,
+        "snapshot_global_lifecycle",
+        lambda **kwargs: GlobalLifecycleSnapshot(
+            ps_server_count=3,
+            managed_server_count=2,
+            orphan_server_count=1,
+            lease_count=3,
+            stale_lease_count=1,
+        ),
+        raising=False,
+    )
+
+    box = launcher._preflight_box()
+
+    ids = [item.id for item in box.items]
+    assert ids[ids.index("serena") + 1] == "serena-mcp"
+    item = box.items[ids.index("serena-mcp")]
+    assert item.label == "serena mcp"
+    assert item.status == "warn"
+    assert _strip_ansi(item.value) == (
+        "ps[3 servers] -> managed[2 servers] . "
+        "orphan[1] . leases[3] . stale[1]"
+    )
+
+
+def test_preflight_box_marks_global_serena_mcp_idle_as_info(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch)
+    monkeypatch.setattr(
+        launcher,
+        "snapshot_global_lifecycle",
+        lambda **kwargs: GlobalLifecycleSnapshot(
+            ps_server_count=0,
+            managed_server_count=0,
+            orphan_server_count=0,
+            lease_count=0,
+            stale_lease_count=0,
+        ),
+        raising=False,
+    )
+
+    item = next(item for item in launcher._preflight_box().items if item.id == "serena-mcp")
+
+    assert item.status == "info"
+    assert _strip_ansi(item.value) == (
+        "ps[0 servers] -> managed[0 servers] . "
+        "orphan[0] . leases[0] . stale[0]"
+    )
+
+
+def test_preflight_box_marks_global_serena_mcp_scan_failure_as_warn(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch)
+    monkeypatch.setattr(
+        launcher,
+        "snapshot_global_lifecycle",
+        lambda **kwargs: GlobalLifecycleSnapshot(
+            ps_server_count=0,
+            managed_server_count=0,
+            orphan_server_count=0,
+            lease_count=0,
+            stale_lease_count=0,
+            scan_failed=True,
+        ),
+        raising=False,
+    )
+
+    item = next(item for item in launcher._preflight_box().items if item.id == "serena-mcp")
+
+    assert item.status == "warn"
+    assert item.value == "scan unavailable"
+
+
+def test_preflight_box_marks_global_serena_mcp_clean_running_as_done(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_CLEANUP_VALUE", "0 to delete . 0 to keep")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_MEMORY_VALUE", "0 files to reset")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch)
+    monkeypatch.setattr(
+        launcher,
+        "snapshot_global_lifecycle",
+        lambda **kwargs: GlobalLifecycleSnapshot(
+            ps_server_count=2,
+            managed_server_count=2,
+            orphan_server_count=0,
+            lease_count=3,
+            stale_lease_count=0,
+        ),
+        raising=False,
+    )
+
+    item = next(item for item in launcher._preflight_box().items if item.id == "serena-mcp")
+
+    assert item.status == "done"
 
 
 def test_v2_render_preflight_overview_skips_when_non_interactive(monkeypatch):

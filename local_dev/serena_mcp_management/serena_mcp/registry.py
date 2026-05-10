@@ -63,6 +63,29 @@ def lock_path(scope: Scope) -> Path:
     return state_dir_for(scope) / "registry.lock"
 
 
+def read_registry_record(scope: Scope) -> ServerRecord | None:
+    """Read a registry record without creating state directories or lock files."""
+
+    path = registry_path(scope)
+    if not path.exists():
+        return None
+    lock = lock_path(scope)
+    if not lock.exists():
+        return _load_record(path)
+    try:
+        with lock.open("r") as handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return None
+            try:
+                return _load_record(path)
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        return None
+
+
 @contextmanager
 def locked_registry(scope: Scope) -> Iterator[Registry]:
     """Open a scope registry under an exclusive lock and persist on exit."""
@@ -136,7 +159,7 @@ def _load_record(path: Path) -> ServerRecord | None:
         }
         record["leases"] = leases
         return ServerRecord(**record)
-    except (json.JSONDecodeError, TypeError, KeyError):
+    except (json.JSONDecodeError, TypeError, KeyError, AttributeError):
         return None
 
 

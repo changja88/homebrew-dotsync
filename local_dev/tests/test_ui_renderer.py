@@ -8,6 +8,7 @@ from local_dev.serena_mcp_management.ui import (
     PINK,
     PURPLE,
     render_box,
+    style_mcp_inventory,
 )
 
 
@@ -80,6 +81,64 @@ def test_render_box_uses_warn_marker_for_warn_items():
     )
     text = render_box(model)
     assert "!" in text
+
+
+def test_style_mcp_inventory_renders_single_line_plain_text():
+    text = style_mcp_inventory(
+        ps_servers=3,
+        managed_servers=2,
+        orphan_servers=1,
+        leases=3,
+        stale_leases=1,
+    )
+
+    assert _strip_ansi(text) == (
+        "ps[3 servers] -> managed[2 servers] . "
+        "orphan[1] . leases[3] . stale[1]"
+    )
+
+
+def test_style_mcp_inventory_highlights_orphan_and_stale_when_nonzero():
+    text = style_mcp_inventory(
+        ps_servers=3,
+        managed_servers=2,
+        orphan_servers=1,
+        leases=3,
+        stale_leases=1,
+    )
+
+    assert "\x1b[33m" in text
+    assert "orphan" in text
+    assert "stale" in text
+
+
+def test_render_box_expands_border_for_long_mcp_inventory_row():
+    model = BoxModel(
+        phase="preflight",
+        title="codex",
+        items=[
+            Item(
+                id="serena-mcp",
+                label="serena mcp",
+                value=style_mcp_inventory(
+                    ps_servers=123,
+                    managed_servers=122,
+                    orphan_servers=1,
+                    leases=987,
+                    stale_leases=1,
+                ),
+                status="warn",
+            ),
+        ],
+    )
+
+    plain_lines = _strip_ansi(render_box(model)).splitlines()
+    border_width = max(
+        len(line.strip()) for line in plain_lines if set(line.strip()) == {"─"}
+    )
+    item_width = max(len(line.strip()) for line in plain_lines if "serena mcp" in line)
+
+    assert border_width >= item_width
 
 
 def test_render_box_spin_frame_cycles_through_braille_set():
@@ -192,5 +251,4 @@ def test_render_box_uses_double_top_and_bottom_border():
     assert "─" in _strip_ansi(lines[1])
     assert f"\x1b[{PINK}m" in lines[0] or f"\x1b[1;{PINK}m" in lines[0]
     assert f"\x1b[{PURPLE}m" in lines[1] or f"\x1b[1;{PURPLE}m" in lines[1]
-
 

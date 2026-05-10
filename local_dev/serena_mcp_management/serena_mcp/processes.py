@@ -10,6 +10,10 @@ from local_dev.serena_mcp_management.serena_mcp.health import process_identity
 from local_dev.serena_mcp_management.serena_mcp.paths import Scope, serena_context_for
 
 
+class ProcessScanError(RuntimeError):
+    """Raised when the process table cannot be scanned."""
+
+
 @dataclass(frozen=True, slots=True)
 class SerenaMcpProcess:
     """A parsed `serena start-mcp-server` process."""
@@ -22,7 +26,16 @@ class SerenaMcpProcess:
 
 
 def list_serena_mcp_processes() -> list[SerenaMcpProcess]:
-    """Return parseable Serena MCP server processes."""
+    """Return parseable Serena MCP server processes, or [] when ps is unavailable."""
+
+    try:
+        return scan_serena_mcp_processes()
+    except ProcessScanError:
+        return []
+
+
+def scan_serena_mcp_processes() -> list[SerenaMcpProcess]:
+    """Return parseable Serena MCP server processes, raising when ps is unavailable."""
 
     try:
         proc = subprocess.run(
@@ -31,10 +44,10 @@ def list_serena_mcp_processes() -> list[SerenaMcpProcess]:
             text=True,
             capture_output=True,
         )
-    except OSError:
-        return []
+    except OSError as exc:
+        raise ProcessScanError("failed to run ps") from exc
     if proc.returncode != 0:
-        return []
+        raise ProcessScanError(f"ps exited with {proc.returncode}")
     processes: list[SerenaMcpProcess] = []
     for line in proc.stdout.splitlines():
         pid_text, _, command = line.strip().partition(" ")

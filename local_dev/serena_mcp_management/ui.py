@@ -137,6 +137,34 @@ def style_count(phrase: str) -> str:
     return result
 
 
+def style_mcp_inventory(
+    *,
+    ps_servers: int,
+    managed_servers: int,
+    orphan_servers: int,
+    leases: int,
+    stale_leases: int,
+) -> str:
+    """Colorize the global Serena MCP preflight inventory."""
+
+    def normal(label: str, value: int, suffix: str = "") -> str:
+        return f"{_ansi(PURPLE, label)}[{_ansi(PINK, str(value))}{suffix}]"
+
+    def risk(label: str, value: int) -> str:
+        if value > 0:
+            return f"{_ansi('33', label)}[{_ansi('33', str(value))}]"
+        return f"{_ansi('90', label)}[{_ansi('90', str(value))}]"
+
+    return (
+        f"{normal('ps', ps_servers, ' servers')} "
+        f"{_ansi('90', '->')} "
+        f"{_ansi(MINT, 'managed')}[{_ansi(PINK, str(managed_servers))} servers] . "
+        f"{risk('orphan', orphan_servers)} . "
+        f"{normal('leases', leases)} . "
+        f"{risk('stale', stale_leases)}"
+    )
+
+
 def _marker_for(status: ItemStatus, *, spin_frame: int = 0) -> str:
     if status == "spin":
         frame = SPINNER_FRAMES[spin_frame % len(SPINNER_FRAMES)]
@@ -213,17 +241,33 @@ def render_inline_row(label: str, value: str, *, status: ItemStatus) -> str:
     return f"  {marker} {label_text}  {value}\n"
 
 
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _visible_len(text: str) -> int:
+    return len(_ANSI_ESCAPE_RE.sub("", text))
+
+
+def _box_width_for(model: BoxModel) -> int:
+    width = _BOX_WIDTH
+    for item in model.items:
+        row = f"  o {item.label:<10}  {item.value}"
+        width = max(width, _visible_len(row) - 2)
+    return width
+
+
 def render_box(model: BoxModel, *, spin_frame: int = 0) -> str:
+    box_width = _box_width_for(model)
     lines: list[str] = []
     # Double border (pink + purple) — outline-offset look from concept 02.
-    lines.append("  " + _ansi(PINK, "─" * _BOX_WIDTH))
-    lines.append("  " + _ansi(PURPLE, "─" * _BOX_WIDTH))
+    lines.append("  " + _ansi(PINK, "─" * box_width))
+    lines.append("  " + _ansi(PURPLE, "─" * box_width))
     art = _HEADER_ART.get(model.title)
     if art is not None:
         for art_line in art:
             lines.append("  " + _gradient_line(art_line))
         phase_label = _ansi(PINK, f"·  {model.phase}")
-        pad = max(0, _BOX_WIDTH - len(art[-1]) - len(model.phase) - 4)
+        pad = max(0, box_width - len(art[-1]) - len(model.phase) - 4)
         lines.append("  " + " " * (len(art[-1]) + pad) + phase_label)
     else:
         header = f"{model.title}  ·  {model.phase}"
@@ -232,8 +276,8 @@ def render_box(model: BoxModel, *, spin_frame: int = 0) -> str:
         marker = _marker_for(item.status, spin_frame=spin_frame)
         label = _ansi(MINT, f"{item.label:<10}")
         lines.append(f"  {marker} {label}  {item.value}")
-    lines.append("  " + _ansi(PURPLE, "─" * _BOX_WIDTH))
-    lines.append("  " + _ansi(PINK, "─" * _BOX_WIDTH))
+    lines.append("  " + _ansi(PURPLE, "─" * box_width))
+    lines.append("  " + _ansi(PINK, "─" * box_width))
     return "\n".join(lines) + "\n"
 
 
