@@ -93,6 +93,32 @@ def test_registry_persists_proxy_fields(tmp_path):
         assert registry.record.proxy_pid == 456
 
 
+def test_registry_persists_managed_process_identities(tmp_path):
+    scope = Scope(tmp_path, "codex")
+    with locked_registry(scope) as registry:
+        registry.record = ServerRecord(
+            server_pid=123,
+            mcp_url="http://127.0.0.1:9001/mcp",
+            dashboard_url="http://127.0.0.1:24000",
+            project_root=str(tmp_path.resolve()),
+            client_type="codex",
+            started_at=1.0,
+            leases={},
+            upstream_mcp_url="http://127.0.0.1:9000/mcp",
+            proxy_pid=456,
+            watchdog_pid=789,
+            server_identity="serena identity",
+            proxy_identity="proxy identity",
+            watchdog_identity="watchdog identity",
+        )
+
+    with locked_registry(scope) as registry:
+        assert registry.record is not None
+        assert registry.record.server_identity == "serena identity"
+        assert registry.record.proxy_identity == "proxy identity"
+        assert registry.record.watchdog_identity == "watchdog identity"
+
+
 def test_registry_treats_corrupt_json_as_no_record(tmp_path):
     scope = Scope(tmp_path, "codex")
     path = tmp_path / ".serena" / "dotsync-mcp" / "codex" / "registry.json"

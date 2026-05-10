@@ -16,6 +16,7 @@ from local_dev.serena_mcp_management.serena_mcp.health import (
     http_endpoint_alive,
     normalize_dashboard_url,
     pid_is_alive,
+    process_identity,
 )
 from local_dev.serena_mcp_management.serena_mcp.paths import Scope, serena_context_for, state_dir_for
 from local_dev.serena_mcp_management.serena_mcp.processes import (
@@ -67,9 +68,13 @@ def server_is_healthy(record: ServerRecord, scope: Scope) -> bool:
         return False
     if record.proxy_pid is None or not record.upstream_mcp_url:
         return False
+    if record.server_identity is None or record.proxy_identity is None:
+        return False
     return (
         pid_is_alive(record.server_pid)
         and pid_is_alive(record.proxy_pid)
+        and _pid_identity_matches(record.server_pid, record.server_identity)
+        and _pid_identity_matches(record.proxy_pid, record.proxy_identity)
         and http_endpoint_alive(record.mcp_url)
         and dashboard_matches_project(record.dashboard_url, scope.project_root)
     )
@@ -81,7 +86,8 @@ def _cleanup_same_scope_orphans(scope: Scope, *, preserve_server_pid: int | None
             continue
         if preserve_server_pid is not None and process.pid == preserve_server_pid:
             continue
-        _terminate_pid(process.pid)
+        if process.identity is not None:
+            _terminate_pid(process.pid, expected_identity=process.identity)
 
 
 def _start_healthy_server(scope: Scope, initial_lease: Lease) -> ServerRecord:
@@ -89,12 +95,15 @@ def _start_healthy_server(scope: Scope, initial_lease: Lease) -> ServerRecord:
     for _attempt in range(3):
         upstream_port = _find_free_port_with_host_lock()
         proc = _start_serena_process(scope, upstream_port)
+        server_identity = process_identity(proc.pid)
         proxy_proc = None
+        proxy_identity = None
         try:
             upstream_mcp_url = f"http://127.0.0.1:{upstream_port}/mcp"
             dashboard_url = _discover_dashboard_url(proc)
             proxy_port = _find_free_port_with_host_lock()
             proxy_proc = _start_proxy_process(scope, proxy_port, upstream_mcp_url)
+            proxy_identity = process_identity(proxy_proc.pid)
             record = ServerRecord(
                 server_pid=proc.pid,
                 mcp_url=f"http://127.0.0.1:{proxy_port}/mcp",
@@ -105,14 +114,16 @@ def _start_healthy_server(scope: Scope, initial_lease: Lease) -> ServerRecord:
                 leases={initial_lease.lease_id: initial_lease},
                 upstream_mcp_url=upstream_mcp_url,
                 proxy_pid=proxy_proc.pid,
+                server_identity=server_identity,
+                proxy_identity=proxy_identity,
             )
             _wait_until_healthy(record, scope)
             return record
         except Exception as exc:
             last_error = exc
             if proxy_proc is not None:
-                _terminate_pid(proxy_proc.pid)
-            _terminate_pid(proc.pid)
+                _terminate_pid(proxy_proc.pid, expected_identity=proxy_identity)
+            _terminate_pid(proc.pid, expected_identity=server_identity)
     raise RuntimeError(f"failed to start healthy Serena MCP server: {last_error}")
 
 
@@ -265,10 +276,17 @@ def _wait_until_healthy(record: ServerRecord, scope: Scope, *, timeout: float = 
 
 
 def _terminate_record(record: ServerRecord) -> None:
-    if record.proxy_pid is not None:
-        _terminate_pid(record.proxy_pid)
-    _terminate_pid(record.server_pid)
+    if record.proxy_pid is not None and record.proxy_identity is not None:
+        _terminate_pid(record.proxy_pid, expected_identity=record.proxy_identity)
+    if record.server_identity is not None:
+        _terminate_pid(record.server_pid, expected_identity=record.server_identity)
 
 
-def _terminate_pid(pid: int) -> None:
-    terminate_pid(pid)
+def _terminate_pid(pid: int, *, expected_identity: str | None = None) -> None:
+    terminate_pid(pid, expected_identity=expected_identity)
+
+
+def _pid_identity_matches(pid: int, expected_identity: str | None) -> bool:
+    if expected_identity is None:
+        return False
+    return process_identity(pid) == expected_identity

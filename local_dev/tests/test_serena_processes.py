@@ -50,6 +50,32 @@ def test_parse_serena_mcp_process_accepts_quoted_project_with_spaces(tmp_path):
     assert proc.project_root == project.resolve()
 
 
+def test_parse_serena_mcp_process_accepts_unquoted_project_with_spaces(tmp_path):
+    project = tmp_path / "repo with spaces"
+    command = (
+        "/usr/bin/python /Users/hyun/.local/bin/serena start-mcp-server "
+        f"--project {project} --context codex --port 12345"
+    )
+
+    proc = parse_serena_mcp_process(334, command)
+
+    assert proc is not None
+    assert proc.project_root == project.resolve()
+
+
+def test_parse_serena_mcp_process_accepts_equals_project_with_unquoted_spaces(tmp_path):
+    project = tmp_path / "repo with spaces"
+    command = (
+        "/usr/bin/python /Users/hyun/.local/bin/serena start-mcp-server "
+        f"--project={project} --context codex --port 12345"
+    )
+
+    proc = parse_serena_mcp_process(335, command)
+
+    assert proc is not None
+    assert proc.project_root == project.resolve()
+
+
 def test_parse_serena_mcp_process_fails_closed_without_context(tmp_path):
     command = f"/usr/bin/python /Users/hyun/.local/bin/serena start-mcp-server --project {tmp_path}"
 
@@ -91,6 +117,27 @@ def test_list_serena_mcp_processes_ignores_unparseable_rows(monkeypatch, tmp_pat
     processes = list_serena_mcp_processes()
 
     assert [proc.pid for proc in processes] == [111]
+
+
+def test_list_serena_mcp_processes_attaches_process_identity(monkeypatch, tmp_path):
+    output = (
+        "111 /usr/bin/python /Users/hyun/.local/bin/serena start-mcp-server "
+        f"--project {tmp_path} --context codex\n"
+    )
+
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.processes.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=output),
+    )
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.processes.process_identity",
+        lambda pid: "Fri May  8 10:00:00 2026 serena start-mcp-server",
+        raising=False,
+    )
+
+    processes = list_serena_mcp_processes()
+
+    assert processes[0].identity == "Fri May  8 10:00:00 2026 serena start-mcp-server"
 
 
 def test_list_serena_mcp_processes_returns_empty_when_ps_cannot_run(monkeypatch):

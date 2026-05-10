@@ -344,3 +344,7 @@ MCP 서버를 관리한다.
   제한된다.
 - process table parsing은 운영체제의 command text 표현에 의존하므로,
   project/context를 정확히 파싱할 수 없는 process는 fail closed로 보존한다.
+- registry write 전에 launcher가 죽어 proxy process만 남은 경우, 현재 proxy
+  command line만으로 project/client scope를 증명할 수 없다. 따라서 registry
+  밖 proxy orphan은 전역 scan으로 강제 종료하지 않고, registry에 기록된
+  `proxy_pid`와 `proxy_identity`가 있을 때만 종료한다.

@@ -28,6 +28,8 @@ def test_ensure_server_reuses_healthy_record(monkeypatch, tmp_path):
         leases={},
         upstream_mcp_url="http://127.0.0.1:9001/mcp",
         proxy_pid=222,
+        server_identity="serena identity",
+        proxy_identity="proxy identity",
     )
     with locked_registry(scope) as registry:
         registry.record = record
@@ -39,6 +41,10 @@ def test_ensure_server_reuses_healthy_record(monkeypatch, tmp_path):
         lambda pid: checked_pids.append(pid) or True,
     )
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.http_endpoint_alive", lambda url: True)
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.server.process_identity",
+        lambda pid: {111: "serena identity", 222: "proxy identity"}[pid],
+    )
     monkeypatch.setattr(
         "local_dev.serena_mcp_management.serena_mcp.server.dashboard_matches_project",
         lambda dashboard_url, project_root: True,
@@ -70,6 +76,37 @@ def test_server_health_rejects_legacy_direct_record_without_proxy_metadata(monke
     )
 
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.pid_is_alive", lambda pid: True)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.http_endpoint_alive", lambda url: True)
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.server.dashboard_matches_project",
+        lambda dashboard_url, project_root: True,
+    )
+
+    assert server.server_is_healthy(record, scope) is False
+
+
+def test_server_health_rejects_reused_server_pid_identity(monkeypatch, tmp_path):
+    scope = Scope(tmp_path, "codex")
+    record = ServerRecord(
+        server_pid=111,
+        mcp_url="http://127.0.0.1:9000/mcp",
+        dashboard_url="http://127.0.0.1:24000",
+        project_root=str(tmp_path.resolve()),
+        client_type="codex",
+        started_at=1.0,
+        leases={},
+        upstream_mcp_url="http://127.0.0.1:9001/mcp",
+        proxy_pid=222,
+        server_identity="original serena identity",
+        proxy_identity="proxy identity",
+    )
+
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.pid_is_alive", lambda pid: True)
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.server.process_identity",
+        lambda pid: "different identity" if pid == 111 else "proxy identity",
+        raising=False,
+    )
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.http_endpoint_alive", lambda url: True)
     monkeypatch.setattr(
         "local_dev.serena_mcp_management.serena_mcp.server.dashboard_matches_project",
@@ -250,6 +287,47 @@ def test_start_healthy_server_exposes_proxy_url_and_tracks_upstream(monkeypatch,
     assert proxy_calls == [(scope, 9001, "http://127.0.0.1:9000/mcp")]
 
 
+def test_start_healthy_server_records_process_identities(monkeypatch, tmp_path):
+    scope = Scope(tmp_path, "codex")
+    lease = Lease("lease-a", os.getpid(), 10.0)
+    ports = iter([9000, 9001])
+
+    class Proc:
+        def __init__(self, pid):
+            self.pid = pid
+
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.server._find_free_port_with_host_lock",
+        lambda: next(ports),
+    )
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.server._start_serena_process",
+        lambda scope_arg, port: Proc(111),
+    )
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.server._start_proxy_process",
+        lambda scope_arg, port, upstream_url: Proc(222),
+    )
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.server.process_identity",
+        lambda pid: {111: "serena identity", 222: "proxy identity"}[pid],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.server._discover_dashboard_url",
+        lambda proc: "http://127.0.0.1:24001",
+    )
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.server._wait_until_healthy",
+        lambda record, scope: None,
+    )
+
+    record = _start_healthy_server(scope, lease)
+
+    assert record.server_identity == "serena identity"
+    assert record.proxy_identity == "proxy identity"
+
+
 def test_start_healthy_server_terminates_proxy_and_upstream_when_health_fails(monkeypatch, tmp_path):
     scope = Scope(tmp_path, "codex")
     lease = Lease("lease-a", os.getpid(), 10.0)
@@ -288,7 +366,7 @@ def test_start_healthy_server_terminates_proxy_and_upstream_when_health_fails(mo
     )
     monkeypatch.setattr(
         "local_dev.serena_mcp_management.serena_mcp.server._terminate_pid",
-        lambda pid: terminated_pids.append(pid),
+        lambda pid, *, expected_identity=None: terminated_pids.append(pid),
     )
 
     with pytest.raises(RuntimeError, match="failed to start healthy Serena MCP server"):
@@ -318,10 +396,14 @@ def test_ensure_server_terminates_registryless_same_scope_orphan_before_start(mo
         project_root=scope.project_root,
         context="codex",
         command="serena start-mcp-server",
+        identity="orphan identity",
     )
 
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.list_serena_mcp_processes", lambda: [orphan])
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server._terminate_pid", terminated.append)
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.server._terminate_pid",
+        lambda pid, *, expected_identity=None: terminated.append(pid),
+    )
     monkeypatch.setattr(
         "local_dev.serena_mcp_management.serena_mcp.server._start_healthy_server",
         lambda scope_arg, lease_arg: replacement,
@@ -382,22 +464,31 @@ def test_ensure_server_reuses_healthy_record_and_cleans_extra_same_scope_upstrea
         leases={},
         upstream_mcp_url="http://127.0.0.1:9001/mcp",
         proxy_pid=222,
+        server_identity="serena identity",
+        proxy_identity="proxy identity",
     )
     with locked_registry(scope) as registry:
         registry.record = record
     processes = [
-        server.SerenaMcpProcess(111, scope.project_root, "codex", "registered"),
-        server.SerenaMcpProcess(333, scope.project_root, "codex", "extra"),
+        server.SerenaMcpProcess(111, scope.project_root, "codex", "registered", "serena identity"),
+        server.SerenaMcpProcess(333, scope.project_root, "codex", "extra", "extra identity"),
     ]
 
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.pid_is_alive", lambda pid: True)
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.http_endpoint_alive", lambda url: True)
     monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.server.process_identity",
+        lambda pid: {111: "serena identity", 222: "proxy identity"}[pid],
+    )
+    monkeypatch.setattr(
         "local_dev.serena_mcp_management.serena_mcp.server.dashboard_matches_project",
         lambda dashboard_url, project_root: True,
     )
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.list_serena_mcp_processes", lambda: processes)
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server._terminate_pid", terminated.append)
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.server._terminate_pid",
+        lambda pid, *, expected_identity=None: terminated.append(pid),
+    )
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.ensure_watchdog", lambda scope_arg: None)
 
     assert ensure_server(scope, lease).server_pid == 111
@@ -406,7 +497,11 @@ def test_ensure_server_reuses_healthy_record_and_cleans_extra_same_scope_upstrea
 
 def test_server_terminate_record_delegates_to_shared_termination(monkeypatch):
     terminated = []
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.terminate_pid", terminated.append)
+
+    def fake_terminate(pid, *, expected_identity=None):
+        terminated.append((pid, expected_identity))
+
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.terminate_pid", fake_terminate)
 
     server._terminate_record(ServerRecord(
         server_pid=111,
@@ -418,9 +513,11 @@ def test_server_terminate_record_delegates_to_shared_termination(monkeypatch):
         leases={},
         upstream_mcp_url="http://127.0.0.1:9001/mcp",
         proxy_pid=222,
+        server_identity="serena identity",
+        proxy_identity="proxy identity",
     ))
 
-    assert terminated == [222, 111]
+    assert terminated == [(222, "proxy identity"), (111, "serena identity")]
 
 
 def test_start_serena_process_redirects_output_to_scope_log(monkeypatch, tmp_path):

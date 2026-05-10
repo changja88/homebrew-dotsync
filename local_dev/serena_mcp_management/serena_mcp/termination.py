@@ -5,13 +5,20 @@ import os
 import signal
 import time
 
-from local_dev.serena_mcp_management.serena_mcp.health import pid_is_alive
+from local_dev.serena_mcp_management.serena_mcp.health import pid_is_alive, process_identity
 
 
-def terminate_pid(pid: int, *, timeout: float = 5.0) -> None:
+def terminate_pid(
+    pid: int,
+    *,
+    timeout: float = 5.0,
+    expected_identity: str | None = None,
+) -> None:
     """Terminate a process group, falling back to PID kill and SIGKILL."""
 
     if pid <= 0:
+        return
+    if not _identity_matches(pid, expected_identity):
         return
     if not _send(pid, signal.SIGTERM):
         return
@@ -19,7 +26,11 @@ def terminate_pid(pid: int, *, timeout: float = 5.0) -> None:
     while time.time() < deadline:
         if not pid_is_alive(pid):
             return
+        if not _identity_matches(pid, expected_identity):
+            return
         time.sleep(0.1)
+    if not _identity_matches(pid, expected_identity):
+        return
     _send(pid, signal.SIGKILL)
 
 
@@ -28,10 +39,22 @@ def _send(pid: int, sig: signal.Signals) -> bool:
         os.killpg(pid, sig)
         return True
     except ProcessLookupError:
-        return False
-    except PermissionError:
-        try:
-            os.kill(pid, sig)
-            return True
-        except ProcessLookupError:
+        if not pid_is_alive(pid):
             return False
+        return _send_pid(pid, sig)
+    except PermissionError:
+        return _send_pid(pid, sig)
+
+
+def _send_pid(pid: int, sig: signal.Signals) -> bool:
+    try:
+        os.kill(pid, sig)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def _identity_matches(pid: int, expected_identity: str | None) -> bool:
+    if expected_identity is None:
+        return True
+    return process_identity(pid) == expected_identity

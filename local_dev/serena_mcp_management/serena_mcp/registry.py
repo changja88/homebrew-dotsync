@@ -38,6 +38,9 @@ class ServerRecord:
     watchdog_pid: int | None = None
     upstream_mcp_url: str | None = None
     proxy_pid: int | None = None
+    server_identity: str | None = None
+    proxy_identity: str | None = None
+    watchdog_identity: str | None = None
 
 
 @dataclass(slots=True)

@@ -6,6 +6,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from local_dev.serena_mcp_management.serena_mcp.health import process_identity
 from local_dev.serena_mcp_management.serena_mcp.paths import Scope, serena_context_for
 
 
@@ -17,6 +18,7 @@ class SerenaMcpProcess:
     project_root: Path
     context: str
     command: str
+    identity: str | None = None
 
 
 def list_serena_mcp_processes() -> list[SerenaMcpProcess]:
@@ -40,7 +42,13 @@ def list_serena_mcp_processes() -> list[SerenaMcpProcess]:
             continue
         parsed = parse_serena_mcp_process(int(pid_text), command)
         if parsed is not None:
-            processes.append(parsed)
+            processes.append(SerenaMcpProcess(
+                pid=parsed.pid,
+                project_root=parsed.project_root,
+                context=parsed.context,
+                command=parsed.command,
+                identity=process_identity(parsed.pid),
+            ))
     return processes
 
 
@@ -85,9 +93,24 @@ def _option_value(argv: list[str], option: str) -> str | None:
     prefix = option + "="
     for index, value in enumerate(argv):
         if value == option:
-            if index + 1 >= len(argv):
+            values = _values_until_next_option(argv, index + 1)
+            if not values:
                 return None
-            return argv[index + 1]
+            return " ".join(values)
         if value.startswith(prefix):
-            return value[len(prefix):]
+            first = value[len(prefix):]
+            values = [first, *_values_until_next_option(argv, index + 1)]
+            values = [item for item in values if item]
+            if not values:
+                return None
+            return " ".join(values)
     return None
+
+
+def _values_until_next_option(argv: list[str], start: int) -> list[str]:
+    values: list[str] = []
+    for value in argv[start:]:
+        if value.startswith("--"):
+            break
+        values.append(value)
+    return values

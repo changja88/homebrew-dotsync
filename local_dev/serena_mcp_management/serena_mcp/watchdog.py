@@ -74,7 +74,7 @@ def launcher_process_matches(lease: Lease) -> bool:
     """Return true if the lease still belongs to the original live launcher."""
 
     if lease.launcher_identity is None:
-        return pid_is_alive(lease.launcher_pid)
+        return False
     return process_identity(lease.launcher_pid) == lease.launcher_identity
 
 
@@ -158,7 +158,10 @@ def ensure_watchdog(scope: Scope) -> None:
     with locked_registry(scope) as registry:
         if registry.record is None:
             return
-        if registry.record.watchdog_pid and pid_is_alive(registry.record.watchdog_pid):
+        if registry.record.watchdog_pid and _pid_identity_matches(
+            registry.record.watchdog_pid,
+            registry.record.watchdog_identity,
+        ):
             return
         env = os.environ.copy()
         env["PYTHONPATH"] = _pythonpath_with_repo_root(env.get("PYTHONPATH"))
@@ -177,6 +180,7 @@ def ensure_watchdog(scope: Scope) -> None:
             start_new_session=True,
         )
         registry.record.watchdog_pid = proc.pid
+        registry.record.watchdog_identity = process_identity(proc.pid)
 
 
 def _pythonpath_with_repo_root(current: str | None) -> str:
@@ -190,13 +194,22 @@ def _pythonpath_with_repo_root(current: str | None) -> str:
 
 
 def _terminate_record(record: ServerRecord) -> None:
-    if record.proxy_pid is not None:
-        _terminate_pid(record.proxy_pid)
-    _terminate_pid(record.server_pid)
+    if record.proxy_pid is not None and record.proxy_identity is not None:
+        _terminate_pid(record.proxy_pid, expected_identity=record.proxy_identity)
+    if record.server_identity is not None:
+        _terminate_pid(record.server_pid, expected_identity=record.server_identity)
 
 
-def _terminate_pid(pid: int) -> None:
-    terminate_pid(pid)
+def _terminate_pid(pid: int, *, expected_identity: str | None = None) -> None:
+    terminate_pid(pid, expected_identity=expected_identity)
+
+
+def _pid_identity_matches(pid: int, expected_identity: str | None) -> bool:
+    if expected_identity is None:
+        return False
+    if not pid_is_alive(pid):
+        return False
+    return process_identity(pid) == expected_identity
 
 
 if __name__ == "__main__":
