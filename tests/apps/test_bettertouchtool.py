@@ -428,6 +428,61 @@ def test_status_dirty_when_real_content_differs_despite_uuid_normalization(tmp_p
     assert result.state == "dirty"
 
 
+def test_status_clean_when_only_btt_last_updated_at_differs(tmp_path):
+    """BTT may rewrite trigger metadata timestamps during app updates or
+    database migrations. Those timestamps should not make unchanged shortcuts
+    look dirty."""
+    target = tmp_path / "configs"
+    presets = target / "bettertouchtool" / "presets"
+    presets.mkdir(parents=True)
+    stored_text = (
+        '{\n'
+        '  "BTTPresetName" : "Master_bt",\n'
+        '  "BTTTriggers" : [\n'
+        '    {\n'
+        '      "BTTLastUpdatedAt" : 1779981980.37502,\n'
+        '      "BTTUUID" : "7771B270-FB80-4B09-A1A0-76E79E2EFB6E",\n'
+        '      "BTTLayoutIndependentChar" : "HOME",\n'
+        '      "BTTShortcutKeyCode" : 115\n'
+        '    }\n'
+        '  ]\n'
+        '}\n'
+    )
+    live_text = (
+        '{\n'
+        '  "BTTPresetName" : "Master_bt",\n'
+        '  "BTTTriggers" : [\n'
+        '    {\n'
+        '      "BTTLastUpdatedAt" : 1780807565.605134,\n'
+        '      "BTTUUID" : "7771B270-FB80-4B09-A1A0-76E79E2EFB6E",\n'
+        '      "BTTLayoutIndependentChar" : "HOME",\n'
+        '      "BTTShortcutKeyCode" : 115\n'
+        '    }\n'
+        '  ]\n'
+        '}\n'
+    )
+    (presets / "Master_bt.bttpreset").write_text(stored_text)
+
+    def fake_run(*args, **kwargs):
+        class R:
+            returncode = 0
+            stdout = "done"
+            stderr = ""
+        cmd = args[0]
+        for token in cmd:
+            if "outputPath" in token:
+                import re
+                m = re.search(r'outputPath "([^"]+)"', token)
+                if m:
+                    Path(m.group(1)).parent.mkdir(parents=True, exist_ok=True)
+                    Path(m.group(1)).write_text(live_text)
+        return R()
+
+    with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=fake_run):
+        result = BetterTouchToolApp(presets=["Master_bt"]).status(target)
+    assert result.state == "clean"
+
+
 def test_status_dirty_when_export_differs(tmp_path):
     target = tmp_path / "configs"
     presets = target / "bettertouchtool" / "presets"

@@ -6,6 +6,7 @@ file layout is ``<sync>/bettertouchtool/presets/<name>.bttpreset``.
 """
 from __future__ import annotations
 import hashlib
+import json
 import re
 import sqlite3
 import subprocess
@@ -21,18 +22,47 @@ from dotsync.plan import AppPlan, Change
 # the export and raises "BTT export file was not created" on every run.
 _EXPORT_WAIT_TIMEOUT = 5.0
 
-# BTT regenerates BTTPresetUUID on every export_preset call, even when no
-# user-visible change exists. A naive byte-for-byte hash would flag every
-# from→status comparison as dirty, so we normalize that one line before hashing.
+# BTT regenerates BTTPresetUUID on every export_preset call and may rewrite
+# BTTLastUpdatedAt during app updates or database migrations, even when no
+# user-visible preset content changed. A naive byte-for-byte hash would flag
+# those cases as dirty, so we normalize volatile metadata before hashing.
 _BTT_UUID_LINE_RE = re.compile(
     r'^(\s*"BTTPresetUUID"\s*:\s*")[^"]+(",?\s*)$',
     re.MULTILINE,
 )
+_BTT_LAST_UPDATED_LINE_RE = re.compile(
+    r'^(\s*"BTTLastUpdatedAt"\s*:\s*)[-+]?\d+(?:\.\d+)?(,?\s*)$',
+    re.MULTILINE,
+)
+_VOLATILE_PRESET_KEYS = {"BTTPresetUUID", "BTTLastUpdatedAt"}
+
+
+def _normalize_preset_data(value):
+    if isinstance(value, dict):
+        return {
+            key: _normalize_preset_data(child)
+            for key, child in value.items()
+            if key not in _VOLATILE_PRESET_KEYS
+        }
+    if isinstance(value, list):
+        return [_normalize_preset_data(item) for item in value]
+    return value
 
 
 def _hash_preset(path: Path) -> str:
     text = path.read_text(encoding="utf-8", errors="replace")
-    normalized = _BTT_UUID_LINE_RE.sub(r"\1<normalized>\2", text)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        normalized = _BTT_UUID_LINE_RE.sub(r"\1<normalized>\2", text)
+        normalized = _BTT_LAST_UPDATED_LINE_RE.sub(r"\1<normalized>\2", normalized)
+    else:
+        normalized = json.dumps(
+            _normalize_preset_data(data),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
