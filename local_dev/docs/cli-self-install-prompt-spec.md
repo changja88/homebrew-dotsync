@@ -33,6 +33,11 @@ PROJECT: None" 대시보드는 별개로, Claude 플러그인의 bare serena 인
   돌려줘도 binary가 안 보이면 failed.
 - 거절/실패/uv 부재 시 흐름은 끊기지 않는다: serena는 기존 degrade(`! serena
   unavailable` 경고 후 bare launch), graphify는 질문 전체 skip + 경고 행 하나.
+- **설치 출력**: uv stdout/stderr는 캡처해 숨기고, 설치 중에는 spinner 행
+  하나에 마지막 의미 있는 줄(`+ pkg==ver` 줄은 패키지 토큰만)을 갱신해
+  보여준다. 실패(exit != 0) 시에만 캡처 전체를 들여쓰기 dump로 풀어 원인을
+  남긴다 (`_run_tool_install_streaming`). 마지막 ✓/! 상태 행은 기존
+  `render_inline_row` 그대로.
 - **TUI 불변**: 박스에 새 행을 추가하지 않는다. 질문은 기존 `confirm`
   화살표 선택 UI, 결과는 `render_inline_row` — 기존 문법 그대로. CLI가 이미
   해석되는 머신에서는 질문 자체가 나타나지 않아 동작 차이가 없다.
@@ -48,6 +53,7 @@ PROJECT: None" 대시보드는 별개로, Claude 플러그인의 bare serena 인
 - `tests/test_external_cli.py` — 해석/설치 명령 빌더 단위 스펙.
 - `tests/test_launcher_phases.py` — 프롬프트 phase 5상태(present/installed/
   declined/failed/unavailable), `_main_v2` 호출 순서(cli → init), graphify
-  질문 gating, degrade 경로.
+  질문 gating, degrade 경로, 설치 출력 streaming(성공 시 숨김 / 실패 시
+  들여쓰기 dump / 진행 행 갱신).
 - 샌드박스 E2E(2026-06-11): PATH 없는 셸에서 4개 Yes 액션 전부 실제 성공
   (project.yml 생성, AGENTS.md+hooks.json, git hooks, `~/.codex/skills/graphify`).

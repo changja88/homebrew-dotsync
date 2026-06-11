@@ -1769,6 +1769,150 @@ def test_serena_cli_install_phase_warns_without_uv(monkeypatch):
     assert "uv" in _strip_ansi(out.getvalue())
 
 
+# --- CLI install output streaming ----------------------------------------------
+#
+# uv tool install의 패키지 벽 출력은 숨긴다: 설치 중에는 spinner 행 하나에
+# 마지막 의미 있는 줄(패키지 1개)만 갱신해 보여주고, 실패했을 때만 캡처한
+# 전체 출력을 들여쓰기 dump로 풀어 원인을 남긴다.
+
+
+class _FakeInstallProc:
+    def __init__(self, lines, returncode):
+        self.stdout = iter(lines)
+        self._returncode = returncode
+
+    def wait(self):
+        return self._returncode
+
+
+def test_install_progress_value_maps_lines():
+    assert launcher._install_progress_value(" + cffi==2.0.0\n") == "cffi==2.0.0"
+    assert (launcher._install_progress_value("Resolved 74 packages in 20.57s\n")
+            == "Resolved 74 packages in 20.57s")
+    assert launcher._install_progress_value("   \n") is None
+
+
+def test_install_progress_value_truncates_long_lines():
+    value = launcher._install_progress_value("x" * 200)
+    assert len(value) <= 58
+    assert value.endswith("…")
+
+
+def test_tool_install_streaming_hides_uv_output_on_success():
+    lines = [
+        "Resolved 74 packages in 20.57s\n",
+        " + cffi==2.0.0\n",
+        " + httpcore==1.0.9\n",
+        "Installed 3 executables: serena, serena-agent, serena-hooks\n",
+    ]
+    out = io.StringIO()
+    rc = launcher._run_tool_install_streaming(
+        ["/stub/uv", "tool", "install", "serena-agent"],
+        label="serena cli",
+        stream=out,
+        popen_fn=lambda cmd, **kw: _FakeInstallProc(lines, 0),
+        tick_interval=999.0,
+    )
+    assert rc == 0
+    text = _strip_ansi(out.getvalue())
+    # 성공하면 uv 출력은 dump되지 않는다 (들여쓰기 dump 라인이 없어야 한다).
+    assert "    + cffi==2.0.0" not in text
+    # 진행 행에는 줄이 도착할 때마다 마지막 값 하나가 spinner 옆에 갱신된다.
+    assert "cffi==2.0.0" in text
+
+
+def test_tool_install_streaming_dumps_output_on_failure():
+    lines = [
+        "Resolved 2 packages in 1.00s\n",
+        "error: Request failed after 3 retries\n",
+    ]
+    out = io.StringIO()
+    rc = launcher._run_tool_install_streaming(
+        ["/stub/uv", "tool", "install", "serena-agent"],
+        label="serena cli",
+        stream=out,
+        popen_fn=lambda cmd, **kw: _FakeInstallProc(lines, 2),
+        tick_interval=999.0,
+    )
+    assert rc == 2
+    text = _strip_ansi(out.getvalue())
+    # 실패 시 캡처한 uv 출력이 들여쓰기 dump로 그대로 보존된다.
+    assert "    error: Request failed after 3 retries" in text
+    assert "    Resolved 2 packages in 1.00s" in text
+
+
+def test_serena_cli_install_streams_with_label(monkeypatch):
+    calls = {}
+
+    def fake_streaming(cmd, *, label, stream=None, **kw):
+        calls.update(cmd=cmd, label=label, stream=stream)
+        return 7
+
+    monkeypatch.setattr(launcher, "_run_tool_install_streaming", fake_streaming)
+    out = io.StringIO()
+    rc = launcher._serena_cli_install(stream=out)
+    assert rc == 7
+    assert calls["label"] == "serena cli"
+    assert calls["stream"] is out
+    assert calls["cmd"][-1] == "serena-agent"
+
+
+def test_graphify_cli_install_streams_with_label(monkeypatch):
+    calls = {}
+
+    def fake_streaming(cmd, *, label, stream=None, **kw):
+        calls.update(cmd=cmd, label=label, stream=stream)
+        return 7
+
+    monkeypatch.setattr(launcher, "_run_tool_install_streaming", fake_streaming)
+    out = io.StringIO()
+    rc = launcher._graphify_cli_install(stream=out)
+    assert rc == 7
+    assert calls["label"] == "graphify cli"
+    assert calls["stream"] is out
+    assert calls["cmd"][-1] == "graphifyy"
+
+
+def test_serena_cli_install_phase_passes_stream_to_default_installer(monkeypatch):
+    resolution = [None]
+    monkeypatch.setattr(launcher, "serena_server_command",
+                        lambda: resolution[0], raising=False)
+    seen = {}
+
+    def fake_install(*, stream=None):
+        seen["stream"] = stream
+        resolution[0] = ["serena"]
+        return 0
+
+    monkeypatch.setattr(launcher, "_serena_cli_install", fake_install)
+    out = io.StringIO()
+    answers = iter(["y"])
+    state = launcher._run_serena_cli_install_v2(
+        stream=out, input_fn=lambda: next(answers))
+    assert state == "installed"
+    assert seen["stream"] is out
+
+
+def test_graphify_cli_install_phase_passes_stream_to_default_installer(monkeypatch):
+    resolution = [None]
+    monkeypatch.setattr(launcher, "graphify_command",
+                        lambda: resolution[0], raising=False)
+    seen = {}
+
+    def fake_install(*, stream=None):
+        seen["stream"] = stream
+        resolution[0] = ["graphify"]
+        return 0
+
+    monkeypatch.setattr(launcher, "_graphify_cli_install", fake_install)
+    out = io.StringIO()
+    answers = iter(["y"])
+    state = launcher._run_graphify_cli_install_v2(
+        stream=out, input_fn=lambda: next(answers))
+    assert state == "installed"
+    assert seen["stream"] is out
+
+
 def test_v2_main_runs_serena_cli_phase_before_init(monkeypatch, tmp_path):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
@@ -1888,20 +2032,17 @@ def test_cli_install_runners_use_resolved_uv_commands(monkeypatch):
         launcher, "graphify_install_command",
         lambda: ["/u/uv", "tool", "install", "graphifyy"],
         raising=False)
-    run_calls = []
+    popen_calls = []
 
-    class _Result:
-        returncode = 0
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append(cmd)
+        return _FakeInstallProc([], 0)
 
-    def fake_run(cmd, check=False):
-        run_calls.append(cmd)
-        return _Result()
-
-    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+    monkeypatch.setattr(launcher.subprocess, "Popen", fake_popen)
 
     assert launcher._serena_cli_install() == 0
     assert launcher._graphify_cli_install() == 0
-    assert run_calls == [
+    assert popen_calls == [
         ["/u/uv", "tool", "install", "--from", "spec", "serena-agent"],
         ["/u/uv", "tool", "install", "graphifyy"],
     ]

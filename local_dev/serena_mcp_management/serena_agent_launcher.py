@@ -43,6 +43,7 @@ from local_dev.serena_mcp_management.session_inventory import (
     scan_inventory,
 )
 from local_dev.serena_mcp_management.ui import (
+    MINT,
     PINK,
     PURPLE,
     BoxModel,
@@ -674,7 +675,87 @@ def _preflight_box() -> BoxModel:
     return BoxModel(phase="preflight", title=client, items=items)
 
 
-def _serena_cli_install() -> int:
+_INSTALL_PROGRESS_LIMIT = 58
+
+
+def _install_progress_value(line: str) -> str | None:
+    """Map one line of `uv tool install` output to a compact progress value.
+
+    `+ pkg==ver` / `- pkg==ver` 줄은 패키지 토큰만 남기고, 그 외 비어 있지
+    않은 줄은 그대로 쓴다. 빈 줄은 None (직전 값 유지).
+    """
+    text = line.strip()
+    if not text:
+        return None
+    if text.startswith(("+ ", "- ")):
+        text = text[2:].strip()
+    if len(text) > _INSTALL_PROGRESS_LIMIT:
+        text = text[: _INSTALL_PROGRESS_LIMIT - 1] + "…"
+    return text
+
+
+def _run_tool_install_streaming(
+    cmd: list[str],
+    *,
+    label: str,
+    stream: TextIO | None = None,
+    popen_fn: Callable[..., object] | None = None,
+    tick_interval: float = 0.1,
+) -> int:
+    """Run a `uv tool install` behind a single in-place progress row.
+
+    uv의 패키지 벽 출력은 캡처해 숨기고, 마지막 의미 있는 줄 하나만 spinner
+    행에 갱신해 보여준다. 실패(exit != 0)하면 캡처한 전체 출력을 들여쓰기
+    dump로 풀어 원인을 그대로 남긴다. 마지막 상태 행(✓/!)은 호출자 몫.
+    """
+    out = stream if stream is not None else sys.stdout
+    launch = popen_fn if popen_fn is not None else subprocess.Popen
+    proc = launch(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    captured: list[str] = []
+    state = {"frame": 0, "value": "installing…"}
+    write_lock = threading.Lock()
+
+    def redraw() -> None:
+        with write_lock:
+            label_text = f"\x1b[{MINT}m{label:<10}\x1b[0m"
+            out.write(
+                f"\r  {style_spinner(state['frame'])} {label_text}"
+                f"  {state['value']}\x1b[K"
+            )
+            out.flush()
+
+    def on_tick(frame: int) -> None:
+        state["frame"] = frame
+        redraw()
+
+    ticker = SpinnerTicker(on_tick=on_tick, interval=tick_interval)
+    ticker.start()
+    try:
+        for line in proc.stdout:
+            captured.append(line)
+            value = _install_progress_value(line)
+            if value is not None:
+                state["value"] = value
+                redraw()
+        rc = int(proc.wait())
+    finally:
+        ticker.stop()
+    out.write("\r\x1b[K")
+    if rc != 0:
+        for line in captured:
+            out.write("    " + (line if line.endswith("\n") else line + "\n"))
+    out.flush()
+    return rc
+
+
+def _serena_cli_install(*, stream: TextIO | None = None) -> int:
     """Install the serena CLI persistently via uv tool.
 
     Returns the exit code. 2 indicates uv is unavailable.
@@ -682,10 +763,10 @@ def _serena_cli_install() -> int:
     cmd = serena_install_command()
     if cmd is None:
         return 2
-    return int(subprocess.run(cmd, check=False).returncode)
+    return _run_tool_install_streaming(cmd, label="serena cli", stream=stream)
 
 
-def _graphify_cli_install() -> int:
+def _graphify_cli_install(*, stream: TextIO | None = None) -> int:
     """Install the graphify CLI persistently via uv tool.
 
     Returns the exit code. 2 indicates uv is unavailable.
@@ -693,7 +774,7 @@ def _graphify_cli_install() -> int:
     cmd = graphify_install_command()
     if cmd is None:
         return 2
-    return int(subprocess.run(cmd, check=False).returncode)
+    return _run_tool_install_streaming(cmd, label="graphify cli", stream=stream)
 
 
 def _display_uv_command(cmd: list[str]) -> str:
@@ -729,7 +810,7 @@ def _run_serena_cli_install_v2(
         input_fn=input_fn,
     ):
         return "declined"
-    rc = (install_fn or _serena_cli_install)()
+    rc = install_fn() if install_fn is not None else _serena_cli_install(stream=out)
     if rc == 0 and serena_server_command() is not None:
         out.write(render_inline_row(
             "serena cli", "installed at ~/.local/bin/serena", status="done"))
@@ -772,7 +853,7 @@ def _run_graphify_cli_install_v2(
         input_fn=input_fn,
     ):
         return "declined"
-    rc = (install_fn or _graphify_cli_install)()
+    rc = install_fn() if install_fn is not None else _graphify_cli_install(stream=out)
     if rc == 0 and graphify_command() is not None:
         out.write(render_inline_row(
             "graphify cli", "installed at ~/.local/bin/graphify", status="done"))

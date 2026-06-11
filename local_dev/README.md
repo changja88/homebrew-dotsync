@@ -41,7 +41,10 @@ so agent sessions see the same CLIs.
 Initialize 프롬프트 직전에 항상, graphify CLI는 graphify 행 중 하나라도
 missing일 때 graphify 질문들 직전에. 거절하면 아래의 degrade 동작이 그대로
 적용되고(graphify 질문들은 통째로 skip), `uv` 자체가 없으면 묻지 않고 경고
-행만 남긴다. 디자인 문서: `docs/cli-self-install-prompt-spec.md`.
+행만 남긴다. 설치가 도는 동안 uv의 패키지 벽 출력은 캡처해 숨기고 spinner
+행 하나에 마지막 진행 줄(패키지 1개)만 갱신해 보여준다 — 캡처한 전체 출력은
+설치가 실패했을 때만 들여쓰기로 풀어 남긴다. 디자인 문서:
+`docs/cli-self-install-prompt-spec.md`.
 
 | CLI | Install | Resolution rules |
 |---|---|---|
