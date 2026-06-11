@@ -82,16 +82,23 @@ brew test dotsync
 
 ## 릴리스 절차 (Homebrew tap)
 
-수동 릴리스 절차:
+릴리스는 **`make release`** (= `scripts/release.sh`) 하나로 한다. 스크립트가 지키는 불변식:
 
-1. `git push -u origin main`
-2. `git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z`
-3. `gh release create vX.Y.Z`
-4. `curl -sL <tarball-url> | shasum -a 256`로 해시 계산
-5. `Formula/dotsync.rb`의 `sha256` 갱신, commit, push
-6. `brew install changja88/dotsync/dotsync && dotsync --version`로 검증
+> **origin/main의 formula는 placeholder sha256을 절대 노출하지 않는다.** brew는 tap의 main을 직접 읽으므로, placeholder가 push되는 순간 모든 사용자의 `brew install`이 checksum 오류로 깨진다 (v0.1.19 사고).
 
-formula의 `sha256`을 **절대 추측해서 채우지 말 것** — 항상 GitHub release를 먼저 cut한 뒤 실제 tarball에서 계산할 것.
+이를 위한 순서가 핵심이다: bump commit → **태그만 먼저 push** (tarball은 태그에서 생성되므로 release 객체 불필요) → tarball sha256 계산 → formula 패치 commit → **main을 한 번에 push** (origin/main이 이전 릴리스에서 새 릴리스로 원자적으로 점프). 중간 어디서 실패해도 tap은 이전 버전을 그대로 서빙한다. `gh release create`는 맨 끝의 best-effort 단계 — GitHub release 객체는 tap 동작에 필요 없으므로 gh 미인증이어도 릴리스는 완료된다. 이 불변식은 `tests/test_release_script.py`가 샌드박스 origin에 대해 검증한다.
+
+부득이 수동으로 할 때도 같은 순서를 지킬 것:
+
+1. 버전 bump (pyproject.toml, `lib/dotsync/__init__.py`, Formula url/test, sha256은 placeholder로) + commit — **push 금지**
+2. `git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z` (태그만)
+3. `curl -fsSL https://github.com/changja88/homebrew-dotsync/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256`
+4. `Formula/dotsync.rb`의 `sha256` 갱신, commit
+5. `git push origin main` (bump + sha 커밋이 함께 올라감)
+6. `brew update && brew install changja88/dotsync/dotsync && dotsync --version`로 검증
+7. (선택) `gh release create vX.Y.Z`
+
+formula의 `sha256`을 **절대 추측해서 채우지 말 것** — 항상 태그를 먼저 push한 뒤 실제 tarball에서 계산할 것.
 
 ## Python 버전
 
