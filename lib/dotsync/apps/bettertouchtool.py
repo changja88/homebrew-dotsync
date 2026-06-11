@@ -22,10 +22,12 @@ from dotsync.plan import AppPlan, Change
 # the export and raises "BTT export file was not created" on every run.
 _EXPORT_WAIT_TIMEOUT = 5.0
 
-# BTT regenerates BTTPresetUUID on every export_preset call and may rewrite
-# BTTLastUpdatedAt during app updates or database migrations, even when no
-# user-visible preset content changed. A naive byte-for-byte hash would flag
-# those cases as dirty, so we normalize volatile metadata before hashing.
+# BTT regenerates BTTPresetUUID on every export_preset call, may rewrite
+# BTTLastUpdatedAt during app updates or database migrations, and emits the
+# BTTPresetContent containers / BTTTriggers arrays in no guaranteed order —
+# all without any user-visible preset content changing. A naive byte-for-byte
+# hash would flag those cases as dirty, so we normalize volatile metadata and
+# entity-collection order before hashing.
 _BTT_UUID_LINE_RE = re.compile(
     r'^(\s*"BTTPresetUUID"\s*:\s*")[^"]+(",?\s*)$',
     re.MULTILINE,
@@ -45,7 +47,15 @@ def _normalize_preset_data(value):
             if key not in _VOLATILE_PRESET_KEYS
         }
     if isinstance(value, list):
-        return [_normalize_preset_data(item) for item in value]
+        normalized = [_normalize_preset_data(item) for item in value]
+        # export_preset emits entity collections (BTTPresetContent containers,
+        # BTTTriggers) in no guaranteed order; user-visible ordering lives in
+        # each entity's BTTOrder field, so array position carries no signal.
+        if normalized and all(isinstance(item, dict) for item in normalized):
+            normalized.sort(
+                key=lambda item: json.dumps(item, sort_keys=True, ensure_ascii=False)
+            )
+        return normalized
     return value
 
 

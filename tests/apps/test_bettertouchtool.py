@@ -483,6 +483,121 @@ def test_status_clean_when_only_btt_last_updated_at_differs(tmp_path):
     assert result.state == "clean"
 
 
+def test_status_clean_when_only_container_order_differs(tmp_path):
+    """BTT's export_preset emits the per-app containers in BTTPresetContent
+    in no guaranteed order — the same preset can export [Global, Finder] one
+    day and [Finder, Global] the next. A positional comparison flags that as
+    dirty even though nothing changed."""
+    import json
+    target = tmp_path / "configs"
+    presets = target / "bettertouchtool" / "presets"
+    presets.mkdir(parents=True)
+    finder = {"BTTAppBundleIdentifier": "com.apple.finder", "BTTTriggers": []}
+    global_ = {
+        "BTTAppBundleIdentifier": "BT.G",
+        "BTTTriggers": [{"BTTUUID": "U1", "BTTOrder": 0, "BTTShortcutKeyCode": 115}],
+    }
+    stored_text = json.dumps({"BTTPresetName": "Master_bt", "BTTPresetContent": [finder, global_]})
+    live_text = json.dumps({"BTTPresetName": "Master_bt", "BTTPresetContent": [global_, finder]})
+    (presets / "Master_bt.bttpreset").write_text(stored_text)
+
+    def fake_run(*args, **kwargs):
+        class R:
+            returncode = 0
+            stdout = "done"
+            stderr = ""
+        cmd = args[0]
+        for token in cmd:
+            if "outputPath" in token:
+                import re
+                m = re.search(r'outputPath "([^"]+)"', token)
+                if m:
+                    Path(m.group(1)).parent.mkdir(parents=True, exist_ok=True)
+                    Path(m.group(1)).write_text(live_text)
+        return R()
+
+    with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=fake_run):
+        result = BetterTouchToolApp(presets=["Master_bt"]).status(target)
+    assert result.state == "clean"
+
+
+def test_status_clean_when_only_trigger_order_differs(tmp_path):
+    """Trigger order inside a container's BTTTriggers array is just as
+    volatile across exports as the container order. The user-visible ordering
+    lives in each trigger's BTTOrder field, so array position carries no
+    information and must not affect the dirty check."""
+    import json
+    target = tmp_path / "configs"
+    presets = target / "bettertouchtool" / "presets"
+    presets.mkdir(parents=True)
+    t1 = {"BTTUUID": "U1", "BTTOrder": 0, "BTTShortcutKeyCode": 115}
+    t2 = {"BTTUUID": "U2", "BTTOrder": 1, "BTTShortcutKeyCode": 116}
+    stored_text = json.dumps({
+        "BTTPresetContent": [{"BTTAppBundleIdentifier": "BT.G", "BTTTriggers": [t1, t2]}],
+    })
+    live_text = json.dumps({
+        "BTTPresetContent": [{"BTTAppBundleIdentifier": "BT.G", "BTTTriggers": [t2, t1]}],
+    })
+    (presets / "Master_bt.bttpreset").write_text(stored_text)
+
+    def fake_run(*args, **kwargs):
+        class R:
+            returncode = 0
+            stdout = "done"
+            stderr = ""
+        cmd = args[0]
+        for token in cmd:
+            if "outputPath" in token:
+                import re
+                m = re.search(r'outputPath "([^"]+)"', token)
+                if m:
+                    Path(m.group(1)).parent.mkdir(parents=True, exist_ok=True)
+                    Path(m.group(1)).write_text(live_text)
+        return R()
+
+    with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=fake_run):
+        result = BetterTouchToolApp(presets=["Master_bt"]).status(target)
+    assert result.state == "clean"
+
+
+def test_status_dirty_when_trigger_content_differs_regardless_of_order(tmp_path):
+    """Sanity check: order-insensitive comparison must NOT mask a real
+    content change — same triggers reordered, but one key remapped."""
+    import json
+    target = tmp_path / "configs"
+    presets = target / "bettertouchtool" / "presets"
+    presets.mkdir(parents=True)
+    t1 = {"BTTUUID": "U1", "BTTOrder": 0, "BTTShortcutKeyCode": 115}
+    t2 = {"BTTUUID": "U2", "BTTOrder": 1, "BTTShortcutKeyCode": 116}
+    t2_changed = {"BTTUUID": "U2", "BTTOrder": 1, "BTTShortcutKeyCode": 999}
+    stored_text = json.dumps({
+        "BTTPresetContent": [{"BTTAppBundleIdentifier": "BT.G", "BTTTriggers": [t1, t2]}],
+    })
+    live_text = json.dumps({
+        "BTTPresetContent": [{"BTTAppBundleIdentifier": "BT.G", "BTTTriggers": [t2_changed, t1]}],
+    })
+    (presets / "Master_bt.bttpreset").write_text(stored_text)
+
+    def fake_run(*args, **kwargs):
+        class R:
+            returncode = 0
+            stdout = "done"
+            stderr = ""
+        cmd = args[0]
+        for token in cmd:
+            if "outputPath" in token:
+                import re
+                m = re.search(r'outputPath "([^"]+)"', token)
+                if m:
+                    Path(m.group(1)).parent.mkdir(parents=True, exist_ok=True)
+                    Path(m.group(1)).write_text(live_text)
+        return R()
+
+    with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=fake_run):
+        result = BetterTouchToolApp(presets=["Master_bt"]).status(target)
+    assert result.state == "dirty"
+
+
 def test_status_dirty_when_export_differs(tmp_path):
     target = tmp_path / "configs"
     presets = target / "bettertouchtool" / "presets"
