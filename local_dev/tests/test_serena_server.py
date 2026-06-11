@@ -522,6 +522,7 @@ def test_server_terminate_record_delegates_to_shared_termination(monkeypatch):
 
 def test_start_serena_process_redirects_output_to_scope_log(monkeypatch, tmp_path):
     scope = Scope(tmp_path, "codex")
+    monkeypatch.setattr(server, "serena_server_command", lambda: ["serena"])
     calls = []
 
     class Proc:
@@ -613,3 +614,43 @@ def test_discover_dashboard_url_ignores_mcp_url_before_dashboard_url(tmp_path):
             return None
 
     assert _discover_dashboard_url(Proc(), timeout=0.1) == "http://127.0.0.1:24284"
+
+
+def test_start_serena_process_uses_resolved_server_command(monkeypatch, tmp_path):
+    # serena는 PATH에 없을 수 있다 — external_cli resolver가 돌려준 직접
+    # 바이너리 argv로 띄워야 한다 (uvx 래퍼는 server_pid를 어긋나게 하므로 금지).
+    scope = Scope(tmp_path, "codex")
+    monkeypatch.setattr(server, "serena_server_command",
+                        lambda: ["/u/.local/bin/serena"], raising=False)
+    calls = []
+
+    class Proc:
+        pid = 123
+
+    def fake_popen(*args, **kwargs):
+        calls.append((args, kwargs))
+        return Proc()
+
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.server.subprocess.Popen",
+        fake_popen,
+    )
+
+    _start_serena_process(scope, 9012)
+
+    argv = calls[0][0][0]
+    assert argv[:2] == ["/u/.local/bin/serena", "start-mcp-server"]
+    assert "--project" in argv
+    assert str(scope.project_root) in argv
+
+
+def test_start_serena_process_raises_actionable_error_without_cli(monkeypatch, tmp_path):
+    scope = Scope(tmp_path, "codex")
+    monkeypatch.setattr(server, "serena_server_command",
+                        lambda: None, raising=False)
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.server.subprocess.Popen",
+        lambda *a, **k: pytest.fail("must not spawn without a resolved CLI"),
+    )
+    with pytest.raises(RuntimeError, match="serena CLI"):
+        _start_serena_process(scope, 9012)

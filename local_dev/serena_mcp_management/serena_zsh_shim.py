@@ -32,6 +32,10 @@ def render_zsh_shim(
 SERENA_AGENT_LAUNCHER="__LAUNCHER_PATH__"
 SERENA_AGENT_PYTHON="__PYTHON_EXECUTABLE__"
 
+# serena/graphify CLI는 uv tool bin($HOME/.local/bin)에 설치된다 — launcher와
+# 그 아래 agent 세션이 같은 CLI를 보도록 PATH를 보강한다.
+export PATH="$HOME/.local/bin:$PATH"
+
 _dotsync_agent_marker_present() {
   local dir="$1"
   local marker=""
@@ -96,7 +100,7 @@ _dotsync_agent_graphify_global_installed() {
   local client="$1"
   case "$client" in
     claude) [[ -d "$HOME/.claude/skills/graphify" ]] ;;
-    *)      [[ -d "$HOME/.agents/skills/graphify" ]] ;;
+    *)      [[ -d "$HOME/.codex/skills/graphify" ]] ;;
   esac
 }
 

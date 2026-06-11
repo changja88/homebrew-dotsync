@@ -16,6 +16,29 @@ def _strip_ansi(s: str) -> str:
     return _ANSI_ESCAPE_RE.sub("", s)
 
 
+@pytest.fixture(autouse=True)
+def stub_external_cli_resolution(monkeypatch):
+    """이 파일의 phase 테스트는 CLI가 해석되는 머신을 기본으로 모델링한다.
+
+    해석/설치 동작 자체를 검증하는 테스트는 개별 monkeypatch로 이 기본값을
+    덮어쓴다. (autouse가 없으면 테스트 결과가 실행 머신의 serena/graphify
+    설치 여부에 따라 달라진다.)
+    """
+    monkeypatch.setattr(launcher, "serena_server_command",
+                        lambda: ["serena"], raising=False)
+    monkeypatch.setattr(launcher, "graphify_command",
+                        lambda: ["graphify"], raising=False)
+    monkeypatch.setattr(
+        launcher, "serena_install_command",
+        lambda: ["/stub/uv", "tool", "install", "--from",
+                 "git+https://github.com/oraios/serena", "serena-agent"],
+        raising=False)
+    monkeypatch.setattr(
+        launcher, "graphify_install_command",
+        lambda: ["/stub/uv", "tool", "install", "graphifyy"],
+        raising=False)
+
+
 def test_main_always_dispatches_to_v2(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     called = {}
@@ -406,7 +429,7 @@ def test_v2_preflight_graphify_global_missing_codex_uses_platform_codex(monkeypa
     text = _strip_ansi(out.getvalue())
     assert install_calls == ["codex"]
     assert "graphify install --platform codex" in text
-    assert "user skill at ~/.agents/skills/graphify" in text
+    assert "user skill at ~/.codex/skills/graphify" in text
 
 
 def test_v2_preflight_graphify_graph_missing_shows_hint_no_callback(monkeypatch):
@@ -653,6 +676,9 @@ def test_v2_run_cleanup_codex_does_not_require_jq(tmp_path):
 
 
 def test_v2_run_cleanup_codex_uses_default_home_when_codex_home_empty(tmp_path, monkeypatch):
+    # 이 스위트는 shim launcher가 띄운 agent 세션 안에서도 돈다 — 거기서는
+    # SERENA_AGENT_CLIENT=claude가 누출되므로 codex 분기를 명시적으로 고정한다.
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("CODEX_HOME", "")
     monkeypatch.setattr(launcher.os, "getcwd", lambda: "/repo")
@@ -1513,3 +1539,380 @@ def test_v2_main_passes_serena_state_to_preflight(monkeypatch, tmp_path):
     rc = launcher._main_v2([])
     assert rc == 130  # final confirm declined
     assert captured["serena_state"] == "created"
+
+
+# --- External CLI resolution for prompt actions ------------------------------
+#
+# serena/graphify는 PATH에 없을 수 있다 (serena는 uvx로만 돌고, graphify는
+# uv tool bin인 ~/.local/bin에 산다 — 둘 다 interactive PATH 밖). 프롬프트의
+# Yes 액션은 bare `which` 대신 external_cli resolver가 돌려준 argv를 그대로
+# 실행해야 한다. 그렇지 않으면 Yes가 조용히 exit 2로 끝난다.
+
+
+def test_serena_project_create_runs_resolved_command(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        launcher, "serena_oneshot_command",
+        lambda: ["/opt/homebrew/bin/uvx", "--from", "spec", "serena"],
+        raising=False,
+    )
+
+    class FakeYesProc:
+        stdout = None
+
+        def terminate(self):
+            pass
+
+        def wait(self):
+            pass
+
+    monkeypatch.setattr(launcher.subprocess, "Popen",
+                        lambda cmd, stdout=None: FakeYesProc())
+
+    run_calls = []
+
+    class _Result:
+        returncode = 0
+
+    def fake_run(cmd, stdin=None, check=False):
+        run_calls.append(cmd)
+        return _Result()
+
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+
+    rc = launcher._serena_project_create(tmp_path)
+    assert rc == 0
+    assert run_calls == [
+        ["/opt/homebrew/bin/uvx", "--from", "spec", "serena",
+         "project", "create", str(tmp_path)]
+    ]
+
+
+def test_serena_project_create_returns_2_when_cli_unresolvable(monkeypatch, tmp_path):
+    monkeypatch.setattr(launcher, "serena_oneshot_command",
+                        lambda: None, raising=False)
+    monkeypatch.setattr(
+        launcher.subprocess, "run",
+        lambda *a, **k: pytest.fail("must not spawn anything"),
+    )
+    assert launcher._serena_project_create(tmp_path) == 2
+
+
+def test_graphify_install_actions_run_resolved_command(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        launcher, "graphify_command",
+        lambda: ["/u/.local/bin/graphify"], raising=False,
+    )
+    run_calls = []
+
+    class _Result:
+        returncode = 0
+
+    def fake_run(cmd, cwd=None, check=False):
+        run_calls.append((cmd, cwd))
+        return _Result()
+
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+
+    assert launcher._graphify_global_install("codex") == 0
+    assert launcher._graphify_integration_install(tmp_path, "codex") == 0
+    assert launcher._graphify_hook_install(tmp_path) == 0
+    assert run_calls == [
+        (["/u/.local/bin/graphify", "install", "--platform", "codex"], None),
+        (["/u/.local/bin/graphify", "codex", "install"], str(tmp_path)),
+        (["/u/.local/bin/graphify", "hook", "install"], str(tmp_path)),
+    ]
+
+
+def test_graphify_install_actions_return_2_when_cli_unresolvable(monkeypatch, tmp_path):
+    monkeypatch.setattr(launcher, "graphify_command", lambda: None, raising=False)
+    monkeypatch.setattr(
+        launcher.subprocess, "run",
+        lambda *a, **k: pytest.fail("must not spawn anything"),
+    )
+    assert launcher._graphify_global_install("codex") == 2
+    assert launcher._graphify_integration_install(tmp_path, "codex") == 2
+    assert launcher._graphify_hook_install(tmp_path) == 2
+
+
+def test_v2_main_degrades_to_bare_launch_when_serena_cli_missing(
+    monkeypatch, tmp_path, capsys
+):
+    """project.yml이 있어도(managed) serena CLI 자체를 못 찾으면 scoped server를
+    띄울 수 없다 — traceback 대신 경고 한 줄을 남기고 bare child로 강등한다.
+    skipped/failed 경로와 동일하게 cleanup(launch prep)도 건너뛴다."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    monkeypatch.delenv("SERENA_AGENT_CLEAR_BEFORE_CHILD", raising=False)
+    _set_graphify_env(monkeypatch)
+
+    monkeypatch.setattr(launcher, "_render_preflight_overview_v2",
+                        lambda *, stream=None: None, raising=False)
+    monkeypatch.setattr(launcher, "_run_serena_cli_install_v2",
+                        lambda **kw: "declined", raising=False)
+    monkeypatch.setattr(launcher, "_run_preflight_v2",
+                        lambda **kw: 0, raising=False)
+    monkeypatch.setattr(launcher, "_run_final_confirm_v2",
+                        lambda **kw: True, raising=False)
+    monkeypatch.setattr(launcher, "serena_server_command",
+                        lambda: None, raising=False)
+    monkeypatch.setattr(launcher, "find_real_binary",
+                        lambda client: "/usr/bin/true", raising=False)
+    monkeypatch.setattr(launcher, "_run_launch_prep_v2",
+                        lambda **kw: pytest.fail("cleanup must not run when degrading"),
+                        raising=False)
+    monkeypatch.setattr(launcher, "_start_mcp_with_spinner",
+                        lambda **kw: pytest.fail("scoped server must not start"),
+                        raising=False)
+    monkeypatch.setattr(launcher, "ensure_server",
+                        lambda *a, **k: pytest.fail("scoped server must not start"),
+                        raising=False)
+
+    run_calls = []
+
+    class _Result:
+        returncode = 0
+
+    def fake_run(cmd, *a, **k):
+        run_calls.append(cmd)
+        return _Result()
+
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+
+    rc = launcher._main_v2([])
+    assert rc == 0
+    assert run_calls == [["/usr/bin/true"]]
+    out = _strip_ansi(capsys.readouterr().out)
+    assert "serena CLI" in out
+
+
+# --- CLI self-install prompts -------------------------------------------------
+#
+# serena/graphify CLI가 머신에 없으면 preflight 질문 단계에서 설치 여부를 묻고,
+# Yes면 uv tool로 설치한다. 이미 해석되는 머신에서는 질문 자체가 나타나지 않아
+# 기존 동작이 바뀌지 않는다 (no side effects).
+
+
+def test_serena_cli_install_phase_silent_when_resolvable(monkeypatch):
+    monkeypatch.setattr(launcher, "serena_server_command",
+                        lambda: ["serena"], raising=False)
+    out = io.StringIO()
+    state = launcher._run_serena_cli_install_v2(
+        stream=out, input_fn=lambda: pytest.fail("no prompt expected"))
+    assert state == "present"
+    assert out.getvalue() == ""
+
+
+def test_serena_cli_install_phase_installs_on_yes(monkeypatch):
+    resolution = [None]
+    monkeypatch.setattr(launcher, "serena_server_command",
+                        lambda: resolution[0], raising=False)
+
+    def fake_install():
+        resolution[0] = ["serena"]
+        return 0
+
+    out = io.StringIO()
+    answers = iter(["y"])
+    state = launcher._run_serena_cli_install_v2(
+        stream=out, input_fn=lambda: next(answers), install_fn=fake_install)
+    assert state == "installed"
+    text = _strip_ansi(out.getvalue())
+    # 프롬프트가 실행할 실제 명령을 보여주고, 성공을 인라인 행으로 알린다.
+    assert "uv tool install --from git+https://github.com/oraios/serena serena-agent" in text
+    assert "serena cli" in text
+
+
+def test_serena_cli_install_phase_declines_without_installing(monkeypatch):
+    monkeypatch.setattr(launcher, "serena_server_command",
+                        lambda: None, raising=False)
+    out = io.StringIO()
+    answers = iter(["n"])
+    state = launcher._run_serena_cli_install_v2(
+        stream=out, input_fn=lambda: next(answers),
+        install_fn=lambda: pytest.fail("must not install on decline"))
+    assert state == "declined"
+
+
+def test_serena_cli_install_phase_reports_failure(monkeypatch):
+    monkeypatch.setattr(launcher, "serena_server_command",
+                        lambda: None, raising=False)
+    out = io.StringIO()
+    answers = iter(["y"])
+    state = launcher._run_serena_cli_install_v2(
+        stream=out, input_fn=lambda: next(answers), install_fn=lambda: 1)
+    assert state == "failed"
+    assert "install failed" in _strip_ansi(out.getvalue())
+
+
+def test_serena_cli_install_phase_fails_when_binary_still_missing(monkeypatch):
+    # uv가 0을 돌려줘도 binary가 해석되지 않으면 성공으로 치지 않는다.
+    monkeypatch.setattr(launcher, "serena_server_command",
+                        lambda: None, raising=False)
+    out = io.StringIO()
+    answers = iter(["y"])
+    state = launcher._run_serena_cli_install_v2(
+        stream=out, input_fn=lambda: next(answers), install_fn=lambda: 0)
+    assert state == "failed"
+
+
+def test_serena_cli_install_phase_warns_without_uv(monkeypatch):
+    monkeypatch.setattr(launcher, "serena_server_command",
+                        lambda: None, raising=False)
+    monkeypatch.setattr(launcher, "serena_install_command",
+                        lambda: None, raising=False)
+    out = io.StringIO()
+    state = launcher._run_serena_cli_install_v2(
+        stream=out, input_fn=lambda: pytest.fail("no prompt without uv"))
+    assert state == "unavailable"
+    assert "uv" in _strip_ansi(out.getvalue())
+
+
+def test_v2_main_runs_serena_cli_phase_before_init(monkeypatch, tmp_path):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
+    monkeypatch.delenv("SERENA_AGENT_CLEAR_BEFORE_CHILD", raising=False)
+    _set_graphify_env(monkeypatch)
+
+    order = []
+    monkeypatch.setattr(launcher, "_render_preflight_overview_v2",
+                        lambda *, stream=None: None, raising=False)
+    monkeypatch.setattr(launcher, "_run_serena_cli_install_v2",
+                        lambda **kw: order.append("cli") or "present",
+                        raising=False)
+    monkeypatch.setattr(launcher, "_run_serena_init_v2",
+                        lambda **kw: order.append("init") or "skipped",
+                        raising=False)
+    monkeypatch.setattr(launcher, "_run_preflight_v2",
+                        lambda **kw: 0, raising=False)
+    monkeypatch.setattr(launcher, "_run_final_confirm_v2",
+                        lambda **kw: True, raising=False)
+    monkeypatch.setattr(launcher, "find_real_binary",
+                        lambda client: "/usr/bin/true", raising=False)
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(launcher.subprocess, "run", lambda cmd, *a, **k: _Result())
+
+    rc = launcher._main_v2([])
+    assert rc == 0
+    assert order == ["cli", "init"]
+
+
+def test_v2_preflight_offers_graphify_cli_install_before_actions(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS", "missing")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS", "built")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS", "installed")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS", "installed")
+
+    resolution = [None]
+    monkeypatch.setattr(launcher, "graphify_command",
+                        lambda: resolution[0], raising=False)
+
+    def fake_cli_install():
+        resolution[0] = ["graphify"]
+        return 0
+
+    global_calls = []
+    out = io.StringIO()
+    answers = iter(["y", "y"])  # CLI 설치 → global skill 설치
+    rc = launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        install_graphify_cli=fake_cli_install,
+        install_graphify_global=lambda client: global_calls.append(client) or 0,
+    )
+    assert rc == 0
+    assert global_calls == ["codex"]
+    text = _strip_ansi(out.getvalue())
+    assert "uv tool install graphifyy" in text
+
+
+def test_v2_preflight_skips_graphify_actions_when_cli_declined(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS", "missing")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS", "missing")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS", "missing")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS", "missing")
+    monkeypatch.setattr(launcher, "graphify_command",
+                        lambda: None, raising=False)
+
+    out = io.StringIO()
+    answers = iter(["n"])  # CLI 설치 거절 — 이후 어떤 graphify 질문도 없어야 한다
+    rc = launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        install_graphify_global=lambda client: pytest.fail("must not run"),
+        install_graphify_integration=lambda root, client: pytest.fail("must not run"),
+        install_graphify_hooks=lambda root: pytest.fail("must not run"),
+    )
+    assert rc == 0
+    assert "skipping graphify setup" in _strip_ansi(out.getvalue())
+
+
+def test_v2_preflight_no_graphify_cli_prompt_when_nothing_missing(monkeypatch):
+    # 모든 graphify 항목이 이미 갖춰져 있으면 CLI가 없어도 묻지 않는다 —
+    # 제안할 설치 액션이 없는데 질문만 늘리는 것을 피한다.
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS", "installed")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS", "built")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS", "installed")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS", "installed")
+    monkeypatch.setattr(launcher, "graphify_command",
+                        lambda: None, raising=False)
+
+    out = io.StringIO()
+    rc = launcher._run_preflight_v2(
+        stream=out, input_fn=lambda: pytest.fail("no prompts expected"))
+    assert rc == 0
+    assert "graphifyy" not in _strip_ansi(out.getvalue())
+
+
+def test_cli_install_runners_use_resolved_uv_commands(monkeypatch):
+    monkeypatch.setattr(
+        launcher, "serena_install_command",
+        lambda: ["/u/uv", "tool", "install", "--from", "spec", "serena-agent"],
+        raising=False)
+    monkeypatch.setattr(
+        launcher, "graphify_install_command",
+        lambda: ["/u/uv", "tool", "install", "graphifyy"],
+        raising=False)
+    run_calls = []
+
+    class _Result:
+        returncode = 0
+
+    def fake_run(cmd, check=False):
+        run_calls.append(cmd)
+        return _Result()
+
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+
+    assert launcher._serena_cli_install() == 0
+    assert launcher._graphify_cli_install() == 0
+    assert run_calls == [
+        ["/u/uv", "tool", "install", "--from", "spec", "serena-agent"],
+        ["/u/uv", "tool", "install", "graphifyy"],
+    ]
+
+
+def test_cli_install_runners_return_2_without_uv(monkeypatch):
+    monkeypatch.setattr(launcher, "serena_install_command",
+                        lambda: None, raising=False)
+    monkeypatch.setattr(launcher, "graphify_install_command",
+                        lambda: None, raising=False)
+    monkeypatch.setattr(launcher.subprocess, "run",
+                        lambda *a, **k: pytest.fail("must not spawn anything"))
+    assert launcher._serena_cli_install() == 2
+    assert launcher._graphify_cli_install() == 2

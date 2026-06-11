@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -20,6 +19,13 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from local_dev.serena_mcp_management.external_cli import (
+    graphify_command,
+    graphify_install_command,
+    serena_install_command,
+    serena_oneshot_command,
+    serena_server_command,
+)
 from local_dev.serena_mcp_management.serena_mcp.diagnostics import snapshot_global_lifecycle
 from local_dev.serena_mcp_management.serena_mcp.paths import Scope, find_project_root
 from local_dev.serena_mcp_management.serena_mcp.registry import locked_registry, touch_lease
@@ -228,6 +234,16 @@ def clear_terminal_before_child() -> None:
     print("\x1b[3J\x1b[H\x1b[2J", end="", flush=True)
 
 
+def _launch_bare_child(args: list[str]) -> int:
+    """Run the real agent binary without the scoped Serena MCP server."""
+
+    client_type = infer_client_type(os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0]))
+    real_binary = find_real_binary(client_type)
+    if os.environ.get("SERENA_AGENT_CLEAR_BEFORE_CHILD") == "1":
+        clear_terminal_before_child()
+    return int(subprocess.run([real_binary, *args]).returncode)
+
+
 def open_dashboard_if_requested(dashboard_url: str) -> None:
     """Open the Serena dashboard for interactive agent sessions."""
 
@@ -378,6 +394,7 @@ def _main_v2(args: list[str]) -> int:
 
     if interactive:
         _render_preflight_overview_v2()
+        _run_serena_cli_install_v2()
 
     serena_state = _run_serena_init_v2() if interactive else "managed"
 
@@ -391,11 +408,15 @@ def _main_v2(args: list[str]) -> int:
 
     if serena_state in {"skipped", "failed"}:
         warnings.append(f"serena project create {serena_state}")
-        client_type = infer_client_type(os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0]))
-        real_binary = find_real_binary(client_type)
-        if os.environ.get("SERENA_AGENT_CLEAR_BEFORE_CHILD") == "1":
-            clear_terminal_before_child()
-        return int(subprocess.run([real_binary, *args]).returncode)
+        return _launch_bare_child(args)
+
+    if serena_server_command() is None:
+        out.write(
+            "  ! serena    unavailable . serena CLI not found —"
+            " launching without scoped server\n"
+        )
+        out.flush()
+        return _launch_bare_child(args)
 
     summary_state = _run_launch_prep_v2() if interactive else None
 
@@ -492,7 +513,7 @@ def _graphify_global_value(client: str, status: str) -> tuple[str, str]:
     if status == "installed":
         if client == "claude":
             return "user skill at ~/.claude/skills/graphify", "done"
-        return "user skill at ~/.agents/skills/graphify", "done"
+        return "user skill at ~/.codex/skills/graphify", "done"
     cmd = "graphify install" if client == "claude" else "graphify install --platform codex"
     return f'not installed . run "{cmd}"', "warn"
 
@@ -653,15 +674,130 @@ def _preflight_box() -> BoxModel:
     return BoxModel(phase="preflight", title=client, items=items)
 
 
+def _serena_cli_install() -> int:
+    """Install the serena CLI persistently via uv tool.
+
+    Returns the exit code. 2 indicates uv is unavailable.
+    """
+    cmd = serena_install_command()
+    if cmd is None:
+        return 2
+    return int(subprocess.run(cmd, check=False).returncode)
+
+
+def _graphify_cli_install() -> int:
+    """Install the graphify CLI persistently via uv tool.
+
+    Returns the exit code. 2 indicates uv is unavailable.
+    """
+    cmd = graphify_install_command()
+    if cmd is None:
+        return 2
+    return int(subprocess.run(cmd, check=False).returncode)
+
+
+def _display_uv_command(cmd: list[str]) -> str:
+    """Render an absolute-uv argv as the short `uv …` form for prompts."""
+    return " ".join(["uv", *cmd[1:]])
+
+
+def _run_serena_cli_install_v2(
+    *,
+    stream: TextIO | None = None,
+    input_fn: Callable[[], str] | None = None,
+    install_fn: Callable[[], int] | None = None,
+) -> str:
+    """Offer to install the serena CLI when it cannot be resolved.
+
+    Returns one of: 'present', 'installed', 'declined', 'failed',
+    'unavailable'. 어떤 결과여도 흐름은 계속된다 — 이후 단계가 uvx
+    fallback(project create)과 bare-launch 강등(scoped server)으로 처리한다.
+    """
+    if serena_server_command() is not None:
+        return "present"
+    out = stream if stream is not None else sys.stdout
+    install_cmd = serena_install_command()
+    if install_cmd is None:
+        out.write(render_inline_row(
+            "serena cli", "uv not found — cannot offer install", status="warn"))
+        out.flush()
+        return "unavailable"
+    if not confirm(
+        f"Run `{_display_uv_command(install_cmd)}` to install the serena CLI?",
+        default=True,
+        stream=out,
+        input_fn=input_fn,
+    ):
+        return "declined"
+    rc = (install_fn or _serena_cli_install)()
+    if rc == 0 and serena_server_command() is not None:
+        out.write(render_inline_row(
+            "serena cli", "installed at ~/.local/bin/serena", status="done"))
+        out.flush()
+        return "installed"
+    message = (
+        f"install failed (exit {rc})"
+        if rc != 0
+        else "install finished but serena is still unresolvable"
+    )
+    out.write(render_inline_row("serena cli", message, status="warn"))
+    out.flush()
+    return "failed"
+
+
+def _run_graphify_cli_install_v2(
+    *,
+    stream: TextIO | None = None,
+    input_fn: Callable[[], str] | None = None,
+    install_fn: Callable[[], int] | None = None,
+) -> str:
+    """Offer to install the graphify CLI when it cannot be resolved.
+
+    Returns one of: 'present', 'installed', 'declined', 'failed',
+    'unavailable'.
+    """
+    if graphify_command() is not None:
+        return "present"
+    out = stream if stream is not None else sys.stdout
+    install_cmd = graphify_install_command()
+    if install_cmd is None:
+        out.write(render_inline_row(
+            "graphify cli", "uv not found — cannot offer install", status="warn"))
+        out.flush()
+        return "unavailable"
+    if not confirm(
+        f"Run `{_display_uv_command(install_cmd)}` to install the graphify CLI?",
+        default=True,
+        stream=out,
+        input_fn=input_fn,
+    ):
+        return "declined"
+    rc = (install_fn or _graphify_cli_install)()
+    if rc == 0 and graphify_command() is not None:
+        out.write(render_inline_row(
+            "graphify cli", "installed at ~/.local/bin/graphify", status="done"))
+        out.flush()
+        return "installed"
+    message = (
+        f"install failed (exit {rc})"
+        if rc != 0
+        else "install finished but graphify is still unresolvable"
+    )
+    out.write(render_inline_row("graphify cli", message, status="warn"))
+    out.flush()
+    return "failed"
+
+
 def _graphify_hook_install(project_root: Path) -> int:
     """Run `graphify hook install` for the given project root.
 
-    Returns the exit code. 2 indicates graphify is not on PATH.
+    Returns the exit code. 2 indicates the graphify CLI is unavailable.
     """
-    if shutil.which("graphify") is None:
+    graphify = graphify_command()
+    if graphify is None:
         return 2
     proc = subprocess.run(
-        ["graphify", "hook", "install"],
+        [*graphify, "hook", "install"],
         cwd=str(project_root),
         check=False,
     )
@@ -671,11 +807,12 @@ def _graphify_hook_install(project_root: Path) -> int:
 def _graphify_global_install(client: str) -> int:
     """Run `graphify install` (or `graphify install --platform codex`) for the user.
 
-    Returns the exit code. 2 indicates graphify is not on PATH.
+    Returns the exit code. 2 indicates the graphify CLI is unavailable.
     """
-    if shutil.which("graphify") is None:
+    graphify = graphify_command()
+    if graphify is None:
         return 2
-    cmd = ["graphify", "install"]
+    cmd = [*graphify, "install"]
     if client == "codex":
         cmd.extend(["--platform", "codex"])
     proc = subprocess.run(cmd, check=False)
@@ -685,13 +822,14 @@ def _graphify_global_install(client: str) -> int:
 def _graphify_integration_install(project_root: Path, client: str) -> int:
     """Run `graphify {claude,codex} install` inside the project.
 
-    Returns the exit code. 2 indicates graphify is not on PATH.
+    Returns the exit code. 2 indicates the graphify CLI is unavailable.
     """
-    if shutil.which("graphify") is None:
+    graphify = graphify_command()
+    if graphify is None:
         return 2
     subcommand = "claude" if client == "claude" else "codex"
     proc = subprocess.run(
-        ["graphify", subcommand, "install"],
+        [*graphify, subcommand, "install"],
         cwd=str(project_root),
         check=False,
     )
@@ -703,6 +841,7 @@ def _run_preflight_v2(
     stream: TextIO | None = None,
     input_fn: Callable[[], str] | None = None,
     serena_state: str = "managed",
+    install_graphify_cli: Callable[[], int] | None = None,
     install_graphify_global: Callable[[str], int] | None = None,
     install_graphify_integration: Callable[[Path, str], int] | None = None,
     install_graphify_hooks: Callable[[Path], int] | None = None,
@@ -731,6 +870,26 @@ def _run_preflight_v2(
         out.write(render_inline_row(label, value, status="done" if ok else "warn"))
         out.flush()
 
+    graphify_statuses = {
+        os.environ.get("SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS", "unknown"),
+        os.environ.get("SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS", "unknown"),
+        os.environ.get("SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS", "unknown"),
+        os.environ.get("SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS", "unknown"),
+    }
+    if "missing" in graphify_statuses:
+        # 아래 설치 액션들은 전부 graphify CLI가 필요하다 — 해석이 안 되면
+        # 먼저 CLI 설치를 제안하고, 끝내 없으면 graphify 질문 전체를 건너뛴다.
+        cli_state = _run_graphify_cli_install_v2(
+            stream=out, input_fn=input_fn, install_fn=install_graphify_cli,
+        )
+        if cli_state in {"declined", "failed", "unavailable"}:
+            out.write(render_inline_row(
+                "graphify", "cli unavailable . skipping graphify setup",
+                status="warn",
+            ))
+            out.flush()
+            return 0
+
     global_status = os.environ.get(
         "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS", "unknown"
     )
@@ -749,7 +908,7 @@ def _run_preflight_v2(
                 if client == "claude":
                     _emit("graphify global", "user skill at ~/.claude/skills/graphify", ok=True)
                 else:
-                    _emit("graphify global", "user skill at ~/.agents/skills/graphify", ok=True)
+                    _emit("graphify global", "user skill at ~/.codex/skills/graphify", ok=True)
             else:
                 _emit("graphify global", f"global install failed (exit {rc})", ok=False)
 
@@ -845,14 +1004,15 @@ def _serena_project_create(project_root: Path) -> int:
     """Run `serena project create <root>` feeding default answers via `yes ""`.
 
     Returns:
-        0 on success, non-zero on failure.
+        0 on success, non-zero on failure (2 when no serena runner is available).
     """
-    if shutil.which("serena") is None:
+    serena = serena_oneshot_command()
+    if serena is None:
         return 2
     yes_proc = subprocess.Popen(["yes", ""], stdout=subprocess.PIPE)
     try:
         proc = subprocess.run(
-            ["serena", "project", "create", str(project_root)],
+            [*serena, "project", "create", str(project_root)],
             stdin=yes_proc.stdout,
             check=False,
         )

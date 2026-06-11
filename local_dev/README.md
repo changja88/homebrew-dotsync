@@ -29,6 +29,33 @@ Preserving the depth keeps imports working without code changes.
 Override the runtime location with `STABLE_DIR=...` if you want a different
 stable home.
 
+## External CLI prerequisites (serena / graphify)
+
+The launcher shells out to two external CLIs. Neither is assumed to be on
+PATH — `external_cli.py` resolves each one as **PATH → `~/.local/bin` (uv
+tool bin)**, and the managed zshrc block prepends `$HOME/.local/bin` to PATH
+so agent sessions see the same CLIs.
+
+**Self-install prompts.** CLI가 해석되지 않으면 interactive preflight가 설치
+여부를 직접 묻는다 (`uv tool install …`, default Yes) — serena CLI는
+Initialize 프롬프트 직전에 항상, graphify CLI는 graphify 행 중 하나라도
+missing일 때 graphify 질문들 직전에. 거절하면 아래의 degrade 동작이 그대로
+적용되고(graphify 질문들은 통째로 skip), `uv` 자체가 없으면 묻지 않고 경고
+행만 남긴다. 디자인 문서: `docs/cli-self-install-prompt-spec.md`.
+
+| CLI | Install | Resolution rules |
+|---|---|---|
+| `graphify` | `uv tool install graphifyy` | Direct binary only. **No uvx fallback**: graphify writes its own absolute path into project hooks (`.codex/hooks.json` 등), so an ephemeral uvx cache path would rot there after `uv cache clean`. |
+| `serena` | `uv tool install --from "git+https://github.com/oraios/serena" serena-agent` | One-shot commands (`serena project create`) fall back to `uvx --from git+…oraios/serena` when no direct binary exists. The **long-running scoped server requires a direct binary** — uvx keeps the real server as a child process, so the registry would record the wrapper pid and same-scope orphan cleanup would kill its own server. |
+
+When the serena CLI is unresolvable the launcher degrades gracefully: the
+Initialize prompt still works (uvx), and the scoped-server phase prints
+`! serena unavailable …` and launches the bare agent instead of crashing.
+
+Graphify preflight paths follow graphifyy 0.8.x behavior: the codex
+user-level skill lives at `~/.codex/skills/graphify` (claude:
+`~/.claude/skills/graphify`).
+
 ## Serena MCP Management
 
 `serena_mcp_management/` contains the local Serena MCP launcher, zsh shim
@@ -71,6 +98,7 @@ the final summary uses `N sessions deleted . M memory files reset`.
 cd local_dev
 # Edit code under serena_mcp_management/ ...
 make install-shim
+dotsync from   # ~/.zshrc 변경을 dotsync sync 폴더본에도 반영 (안 하면 다음 `dotsync to`가 옛 managed block을 되살린다)
 exec zsh   # reload claude/codex shell functions
 ```
 

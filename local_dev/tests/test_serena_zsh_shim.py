@@ -61,9 +61,10 @@ def test_render_zsh_shim_graphify_global_helper_branches_on_client():
     )
 
     # The user-level skill lives under ~/.claude/skills/graphify for claude
-    # and ~/.agents/skills/graphify for codex.
+    # and ~/.codex/skills/graphify for codex (graphifyy 0.8.x
+    # `graphify install --platform codex` 실측 경로).
     assert "$HOME/.claude/skills/graphify" in text
-    assert "$HOME/.agents/skills/graphify" in text
+    assert "$HOME/.codex/skills/graphify" in text
 
 
 def test_render_zsh_shim_graphify_graph_helper_checks_graph_json():
@@ -666,3 +667,16 @@ def _write_zsh_fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     shim_path = tmp_path / "shim.zsh"
     shim_path.write_text(shim)
     return shim_path, real_codex, real_claude, launcher
+
+
+def test_render_zsh_shim_puts_uv_tool_bin_on_path():
+    """serena/graphify CLI는 uv tool bin(~/.local/bin)에 산다. 기본 PATH에 없는
+    머신에서도 launcher와 그 아래 agent 세션이 같은 CLI를 보도록 managed block이
+    PATH를 보강한다."""
+    text = render_zsh_shim(
+        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
+        python_executable=Path("/repo/.venv/bin/python3"),
+        codex_binary=Path("/opt/homebrew/bin/codex"),
+        claude_binary=Path("/opt/homebrew/bin/claude"),
+    )
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in text

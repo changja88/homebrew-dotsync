@@ -31,6 +31,20 @@ def stub_launcher_lease_factory(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def stub_serena_cli_resolution(monkeypatch):
+    """Launcher-flow 테스트는 serena CLI가 해석되는 머신을 모델링한다.
+
+    해석 자체(PATH/uv tool bin/uvx fallback)의 동작은 test_external_cli.py와
+    test_launcher_phases.py가 검증한다.
+    """
+
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_agent_launcher.serena_server_command",
+        lambda: ["serena"],
+    )
+
+
 def test_infer_client_type_from_program_name():
     assert infer_client_type("codex") == "codex"
     assert infer_client_type("/tmp/claude") == "claude"

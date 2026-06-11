@@ -11,6 +11,7 @@ import sys
 import time
 from pathlib import Path
 
+from local_dev.serena_mcp_management.external_cli import serena_server_command
 from local_dev.serena_mcp_management.serena_mcp.health import (
     dashboard_matches_project,
     http_endpoint_alive,
@@ -144,12 +145,18 @@ def _find_free_port() -> int:
 
 
 def _start_serena_process(scope: Scope, port: int) -> subprocess.Popen:
+    serena = serena_server_command()
+    if serena is None:
+        raise RuntimeError(
+            "serena CLI not found (expected on PATH or ~/.local/bin; "
+            "install it with uv tool)"
+        )
     log_path = _serena_process_log_path(scope)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("w") as log:
         proc = subprocess.Popen(
             [
-                "serena",
+                *serena,
                 "start-mcp-server",
                 "--project",
                 str(scope.project_root),
