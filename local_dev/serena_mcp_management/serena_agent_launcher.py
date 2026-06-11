@@ -804,7 +804,8 @@ def _run_serena_cli_install_v2(
         out.flush()
         return "unavailable"
     if not confirm(
-        f"Run `{_display_uv_command(install_cmd)}` to install the serena CLI?",
+        "serena CLI is not installed — install it? "
+        f"({_display_uv_command(install_cmd)})",
         default=True,
         stream=out,
         input_fn=input_fn,
@@ -847,7 +848,8 @@ def _run_graphify_cli_install_v2(
         out.flush()
         return "unavailable"
     if not confirm(
-        f"Run `{_display_uv_command(install_cmd)}` to install the graphify CLI?",
+        "graphify CLI is not installed — install it? "
+        f"({_display_uv_command(install_cmd)})",
         default=True,
         stream=out,
         input_fn=input_fn,
@@ -978,7 +980,7 @@ def _run_preflight_v2(
     if global_status == "missing":
         cmd = "graphify install" if client == "claude" else "graphify install --platform codex"
         if confirm(
-            f"Run `{cmd}` to install the graphify skill globally?",
+            f"graphify global skill is not installed — install it? ({cmd})",
             default=False,
             stream=out,
             input_fn=input_fn,
@@ -1004,7 +1006,7 @@ def _run_preflight_v2(
         serena_done = serena_state in {"managed", "created"}
         integration_default = serena_done and global_done
         if confirm(
-            f"Run `{cmd}` to wire graphify into this project?",
+            f"graphify is not wired into this project — set it up? ({cmd})",
             default=integration_default,
             stream=out,
             input_fn=input_fn,

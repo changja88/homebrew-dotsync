@@ -1913,6 +1913,70 @@ def test_graphify_cli_install_phase_passes_stream_to_default_installer(monkeypat
     assert seen["stream"] is out
 
 
+# --- install prompt wording -----------------------------------------------------
+#
+# 설치 제안 프롬프트는 "상태(없음) → 질문 → (명령어)" 순서로 읽힌다.
+# 명령어가 문장 주어처럼 먼저 나오지 않는다.
+
+
+def test_serena_cli_install_prompt_states_missing_before_command(monkeypatch):
+    monkeypatch.setattr(launcher, "serena_server_command",
+                        lambda: None, raising=False)
+    out = io.StringIO()
+    answers = iter(["n"])
+    launcher._run_serena_cli_install_v2(stream=out, input_fn=lambda: next(answers))
+    text = _strip_ansi(out.getvalue())
+    assert "serena CLI is not installed" in text
+    assert (text.index("serena CLI is not installed")
+            < text.index("uv tool install --from"))
+
+
+def test_graphify_cli_install_prompt_states_missing_before_command(monkeypatch):
+    monkeypatch.setattr(launcher, "graphify_command",
+                        lambda: None, raising=False)
+    out = io.StringIO()
+    answers = iter(["n"])
+    launcher._run_graphify_cli_install_v2(stream=out, input_fn=lambda: next(answers))
+    text = _strip_ansi(out.getvalue())
+    assert "graphify CLI is not installed" in text
+    assert (text.index("graphify CLI is not installed")
+            < text.index("uv tool install graphifyy"))
+
+
+def test_graphify_global_install_prompt_states_missing_before_command(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS", "missing")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS", "built")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS", "installed")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS", "installed")
+    out = io.StringIO()
+    answers = iter(["n"])
+    launcher._run_preflight_v2(stream=out, input_fn=lambda: next(answers))
+    text = _strip_ansi(out.getvalue())
+    assert "graphify global skill is not installed" in text
+    assert (text.index("graphify global skill is not installed")
+            < text.index("graphify install --platform codex"))
+
+
+def test_graphify_integration_prompt_states_missing_before_command(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS", "installed")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS", "built")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS", "missing")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS", "installed")
+    out = io.StringIO()
+    answers = iter(["n"])
+    launcher._run_preflight_v2(stream=out, input_fn=lambda: next(answers))
+    text = _strip_ansi(out.getvalue())
+    assert "graphify is not wired into this project" in text
+    assert (text.index("graphify is not wired into this project")
+            < text.index("graphify codex install"))
+
+
 def test_v2_main_runs_serena_cli_phase_before_init(monkeypatch, tmp_path):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
