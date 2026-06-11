@@ -339,9 +339,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--install-zshrc", action="store_true", help="replace the managed block in a zsh rc file")
     parser.add_argument("--uninstall-zshrc", action="store_true", help="remove the managed block from a zsh rc file")
     parser.add_argument("--rc-path", type=Path, default=Path.home() / ".zshrc", help="zsh rc file to update")
+    parser.add_argument(
+        "--python-executable",
+        type=Path,
+        default=None,
+        help="Python interpreter to record in SERENA_AGENT_PYTHON (default: auto-detect)",
+    )
     args = parser.parse_args(argv)
     launcher_path = Path(__file__).resolve().with_name("serena_agent_launcher.py")
-    python_executable = default_python_executable()
+    python_executable = args.python_executable or default_python_executable()
     codex_binary = default_binary_path("codex")
     claude_binary = default_binary_path("claude")
     if args.uninstall_zshrc:

@@ -380,6 +380,25 @@ def test_default_python_executable_prefers_python_312_when_current_is_too_old(mo
     assert default_python_executable() == python312
 
 
+def test_zsh_shim_cli_install_honors_explicit_python_executable(monkeypatch, tmp_path):
+    # Auto-detection would record the interpreter currently running the
+    # generator; an explicit --python-executable must override it so the shim
+    # can point at a self-contained venv instead of whichever python ran make.
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_zsh_shim.sys.executable",
+        "/Users/me/Desktop/homebrew-dotsync/.venv/bin/python3",
+    )
+    rc = tmp_path / ".zshrc"
+    rc.write_text("# existing\n")
+
+    chosen = "/Users/me/Desktop/dotsync_config/agent_launcher/.venv/bin/python3"
+    assert main(["--install-zshrc", "--rc-path", str(rc), "--python-executable", chosen]) == 0
+
+    text = rc.read_text()
+    assert f'SERENA_AGENT_PYTHON="{chosen}"' in text
+    assert "/homebrew-dotsync/.venv/bin/python3" not in text
+
+
 @pytest.mark.no_subprocess_block
 def test_zsh_shim_passes_argument_commands_directly_to_real_binary(tmp_path):
     shim_path, real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
