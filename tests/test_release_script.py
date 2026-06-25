@@ -239,7 +239,8 @@ def test_formula_wraps_libexec_entrypoint_with_pythonpath():
     assert 'libexec.install "lib/dotsync"' in formula
     assert 'libexec.install "bin"' in formula
     assert 'inreplace libexec/"bin/dotsync"' in formula
-    assert 'bin.env_script_all_files(libexec/"bin", PYTHONPATH: libexec)' in formula
+    assert '(libexec/"bin").env_script_all_files(bin, PYTHONPATH: libexec)' in formula
+    assert 'bin.env_script_all_files(libexec/"bin", PYTHONPATH: libexec)' not in formula
     assert 'bin.install "bin/dotsync"' not in formula
 
 

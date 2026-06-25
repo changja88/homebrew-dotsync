@@ -141,7 +141,7 @@ def test_finish_ok_emits_done_line(capsys, monkeypatch):
 
 def test_finish_unchanged_emits_dim_line(capsys, monkeypatch):
     """`App._finish_unchanged()` is the canonical 'nothing to do here'
-    marker for `dotsync to` when local and stored are byte-identical."""
+    marker for `dotsync apply` when local and stored are byte-identical."""
     monkeypatch.setenv("NO_COLOR", "1")
 
     class FakeApp(App):

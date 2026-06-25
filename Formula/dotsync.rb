@@ -30,7 +30,7 @@ class Dotsync < Formula
     # user's `python3` resolution.
     py = self.class.external_python || (Formula["python@3.12"].opt_bin/"python3.12").to_s
     inreplace libexec/"bin/dotsync", /^#!.*python.*$/, "#!#{py}"
-    bin.env_script_all_files(libexec/"bin", PYTHONPATH: libexec)
+    (libexec/"bin").env_script_all_files(bin, PYTHONPATH: libexec)
   end
 
   def caveats

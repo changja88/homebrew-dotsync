@@ -105,7 +105,10 @@ lists. Both sections must stay in parity per `CLAUDE.md`.
 - **stdlib only.** No `requests`, no `pydantic`, no `click`. Allowed: `tomllib`, `argparse`, `shutil`, `pathlib`, `subprocess`, `json`, `dataclasses`, `abc`, `hashlib`, `re`, `sqlite3`. The Homebrew formula stays single-`python@3.12`-dep.
 - **macOS only.** No Linux branches. macOS-specific paths (`~/Library/Application Support/...`) are fine.
 - **No network calls** from dotsync itself. External processes that hit the network (claude plugin install, BTT) are OK if invoked via the user's existing CLI.
-- **`from` = local→folder, `to` = folder→local.** `to` always backs up local first; `from` never does (the user's sync folder is their git responsibility).
+- **`backup` = local→folder, `apply` = folder→local.** Internally, app
+  plugins still implement `sync_from` and `sync_to`. `apply` always backs up
+  local first; `backup` never backs up the sync folder (the user's sync folder
+  is their git responsibility).
 
 ## Checklist
 

@@ -236,7 +236,7 @@ def format_ask(question: str, default: str = "", *, accent: str = "primary") -> 
 
     `accent="primary"` (default) renders the prompt in the brand purple — used
     for routine questions. `accent="warn"` renders it in yellow + bold,
-    reserved for destructive confirmations (e.g. `dotsync to`'s "Apply?")
+    reserved for destructive confirmations (e.g. `dotsync apply`'s "Apply?")
     so the user can tell at a glance that the next keystroke matters.
     """
     color = YELLOW if accent == "warn" else PRIMARY
@@ -267,9 +267,9 @@ def format_summary(
     """Bottom rounded box: per-app result lines + counts + elapsed time.
 
     Per-app lines are optional — pass them to make the user-facing
-    summary concrete. Use ``synced`` for legacy `dotsync from` output,
+    summary concrete. Use ``synced`` for legacy local-to-folder output,
     ``changed`` for apps whose plan contains work to do, and the pair
-    ``applied``/``unchanged`` for `dotsync to` (which distinguishes apps
+    ``applied``/``unchanged`` for `dotsync apply` (which distinguishes apps
     that actually changed from apps that were already in sync).
     ``failed`` lists apps whose sync raised, regardless of direction.
     """

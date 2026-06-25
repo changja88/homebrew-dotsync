@@ -20,17 +20,17 @@ def test_format_welcome_marks_init_as_starting_point():
     out = format_welcome("0.1.0")
     assert "Quickstart" in out
     init_pos = out.find("dotsync init")
-    from_pos = out.find("dotsync from")
-    to_pos = out.find("dotsync to")
-    assert 0 <= init_pos < from_pos < to_pos
+    backup_pos = out.find("dotsync backup")
+    apply_pos = out.find("dotsync apply")
+    assert 0 <= init_pos < backup_pos < apply_pos
     assert "start here" in out.lower()
 
 
 def test_format_welcome_lists_basic_commands():
     out = format_welcome("0.1.0")
     assert "dotsync init" in out
-    assert "from --all" in out
-    assert "to --all" in out
+    assert "backup --all" in out
+    assert "apply --all" in out
 
 
 def test_format_welcome_no_color_strips_ansi(monkeypatch):

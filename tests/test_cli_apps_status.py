@@ -22,7 +22,7 @@ def test_status_reports_diff(fake_home, monkeypatch, tmp_path, capsys):
 
 def test_status_shows_direction_hint(fake_home, monkeypatch, tmp_path, capsys):
     """When local is newer than stored, status surfaces 'local-newer' so the
-    user knows to run `from`."""
+    user knows to run `backup`."""
     monkeypatch.setenv("NO_COLOR", "1")
     target = tmp_path / "configs"
     (target / "zsh").mkdir(parents=True)

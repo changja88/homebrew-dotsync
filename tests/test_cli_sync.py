@@ -1,43 +1,69 @@
 from unittest.mock import patch
-from dotsync.cli import main
+from dotsync.cli import _build_parser, main
 from dotsync.config import Config, save_config
 from dotsync.plan import AppPlan
 
 
-def test_from_single_app_calls_sync_from(fake_home, monkeypatch, tmp_path):
+def test_backup_single_app_calls_sync_from(fake_home, monkeypatch, tmp_path):
     target = tmp_path / "configs"
     target.mkdir()
     save_config(Config(dir=target, apps=["zsh"]))
     monkeypatch.setenv("DOTSYNC_DIR", str(target))
     (fake_home / ".zshrc").write_text("X")
 
-    rc = main(["from", "zsh", "--yes"])
+    rc = main(["backup", "zsh", "--yes"])
     assert rc == 0
     assert (target / "zsh" / ".zshrc").read_text() == "X"
 
 
-def test_to_all_iterates_registered_apps(fake_home, monkeypatch, tmp_path):
+def test_apply_all_iterates_registered_apps(fake_home, monkeypatch, tmp_path):
     target = tmp_path / "configs"
     (target / "zsh").mkdir(parents=True)
     (target / "zsh" / ".zshrc").write_text("Z")
     save_config(Config(dir=target, apps=["zsh"]))
     monkeypatch.setenv("DOTSYNC_DIR", str(target))
 
-    rc = main(["to", "--all", "--yes"])
+    rc = main(["apply", "--all", "--yes"])
     assert rc == 0
     assert (fake_home / ".zshrc").read_text() == "Z"
 
 
+def test_legacy_from_to_aliases_still_work(fake_home, monkeypatch, tmp_path):
+    target = tmp_path / "configs"
+    (target / "zsh").mkdir(parents=True)
+    (target / "zsh" / ".zshrc").write_text("FROM_FOLDER")
+    save_config(Config(dir=target, apps=["zsh"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+    (fake_home / ".zshrc").write_text("LOCAL")
+
+    assert main(["from", "zsh", "--yes"]) == 0
+    assert (target / "zsh" / ".zshrc").read_text() == "LOCAL"
+
+    (target / "zsh" / ".zshrc").write_text("RESTORED")
+    assert main(["to", "zsh", "--yes"]) == 0
+    assert (fake_home / ".zshrc").read_text() == "RESTORED"
+
+
+def test_help_lists_backup_apply_without_legacy_from_to():
+    help_text = _build_parser().format_help()
+
+    assert "backup" in help_text
+    assert "apply" in help_text
+    assert "from                " not in help_text
+    assert "to                  " not in help_text
+    assert "from,to" not in help_text
+
+
 def test_no_config_shows_init_hint(fake_home, monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)  # cwd has no dotsync.toml
-    rc = main(["from", "--all"])
+    rc = main(["backup", "--all"])
     assert rc != 0
     err = capsys.readouterr().err
     assert "dotsync init" in err or "DOTSYNC_DIR" in err
 
 
 def test_from_continues_after_one_app_fails(fake_home, monkeypatch, tmp_path, capsys):
-    """If one app raises during `from --all`, others should still run
+    """If one app raises during `backup --all`, others should still run
     and the summary should report 1 ok / 1 error."""
     monkeypatch.setenv("NO_COLOR", "1")
     target = tmp_path / "configs"
@@ -47,7 +73,7 @@ def test_from_continues_after_one_app_fails(fake_home, monkeypatch, tmp_path, ca
     (fake_home / ".zshrc").write_text("Z")
     # ghostty source missing → its sync_from raises FileNotFoundError
 
-    rc = main(["from", "--all", "--yes"])
+    rc = main(["backup", "--all", "--yes"])
     out = capsys.readouterr().out
     # zsh succeeded (file copied)
     assert (target / "zsh" / ".zshrc").read_text() == "Z"
@@ -68,7 +94,7 @@ def test_from_dry_run_shows_preview_without_changing_folder(
     monkeypatch.setenv("DOTSYNC_DIR", str(target))
     (fake_home / ".zshrc").write_text("LOCAL")
 
-    rc = main(["from", "zsh", "--dry-run"])
+    rc = main(["backup", "zsh", "--dry-run"])
 
     assert rc == 0
     assert not (target / "zsh" / ".zshrc").exists()
@@ -90,7 +116,7 @@ def test_from_prompts_confirmation_by_default_and_decline_keeps_folder(
     (fake_home / ".zshrc").write_text("LOCAL")
     monkeypatch.setattr("builtins.input", lambda prompt="": "n")
 
-    rc = main(["from", "zsh"])
+    rc = main(["backup", "zsh"])
 
     assert rc == 0
     assert not (target / "zsh" / ".zshrc").exists()
@@ -105,7 +131,7 @@ def test_from_bare_enter_aborts(fake_home, monkeypatch, tmp_path):
     (fake_home / ".zshrc").write_text("LOCAL")
     monkeypatch.setattr("builtins.input", lambda prompt="": "")
 
-    rc = main(["from", "zsh"])
+    rc = main(["backup", "zsh"])
 
     assert rc == 0
     assert not (target / "zsh" / ".zshrc").exists()
@@ -119,7 +145,7 @@ def test_from_yes_skips_prompt_and_applies(fake_home, monkeypatch, tmp_path):
     monkeypatch.setenv("DOTSYNC_DIR", str(target))
     (fake_home / ".zshrc").write_text("LOCAL")
 
-    rc = main(["from", "zsh", "--yes"])
+    rc = main(["backup", "zsh", "--yes"])
 
     assert rc == 0
     assert (target / "zsh" / ".zshrc").read_text() == "LOCAL"
@@ -136,7 +162,7 @@ def test_to_preview_uses_concrete_plan_actions(
     save_config(Config(dir=target, apps=["zsh"]))
     monkeypatch.setenv("DOTSYNC_DIR", str(target))
 
-    rc = main(["to", "zsh", "--dry-run"])
+    rc = main(["apply", "zsh", "--dry-run"])
 
     assert rc == 0
     out = capsys.readouterr().out
@@ -152,7 +178,7 @@ def test_to_unknown_app_returns_cli_error(fake_home, monkeypatch, tmp_path, caps
     save_config(Config(dir=target, apps=["zsh"]))
     monkeypatch.setenv("DOTSYNC_DIR", str(target))
 
-    rc = main(["to", "nonsense", "--dry-run"])
+    rc = main(["apply", "nonsense", "--dry-run"])
 
     assert rc == 2
     err = capsys.readouterr().err
@@ -166,7 +192,7 @@ def test_from_unknown_app_returns_cli_error(fake_home, monkeypatch, tmp_path, ca
     save_config(Config(dir=target, apps=["zsh"]))
     monkeypatch.setenv("DOTSYNC_DIR", str(target))
 
-    rc = main(["from", "nonsense", "--dry-run"])
+    rc = main(["backup", "nonsense", "--dry-run"])
 
     assert rc == 2
     err = capsys.readouterr().err
@@ -199,7 +225,7 @@ def test_from_unknown_empty_plan_still_applies_after_yes(monkeypatch, tmp_path):
 
     monkeypatch.setattr("dotsync.cli.build_app", lambda name, cfg: CustomApp())
 
-    rc = main(["from", "claude", "--yes"])
+    rc = main(["backup", "claude", "--yes"])
 
     assert rc == 0
     assert calls["sync_from"] == 1
@@ -231,7 +257,7 @@ def test_to_unknown_empty_plan_still_applies_after_yes(monkeypatch, tmp_path):
 
     monkeypatch.setattr("dotsync.cli.build_app", lambda name, cfg: CustomApp())
 
-    rc = main(["to", "claude", "--yes"])
+    rc = main(["apply", "claude", "--yes"])
 
     assert rc == 0
     assert calls["sync_to"] == 1
@@ -275,7 +301,7 @@ def test_to_rotates_backups_after_failed_partial_sync(monkeypatch, tmp_path):
     monkeypatch.setattr("dotsync.cli.new_backup_session", fake_new_backup_session)
     monkeypatch.setattr("dotsync.cli.build_app", lambda name, cfg: CustomApp())
 
-    rc = main(["to", "zsh", "--yes"])
+    rc = main(["apply", "zsh", "--yes"])
 
     assert rc == 6
     assert sorted(p.name for p in backup_root.iterdir()) == ["20260103_000000"]
@@ -293,7 +319,7 @@ def test_to_dry_run_does_not_change_local_or_create_backup(
     save_config(Config(dir=target, apps=["zsh"]))
     monkeypatch.setenv("DOTSYNC_DIR", str(target))
 
-    rc = main(["to", "--all", "--dry-run"])
+    rc = main(["apply", "--all", "--dry-run"])
     assert rc == 0
     # local untouched
     assert (fake_home / ".zshrc").read_text() == "LOCAL_ORIG"
@@ -307,7 +333,7 @@ def test_to_dry_run_does_not_change_local_or_create_backup(
 
 
 def test_to_prompts_confirmation_by_default(fake_home, monkeypatch, tmp_path):
-    """Without --yes or --dry-run, `to` must ask before overwriting."""
+    """Without --yes or --dry-run, `apply` must ask before overwriting."""
     monkeypatch.setenv("NO_COLOR", "1")
     target = tmp_path / "configs"
     (target / "zsh").mkdir(parents=True)
@@ -319,7 +345,7 @@ def test_to_prompts_confirmation_by_default(fake_home, monkeypatch, tmp_path):
     answers = iter(["n"])  # decline
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
-    rc = main(["to", "--all"])
+    rc = main(["apply", "--all"])
     assert rc == 0
     # decline → local untouched
     assert (fake_home / ".zshrc").read_text() == "LOCAL_ORIG"
@@ -334,7 +360,7 @@ def test_to_with_yes_skips_prompt_and_applies(fake_home, monkeypatch, tmp_path):
     save_config(Config(dir=target, apps=["zsh"]))
     monkeypatch.setenv("DOTSYNC_DIR", str(target))
 
-    rc = main(["to", "--all", "--yes"])
+    rc = main(["apply", "--all", "--yes"])
     assert rc == 0
     assert (fake_home / ".zshrc").read_text() == "FROM_FOLDER"
 
@@ -353,7 +379,7 @@ def test_to_unchanged_does_not_create_or_rotate_backups(
     save_config(Config(dir=target, apps=["zsh"], backup_keep=1))
     monkeypatch.setenv("DOTSYNC_DIR", str(target))
 
-    rc = main(["to", "--all", "--yes"])
+    rc = main(["apply", "--all", "--yes"])
 
     assert rc == 0
     assert sorted(p.name for p in backup_root.iterdir()) == [
@@ -375,7 +401,7 @@ def test_to_bare_enter_aborts(fake_home, monkeypatch, tmp_path):
 
     monkeypatch.setattr("builtins.input", lambda prompt="": "")
 
-    rc = main(["to", "--all"])
+    rc = main(["apply", "--all"])
     assert rc == 0
     assert (fake_home / ".zshrc").read_text() == "LOCAL_ORIG"
 
@@ -390,7 +416,7 @@ def test_runtime_error_caught_with_friendly_exit(
     monkeypatch.setenv("DOTSYNC_DIR", str(target))
 
     with patch("dotsync.apps.base.shutil.copy2", side_effect=RuntimeError("disk full")):
-        rc = main(["to", "zsh", "--yes"])
+        rc = main(["apply", "zsh", "--yes"])
     assert rc != 0
     err = capsys.readouterr().err
     assert "disk full" in err
@@ -421,7 +447,7 @@ def test_cmd_to_surfaces_app_warnings_in_summary(
 
     from dotsync.cli import main
 
-    rc = main(["to", "--all", "--yes"])
+    rc = main(["apply", "--all", "--yes"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "simulated network blip" in out

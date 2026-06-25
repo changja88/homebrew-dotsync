@@ -386,7 +386,7 @@ class App(ABC):
 
     def _finish_unchanged(self) -> None:
         """Close a per-app sync section with a dim 'unchanged' line — used
-        by `dotsync to` when local already matches stored, so the user can
+        by `dotsync apply` when local already matches stored, so the user can
         see at a glance which apps did vs. didn't move."""
         from dotsync import ui
 

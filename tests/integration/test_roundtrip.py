@@ -1,4 +1,4 @@
-"""Round-trip idempotency: from→to and to→from must not mutate the
+"""Round-trip idempotency: backup→apply and apply→backup must not mutate the
 non-source side. Regression net for Phase 4's default sync_from/sync_to."""
 
 from pathlib import Path
@@ -141,7 +141,7 @@ def test_codex_to_then_from_does_not_change_stored(fake_home, tmp_path):
 
 
 def test_ghostty_from_then_to_creates_backup_before_overwriting(fake_home, tmp_path):
-    """from→to must back up the pre-existing local before copying stored
+    """backup→apply must back up the pre-existing local before copying stored
     over it. The backup content must equal the original local content."""
     local = _ghostty_local(fake_home)
     local.parent.mkdir(parents=True)

@@ -235,10 +235,10 @@ def _make_btt_subprocess(stored_text_per_preset: dict[str, str]):
 
 
 def test_plan_to_reports_unchanged_when_live_matches_stored(tmp_path):
-    """After `dotsync from`, every preset's live BTT state matches the stored
+    """After `dotsync backup`, every preset's live BTT state matches the stored
     bytes (modulo BTTPresetUUID, which status() normalizes). plan_to MUST
-    surface that as 'unchanged' — otherwise `dotsync to` immediately after
-    `dotsync from` falsely shows every BTT preset needing an update.
+    surface that as 'unchanged' — otherwise `dotsync apply` immediately after
+    `dotsync backup` falsely shows every BTT preset needing an update.
     Regression: plan_to used to skip the live-vs-stored comparison entirely
     and always returned 'update' whenever the stored file existed."""
     target = tmp_path / "configs"
@@ -477,7 +477,7 @@ def test_status_clean_when_export_matches_stored(tmp_path):
 def test_status_clean_when_only_btt_preset_uuid_differs(tmp_path):
     """BTT regenerates BTTPresetUUID on every export_preset call, even when
     the preset content is otherwise identical. status() must normalize that
-    line away or every from→to roundtrip falsely shows dirty."""
+    line away or every backup→apply roundtrip falsely shows dirty."""
     target = tmp_path / "configs"
     presets = target / "bettertouchtool" / "presets"
     presets.mkdir(parents=True)

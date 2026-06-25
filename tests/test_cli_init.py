@@ -190,8 +190,8 @@ def test_init_prints_next_steps_with_apps_command_hint(
     out = capsys.readouterr().out
     assert "DOTSYNC_DIR" in out
     assert "dotsync apps" in out
-    assert "dotsync from --all" in out
-    assert "dotsync to --all" in out
+    assert "dotsync backup --all" in out
+    assert "dotsync apply --all" in out
 
 
 def test_init_shows_welcome_by_default(fake_home, tmp_path, monkeypatch, capsys):

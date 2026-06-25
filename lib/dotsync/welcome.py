@@ -53,9 +53,9 @@ def format_welcome(version: str = __version__) -> str:
         "",
         f"       {c(bold, 'dotsync init')}            "
         f"{c(dim, '# start here: pick a sync folder + auto-detect apps')}",
-        f"       {c(bold, 'dotsync from --all')}      "
+        f"       {c(bold, 'dotsync backup --all')}    "
         f"{c(dim, '# local apps → folder')}",
-        f"       {c(bold, 'dotsync to --all')}        "
+        f"       {c(bold, 'dotsync apply --all')}     "
         f"{c(dim, '# folder → local apps  (with backups)')}",
         "",
         f"   {c(dim, 'See `dotsync --help` for all commands.')}",

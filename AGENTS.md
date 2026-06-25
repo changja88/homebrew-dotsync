@@ -32,10 +32,10 @@ between local app locations and one user-chosen sync folder.
 ## Core Architecture
 
 - `lib/dotsync/cli.py` owns argparse command dispatch for `welcome`, `init`,
-  `config`, `apps`, `status`, `from`, and `to`.
+  `config`, `apps`, `status`, `backup`, and `apply`.
 - `lib/dotsync/config.py` owns sync-folder discovery and `dotsync.toml`
   persistence. Config lives only at `<sync folder>/dotsync.toml`.
-- `lib/dotsync/backup.py` creates `to` backups inside the sync folder, normally
+- `lib/dotsync/backup.py` creates `apply` backups inside the sync folder, normally
   `<sync folder>/.backups/<timestamp>/<app>/`.
 - `lib/dotsync/shellrc.py` owns shell rc detection and idempotent
   `DOTSYNC_DIR` export insertion/update logic.
@@ -64,10 +64,11 @@ between local app locations and one user-chosen sync folder.
   `cli.py`.
 - Never create `~/.dotsync`, `~/.config/dotsync`, or any hidden global pointer
   file for application state.
-- Direction names are important: `from` means local app config to sync folder;
-  `to` means sync folder to local app config.
-- `to` must back up local files before overwriting. `from` does not back up the
-  sync folder.
+- Public command names are important: `backup` means local app config to sync
+  folder; `apply` means sync folder to local app config. The internal app
+  plugin methods still use `sync_from` and `sync_to`.
+- `apply` must back up local files before overwriting. `backup` does not back
+  up the sync folder.
 
 ## App Plugin Pattern
 

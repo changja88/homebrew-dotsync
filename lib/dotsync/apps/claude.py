@@ -27,9 +27,9 @@ GLOBAL_RULE_DIRECTORIES = ("commands", "agents", "skills", "output-styles")
 # 1. Run `PYTHONPATH=lib python3 -m dotsync status` and confirm the Claude row
 #    reports clean or lists CLAUDE.md / global-rule directories naturally.
 # 2. Use an isolated DOTSYNC_DIR under /tmp, run `dotsync init --apps claude`
-#    with `--yes --no-shell-init`, then `dotsync from claude`; confirm stored
+#    with `--yes --no-shell-init`, then `dotsync backup claude`; confirm stored
 #    `claude/` contains existing CLAUDE.md and global-rule directories.
-# 3. Set HOME to a fake /tmp home and run `dotsync to claude --yes`; confirm the
+# 3. Set HOME to a fake /tmp home and run `dotsync apply claude --yes`; confirm the
 #    same global-rule items are restored under the fake ~/.claude/.
 # 4. Remove the temporary DOTSYNC_DIR and fake HOME directories.
 

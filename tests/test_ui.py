@@ -36,14 +36,14 @@ def test_no_color_disables_ansi(monkeypatch):
 
 
 def test_format_banner_includes_title_and_box():
-    out = ui.format_banner("dotsync to")
-    assert "dotsync to" in out
+    out = ui.format_banner("dotsync apply")
+    assert "dotsync apply" in out
     assert "╭" in out and "╰" in out
     assert "│" in out
 
 
 def test_format_banner_with_subtitle():
-    out = ui.format_banner("dotsync to", "4 apps · /Users/x/cfg")
+    out = ui.format_banner("dotsync apply", "4 apps · /Users/x/cfg")
     assert "4 apps" in out
     assert "/Users/x/cfg" in out
 
@@ -106,7 +106,7 @@ def test_format_summary_fits_all_supported_apps(monkeypatch):
 
 
 def test_format_summary_separates_applied_and_unchanged(monkeypatch):
-    """For `dotsync to`, the summary distinguishes apps that actually
+    """For `dotsync apply`, the summary distinguishes apps that actually
     changed (applied) from apps that were already in sync (unchanged)."""
     monkeypatch.setenv("NO_COLOR", "1")
     out = ui.format_summary(
