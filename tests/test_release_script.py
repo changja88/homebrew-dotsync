@@ -190,6 +190,38 @@ def test_release_preflights_pytest_before_version_mutation(sandbox):
     assert not _origin_has_tag(sandbox, "v0.1.20")
 
 
+@pytest.mark.no_subprocess_block
+def test_release_falls_back_to_uv_pytest_when_default_venv_lacks_pytest(sandbox):
+    """A fresh clone may have a uv-created .venv without pytest installed.
+    The release script should still be able to run tests using uv's
+    --with pytest overlay before mutating release files."""
+    sandbox["env"].pop("PYTHON")
+    venv_bin = sandbox["work"] / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    _write_stub(venv_bin, "python3", "exit 1")
+    _write_stub(
+        sandbox["bin"],
+        "uv",
+        (
+            'if [[ "$*" == "run --with pytest python -m pytest --version" ]]; then\n'
+            "  exit 0\n"
+            'elif [[ "$*" == "run --with pytest python -m pytest -q" ]]; then\n'
+            "  exit 0\n"
+            "fi\n"
+            "exit 2"
+        ),
+    )
+    _write_stub(sandbox["bin"], "gh", "exit 1")
+    _write_stub(sandbox["bin"], "curl", f'printf "%s" "{FAKE_TARBALL.decode()}"')
+
+    result = _run_release(sandbox)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    formula = _origin_formula(sandbox)
+    assert FAKE_TARBALL_SHA in formula
+    assert _origin_has_tag(sandbox, "v0.1.20")
+
+
 def test_formula_wraps_libexec_entrypoint_with_pythonpath():
     formula = (REPO_ROOT / "Formula" / "dotsync.rb").read_text()
 

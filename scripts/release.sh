@@ -55,10 +55,26 @@ CURRENT=$(grep -E '^version = "[0-9]+\.[0-9]+\.[0-9]+"' pyproject.toml | head -1
 [[ -n "$CURRENT" ]] || die "Could not parse current version from pyproject.toml"
 step "현재 버전: v$CURRENT"
 
-PY="${PYTHON:-.venv/bin/python3}"
 step "Checking pytest runner"
-"$PY" -m pytest --version >/dev/null || die "pytest is not available for $PY — install test deps before releasing"
-ok "pytest available"
+PYTEST_RUNNER=()
+if [[ -n "${PYTHON:-}" ]]; then
+  "$PYTHON" -m pytest --version >/dev/null 2>&1 \
+    || die "pytest is not available for $PYTHON — install test deps before releasing"
+  PYTEST_RUNNER=("$PYTHON" -m pytest)
+  ok "pytest available via $PYTHON"
+else
+  DEFAULT_PY=".venv/bin/python3"
+  if "$DEFAULT_PY" -m pytest --version >/dev/null 2>&1; then
+    PYTEST_RUNNER=("$DEFAULT_PY" -m pytest)
+    ok "pytest available via $DEFAULT_PY"
+  elif command -v uv >/dev/null 2>&1 \
+      && uv run --with pytest python -m pytest --version >/dev/null 2>&1; then
+    PYTEST_RUNNER=(uv run --with pytest python -m pytest)
+    ok "pytest available via uv run --with pytest"
+  else
+    die "pytest is not available via $DEFAULT_PY or uv run --with pytest — install test deps before releasing"
+  fi
+fi
 
 # 2. ask bump kind -----------------------------------------------------------
 echo
@@ -104,7 +120,7 @@ ok "pyproject.toml, lib/dotsync/__init__.py, Formula/dotsync.rb updated"
 
 # 4. tests must pass before tagging ------------------------------------------
 step "Running tests"
-"$PY" -m pytest -q || die "Tests failed — aborting release. Changes left in place."
+"${PYTEST_RUNNER[@]}" -q || die "Tests failed — aborting release. Changes left in place."
 ok "All tests passed"
 
 # 5. commit + tag, push the tag only ------------------------------------------
