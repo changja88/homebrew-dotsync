@@ -1,4 +1,5 @@
 """Filter dynamic local Serena MCP entries from synced agent config."""
+
 from __future__ import annotations
 
 import copy

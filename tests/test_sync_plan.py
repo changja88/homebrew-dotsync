@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from dotsync.plan import (
     Change,
     AppPlan,
@@ -62,6 +60,33 @@ def test_plan_file_copy_reports_missing_source(tmp_path):
     assert change.label == "config"
 
 
+def test_plan_file_copy_reports_unknown_for_symlink_source(tmp_path):
+    target = tmp_path / "outside"
+    target.write_text("secret")
+    src = tmp_path / "src"
+    src.symlink_to(target)
+    dst = tmp_path / "dst"
+
+    change = plan_file_copy("config", src, dst)
+
+    assert change.kind == "unknown"
+    assert "symlink" in change.details
+
+
+def test_plan_file_copy_reports_unknown_for_symlink_destination(tmp_path):
+    src = tmp_path / "src"
+    src.write_text("safe")
+    target = tmp_path / "outside"
+    target.write_text("secret")
+    dst = tmp_path / "dst"
+    dst.symlink_to(target)
+
+    change = plan_file_copy("config", src, dst)
+
+    assert change.kind == "unknown"
+    assert "symlink" in change.details
+
+
 def test_plan_tree_mirror_summarizes_create_update_and_remove(tmp_path):
     src = tmp_path / "src"
     dst = tmp_path / "dst"
@@ -93,6 +118,45 @@ def test_plan_tree_mirror_reports_unchanged_for_matching_trees(tmp_path):
 
     assert change.kind == "unchanged"
     assert change.details == ""
+
+
+def test_plan_tree_mirror_reports_unknown_for_symlink_source(tmp_path):
+    outside = tmp_path / "outside"
+    outside.write_text("secret")
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src.mkdir()
+    dst.mkdir()
+    (src / "leak.txt").symlink_to(outside)
+
+    change = plan_tree_mirror("rules/", src, dst)
+
+    assert change.kind == "unknown"
+    assert "symlink" in change.details
+
+
+def test_plan_tree_mirror_reports_unknown_for_file_source(tmp_path):
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src.write_text("not a directory")
+    dst.mkdir()
+
+    change = plan_tree_mirror("rules/", src, dst)
+
+    assert change.kind == "unknown"
+    assert "directory" in change.details
+
+
+def test_plan_tree_mirror_reports_unknown_for_file_destination(tmp_path):
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    src.mkdir()
+    dst.write_text("not a directory")
+
+    change = plan_tree_mirror("rules/", src, dst)
+
+    assert change.kind == "unknown"
+    assert "directory" in change.details
 
 
 def test_app_plan_changed_excludes_unchanged_but_includes_missing_source(tmp_path):

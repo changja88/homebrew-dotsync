@@ -1,7 +1,8 @@
 """Unit tests for the shellrc module — detection + idempotent rc edits."""
+
+import shlex
 from pathlib import Path
 
-import pytest
 
 from dotsync.shellrc import (
     MARKER,
@@ -14,18 +15,24 @@ from dotsync.shellrc import (
 
 # ---------------- detect_rc_path -----------------------------------------
 
+
 def test_detect_rc_path_zsh(tmp_path):
     assert detect_rc_path(shell="/bin/zsh", home=tmp_path) == tmp_path / ".zshrc"
 
 
 def test_detect_rc_path_zsh_homebrew_path(tmp_path):
     """Some users have non-standard zsh paths — only the basename should matter."""
-    assert detect_rc_path(shell="/opt/homebrew/bin/zsh", home=tmp_path) == tmp_path / ".zshrc"
+    assert (
+        detect_rc_path(shell="/opt/homebrew/bin/zsh", home=tmp_path)
+        == tmp_path / ".zshrc"
+    )
 
 
 def test_detect_rc_path_bash_prefers_bash_profile_when_present(tmp_path):
     (tmp_path / ".bash_profile").write_text("# existing\n")
-    assert detect_rc_path(shell="/bin/bash", home=tmp_path) == tmp_path / ".bash_profile"
+    assert (
+        detect_rc_path(shell="/bin/bash", home=tmp_path) == tmp_path / ".bash_profile"
+    )
 
 
 def test_detect_rc_path_bash_falls_back_to_bashrc_when_only_bashrc_exists(tmp_path):
@@ -35,7 +42,9 @@ def test_detect_rc_path_bash_falls_back_to_bashrc_when_only_bashrc_exists(tmp_pa
 
 def test_detect_rc_path_bash_default_when_neither_exists(tmp_path):
     """macOS convention: login shells read ~/.bash_profile, so default to that."""
-    assert detect_rc_path(shell="/bin/bash", home=tmp_path) == tmp_path / ".bash_profile"
+    assert (
+        detect_rc_path(shell="/bin/bash", home=tmp_path) == tmp_path / ".bash_profile"
+    )
 
 
 def test_detect_rc_path_unsupported_shell_returns_none(tmp_path):
@@ -59,17 +68,26 @@ def test_detect_rc_path_falls_back_to_env_shell(tmp_path, monkeypatch):
 
 # ---------------- export_line --------------------------------------------
 
+
 def test_export_line_quotes_path():
     line = export_line(Path("/Users/me/Desktop/dotsync_config"))
-    assert line == 'export DOTSYNC_DIR="/Users/me/Desktop/dotsync_config"'
+    assert line == "export DOTSYNC_DIR=/Users/me/Desktop/dotsync_config"
 
 
 def test_export_line_handles_path_with_spaces():
     line = export_line(Path("/Users/me/My Drive/dotsync"))
-    assert line == 'export DOTSYNC_DIR="/Users/me/My Drive/dotsync"'
+    assert line == "export DOTSYNC_DIR='/Users/me/My Drive/dotsync'"
+
+
+def test_export_line_shell_escapes_special_characters(tmp_path):
+    path = tmp_path / 'a"$(touch hacked)'
+    line = export_line(path)
+    assert line.startswith("export DOTSYNC_DIR=")
+    assert shlex.split(line)[1] == f"DOTSYNC_DIR={path}"
 
 
 # ---------------- update_shell_rc ----------------------------------------
+
 
 def test_update_shell_rc_missing_file_does_not_create(tmp_path):
     rc = tmp_path / ".zshrc"
@@ -86,8 +104,7 @@ def test_update_shell_rc_empty_file_appends_marker_and_line(tmp_path):
     assert result.action == "added"
     text = rc.read_text()
     assert MARKER in text
-    assert 'export DOTSYNC_DIR="' in text
-    assert str(tmp_path / "sync") in text
+    assert export_line(tmp_path / "sync") in text
 
 
 def test_update_shell_rc_existing_content_appends_at_eof(tmp_path):

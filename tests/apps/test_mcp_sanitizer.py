@@ -18,12 +18,15 @@ command = "npx"
 args = ["@playwright/mcp"]
 """
 
-    assert sanitize_codex_config_text(src) == """model = "gpt-5.2"
+    assert (
+        sanitize_codex_config_text(src)
+        == """model = "gpt-5.2"
 
 [mcp_servers.playwright]
 command = "npx"
 args = ["@playwright/mcp"]
 """
+    )
 
 
 def test_sanitize_codex_config_removes_dynamic_serena_child_tables():
@@ -40,9 +43,12 @@ X_TOKEN = "secret"
 url = "http://127.0.0.1:7777/mcp"
 """
 
-    assert sanitize_codex_config_text(src) == """[mcp_servers.context7]
+    assert (
+        sanitize_codex_config_text(src)
+        == """[mcp_servers.context7]
 url = "http://127.0.0.1:7777/mcp"
 """
+    )
 
 
 def test_sanitize_codex_config_preserves_unaffected_text_exactly():
@@ -59,7 +65,9 @@ url = "http://127.0.0.1:9123/mcp"
 model = "gpt-5.4"
 """
 
-    assert sanitize_codex_config_text(src) == """# user comment
+    assert (
+        sanitize_codex_config_text(src)
+        == """# user comment
 model = "gpt-5.2"
 
 [mcp_servers.context7] # local but not Serena
@@ -68,6 +76,7 @@ url = "http://127.0.0.1:7777/mcp"
 [profiles.work]
 model = "gpt-5.4"
 """
+    )
 
 
 def test_sanitize_codex_config_reports_when_text_changed():
@@ -102,7 +111,9 @@ def test_filter_claude_mcp_servers_removes_local_serena_http_url():
 def test_filter_claude_mcp_servers_reports_when_changed():
     servers = {"serena": {"type": "http", "url": "http://127.0.0.1:9123/mcp"}}
 
-    assert filter_claude_mcp_servers(servers) == SanitizedMapping(value={}, changed=True)
+    assert filter_claude_mcp_servers(servers) == SanitizedMapping(
+        value={}, changed=True
+    )
 
 
 def test_filter_claude_mcp_servers_keeps_remote_serena_url():

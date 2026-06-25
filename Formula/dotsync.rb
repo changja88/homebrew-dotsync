@@ -24,12 +24,12 @@ class Dotsync < Formula
 
   def install
     libexec.install "lib/dotsync"
-    bin.install "bin/dotsync"
+    libexec.install "bin"
     # Prefer an already-installed Python 3.12+ over brew's python@3.12; pin
     # the shebang so dotsync runs with a known version regardless of the
     # user's `python3` resolution.
     py = self.class.external_python || (Formula["python@3.12"].opt_bin/"python3.12").to_s
-    inreplace bin/"dotsync", /^#!.*python.*$/, "#!#{py}"
+    inreplace libexec/"bin/dotsync", /^#!.*python.*$/, "#!#{py}"
     bin.env_script_all_files(libexec/"bin", PYTHONPATH: libexec)
   end
 

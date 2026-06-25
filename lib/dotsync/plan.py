@@ -1,4 +1,5 @@
 """Describe sync effects before mutating user files."""
+
 from __future__ import annotations
 
 import hashlib
@@ -51,7 +52,63 @@ def _hash(path: Path) -> str:
     return h.hexdigest()
 
 
-def plan_file_copy(label: str, source: Path, dest: Path) -> Change:
+def _root_safety_error(path: Path, root: Path | None) -> str:
+    if root is None:
+        return ""
+    root_abs = root.absolute()
+    path_abs = path.absolute()
+    try:
+        rel = path_abs.relative_to(root_abs)
+    except ValueError:
+        return f"{path} is outside {root}"
+
+    root_real = root.resolve()
+    path_real = path.resolve()
+    if path_real != root_real and root_real not in path_real.parents:
+        return f"{path} escapes {root} via symlink"
+
+    current = root_abs
+    for part in rel.parts:
+        current = current / part
+        if current.is_symlink():
+            return f"{current} is a symlink"
+    return ""
+
+
+def plan_file_copy(
+    label: str,
+    source: Path,
+    dest: Path,
+    *,
+    source_root: Path | None = None,
+    dest_root: Path | None = None,
+) -> Change:
+    source_error = _root_safety_error(source, source_root)
+    if source_error:
+        return Change(
+            label=label, kind="unknown", source=source, dest=dest, details=source_error
+        )
+    dest_error = _root_safety_error(dest, dest_root)
+    if dest_error:
+        return Change(
+            label=label, kind="unknown", source=source, dest=dest, details=dest_error
+        )
+    if source.is_symlink():
+        return Change(
+            label=label,
+            kind="unknown",
+            source=source,
+            dest=dest,
+            details="source is a symlink",
+        )
+    if dest.is_symlink():
+        return Change(
+            label=label,
+            kind="unknown",
+            source=source,
+            dest=dest,
+            details="destination is a symlink",
+        )
     if not source.exists():
         return Change(label=label, kind="missing-source", source=source, dest=dest)
     if not dest.exists():
@@ -65,14 +122,20 @@ def _tree_files(root: Path, ignored_top_dirs: Iterable[str] = ()) -> set[Path]:
     ignored = tuple(ignored_top_dirs)
     if not root.exists():
         return set()
-    return {
-        f.relative_to(root)
-        for f in root.rglob("*")
-        if f.is_file()
-        and not (
-            f.relative_to(root).parts and f.relative_to(root).parts[0] in ignored
-        )
-    }
+    if root.is_symlink():
+        raise ValueError(f"{root} is a symlink")
+    if not root.is_dir():
+        raise ValueError(f"{root} is not a directory")
+    files: set[Path] = set()
+    for f in root.rglob("*"):
+        rel = f.relative_to(root)
+        if rel.parts and rel.parts[0] in ignored:
+            continue
+        if f.is_symlink():
+            raise ValueError(f"{f} is a symlink")
+        if f.is_file():
+            files.add(rel)
+    return files
 
 
 def plan_tree_mirror(
@@ -80,12 +143,30 @@ def plan_tree_mirror(
     source: Path,
     dest: Path,
     ignored_top_dirs: Iterable[str] = (),
+    *,
+    source_root: Path | None = None,
+    dest_root: Path | None = None,
 ) -> Change:
+    source_error = _root_safety_error(source, source_root)
+    if source_error:
+        return Change(
+            label=label, kind="unknown", source=source, dest=dest, details=source_error
+        )
+    dest_error = _root_safety_error(dest, dest_root)
+    if dest_error:
+        return Change(
+            label=label, kind="unknown", source=source, dest=dest, details=dest_error
+        )
     if not source.exists():
         return Change(label=label, kind="missing-source", source=source, dest=dest)
 
-    source_files = _tree_files(source, ignored_top_dirs)
-    dest_files = _tree_files(dest, ignored_top_dirs)
+    try:
+        source_files = _tree_files(source, ignored_top_dirs)
+        dest_files = _tree_files(dest, ignored_top_dirs)
+    except ValueError as exc:
+        return Change(
+            label=label, kind="unknown", source=source, dest=dest, details=str(exc)
+        )
     creates = source_files - dest_files
     removes = dest_files - source_files
     common = source_files & dest_files

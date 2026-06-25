@@ -31,9 +31,11 @@ def subprocess_blocked(monkeypatch, request):
     if "no_subprocess_block" in request.keywords:
         return
     import subprocess
+
     def _block(*args, **kwargs):
         raise AssertionError(
             f"subprocess.run was called without a test-side mock: {args!r}. "
             f"Add a patch('dotsync.<module>.subprocess.run') or monkeypatch."
         )
+
     monkeypatch.setattr(subprocess, "run", _block)

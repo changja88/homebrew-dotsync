@@ -16,7 +16,9 @@ Real config lives at:
 Backups default to:
   <sync-folder>/.backups/<YYYYMMDD_HHMMSS>/<app>/
 """
+
 from __future__ import annotations
+import json
 import os
 import tomllib
 from dataclasses import dataclass, field
@@ -38,6 +40,7 @@ def supported_apps() -> set[str]:
     """Return the set of registered app names. Lazy import keeps this module
     importable without firing apps/__init__.py at top of file."""
     from dotsync.apps import APP_NAMES
+
     return set(APP_NAMES)
 
 
@@ -65,7 +68,9 @@ class Config:
     # field exists only as a legacy fallback for dotsync.toml files saved
     # before Phase 6/7. When removed, also drop the legacy fallback in
     # BetterTouchToolApp.from_config and the legacy migration in _read_btt_presets.
-    bettertouchtool_presets: List[str] = field(default_factory=lambda: list(DEFAULT_BTT_PRESETS))
+    bettertouchtool_presets: List[str] = field(
+        default_factory=lambda: list(DEFAULT_BTT_PRESETS)
+    )
     app_options: dict = field(default_factory=dict)
 
     def __post_init__(self):
@@ -120,25 +125,25 @@ def load_config() -> Config:
         except tomllib.TOMLDecodeError as e:
             raise ConfigError(f"dotsync.toml at {cfg_file} is malformed: {e}") from e
 
-    apps = data.get("apps") or []
+    apps = data.get("apps", [])
     if not isinstance(apps, list):
         raise ConfigError(f"`apps` must be a list, got: {type(apps).__name__}")
     known = supported_apps()
     for app in apps:
+        if not isinstance(app, str):
+            raise ConfigError(
+                f"`apps` entries must be strings, got: {type(app).__name__}"
+            )
         if app not in known:
             raise ConfigError(
                 f"unknown app `{app}` in config (supported: {sorted(known)})"
             )
 
-    options = data.get("options", {}) or {}
-    backup_dir_raw = options.get("backup_dir")
-    if backup_dir_raw:
-        backup_dir = Path(backup_dir_raw).expanduser()
-        if not backup_dir.is_absolute():
-            backup_dir = folder / backup_dir
-    else:
-        backup_dir = default_backup_dir(folder)
-    backup_keep = int(options.get("backup_keep", DEFAULT_BACKUP_KEEP))
+    options = data.get("options", {})
+    if not isinstance(options, dict):
+        raise ConfigError(f"`options` must be a table, got: {type(options).__name__}")
+    backup_dir = _read_backup_dir(folder, options.get("backup_dir"))
+    backup_keep = _read_backup_keep(options.get("backup_keep", DEFAULT_BACKUP_KEEP))
     btt_presets = _read_btt_presets(options)
     # tomllib materializes [options.x] as nested dict values within `options`.
     app_options = {k: v for k, v in options.items() if isinstance(v, dict)}
@@ -159,12 +164,41 @@ def _toml_value(v) -> str:
         # bool MUST come before int — bool is a subclass of int in Python.
         return "true" if v else "false"
     if isinstance(v, str):
-        return f'"{v}"'
+        return json.dumps(v, ensure_ascii=False)
     if isinstance(v, (int, float)):
         return str(v)
     if isinstance(v, list):
         return "[" + ", ".join(_toml_value(x) for x in v) + "]"
     raise TypeError(f"unsupported app_options value type: {type(v).__name__}")
+
+
+def _read_backup_dir(folder: Path, value) -> Path:
+    raw = Path(".backups") if value is None else None
+    if value is not None and not isinstance(value, str):
+        raise ConfigError(
+            f"`backup_dir` must point inside the sync folder, "
+            f"got: {type(value).__name__}"
+        )
+    if isinstance(value, str):
+        if not value:
+            raise ConfigError("`backup_dir` must point inside the sync folder")
+        raw = Path(value).expanduser()
+    assert raw is not None
+    folder_real = folder.resolve()
+    backup_dir = raw.resolve() if raw.is_absolute() else (folder / raw).resolve()
+    if backup_dir != folder_real and folder_real not in backup_dir.parents:
+        raise ConfigError("`backup_dir` must stay inside the sync folder")
+    return backup_dir
+
+
+def _read_backup_keep(value) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ConfigError(
+            f"`backup_keep` must be a non-negative integer, got: {type(value).__name__}"
+        )
+    if value < 0:
+        raise ConfigError("`backup_keep` must be a non-negative integer")
+    return value
 
 
 def _read_btt_presets(options: dict) -> List[str]:
@@ -194,7 +228,7 @@ def save_config(cfg: Config) -> None:
     cfg.dir.mkdir(parents=True, exist_ok=True)
 
     lines = [
-        "apps = [" + ", ".join(f'"{a}"' for a in cfg.apps) + "]",
+        "apps = [" + ", ".join(_toml_value(a) for a in cfg.apps) + "]",
         "",
         "[options]",
     ]
@@ -202,9 +236,9 @@ def save_config(cfg: Config) -> None:
     # — moving the folder to another machine still uses default location).
     default_bd = default_backup_dir(cfg.dir)
     if cfg.backup_dir is not None and cfg.backup_dir != default_bd:
-        lines.append(f'backup_dir = "{cfg.backup_dir}"')
+        lines.append(f"backup_dir = {_toml_value(str(cfg.backup_dir))}")
     lines.append(f"backup_keep = {cfg.backup_keep}")
-    presets_repr = ", ".join(f'"{p}"' for p in cfg.bettertouchtool_presets)
+    presets_repr = ", ".join(_toml_value(p) for p in cfg.bettertouchtool_presets)
     lines.append(f"bettertouchtool_presets = [{presets_repr}]")
     lines.append("")
 

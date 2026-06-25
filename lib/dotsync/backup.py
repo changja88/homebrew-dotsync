@@ -1,11 +1,12 @@
 """Backup directory management. Per-session timestamped subdirs with rotation."""
+
 from __future__ import annotations
 import re
 import shutil
 from datetime import datetime
 from pathlib import Path
 
-_BACKUP_NAME_RE = re.compile(r"^\d{8}_\d{6}$")
+_BACKUP_NAME_RE = re.compile(r"^\d{8}_\d{6}(?:-\d{2})?$")
 
 
 def new_backup_session(root: Path, *, now: datetime | None = None) -> Path:
@@ -13,11 +14,21 @@ def new_backup_session(root: Path, *, now: datetime | None = None) -> Path:
 
     `now` is a test seam — production passes None and uses datetime.now().
     """
+    if root.is_symlink():
+        raise RuntimeError(
+            f"{root} is a symlink; refusing to create backups through symlinks"
+        )
     root.mkdir(parents=True, exist_ok=True)
     ts = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
     session = root / ts
-    session.mkdir(exist_ok=False)
-    return session
+    for i in range(100):
+        candidate = session if i == 0 else root / f"{ts}-{i:02d}"
+        try:
+            candidate.mkdir(exist_ok=False)
+        except FileExistsError:
+            continue
+        return candidate
+    raise FileExistsError(f"could not create a unique backup session under {root}")
 
 
 def rotate_backups(root: Path, keep: int) -> None:

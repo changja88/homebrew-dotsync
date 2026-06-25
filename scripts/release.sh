@@ -55,6 +55,11 @@ CURRENT=$(grep -E '^version = "[0-9]+\.[0-9]+\.[0-9]+"' pyproject.toml | head -1
 [[ -n "$CURRENT" ]] || die "Could not parse current version from pyproject.toml"
 step "현재 버전: v$CURRENT"
 
+PY="${PYTHON:-.venv/bin/python3}"
+step "Checking pytest runner"
+"$PY" -m pytest --version >/dev/null || die "pytest is not available for $PY — install test deps before releasing"
+ok "pytest available"
+
 # 2. ask bump kind -----------------------------------------------------------
 echo
 echo "1) patch  (v$(echo "$CURRENT" | awk -F. '{printf "%d.%d.%d", $1, $2, $3+1}')) — 버그 수정, 성능 개선"
@@ -99,7 +104,6 @@ ok "pyproject.toml, lib/dotsync/__init__.py, Formula/dotsync.rb updated"
 
 # 4. tests must pass before tagging ------------------------------------------
 step "Running tests"
-PY="${PYTHON:-.venv/bin/python3}"
 "$PY" -m pytest -q || die "Tests failed — aborting release. Changes left in place."
 ok "All tests passed"
 

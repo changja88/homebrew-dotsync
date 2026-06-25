@@ -173,11 +173,35 @@ Each `to` snapshots the about-to-be-overwritten local files into `<sync folder>/
 
 dotsync also excludes dynamic local Serena MCP entries from Claude's `mcpServers` sync. Other MCP servers are still synced normally.
 
-**Codex sync mirrors user-authored global settings.** dotsync copies `~/.codex/config.toml`, optional instruction/config files (`AGENTS.md`, `AGENTS.override.md`, `hooks.json`, `requirements.toml`), and the user-managed `rules/` and `skills/` directories. It skips generated or sensitive state such as `auth.json`, history, sessions, logs, sqlite state, caches, system skills, plugins, memories, and vendor imports.
+**Codex sync mirrors user-authored global settings.** dotsync copies `~/.codex/config.toml`, optional instruction/config files (`AGENTS.md`, `AGENTS.override.md`, `hooks.json`, `requirements.toml`, `plugins.toml`), and the user-managed `rules/` and `skills/` directories. `dotsync from codex` converges the sync folder to the current local managed set: if one of those optional files or managed directories is absent locally, the stored copy is removed from the sync folder. It skips generated or sensitive state such as `auth.json`, history, sessions, logs, sqlite state, caches, system skills, plugin caches, memories, and vendor imports; `skills/.system` is intentionally not synced.
+
+`plugins.toml` is a dotsync restore manifest, not a Codex-owned config file. On `dotsync to codex`, dotsync first copies the file, then best-effort runs `codex plugin marketplace add`, validates configured marketplaces with `codex plugin marketplace list --json`, refreshes only those marketplaces with `codex plugin marketplace upgrade <name>`, and installs missing plugins with `codex plugin add <plugin@marketplace> --json`. If marketplace add fails, or the marketplace is still not listed afterward, plugins from that marketplace are skipped and reported as warnings. Example:
+
+```toml
+plugins = ["sample@debug", "superpowers@openai-curated"]
+
+[[marketplaces]]
+name = "debug"
+source = "owner/repo"
+ref = "main"
+sparse = [".agents/plugins", "extras/plugins"]
+```
+
+Use multiple `sparse` entries when needed; dotsync passes them as repeated `--sparse PATH` flags, matching `codex plugin marketplace add --help`.
+
+Schema:
+
+- `plugins` is required and must be a list of `plugin@marketplace` selectors.
+- `marketplaces` is optional and must be an array of tables.
+- Each marketplace requires `name` and `source`.
+- Each marketplace may include `ref` and `sparse`.
+- Unknown keys are treated as invalid so typos do not silently disable restore.
+
+If `plugins.toml` is invalid, `dotsync to codex --dry-run` shows an unknown `plugins restore` entry with the validation error. A real `dotsync to codex` still copies files but skips plugin restore and reports a warning.
 
 dotsync intentionally excludes dynamic local Serena MCP URLs from Codex config sync. Serena ports are per-project runtime state, so a copied `127.0.0.1:<port>` URL is treated as machine-local state rather than user-authored config.
 
-**BetterTouchTool must be running** for `from` / `to` / `status` — dotsync drives BTT via `osascript`. If BTT isn't running, `status` reports `unknown` and `from` / `to` raise an error.
+**BetterTouchTool must be running** for `from` / `to` / `status` — dotsync drives BTT via `osascript`. If BTT isn't running, `status` reports `unknown` and `from` / `to` raise an error. Preset names are treated as literal BTT names; empty names, path separators, quotes, and control characters are rejected before any AppleScript is generated.
 
 #### 4. Check sync state (per-file sha256 diff)
 
@@ -212,6 +236,8 @@ dotsync config dir ~/another-folder       # change sync folder
 dotsync config apps claude,zsh            # replace the tracked-apps list (for automation)
 dotsync config btt-presets MyPreset,Other # replace BTT preset list (comma-separated)
 ```
+
+`dotsync config show` includes app-specific options such as BTT presets. If you set `backup_dir` manually in `dotsync.toml`, it must resolve inside the sync folder; absolute or relative paths that escape the sync folder, including symlink escapes, are rejected. Symlinks inside managed app config are also rejected instead of followed, so previews and syncs do not read or write through linked paths.
 
 > Newly-saved `dotsync.toml` files write BTT options under an `[options.bettertouchtool]` sub-table (the legacy `bettertouchtool_presets = [...]` form is still read for backward compatibility).
 
@@ -398,11 +424,35 @@ dotsync to --all --yes          # automation (no prompt)
 
 dotsync 는 Claude 의 `mcpServers` sync 에서도 동적 로컬 Serena MCP 항목을 제외한다. 다른 MCP 서버 설정은 계속 정상적으로 sync 된다.
 
-**Codex sync 는 사용자가 작성한 글로벌 설정을 mirror 한다.** dotsync 는 `~/.codex/config.toml`, 선택적 instruction/config 파일(`AGENTS.md`, `AGENTS.override.md`, `hooks.json`, `requirements.toml`), 그리고 사용자가 관리하는 `rules/`, `skills/` 디렉토리를 복사한다. `auth.json`, history, sessions, logs, sqlite state, caches, system skills, plugins, memories, vendor imports 같은 생성/민감 상태는 복사하지 않는다.
+**Codex sync 는 사용자가 작성한 글로벌 설정을 mirror 한다.** dotsync 는 `~/.codex/config.toml`, 선택적 instruction/config 파일(`AGENTS.md`, `AGENTS.override.md`, `hooks.json`, `requirements.toml`, `plugins.toml`), 그리고 사용자가 관리하는 `rules/`, `skills/` 디렉토리를 복사한다. `dotsync from codex` 는 sync 폴더를 현재 로컬의 관리 대상 상태로 수렴시킨다. 즉, 위 선택 파일이나 관리 디렉토리가 로컬에 없으면 sync 폴더의 저장본도 삭제된다. `auth.json`, history, sessions, logs, sqlite state, caches, system skills, plugin cache, memories, vendor imports 같은 생성/민감 상태는 복사하지 않고, `skills/.system` 은 의도적으로 동기화하지 않는다.
+
+`plugins.toml` 은 Codex 가 직접 소유한 설정 파일이 아니라 dotsync 복원용 manifest 다. `dotsync to codex` 때 dotsync 는 먼저 파일을 복사하고, 이후 best-effort 로 `codex plugin marketplace add` 를 실행한 뒤 `codex plugin marketplace list --json` 으로 marketplace 이름을 검증한다. 검증된 marketplace 만 `codex plugin marketplace upgrade <name>` 으로 갱신하고, 아직 설치되지 않은 plugin 은 `codex plugin add <plugin@marketplace> --json` 으로 설치한다. marketplace add 가 실패하거나, add 이후에도 marketplace list 에 보이지 않으면 그 marketplace 의 plugin 설치는 건너뛰고 warning 으로 보고한다. 예:
+
+```toml
+plugins = ["sample@debug", "superpowers@openai-curated"]
+
+[[marketplaces]]
+name = "debug"
+source = "owner/repo"
+ref = "main"
+sparse = [".agents/plugins", "extras/plugins"]
+```
+
+`sparse` 값은 여러 개를 둘 수 있으며, dotsync 는 `codex plugin marketplace add --help` 의 설명대로 반복 `--sparse PATH` 플래그로 전달한다.
+
+Schema:
+
+- `plugins` 는 필수이며 `plugin@marketplace` selector 리스트여야 한다.
+- `marketplaces` 는 선택이며 table array 여야 한다.
+- 각 marketplace 는 `name`, `source` 가 필수다.
+- 각 marketplace 는 선택적으로 `ref`, `sparse` 를 가질 수 있다.
+- 알 수 없는 key 는 invalid 로 처리해서 오타가 복원을 조용히 비활성화하지 않게 한다.
+
+`plugins.toml` 이 invalid 이면 `dotsync to codex --dry-run` 은 validation error 가 포함된 unknown `plugins restore` 항목을 보여준다. 실제 `dotsync to codex` 는 파일 복사는 계속 수행하지만 plugin restore 는 skip 하고 warning 으로 보고한다.
 
 dotsync 는 Codex 설정을 sync 할 때 동적 로컬 Serena MCP URL 을 의도적으로 제외한다. Serena 포트는 프로젝트별 runtime state 이므로, 복사된 `127.0.0.1:<port>` URL 은 사용자가 작성한 설정이 아니라 머신 로컬 상태로 취급한다.
 
-**BetterTouchTool 은 실행 중이어야 한다.** `from` / `to` / `status` 모두 `osascript` 으로 BTT 를 제어하기 때문. BTT 가 꺼져 있으면 `status` 는 `unknown`, `from` / `to` 는 에러로 멈춘다.
+**BetterTouchTool 은 실행 중이어야 한다.** `from` / `to` / `status` 모두 `osascript` 으로 BTT 를 제어하기 때문. BTT 가 꺼져 있으면 `status` 는 `unknown`, `from` / `to` 는 에러로 멈춘다. preset 이름은 BTT 이름 그대로 취급되며, 빈 이름, 경로 구분자, 따옴표, 제어문자는 AppleScript 생성 전에 거부된다.
 
 #### 4. 동기화 상태 확인 (파일별 sha256 비교)
 
@@ -437,6 +487,8 @@ dotsync config dir ~/another-folder       # sync 폴더 변경
 dotsync config apps claude,zsh            # 추적 앱 일괄 교체 (자동화용)
 dotsync config btt-presets MyPreset,Other # BTT preset 목록 일괄 교체 (콤마 구분)
 ```
+
+`dotsync config show` 는 BTT preset 같은 앱별 옵션도 함께 보여준다. `dotsync.toml` 에서 `backup_dir` 를 직접 지정한다면 반드시 sync 폴더 내부로 resolve 되어야 한다. 절대/상대 경로가 sync 폴더 밖으로 나가거나 symlink 를 통해 밖으로 빠지면 거부된다. 관리 대상 앱 설정 내부의 symlink 도 따라가지 않고 거부하므로 preview 와 sync 가 linked path 를 읽거나 쓰지 않는다.
 
 > 새로 저장되는 `dotsync.toml`은 BTT 옵션을 `[options.bettertouchtool]` 서브 테이블로 적는다 (기존 `bettertouchtool_presets = [...]` 형식도 호환을 위해 계속 읽힌다).
 

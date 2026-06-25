@@ -13,17 +13,22 @@ def _plugin_entry(install_path: str, version: str = "1.0.0") -> dict:
     }
 
 
-def _make_local(home: Path, plugins: dict | None = None, marketplaces: dict | None = None,
-                mcp: dict | None = None, settings: dict | None = None,
-                plugin_configs: dict | None = None):
+def _make_local(
+    home: Path,
+    plugins: dict | None = None,
+    marketplaces: dict | None = None,
+    mcp: dict | None = None,
+    settings: dict | None = None,
+    plugin_configs: dict | None = None,
+):
     cdir = home / ".claude"
     cdir.mkdir(parents=True, exist_ok=True)
     (cdir / "settings.json").write_text(json.dumps(settings or {"theme": "dark"}))
     pdir = cdir / "plugins"
     pdir.mkdir(exist_ok=True)
-    (pdir / "installed_plugins.json").write_text(json.dumps(
-        plugins if plugins is not None else {"version": 2, "plugins": {}}
-    ))
+    (pdir / "installed_plugins.json").write_text(
+        json.dumps(plugins if plugins is not None else {"version": 2, "plugins": {}})
+    )
     (pdir / "known_marketplaces.json").write_text(json.dumps(marketplaces or {}))
     (home / ".claude.json").write_text(json.dumps({"mcpServers": mcp or {}}))
     for name, cfg in (plugin_configs or {}).items():
@@ -46,10 +51,13 @@ def _make_minimal_stored(target: Path) -> Path:
 def test_sync_from_copies_all_files(fake_home, tmp_path):
     _make_local(
         fake_home,
-        plugins={"version": 2, "plugins": {
-            "superpowers@official": [_plugin_entry("/p/sp/1.0.0")]
-        }},
-        marketplaces={"official": {"source": {"source": "github", "repo": "anthropics/sp"}}},
+        plugins={
+            "version": 2,
+            "plugins": {"superpowers@official": [_plugin_entry("/p/sp/1.0.0")]},
+        },
+        marketplaces={
+            "official": {"source": {"source": "github", "repo": "anthropics/sp"}}
+        },
         mcp={"playwright": {"command": "npx"}},
         settings={"theme": "dark"},
         plugin_configs={"superpowers": {"foo": "bar"}},
@@ -61,24 +69,32 @@ def test_sync_from_copies_all_files(fake_home, tmp_path):
 
     cdir = target / "claude"
     assert json.loads((cdir / "settings.json").read_text())["theme"] == "dark"
-    assert json.loads((cdir / "mcp-servers.json").read_text()) == {"playwright": {"command": "npx"}}
+    assert json.loads((cdir / "mcp-servers.json").read_text()) == {
+        "playwright": {"command": "npx"}
+    }
     ip = json.loads((cdir / "plugins" / "installed_plugins.json").read_text())
     assert ip["plugins"]["superpowers@official"][0]["installPath"] == "/p/sp/1.0.0"
     km = json.loads((cdir / "plugins" / "known_marketplaces.json").read_text())
     assert km["official"]["source"]["repo"] == "anthropics/sp"
-    assert json.loads((cdir / "plugins" / "superpowers" / "config.json").read_text()) == {"foo": "bar"}
+    assert json.loads(
+        (cdir / "plugins" / "superpowers" / "config.json").read_text()
+    ) == {"foo": "bar"}
 
 
 def test_sync_to_replaces_mcp_servers_in_claude_json(fake_home, tmp_path):
     """sync_to overwrites .claude.json's mcpServers wholesale — pre-existing
     entries that aren't in the stored mcp-servers.json are dropped."""
-    _make_local(fake_home, mcp={"existing": {"command": "old"}}, settings={"theme": "old"})
+    _make_local(
+        fake_home, mcp={"existing": {"command": "old"}}, settings={"theme": "old"}
+    )
     target = tmp_path / "configs"
     cdir = target / "claude"
     (cdir / "plugins").mkdir(parents=True)
     (cdir / "settings.json").write_text(json.dumps({"theme": "new"}))
     (cdir / "mcp-servers.json").write_text(json.dumps({"new-mcp": {"command": "x"}}))
-    (cdir / "plugins" / "installed_plugins.json").write_text(json.dumps({"version": 2, "plugins": {}}))
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"version": 2, "plugins": {}})
+    )
     (cdir / "plugins" / "known_marketplaces.json").write_text(json.dumps({}))
     backup = tmp_path / "backup"
     backup.mkdir()
@@ -89,12 +105,17 @@ def test_sync_to_replaces_mcp_servers_in_claude_json(fake_home, tmp_path):
         run.return_value.stderr = ""
         ClaudeApp().sync_to(target, backup)
 
-    assert json.loads((fake_home / ".claude" / "settings.json").read_text())["theme"] == "new"
+    assert (
+        json.loads((fake_home / ".claude" / "settings.json").read_text())["theme"]
+        == "new"
+    )
     cj = json.loads((fake_home / ".claude.json").read_text())
     assert cj["mcpServers"] == {"new-mcp": {"command": "x"}}
     # The pre-existing "existing" key MUST be gone — current behavior is replace, not merge.
     assert "existing" not in cj["mcpServers"]
-    assert json.loads((backup / "claude" / "settings.json").read_text())["theme"] == "old"
+    assert (
+        json.loads((backup / "claude" / "settings.json").read_text())["theme"] == "old"
+    )
 
 
 def test_sync_to_invokes_plugin_restore_with_scope_user(fake_home, tmp_path):
@@ -104,13 +125,21 @@ def test_sync_to_invokes_plugin_restore_with_scope_user(fake_home, tmp_path):
     (cdir / "plugins").mkdir(parents=True)
     (cdir / "settings.json").write_text("{}")
     (cdir / "mcp-servers.json").write_text("{}")
-    (cdir / "plugins" / "installed_plugins.json").write_text(json.dumps({
-        "version": 2,
-        "plugins": {"superpowers@official": [_plugin_entry("/nonexistent/path")]}
-    }))
-    (cdir / "plugins" / "known_marketplaces.json").write_text(json.dumps({
-        "official": {"source": {"source": "github", "repo": "anthropics/sp"}}
-    }))
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {
+                    "superpowers@official": [_plugin_entry("/nonexistent/path")]
+                },
+            }
+        )
+    )
+    (cdir / "plugins" / "known_marketplaces.json").write_text(
+        json.dumps(
+            {"official": {"source": {"source": "github", "repo": "anthropics/sp"}}}
+        )
+    )
     backup = tmp_path / "backup"
     backup.mkdir()
 
@@ -134,12 +163,14 @@ def test_sync_to_skips_install_when_installpath_exists(fake_home, tmp_path):
     (cdir / "mcp-servers.json").write_text("{}")
     existing = tmp_path / "cached_plugin"
     existing.mkdir()
-    (cdir / "plugins" / "installed_plugins.json").write_text(json.dumps({
-        "version": 2,
-        "plugins": {"sp@official": [_plugin_entry(str(existing))]}
-    }))
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps(
+            {"version": 2, "plugins": {"sp@official": [_plugin_entry(str(existing))]}}
+        )
+    )
     (cdir / "plugins" / "known_marketplaces.json").write_text(json.dumps({}))
-    backup = tmp_path / "backup"; backup.mkdir()
+    backup = tmp_path / "backup"
+    backup.mkdir()
 
     with patch("dotsync.apps.claude.subprocess.run") as run:
         run.return_value.returncode = 0
@@ -156,13 +187,16 @@ def test_sync_to_disables_plugins_marked_false(fake_home, tmp_path):
     target = tmp_path / "configs"
     cdir = target / "claude"
     (cdir / "plugins").mkdir(parents=True)
-    (cdir / "settings.json").write_text(json.dumps({
-        "enabledPlugins": {"a@mp": True, "b@mp": False, "c@mp": False}
-    }))
+    (cdir / "settings.json").write_text(
+        json.dumps({"enabledPlugins": {"a@mp": True, "b@mp": False, "c@mp": False}})
+    )
     (cdir / "mcp-servers.json").write_text("{}")
-    (cdir / "plugins" / "installed_plugins.json").write_text(json.dumps({"version": 2, "plugins": {}}))
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"version": 2, "plugins": {}})
+    )
     (cdir / "plugins" / "known_marketplaces.json").write_text(json.dumps({}))
-    backup = tmp_path / "backup"; backup.mkdir()
+    backup = tmp_path / "backup"
+    backup.mkdir()
 
     with patch("dotsync.apps.claude.subprocess.run") as run:
         run.return_value.returncode = 0
@@ -177,6 +211,29 @@ def test_sync_to_disables_plugins_marked_false(fake_home, tmp_path):
     assert not any("a@mp" in c for c in disable_cmds)
 
 
+def test_sync_to_rejects_invalid_disabled_plugin_id_before_mutating_local(
+    fake_home, tmp_path
+):
+    _make_local(
+        fake_home, settings={"theme": "LOCAL"}, mcp={"local": {"command": "old"}}
+    )
+    target = tmp_path / "configs"
+    stored = _make_minimal_stored(target)
+    (stored / "settings.json").write_text(
+        json.dumps({"enabledPlugins": {"safe..name@official": False}})
+    )
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    with pytest.raises(RuntimeError, match="plugin id"):
+        ClaudeApp().sync_to(target, backup)
+
+    assert json.loads((fake_home / ".claude" / "settings.json").read_text()) == {
+        "theme": "LOCAL"
+    }
+    assert not (backup / "claude").exists()
+
+
 def test_sync_to_directory_marketplace_uses_path(fake_home, tmp_path):
     _make_local(fake_home)
     target = tmp_path / "configs"
@@ -184,11 +241,23 @@ def test_sync_to_directory_marketplace_uses_path(fake_home, tmp_path):
     (cdir / "plugins").mkdir(parents=True)
     (cdir / "settings.json").write_text("{}")
     (cdir / "mcp-servers.json").write_text("{}")
-    (cdir / "plugins" / "installed_plugins.json").write_text(json.dumps({"version": 2, "plugins": {}}))
-    (cdir / "plugins" / "known_marketplaces.json").write_text(json.dumps({
-        "local-mp": {"source": {"source": "directory", "path": "/Users/x/local-marketplace"}}
-    }))
-    backup = tmp_path / "backup"; backup.mkdir()
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"version": 2, "plugins": {}})
+    )
+    (cdir / "plugins" / "known_marketplaces.json").write_text(
+        json.dumps(
+            {
+                "local-mp": {
+                    "source": {
+                        "source": "directory",
+                        "path": "/Users/x/local-marketplace",
+                    }
+                }
+            }
+        )
+    )
+    backup = tmp_path / "backup"
+    backup.mkdir()
 
     with patch("dotsync.apps.claude.subprocess.run") as run:
         run.return_value.returncode = 0
@@ -197,7 +266,9 @@ def test_sync_to_directory_marketplace_uses_path(fake_home, tmp_path):
         ClaudeApp().sync_to(target, backup)
 
     cmds = [" ".join(c.args[0]) for c in run.call_args_list]
-    assert any("marketplace add --scope user /Users/x/local-marketplace" in c for c in cmds)
+    assert any(
+        "marketplace add --scope user /Users/x/local-marketplace" in c for c in cmds
+    )
 
 
 def test_sync_to_missing_target_raises(fake_home, tmp_path):
@@ -209,7 +280,9 @@ def test_sync_to_missing_target_raises(fake_home, tmp_path):
         ClaudeApp().sync_to(target, backup)
 
 
-def test_sync_to_missing_required_plugin_metadata_fails_before_mutating_local(fake_home, tmp_path):
+def test_sync_to_missing_required_plugin_metadata_fails_before_mutating_local(
+    fake_home, tmp_path
+):
     _make_local(fake_home, settings={"theme": "LOCAL"})
     target = tmp_path / "configs"
     cdir = target / "claude"
@@ -223,18 +296,24 @@ def test_sync_to_missing_required_plugin_metadata_fails_before_mutating_local(fa
     with pytest.raises(FileNotFoundError, match="installed_plugins.json"):
         ClaudeApp().sync_to(target, backup)
 
-    assert json.loads((fake_home / ".claude" / "settings.json").read_text()) == {"theme": "LOCAL"}
+    assert json.loads((fake_home / ".claude" / "settings.json").read_text()) == {
+        "theme": "LOCAL"
+    }
     assert not (backup / "claude").exists()
 
 
 def test_sync_to_corrupt_stored_mcp_fails_before_mutating_local(fake_home, tmp_path):
-    _make_local(fake_home, settings={"theme": "LOCAL"}, mcp={"local": {"command": "old"}})
+    _make_local(
+        fake_home, settings={"theme": "LOCAL"}, mcp={"local": {"command": "old"}}
+    )
     target = tmp_path / "configs"
     cdir = target / "claude"
     (cdir / "plugins").mkdir(parents=True)
     (cdir / "settings.json").write_text(json.dumps({"theme": "STORED"}))
     (cdir / "mcp-servers.json").write_text("{not valid json")
-    (cdir / "plugins" / "installed_plugins.json").write_text(json.dumps({"version": 2, "plugins": {}}))
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"version": 2, "plugins": {}})
+    )
     (cdir / "plugins" / "known_marketplaces.json").write_text("{}")
     backup = tmp_path / "backup"
     backup.mkdir()
@@ -242,15 +321,21 @@ def test_sync_to_corrupt_stored_mcp_fails_before_mutating_local(fake_home, tmp_p
     with pytest.raises(RuntimeError, match="mcp-servers.json"):
         ClaudeApp().sync_to(target, backup)
 
-    assert json.loads((fake_home / ".claude" / "settings.json").read_text()) == {"theme": "LOCAL"}
+    assert json.loads((fake_home / ".claude" / "settings.json").read_text()) == {
+        "theme": "LOCAL"
+    }
     assert json.loads((fake_home / ".claude.json").read_text()) == {
         "mcpServers": {"local": {"command": "old"}}
     }
     assert not (backup / "claude").exists()
 
 
-def test_sync_to_corrupt_installed_plugins_fails_before_mutating_local(fake_home, tmp_path):
-    _make_local(fake_home, settings={"theme": "LOCAL"}, mcp={"local": {"command": "old"}})
+def test_sync_to_corrupt_installed_plugins_fails_before_mutating_local(
+    fake_home, tmp_path
+):
+    _make_local(
+        fake_home, settings={"theme": "LOCAL"}, mcp={"local": {"command": "old"}}
+    )
     target = tmp_path / "configs"
     cdir = target / "claude"
     (cdir / "plugins").mkdir(parents=True)
@@ -264,21 +349,29 @@ def test_sync_to_corrupt_installed_plugins_fails_before_mutating_local(fake_home
     with pytest.raises(RuntimeError, match="installed_plugins.json"):
         ClaudeApp().sync_to(target, backup)
 
-    assert json.loads((fake_home / ".claude" / "settings.json").read_text()) == {"theme": "LOCAL"}
+    assert json.loads((fake_home / ".claude" / "settings.json").read_text()) == {
+        "theme": "LOCAL"
+    }
     assert json.loads((fake_home / ".claude.json").read_text()) == {
         "mcpServers": {"local": {"command": "old"}}
     }
     assert not (backup / "claude").exists()
 
 
-def test_sync_to_corrupt_known_marketplaces_fails_before_mutating_local(fake_home, tmp_path):
-    _make_local(fake_home, settings={"theme": "LOCAL"}, mcp={"local": {"command": "old"}})
+def test_sync_to_corrupt_known_marketplaces_fails_before_mutating_local(
+    fake_home, tmp_path
+):
+    _make_local(
+        fake_home, settings={"theme": "LOCAL"}, mcp={"local": {"command": "old"}}
+    )
     target = tmp_path / "configs"
     cdir = target / "claude"
     (cdir / "plugins").mkdir(parents=True)
     (cdir / "settings.json").write_text(json.dumps({"theme": "STORED"}))
     (cdir / "mcp-servers.json").write_text("{}")
-    (cdir / "plugins" / "installed_plugins.json").write_text(json.dumps({"version": 2, "plugins": {}}))
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"version": 2, "plugins": {}})
+    )
     (cdir / "plugins" / "known_marketplaces.json").write_text("{not valid json")
     backup = tmp_path / "backup"
     backup.mkdir()
@@ -286,15 +379,347 @@ def test_sync_to_corrupt_known_marketplaces_fails_before_mutating_local(fake_hom
     with pytest.raises(RuntimeError, match="known_marketplaces.json"):
         ClaudeApp().sync_to(target, backup)
 
-    assert json.loads((fake_home / ".claude" / "settings.json").read_text()) == {"theme": "LOCAL"}
+    assert json.loads((fake_home / ".claude" / "settings.json").read_text()) == {
+        "theme": "LOCAL"
+    }
     assert json.loads((fake_home / ".claude.json").read_text()) == {
         "mcpServers": {"local": {"command": "old"}}
     }
     assert not (backup / "claude").exists()
 
 
-def test_sync_to_required_stored_json_directory_fails_before_mutating_local(fake_home, tmp_path):
-    _make_local(fake_home, settings={"theme": "LOCAL"}, mcp={"local": {"command": "old"}})
+@pytest.mark.parametrize(
+    "relative_path, payload, expected",
+    [
+        ("settings.json", [], "settings.json"),
+        ("plugins/installed_plugins.json", {"plugins": []}, "installed_plugins.json"),
+        ("plugins/known_marketplaces.json", [], "known_marketplaces.json"),
+        ("mcp-servers.json", [], "mcp-servers.json"),
+    ],
+)
+def test_sync_to_invalid_stored_json_shape_fails_before_mutating_local(
+    fake_home, tmp_path, relative_path, payload, expected
+):
+    _make_local(
+        fake_home, settings={"theme": "LOCAL"}, mcp={"local": {"command": "old"}}
+    )
+    target = tmp_path / "configs"
+    cdir = _make_minimal_stored(target)
+    (cdir / relative_path).write_text(json.dumps(payload))
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    with pytest.raises(RuntimeError, match=expected):
+        ClaudeApp().sync_to(target, backup)
+
+    assert json.loads((fake_home / ".claude" / "settings.json").read_text()) == {
+        "theme": "LOCAL"
+    }
+    assert json.loads((fake_home / ".claude.json").read_text()) == {
+        "mcpServers": {"local": {"command": "old"}}
+    }
+    assert not (backup / "claude").exists()
+
+
+def test_sync_to_rejects_plugin_id_path_traversal_before_mutating_local(
+    fake_home, tmp_path
+):
+    _make_local(
+        fake_home, settings={"theme": "LOCAL"}, mcp={"local": {"command": "old"}}
+    )
+    target = tmp_path / "configs"
+    cdir = _make_minimal_stored(target)
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {"../../escape@official": [_plugin_entry("/tmp/escape")]},
+            }
+        )
+    )
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    with pytest.raises(RuntimeError, match="plugin id"):
+        ClaudeApp().sync_to(target, backup)
+
+    assert json.loads((fake_home / ".claude" / "settings.json").read_text()) == {
+        "theme": "LOCAL"
+    }
+    assert not (backup / "claude").exists()
+    assert not (tmp_path / "configs" / "escape").exists()
+
+
+def test_sync_to_rejects_plugin_id_containing_dotdot_before_mutating_local(
+    fake_home, tmp_path
+):
+    _make_local(
+        fake_home, settings={"theme": "LOCAL"}, mcp={"local": {"command": "old"}}
+    )
+    target = tmp_path / "configs"
+    cdir = _make_minimal_stored(target)
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {"safe..name@official": [_plugin_entry("/tmp/plugin")]},
+            }
+        )
+    )
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    with pytest.raises(RuntimeError, match="plugin id"):
+        ClaudeApp().sync_to(target, backup)
+
+    assert json.loads((fake_home / ".claude" / "settings.json").read_text()) == {
+        "theme": "LOCAL"
+    }
+    assert not (backup / "claude").exists()
+
+
+def test_sync_to_invalid_plugin_entry_shape_fails_before_mutating_local(
+    fake_home, tmp_path
+):
+    _make_local(
+        fake_home, settings={"theme": "LOCAL"}, mcp={"local": {"command": "old"}}
+    )
+    target = tmp_path / "configs"
+    cdir = _make_minimal_stored(target)
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {"pilot@official": [1]},
+            }
+        )
+    )
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    with pytest.raises(RuntimeError, match="installed_plugins.json"):
+        ClaudeApp().sync_to(target, backup)
+
+    assert json.loads((fake_home / ".claude" / "settings.json").read_text()) == {
+        "theme": "LOCAL"
+    }
+    assert json.loads((fake_home / ".claude.json").read_text()) == {
+        "mcpServers": {"local": {"command": "old"}}
+    }
+    assert not (backup / "claude").exists()
+
+
+def test_sync_to_invalid_plugin_install_path_type_fails_before_mutating_local(
+    fake_home, tmp_path
+):
+    _make_local(
+        fake_home, settings={"theme": "LOCAL"}, mcp={"local": {"command": "old"}}
+    )
+    target = tmp_path / "configs"
+    cdir = _make_minimal_stored(target)
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {"pilot@official": [{"installPath": 123}]},
+            }
+        )
+    )
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    with pytest.raises(RuntimeError, match="installPath"):
+        ClaudeApp().sync_to(target, backup)
+
+    assert json.loads((fake_home / ".claude" / "settings.json").read_text()) == {
+        "theme": "LOCAL"
+    }
+    assert not (backup / "claude").exists()
+
+
+def test_sync_to_invalid_marketplace_source_shape_fails_before_mutating_local(
+    fake_home, tmp_path
+):
+    _make_local(
+        fake_home, settings={"theme": "LOCAL"}, mcp={"local": {"command": "old"}}
+    )
+    target = tmp_path / "configs"
+    cdir = _make_minimal_stored(target)
+    (cdir / "plugins" / "known_marketplaces.json").write_text(
+        json.dumps(
+            {
+                "official": {"source": {"source": "github", "repo": 123}},
+            }
+        )
+    )
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    with pytest.raises(RuntimeError, match="known_marketplaces.json"):
+        ClaudeApp().sync_to(target, backup)
+
+    assert json.loads((fake_home / ".claude" / "settings.json").read_text()) == {
+        "theme": "LOCAL"
+    }
+    assert not (backup / "claude").exists()
+
+
+def test_sync_to_refuses_symlink_stored_app_root(fake_home, tmp_path):
+    _make_local(
+        fake_home, settings={"theme": "LOCAL"}, mcp={"local": {"command": "old"}}
+    )
+    target = tmp_path / "configs"
+    target.mkdir()
+    outside = tmp_path / "outside"
+    _make_minimal_stored(outside)
+    (target / "claude").symlink_to(outside / "claude", target_is_directory=True)
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        ClaudeApp().sync_to(target, backup)
+
+    assert json.loads((fake_home / ".claude" / "settings.json").read_text()) == {
+        "theme": "LOCAL"
+    }
+    assert not (backup / "claude").exists()
+
+
+def test_sync_to_refuses_symlink_stored_global_md_before_mutating_local(
+    fake_home, tmp_path
+):
+    _make_local(
+        fake_home, settings={"theme": "LOCAL"}, mcp={"local": {"command": "old"}}
+    )
+    target = tmp_path / "configs"
+    stored = _make_minimal_stored(target)
+    outside = tmp_path / "outside-claude.md"
+    outside.write_text("SECRET\n")
+    (stored / "CLAUDE.md").symlink_to(outside)
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        ClaudeApp().sync_to(target, backup)
+
+    assert json.loads((fake_home / ".claude" / "settings.json").read_text()) == {
+        "theme": "LOCAL"
+    }
+    assert outside.read_text() == "SECRET\n"
+    assert not (backup / "claude").exists()
+
+
+def test_sync_to_refuses_symlink_stored_plugin_config_before_mutating_local(
+    fake_home, tmp_path
+):
+    _make_local(
+        fake_home, settings={"theme": "LOCAL"}, mcp={"local": {"command": "old"}}
+    )
+    target = tmp_path / "configs"
+    stored = _make_minimal_stored(target)
+    (stored / "plugins" / "installed_plugins.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {"pilot@official": [_plugin_entry("/tmp/plugin")]},
+            }
+        )
+    )
+    outside = tmp_path / "outside-plugin-config.json"
+    outside.write_text('{"secret": true}')
+    (stored / "plugins" / "pilot").mkdir()
+    (stored / "plugins" / "pilot" / "config.json").symlink_to(outside)
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        ClaudeApp().sync_to(target, backup)
+
+    assert json.loads((fake_home / ".claude" / "settings.json").read_text()) == {
+        "theme": "LOCAL"
+    }
+    assert outside.read_text() == '{"secret": true}'
+    assert not (backup / "claude").exists()
+
+
+def test_sync_to_refuses_symlink_backup_app_root(fake_home, tmp_path):
+    _make_local(
+        fake_home, settings={"theme": "LOCAL"}, mcp={"local": {"command": "old"}}
+    )
+    target = tmp_path / "configs"
+    _make_minimal_stored(target)
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    outside = tmp_path / "outside-backup"
+    outside.mkdir()
+    (backup / "claude").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        ClaudeApp().sync_to(target, backup)
+
+    assert not (outside / "plugins").exists()
+    assert json.loads((fake_home / ".claude" / "settings.json").read_text()) == {
+        "theme": "LOCAL"
+    }
+
+
+def test_sync_from_invalid_local_installed_plugins_fails_before_mutating_stored(
+    fake_home, tmp_path
+):
+    _make_local(
+        fake_home,
+        settings={"theme": "LOCAL"},
+        plugins={
+            "version": 2,
+            "plugins": {"../../escape@official": [_plugin_entry("/tmp/escape")]},
+        },
+    )
+    target = tmp_path / "configs"
+    stored = _make_minimal_stored(target)
+    (stored / "settings.json").write_text(json.dumps({"theme": "STORED"}))
+
+    with pytest.raises(RuntimeError, match="plugin id"):
+        ClaudeApp().sync_from(target)
+
+    assert json.loads((stored / "settings.json").read_text()) == {"theme": "STORED"}
+    assert not (tmp_path / "configs" / "escape").exists()
+
+
+def test_sync_from_refuses_symlink_stored_app_root(fake_home, tmp_path):
+    _make_local(fake_home, settings={"theme": "LOCAL"})
+    target = tmp_path / "configs"
+    target.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (target / "claude").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        ClaudeApp().sync_from(target)
+
+    assert not (outside / "settings.json").exists()
+
+
+def test_sync_from_refuses_symlink_stored_mcp_servers(fake_home, tmp_path):
+    _make_local(fake_home, settings={"theme": "LOCAL"})
+    target = tmp_path / "configs"
+    stored = _make_minimal_stored(target)
+    outside = tmp_path / "outside-mcp.json"
+    outside.write_text('{"secret": true}')
+    (stored / "mcp-servers.json").unlink()
+    (stored / "mcp-servers.json").symlink_to(outside)
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        ClaudeApp().sync_from(target)
+
+    assert outside.read_text() == '{"secret": true}'
+
+
+def test_sync_to_required_stored_json_directory_fails_before_mutating_local(
+    fake_home, tmp_path
+):
+    _make_local(
+        fake_home, settings={"theme": "LOCAL"}, mcp={"local": {"command": "old"}}
+    )
     target = tmp_path / "configs"
     cdir = target / "claude"
     (cdir / "plugins").mkdir(parents=True)
@@ -308,7 +733,9 @@ def test_sync_to_required_stored_json_directory_fails_before_mutating_local(fake
     with pytest.raises(FileNotFoundError, match="installed_plugins.json"):
         ClaudeApp().sync_to(target, backup)
 
-    assert json.loads((fake_home / ".claude" / "settings.json").read_text()) == {"theme": "LOCAL"}
+    assert json.loads((fake_home / ".claude" / "settings.json").read_text()) == {
+        "theme": "LOCAL"
+    }
     assert json.loads((fake_home / ".claude.json").read_text()) == {
         "mcpServers": {"local": {"command": "old"}}
     }
@@ -322,7 +749,9 @@ def test_status_clean(fake_home, tmp_path):
     (cdir / "plugins").mkdir(parents=True)
     (cdir / "settings.json").write_text(json.dumps({"x": 1}))
     (cdir / "mcp-servers.json").write_text(json.dumps({"a": 1}))
-    (cdir / "plugins" / "installed_plugins.json").write_text(json.dumps({"version": 2, "plugins": {}}))
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"version": 2, "plugins": {}})
+    )
     (cdir / "plugins" / "known_marketplaces.json").write_text(json.dumps({}))
 
     s = ClaudeApp().status(target)
@@ -356,12 +785,18 @@ def test_sync_to_excludes_dynamic_serena_from_claude_json(fake_home, tmp_path):
     cdir = tmp_path / "configs" / "claude"
     (cdir / "plugins").mkdir(parents=True)
     (cdir / "settings.json").write_text("{}")
-    (cdir / "plugins" / "installed_plugins.json").write_text('{"version": 2, "plugins": {}}')
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        '{"version": 2, "plugins": {}}'
+    )
     (cdir / "plugins" / "known_marketplaces.json").write_text("{}")
-    (cdir / "mcp-servers.json").write_text(json.dumps({
-        "serena": {"type": "http", "url": "http://127.0.0.1:9123/mcp"},
-        "playwright": {"command": "npx"},
-    }))
+    (cdir / "mcp-servers.json").write_text(
+        json.dumps(
+            {
+                "serena": {"type": "http", "url": "http://127.0.0.1:9123/mcp"},
+                "playwright": {"command": "npx"},
+            }
+        )
+    )
 
     with patch("dotsync.apps.claude.subprocess.run"):
         ClaudeApp().sync_to(tmp_path / "configs", tmp_path / "backup")
@@ -379,14 +814,18 @@ def test_claude_status_ignores_dynamic_serena_mcp_difference(fake_home, tmp_path
     cdir = tmp_path / "configs" / "claude"
     (cdir / "plugins").mkdir(parents=True)
     (cdir / "settings.json").write_text('{"theme": "dark"}')
-    (cdir / "plugins" / "installed_plugins.json").write_text('{"version": 2, "plugins": {}}')
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        '{"version": 2, "plugins": {}}'
+    )
     (cdir / "plugins" / "known_marketplaces.json").write_text("{}")
     (cdir / "mcp-servers.json").write_text("{}")
 
     assert ClaudeApp().status(tmp_path / "configs").state == "clean"
 
 
-def test_plan_from_marks_update_when_stored_has_only_stale_serena_mcp(fake_home, tmp_path):
+def test_plan_from_marks_update_when_stored_has_only_stale_serena_mcp(
+    fake_home, tmp_path
+):
     _make_local(
         fake_home,
         mcp={},
@@ -394,9 +833,9 @@ def test_plan_from_marks_update_when_stored_has_only_stale_serena_mcp(fake_home,
     )
     cdir = tmp_path / "configs" / "claude"
     cdir.mkdir(parents=True)
-    (cdir / "mcp-servers.json").write_text(json.dumps({
-        "serena": {"type": "http", "url": "http://127.0.0.1:9123/mcp"}
-    }))
+    (cdir / "mcp-servers.json").write_text(
+        json.dumps({"serena": {"type": "http", "url": "http://127.0.0.1:9123/mcp"}})
+    )
 
     plan = ClaudeApp().plan_from(tmp_path / "configs")
 
@@ -425,7 +864,9 @@ def test_status_dirty_when_settings_differ(fake_home, tmp_path):
     (cdir / "plugins").mkdir(parents=True)
     (cdir / "settings.json").write_text(json.dumps({"x": "NEW"}))
     (cdir / "mcp-servers.json").write_text("{}")
-    (cdir / "plugins" / "installed_plugins.json").write_text(json.dumps({"version": 2, "plugins": {}}))
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"version": 2, "plugins": {}})
+    )
     (cdir / "plugins" / "known_marketplaces.json").write_text(json.dumps({}))
 
     s = ClaudeApp().status(target)
@@ -452,14 +893,23 @@ def test_sync_to_tolerates_v1_plugin_entries_dict(fake_home, tmp_path):
     (cdir / "plugins").mkdir(parents=True)
     (cdir / "settings.json").write_text("{}")
     (cdir / "mcp-servers.json").write_text("{}")
-    (cdir / "plugins" / "installed_plugins.json").write_text(json.dumps({
-        "version": 1,
-        "plugins": {"legacy@official": {"installPath": "/p/legacy/1.0.0"}},  # v1: value is dict, not list
-    }))
-    (cdir / "plugins" / "known_marketplaces.json").write_text(json.dumps({
-        "official": {"source": {"source": "github", "repo": "anthropics/sp"}}
-    }))
-    backup = tmp_path / "backup"; backup.mkdir()
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "plugins": {
+                    "legacy@official": {"installPath": "/p/legacy/1.0.0"}
+                },  # v1: value is dict, not list
+            }
+        )
+    )
+    (cdir / "plugins" / "known_marketplaces.json").write_text(
+        json.dumps(
+            {"official": {"source": {"source": "github", "repo": "anthropics/sp"}}}
+        )
+    )
+    backup = tmp_path / "backup"
+    backup.mkdir()
 
     with patch("dotsync.apps.claude.subprocess.run") as run:
         run.return_value.returncode = 0
@@ -483,9 +933,12 @@ def test_sync_to_corrupted_mcp_servers_json_raises_runtime_error(fake_home, tmp_
     (cdir / "plugins").mkdir(parents=True)
     (cdir / "settings.json").write_text("{}")
     (cdir / "mcp-servers.json").write_text("{not valid json")  # corrupted
-    (cdir / "plugins" / "installed_plugins.json").write_text(json.dumps({"version": 2, "plugins": {}}))
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"version": 2, "plugins": {}})
+    )
     (cdir / "plugins" / "known_marketplaces.json").write_text(json.dumps({}))
-    backup = tmp_path / "backup"; backup.mkdir()
+    backup = tmp_path / "backup"
+    backup.mkdir()
 
     with pytest.raises(RuntimeError, match="mcp-servers.json"):
         ClaudeApp().sync_to(target, backup)
@@ -499,13 +952,18 @@ def test_sync_to_treats_string_false_as_truthy_in_enabled_plugins(fake_home, tmp
     target = tmp_path / "configs"
     cdir = target / "claude"
     (cdir / "plugins").mkdir(parents=True)
-    (cdir / "settings.json").write_text(json.dumps({
-        "enabledPlugins": {"truthy-str@mp": "false", "real-bool@mp": False}
-    }))
+    (cdir / "settings.json").write_text(
+        json.dumps(
+            {"enabledPlugins": {"truthy-str@mp": "false", "real-bool@mp": False}}
+        )
+    )
     (cdir / "mcp-servers.json").write_text("{}")
-    (cdir / "plugins" / "installed_plugins.json").write_text(json.dumps({"version": 2, "plugins": {}}))
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"version": 2, "plugins": {}})
+    )
     (cdir / "plugins" / "known_marketplaces.json").write_text(json.dumps({}))
-    backup = tmp_path / "backup"; backup.mkdir()
+    backup = tmp_path / "backup"
+    backup.mkdir()
 
     with patch("dotsync.apps.claude.subprocess.run") as run:
         run.return_value.returncode = 0
@@ -529,15 +987,20 @@ def test_sync_to_warns_instead_of_raising_when_claude_cli_missing(fake_home, tmp
     (cdir / "plugins").mkdir(parents=True)
     (cdir / "settings.json").write_text(json.dumps({"theme": "x"}))
     (cdir / "mcp-servers.json").write_text("{}")
-    (cdir / "plugins" / "installed_plugins.json").write_text(json.dumps({
-        "version": 2, "plugins": {"sp@official": [_plugin_entry("/nope")]}
-    }))
-    (cdir / "plugins" / "known_marketplaces.json").write_text(json.dumps({
-        "official": {"source": {"source": "github", "repo": "anthropics/sp"}}
-    }))
-    backup = tmp_path / "backup"; backup.mkdir()
+    (cdir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"version": 2, "plugins": {"sp@official": [_plugin_entry("/nope")]}})
+    )
+    (cdir / "plugins" / "known_marketplaces.json").write_text(
+        json.dumps(
+            {"official": {"source": {"source": "github", "repo": "anthropics/sp"}}}
+        )
+    )
+    backup = tmp_path / "backup"
+    backup.mkdir()
 
-    with patch("dotsync.apps.claude.subprocess.run", side_effect=FileNotFoundError("claude")):
+    with patch(
+        "dotsync.apps.claude.subprocess.run", side_effect=FileNotFoundError("claude")
+    ):
         app = ClaudeApp()
         app.sync_to(target, backup)  # must not raise
 
@@ -573,8 +1036,10 @@ def test_diff_tree_only_local_returns_all_removed(tmp_path):
 
 
 def test_diff_tree_classifies_added_removed_modified(tmp_path):
-    local = tmp_path / "local"; local.mkdir()
-    stored = tmp_path / "stored"; stored.mkdir()
+    local = tmp_path / "local"
+    local.mkdir()
+    stored = tmp_path / "stored"
+    stored.mkdir()
     (local / "same.md").write_text("same")
     (stored / "same.md").write_text("same")
     (local / "different.md").write_text("v1")
@@ -589,7 +1054,8 @@ def test_diff_tree_classifies_added_removed_modified(tmp_path):
 
 
 def test_mirror_tree_creates_dst_when_absent(tmp_path):
-    src = tmp_path / "src"; src.mkdir()
+    src = tmp_path / "src"
+    src.mkdir()
     (src / "foo.md").write_text("hello")
     dst = tmp_path / "dst"
     ClaudeApp()._mirror_tree(src, dst)
@@ -597,18 +1063,22 @@ def test_mirror_tree_creates_dst_when_absent(tmp_path):
 
 
 def test_mirror_tree_overwrites_existing_files(tmp_path):
-    src = tmp_path / "src"; src.mkdir()
+    src = tmp_path / "src"
+    src.mkdir()
     (src / "foo.md").write_text("new")
-    dst = tmp_path / "dst"; dst.mkdir()
+    dst = tmp_path / "dst"
+    dst.mkdir()
     (dst / "foo.md").write_text("old")
     ClaudeApp()._mirror_tree(src, dst)
     assert (dst / "foo.md").read_text() == "new"
 
 
 def test_mirror_tree_deletes_dst_only_files(tmp_path):
-    src = tmp_path / "src"; src.mkdir()
+    src = tmp_path / "src"
+    src.mkdir()
     (src / "keep.md").write_text("keep")
-    dst = tmp_path / "dst"; dst.mkdir()
+    dst = tmp_path / "dst"
+    dst.mkdir()
     (dst / "keep.md").write_text("keep")
     (dst / "extra.md").write_text("extra")
     ClaudeApp()._mirror_tree(src, dst)
@@ -617,7 +1087,8 @@ def test_mirror_tree_deletes_dst_only_files(tmp_path):
 
 
 def test_mirror_tree_handles_nested_subdirectories(tmp_path):
-    src = tmp_path / "src"; src.mkdir()
+    src = tmp_path / "src"
+    src.mkdir()
     (src / "a").mkdir()
     (src / "a" / "b").mkdir()
     (src / "a" / "b" / "deep.md").write_text("deep")
@@ -627,9 +1098,11 @@ def test_mirror_tree_handles_nested_subdirectories(tmp_path):
 
 
 def test_mirror_tree_cleans_up_empty_subdirs(tmp_path):
-    src = tmp_path / "src"; src.mkdir()
+    src = tmp_path / "src"
+    src.mkdir()
     (src / "keep.md").write_text("keep")
-    dst = tmp_path / "dst"; dst.mkdir()
+    dst = tmp_path / "dst"
+    dst.mkdir()
     (dst / "keep.md").write_text("keep")
     (dst / "old_subdir").mkdir()
     (dst / "old_subdir" / "ghost.md").write_text("ghost")
@@ -638,23 +1111,74 @@ def test_mirror_tree_cleans_up_empty_subdirs(tmp_path):
     assert not (dst / "old_subdir").exists()
 
 
+def test_mirror_tree_replaces_directory_with_file(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    dst = tmp_path / "dst"
+    dst.mkdir()
+    (src / "conflict.md").write_text("file\n")
+    (dst / "conflict.md").mkdir()
+    (dst / "conflict.md" / "old.md").write_text("old\n")
+
+    ClaudeApp()._mirror_tree(src, dst)
+
+    assert (dst / "conflict.md").is_file()
+    assert (dst / "conflict.md").read_text() == "file\n"
+
+
+def test_sync_from_refuses_symlink_in_global_rule_directory(fake_home, tmp_path):
+    _make_local(fake_home)
+    outside = tmp_path / "secret.md"
+    outside.write_text("secret\n")
+    commands = fake_home / ".claude" / "commands"
+    commands.mkdir()
+    (commands / "leak.md").symlink_to(outside)
+    target = tmp_path / "configs"
+    target.mkdir()
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        ClaudeApp().sync_from(target)
+
+    assert not (target / "claude" / "commands" / "leak.md").exists()
+
+
 def test_sync_from_copies_global_md(fake_home, tmp_path):
     _make_local(fake_home)
     (fake_home / ".claude" / "CLAUDE.md").write_text("global rules\n")
-    target = tmp_path / "configs"; target.mkdir()
+    target = tmp_path / "configs"
+    target.mkdir()
 
     ClaudeApp().sync_from(target)
 
     assert (target / "claude" / "CLAUDE.md").read_text() == "global rules\n"
 
 
-def test_sync_from_skips_when_local_md_absent(fake_home, tmp_path):
+def test_sync_from_removes_stale_stored_global_md_when_local_absent(
+    fake_home, tmp_path
+):
     _make_local(fake_home)
-    target = tmp_path / "configs"; target.mkdir()
+    target = tmp_path / "configs"
+    target.mkdir()
     (target / "claude").mkdir()
     (target / "claude" / "CLAUDE.md").write_text("preserved\n")
 
     ClaudeApp().sync_from(target)
+
+    assert not (target / "claude" / "CLAUDE.md").exists()
+
+
+def test_sync_from_refuses_broken_local_global_md_symlink_without_removing_stored(
+    fake_home, tmp_path
+):
+    _make_local(fake_home)
+    (fake_home / ".claude" / "CLAUDE.md").symlink_to(tmp_path / "missing-md")
+    target = tmp_path / "configs"
+    target.mkdir()
+    (target / "claude").mkdir()
+    (target / "claude" / "CLAUDE.md").write_text("preserved\n")
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        ClaudeApp().sync_from(target)
 
     assert (target / "claude" / "CLAUDE.md").read_text() == "preserved\n"
 
@@ -672,7 +1196,8 @@ def test_sync_to_restores_global_md_with_backup(fake_home, tmp_path):
     )
     (cdir / "plugins" / "known_marketplaces.json").write_text("{}")
     (cdir / "CLAUDE.md").write_text("new rules\n")
-    backup = tmp_path / "backup"; backup.mkdir()
+    backup = tmp_path / "backup"
+    backup.mkdir()
 
     with patch("dotsync.apps.claude.subprocess.run") as run:
         run.return_value.returncode = 0
@@ -696,7 +1221,8 @@ def test_sync_to_skips_global_md_when_stored_absent(fake_home, tmp_path):
         json.dumps({"version": 2, "plugins": {}})
     )
     (cdir / "plugins" / "known_marketplaces.json").write_text("{}")
-    backup = tmp_path / "backup"; backup.mkdir()
+    backup = tmp_path / "backup"
+    backup.mkdir()
 
     with patch("dotsync.apps.claude.subprocess.run") as run:
         run.return_value.returncode = 0
@@ -724,6 +1250,40 @@ def test_status_clean_when_global_md_matches(fake_home, tmp_path):
     status = ClaudeApp().status(target)
 
     assert status.state == "clean"
+
+
+def test_status_reports_symlink_stored_root_without_reading_target(fake_home, tmp_path):
+    _make_local(fake_home)
+    target = tmp_path / "configs"
+    target.mkdir()
+    outside = tmp_path / "outside-claude"
+    _make_minimal_stored(outside)
+    (target / "claude").symlink_to(outside / "claude", target_is_directory=True)
+
+    status = ClaudeApp().status(target)
+
+    assert status.state == "unknown"
+    assert "symlink" in status.details
+
+
+def test_status_reports_unknown_for_symlinked_local_global_rule_file(
+    fake_home, tmp_path
+):
+    _make_local(fake_home)
+    cdir = fake_home / ".claude"
+    (cdir / "commands").mkdir()
+    outside = tmp_path / "outside-command.md"
+    outside.write_text("SECRET\n")
+    (cdir / "commands" / "leak.md").symlink_to(outside)
+    target = tmp_path / "configs"
+    stored = _make_minimal_stored(target)
+    (stored / "commands").mkdir()
+    (stored / "commands" / "safe.md").write_text("safe\n")
+
+    status = ClaudeApp().status(target)
+
+    assert status.state == "unknown"
+    assert "symlink" in status.details
 
 
 def test_status_dirty_when_global_md_differs(fake_home, tmp_path):
@@ -772,7 +1332,8 @@ def test_sync_from_mirrors_commands_directory(fake_home, tmp_path):
     cdir = fake_home / ".claude"
     (cdir / "commands").mkdir()
     (cdir / "commands" / "foo.md").write_text("foo\n")
-    target = tmp_path / "configs"; target.mkdir()
+    target = tmp_path / "configs"
+    target.mkdir()
     (target / "claude").mkdir()
     (target / "claude" / "commands").mkdir()
     (target / "claude" / "commands" / "stale.md").write_text("stale\n")
@@ -783,14 +1344,34 @@ def test_sync_from_mirrors_commands_directory(fake_home, tmp_path):
     assert not (target / "claude" / "commands" / "stale.md").exists()
 
 
-def test_sync_from_skips_when_local_directory_absent(fake_home, tmp_path):
+def test_sync_from_removes_stale_stored_directory_when_local_absent(
+    fake_home, tmp_path
+):
     _make_local(fake_home)
-    target = tmp_path / "configs"; target.mkdir()
+    target = tmp_path / "configs"
+    target.mkdir()
     (target / "claude").mkdir()
     (target / "claude" / "commands").mkdir()
     (target / "claude" / "commands" / "preserved.md").write_text("keep\n")
 
     ClaudeApp().sync_from(target)
+
+    assert not (target / "claude" / "commands").exists()
+
+
+def test_sync_from_refuses_broken_local_global_rule_symlink_without_removing_stored(
+    fake_home, tmp_path
+):
+    _make_local(fake_home)
+    (fake_home / ".claude" / "commands").symlink_to(tmp_path / "missing-commands")
+    target = tmp_path / "configs"
+    target.mkdir()
+    (target / "claude").mkdir()
+    (target / "claude" / "commands").mkdir()
+    (target / "claude" / "commands" / "preserved.md").write_text("keep\n")
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        ClaudeApp().sync_from(target)
 
     assert (target / "claude" / "commands" / "preserved.md").read_text() == "keep\n"
 
@@ -801,7 +1382,8 @@ def test_sync_from_handles_all_global_rule_directories(fake_home, tmp_path):
     for name in ("commands", "agents", "skills", "output-styles"):
         (cdir / name).mkdir()
         (cdir / name / "item.md").write_text(name)
-    target = tmp_path / "configs"; target.mkdir()
+    target = tmp_path / "configs"
+    target.mkdir()
 
     ClaudeApp().sync_from(target)
 
@@ -820,7 +1402,8 @@ def test_sync_to_mirrors_directory_with_full_backup(fake_home, tmp_path):
     (stored_cdir / "commands").mkdir()
     (stored_cdir / "commands" / "shared.md").write_text("stored\n")
     (stored_cdir / "commands" / "new.md").write_text("new\n")
-    backup = tmp_path / "backup"; backup.mkdir()
+    backup = tmp_path / "backup"
+    backup.mkdir()
 
     with patch("dotsync.apps.claude.subprocess.run") as run:
         run.return_value.returncode = 0
@@ -835,6 +1418,28 @@ def test_sync_to_mirrors_directory_with_full_backup(fake_home, tmp_path):
     assert (backup / "claude" / "commands" / "shared.md").read_text() == "local\n"
 
 
+def test_sync_to_refuses_file_stored_global_rule_directory_before_backup(
+    fake_home, tmp_path
+):
+    _make_local(
+        fake_home, settings={"theme": "LOCAL"}, mcp={"local": {"command": "old"}}
+    )
+    cdir_local = fake_home / ".claude"
+    (cdir_local / "commands").mkdir()
+    (cdir_local / "commands" / "keep.md").write_text("keep\n")
+    target = tmp_path / "configs"
+    stored_cdir = _make_minimal_stored(target)
+    (stored_cdir / "commands").write_text("not a directory")
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    with pytest.raises(RuntimeError, match="directory"):
+        ClaudeApp().sync_to(target, backup)
+
+    assert (cdir_local / "commands" / "keep.md").read_text() == "keep\n"
+    assert not (backup / "claude" / "commands").exists()
+
+
 def test_sync_to_skips_directory_when_stored_absent(fake_home, tmp_path):
     _make_local(fake_home, settings={"theme": "x"})
     cdir_local = fake_home / ".claude"
@@ -842,7 +1447,8 @@ def test_sync_to_skips_directory_when_stored_absent(fake_home, tmp_path):
     (cdir_local / "commands" / "local-only.md").write_text("keep\n")
     target = tmp_path / "configs"
     _make_minimal_stored(target)
-    backup = tmp_path / "backup"; backup.mkdir()
+    backup = tmp_path / "backup"
+    backup.mkdir()
 
     with patch("dotsync.apps.claude.subprocess.run") as run:
         run.return_value.returncode = 0
@@ -906,8 +1512,10 @@ def test_status_clean_when_global_directories_match(fake_home, tmp_path):
 def test_claude_global_md_round_trip_does_not_change_local(fake_home, tmp_path):
     _make_local(fake_home)
     (fake_home / ".claude" / "CLAUDE.md").write_text("rules\n")
-    target = tmp_path / "sync"; target.mkdir()
-    backup = tmp_path / "backup"; backup.mkdir()
+    target = tmp_path / "sync"
+    target.mkdir()
+    backup = tmp_path / "backup"
+    backup.mkdir()
 
     with patch("dotsync.apps.claude.subprocess.run") as run:
         run.return_value.returncode = 0
@@ -919,15 +1527,19 @@ def test_claude_global_md_round_trip_does_not_change_local(fake_home, tmp_path):
     assert (fake_home / ".claude" / "CLAUDE.md").read_text() == "rules\n"
 
 
-def test_claude_commands_directory_round_trip_does_not_change_local(fake_home, tmp_path):
+def test_claude_commands_directory_round_trip_does_not_change_local(
+    fake_home, tmp_path
+):
     _make_local(fake_home)
     cdir = fake_home / ".claude"
     (cdir / "commands").mkdir()
     (cdir / "commands" / "foo.md").write_text("foo\n")
     (cdir / "commands" / "sub").mkdir()
     (cdir / "commands" / "sub" / "bar.md").write_text("bar\n")
-    target = tmp_path / "sync"; target.mkdir()
-    backup = tmp_path / "backup"; backup.mkdir()
+    target = tmp_path / "sync"
+    target.mkdir()
+    backup = tmp_path / "backup"
+    backup.mkdir()
 
     with patch("dotsync.apps.claude.subprocess.run") as run:
         run.return_value.returncode = 0
@@ -940,14 +1552,18 @@ def test_claude_commands_directory_round_trip_does_not_change_local(fake_home, t
     assert (cdir / "commands" / "sub" / "bar.md").read_text() == "bar\n"
 
 
-def test_claude_global_rules_round_trip_to_then_from_preserves_stored(fake_home, tmp_path):
+def test_claude_global_rules_round_trip_to_then_from_preserves_stored(
+    fake_home, tmp_path
+):
     _make_local(fake_home)
-    target = tmp_path / "sync"; target.mkdir()
+    target = tmp_path / "sync"
+    target.mkdir()
     cdir_stored = _make_minimal_stored(target)
     (cdir_stored / "CLAUDE.md").write_text("stored rules\n")
     (cdir_stored / "agents").mkdir()
     (cdir_stored / "agents" / "reviewer.md").write_text("reviewer\n")
-    backup = tmp_path / "backup"; backup.mkdir()
+    backup = tmp_path / "backup"
+    backup.mkdir()
 
     with patch("dotsync.apps.claude.subprocess.run") as run:
         run.return_value.returncode = 0
@@ -975,7 +1591,9 @@ def test_plan_from_reports_claude_mcp_servers_create(fake_home, tmp_path):
     assert labels["mcp-servers.json"] == "create"
 
 
-def test_plan_to_reports_unknown_for_corrupt_stored_mcp_when_local_json_missing(fake_home, tmp_path):
+def test_plan_to_reports_unknown_for_corrupt_stored_mcp_when_local_json_missing(
+    fake_home, tmp_path
+):
     cdir = fake_home / ".claude"
     cdir.mkdir()
     stored = tmp_path / "sync" / "claude"
@@ -992,7 +1610,42 @@ def test_plan_to_reports_unknown_for_corrupt_stored_mcp_when_local_json_missing(
     assert "invalid" in changes["mcp-servers.json"].details
 
 
-def test_plan_to_reports_mcp_update_when_local_claude_json_lacks_mcp_servers(fake_home, tmp_path):
+def test_plan_to_reports_unknown_for_invalid_stored_installed_plugins_shape(
+    fake_home, tmp_path
+):
+    cdir = fake_home / ".claude"
+    cdir.mkdir()
+    stored = _make_minimal_stored(tmp_path / "sync")
+    (stored / "plugins" / "installed_plugins.json").write_text('{"plugins": []}')
+
+    plan = ClaudeApp().plan_to(tmp_path / "sync")
+
+    changes = {c.label: c for c in plan.changes}
+    assert changes["plugins config"].kind == "unknown"
+    assert "installed_plugins.json" in changes["plugins config"].details
+
+
+def test_plan_from_reports_unknown_for_invalid_local_plugin_id(fake_home, tmp_path):
+    cdir = fake_home / ".claude"
+    plugins = cdir / "plugins"
+    plugins.mkdir(parents=True)
+    (cdir / "settings.json").write_text("{}")
+    (plugins / "installed_plugins.json").write_text(
+        '{"plugins": {"../../escape@official": []}}'
+    )
+    (plugins / "known_marketplaces.json").write_text("{}")
+    (fake_home / ".claude.json").write_text('{"mcpServers": {}}')
+
+    plan = ClaudeApp().plan_from(tmp_path / "sync")
+
+    changes = {c.label: c for c in plan.changes}
+    assert changes["plugins config"].kind == "unknown"
+    assert "plugin id" in changes["plugins config"].details
+
+
+def test_plan_to_reports_mcp_update_when_local_claude_json_lacks_mcp_servers(
+    fake_home, tmp_path
+):
     cdir = fake_home / ".claude"
     cdir.mkdir()
     (fake_home / ".claude.json").write_text('{"other": true}')
@@ -1058,6 +1711,58 @@ def test_plan_from_reports_empty_global_rule_directory_creation(fake_home, tmp_p
 
     changes = {c.label: c for c in plan.changes}
     assert changes["commands/"].kind == "create"
+
+
+def test_plan_from_reports_stale_stored_global_rule_removals(fake_home, tmp_path):
+    cdir = fake_home / ".claude"
+    plugins = cdir / "plugins"
+    plugins.mkdir(parents=True)
+    (cdir / "settings.json").write_text("{}")
+    (plugins / "installed_plugins.json").write_text('{"plugins": {}}')
+    (plugins / "known_marketplaces.json").write_text("{}")
+    (fake_home / ".claude.json").write_text('{"mcpServers": {}}')
+    stored = tmp_path / "sync" / "claude"
+    (stored / "plugins").mkdir(parents=True)
+    (stored / "settings.json").write_text("{}")
+    (stored / "plugins" / "installed_plugins.json").write_text('{"plugins": {}}')
+    (stored / "plugins" / "known_marketplaces.json").write_text("{}")
+    (stored / "mcp-servers.json").write_text("{}")
+    (stored / "CLAUDE.md").write_text("stale")
+    (stored / "commands").mkdir()
+    (stored / "commands" / "stale.md").write_text("stale")
+
+    plan = ClaudeApp().plan_from(tmp_path / "sync")
+
+    changes = {c.label: c for c in plan.changes}
+    assert changes["CLAUDE.md"].kind == "remove"
+    assert changes["commands/"].kind == "remove"
+
+
+def test_plan_from_reports_unknown_for_broken_local_global_rule_symlink(
+    fake_home, tmp_path
+):
+    cdir = fake_home / ".claude"
+    plugins = cdir / "plugins"
+    plugins.mkdir(parents=True)
+    (cdir / "settings.json").write_text("{}")
+    (plugins / "installed_plugins.json").write_text('{"plugins": {}}')
+    (plugins / "known_marketplaces.json").write_text("{}")
+    (fake_home / ".claude.json").write_text('{"mcpServers": {}}')
+    (cdir / "commands").symlink_to(tmp_path / "missing-commands")
+    stored = tmp_path / "sync" / "claude"
+    (stored / "plugins").mkdir(parents=True)
+    (stored / "settings.json").write_text("{}")
+    (stored / "plugins" / "installed_plugins.json").write_text('{"plugins": {}}')
+    (stored / "plugins" / "known_marketplaces.json").write_text("{}")
+    (stored / "mcp-servers.json").write_text("{}")
+    (stored / "commands").mkdir()
+    (stored / "commands" / "stale.md").write_text("stale")
+
+    plan = ClaudeApp().plan_from(tmp_path / "sync")
+
+    commands = [c for c in plan.changes if c.label == "commands/"][0]
+    assert commands.kind == "unknown"
+    assert "symlink" in commands.details
 
 
 def test_plan_to_reports_claude_global_rule_tree_update(fake_home, tmp_path):

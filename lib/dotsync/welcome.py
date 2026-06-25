@@ -1,4 +1,5 @@
 """Welcome banner shown by `dotsync welcome` and at the start of `dotsync init`."""
+
 from __future__ import annotations
 from dotsync import __version__, ui
 
@@ -21,6 +22,7 @@ TAGLINE_DECO = "∿∿∿"
 
 def format_welcome(version: str = __version__) -> str:
     """Return the welcome banner as a single string (color-aware)."""
+
     def c(color: str, text: str) -> str:
         return ui._wrap(color, text)
 
@@ -47,8 +49,7 @@ def format_welcome(version: str = __version__) -> str:
         f"   {c(dim, 'v' + version)}  {c(dim, '·')}  "
         f"{c(dim, 'brew install changja88/dotsync/dotsync')}",
         "",
-        f"   {c(primary, '▶')}  {c(bold, 'Quickstart')} "
-        f"{c(dim, '— in this order:')}",
+        f"   {c(primary, '▶')}  {c(bold, 'Quickstart')} {c(dim, '— in this order:')}",
         "",
         f"       {c(bold, 'dotsync init')}            "
         f"{c(dim, '# start here: pick a sync folder + auto-detect apps')}",

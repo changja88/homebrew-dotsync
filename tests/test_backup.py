@@ -1,5 +1,5 @@
-from pathlib import Path
 from datetime import datetime
+import pytest
 from dotsync.backup import new_backup_session, rotate_backups
 
 
@@ -15,6 +15,16 @@ def test_new_backup_session_creates_unique_dir(tmp_path):
     assert s1.name[8] == "_"
 
 
+def test_new_backup_session_creates_unique_dir_with_same_second(tmp_path):
+    now = datetime(2026, 1, 1, 10, 0, 0)
+    s1 = new_backup_session(tmp_path, now=now)
+    s2 = new_backup_session(tmp_path, now=now)
+    assert s1 != s2
+    assert s1.exists()
+    assert s2.exists()
+    assert s2.name.startswith("20260101_100000-")
+
+
 def test_new_backup_session_creates_parent(tmp_path):
     deep = tmp_path / "a" / "b" / "c"
     s = new_backup_session(deep)
@@ -22,13 +32,42 @@ def test_new_backup_session_creates_parent(tmp_path):
     assert s.exists()
 
 
+def test_new_backup_session_rejects_symlink_root(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = tmp_path / "linked"
+    root.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        new_backup_session(root, now=datetime(2026, 1, 1, 10, 0, 0))
+
+    assert list(outside.iterdir()) == []
+
+
 def test_rotate_keeps_n_newest(tmp_path):
-    for name in ["20260101_000000", "20260102_000000", "20260103_000000",
-                 "20260104_000000", "20260105_000000"]:
+    for name in [
+        "20260101_000000",
+        "20260102_000000",
+        "20260103_000000",
+        "20260104_000000",
+        "20260105_000000",
+    ]:
         (tmp_path / name).mkdir()
     rotate_backups(tmp_path, keep=3)
     remaining = sorted(p.name for p in tmp_path.iterdir())
     assert remaining == ["20260103_000000", "20260104_000000", "20260105_000000"]
+
+
+def test_rotate_includes_same_second_suffixed_sessions(tmp_path):
+    for name in [
+        "20260101_000000",
+        "20260101_000000-01",
+        "20260101_000001",
+    ]:
+        (tmp_path / name).mkdir()
+    rotate_backups(tmp_path, keep=1)
+    remaining = sorted(p.name for p in tmp_path.iterdir())
+    assert remaining == ["20260101_000001"]
 
 
 def test_rotate_zero_keep_keeps_all(tmp_path):

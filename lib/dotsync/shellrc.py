@@ -4,9 +4,11 @@
 Pure functions only — the caller (cli.py) decides *when* to call us based on
 user consent (interactive prompt or `--yes`).
 """
+
 from __future__ import annotations
 
 import os
+import shlex
 from pathlib import Path
 from typing import Literal, NamedTuple, Optional
 
@@ -28,9 +30,8 @@ class ShellRcResult(NamedTuple):
 
 
 def export_line(dotsync_dir: Path) -> str:
-    """The exact line we maintain in the rc file. Always quoted so paths with
-    spaces (iCloud, Google Drive) survive."""
-    return f'export {ENV_VAR}="{dotsync_dir}"'
+    """The exact shell-escaped line we maintain in the rc file."""
+    return f"export {ENV_VAR}={shlex.quote(str(dotsync_dir))}"
 
 
 def detect_rc_path(
@@ -74,36 +75,36 @@ def update_shell_rc(rc_path: Path, dotsync_dir: Path) -> ShellRcResult:
         a different path      → "updated" (replace in place)
       - otherwise             → "added"   (append marker + line at EOF)
     """
-    line = export_line(dotsync_dir)
+    export = export_line(dotsync_dir)
     if not rc_path.exists():
-        return ShellRcResult("rc_missing", rc_path, line)
+        return ShellRcResult("rc_missing", rc_path, export)
 
     text = rc_path.read_text()
     lines = text.splitlines()
 
     target_idx = None
-    for i, l in enumerate(lines):
-        if l.strip().startswith(f"export {ENV_VAR}="):
+    for i, rc_line in enumerate(lines):
+        if rc_line.strip().startswith(f"export {ENV_VAR}="):
             target_idx = i
             break
 
     if target_idx is not None:
-        if lines[target_idx].strip() == line:
-            return ShellRcResult("already_set", rc_path, line)
-        lines[target_idx] = line
+        if lines[target_idx].strip() == export:
+            return ShellRcResult("already_set", rc_path, export)
+        lines[target_idx] = export
         new_text = "\n".join(lines)
         if text.endswith("\n"):
             new_text += "\n"
         rc_path.write_text(new_text)
-        return ShellRcResult("updated", rc_path, line)
+        return ShellRcResult("updated", rc_path, export)
 
     # Append: separate from previous content with a blank line so the marker
     # stands out on `cat ~/.zshrc`.
     if text == "":
-        block = f"{MARKER}\n{line}\n"
+        block = f"{MARKER}\n{export}\n"
     elif text.endswith("\n"):
-        block = f"\n{MARKER}\n{line}\n"
+        block = f"\n{MARKER}\n{export}\n"
     else:
-        block = f"\n\n{MARKER}\n{line}\n"
+        block = f"\n\n{MARKER}\n{export}\n"
     rc_path.write_text(text + block)
-    return ShellRcResult("added", rc_path, line)
+    return ShellRcResult("added", rc_path, export)

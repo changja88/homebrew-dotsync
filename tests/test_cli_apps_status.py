@@ -1,6 +1,4 @@
 import os
-from pathlib import Path
-import pytest
 from dotsync.cli import main
 from dotsync.config import Config, save_config
 

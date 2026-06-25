@@ -4,6 +4,7 @@ Multiple presets can be tracked at once — `presets` is a list of preset
 names. sync_from / sync_to / status iterate every preset; the per-preset
 file layout is ``<sync>/bettertouchtool/presets/<name>.bttpreset``.
 """
+
 from __future__ import annotations
 import hashlib
 import json
@@ -13,7 +14,12 @@ import subprocess
 import time
 from pathlib import Path
 from dotsync import ui
-from dotsync.apps.base import App, AppStatus
+from dotsync.apps.base import (
+    App,
+    AppStatus,
+    ensure_not_symlink,
+    ensure_path_within_root,
+)
 from dotsync.plan import AppPlan, Change
 
 # BTT's `export_preset` AppleScript returns "done" the moment the command is
@@ -104,7 +110,8 @@ class BetterTouchToolApp(App):
             if not data_dir.is_dir():
                 return []
             candidates = [
-                p for p in data_dir.glob("btt_data_store.version_*")
+                p
+                for p in data_dir.glob("btt_data_store.version_*")
                 if not p.name.endswith("-shm") and not p.name.endswith("-wal")
             ]
             if not candidates:
@@ -127,6 +134,24 @@ class BetterTouchToolApp(App):
         return Path(cls.APP_PATH).exists()
 
     DEFAULT_PRESETS: tuple[str, ...] = ("Master_bt",)
+
+    @staticmethod
+    def _validate_preset_name(preset: str) -> str:
+        if not isinstance(preset, str) or not preset:
+            raise ValueError("invalid BetterTouchTool preset name")
+        if (
+            preset in {".", ".."}
+            or "/" in preset
+            or "\\" in preset
+            or '"' in preset
+            or any(ord(ch) < 32 for ch in preset)
+        ):
+            raise ValueError(f"invalid BetterTouchTool preset name: {preset!r}")
+        return preset
+
+    @classmethod
+    def _validated_presets(cls, presets: list[str]) -> list[str]:
+        return [cls._validate_preset_name(preset) for preset in presets]
 
     @classmethod
     def extra_init_args(cls, parser) -> None:
@@ -160,7 +185,8 @@ class BetterTouchToolApp(App):
         # Explicit flag wins.
         flag_value = getattr(args, "btt_presets", None)
         if flag_value:
-            return {"presets": [p.strip() for p in flag_value.split(",") if p.strip()]}
+            presets = [p.strip() for p in flag_value.split(",") if p.strip()]
+            return {"presets": cls._validated_presets(presets)}
         # Toggling BTT on (was-not, now-is) interactively → auto-discover.
         was = cls.name in prev_apps
         if interactive and not was:
@@ -182,12 +208,21 @@ class BetterTouchToolApp(App):
     def handle_config_subcommand(cls, args, cfg) -> int | None:
         from dotsync import ui
         from dotsync.config import save_config
+
         if getattr(args, "cfg_cmd", None) != "btt-presets":
             return None
-        new_presets = [p.strip() for p in args.presets.split(",") if p.strip()]
-        if not new_presets:
+        raw_presets = [p.strip() for p in args.presets.split(",") if p.strip()]
+        if not raw_presets:
             import sys
+
             print("provide at least one preset name", file=sys.stderr)
+            return 2
+        try:
+            new_presets = cls._validated_presets(raw_presets)
+        except ValueError as exc:
+            import sys
+
+            print(str(exc), file=sys.stderr)
             return 2
         cfg.app_options.setdefault(cls.name, {})["presets"] = new_presets
         save_config(cfg)
@@ -196,13 +231,36 @@ class BetterTouchToolApp(App):
 
     def __init__(self, presets: list[str] | None = None):
         super().__init__()
-        self.presets: list[str] = list(presets) if presets else ["Master_bt"]
+        selected = list(presets) if presets else ["Master_bt"]
+        self.presets = self._validated_presets(selected)
 
     def _stored(self, target_dir: Path, preset: str) -> Path:
         return target_dir / self.name / "presets" / f"{preset}.bttpreset"
 
+    @staticmethod
+    def _applescript_string(value: str | Path) -> str:
+        text = str(value)
+        escaped = (
+            text.replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("\r", "\\r")
+            .replace("\n", "\\n")
+        )
+        return f'"{escaped}"'
+
+    def _ensure_stored_path(self, path: Path, target_dir: Path, label: str) -> None:
+        ensure_path_within_root(path, target_dir, label)
+
+    def _ensure_stored_preset(self, target_dir: Path, preset: str) -> Path:
+        stored = self._stored(target_dir, preset)
+        self._ensure_stored_path(stored, target_dir, f"presets/{preset}.bttpreset")
+        ensure_not_symlink(stored, f"presets/{preset}.bttpreset")
+        return stored
+
     def _wait_for_export(self, path: Path, timeout: float | None = None) -> bool:
-        deadline = time.monotonic() + (timeout if timeout is not None else _EXPORT_WAIT_TIMEOUT)
+        deadline = time.monotonic() + (
+            timeout if timeout is not None else _EXPORT_WAIT_TIMEOUT
+        )
         interval = 0.02
         while True:
             if path.exists() and path.stat().st_size > 0:
@@ -215,7 +273,8 @@ class BetterTouchToolApp(App):
     def _osascript(self, script: str) -> None:
         result = subprocess.run(
             ["osascript", "-e", script],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         out = (result.stdout or "").strip()
         if result.returncode != 0 or out != "done":
@@ -236,11 +295,7 @@ class BetterTouchToolApp(App):
                 [Change("presets/", "unknown", details=details)],
                 self.description,
             )
-        dirty = {
-            item.strip()
-            for item in status.details.split(",")
-            if item.strip()
-        }
+        dirty = {item.strip() for item in status.details.split(",") if item.strip()}
         for preset in self.presets:
             label = f"presets/{preset}.bttpreset"
             stored = self._stored(target_dir, preset)
@@ -269,11 +324,7 @@ class BetterTouchToolApp(App):
                 self.description,
             )
 
-        dirty = {
-            item.strip()
-            for item in status.details.split(",")
-            if item.strip()
-        }
+        dirty = {item.strip() for item in status.details.split(",") if item.strip()}
         changes: list[Change] = []
         for preset in self.presets:
             label = f"presets/{preset}.bttpreset"
@@ -292,12 +343,15 @@ class BetterTouchToolApp(App):
         for preset in self.presets:
             ui.dim(f"preset: {preset}")
             dst = self._stored(target_dir, preset)
+            self._ensure_stored_path(dst, target_dir, f"presets/{preset}.bttpreset")
             dst.parent.mkdir(parents=True, exist_ok=True)
             script = (
                 f'tell application "BetterTouchTool" to export_preset '
-                f'"{preset}" outputPath "{dst}" compress false includeSettings true'
+                f"{self._applescript_string(preset)} outputPath "
+                f"{self._applescript_string(dst)} compress false includeSettings true"
             )
             if dst.exists():
+                ensure_not_symlink(dst, f"presets/{preset}.bttpreset")
                 dst.unlink()
             self._osascript(script)
             if not self._wait_for_export(dst):
@@ -309,8 +363,9 @@ class BetterTouchToolApp(App):
         # importing any of them — fail-fast keeps the local BTT state intact
         # if the sync folder is missing files.
         missing = [
-            p for p in self.presets
-            if not self._stored(target_dir, p).exists()
+            p
+            for p in self.presets
+            if not self._ensure_stored_preset(target_dir, p).exists()
         ]
         if missing:
             first_missing = self._stored(target_dir, missing[0])
@@ -321,12 +376,14 @@ class BetterTouchToolApp(App):
 
         for preset in self.presets:
             ui.dim(f"preset: {preset}")
-            src = self._stored(target_dir, preset)
+            src = self._ensure_stored_preset(target_dir, preset)
             backup_target = backup_dir / self.name / f"{preset}.bttpreset"
+            ensure_path_within_root(backup_target, backup_dir, f"{preset}.bttpreset")
             backup_target.parent.mkdir(parents=True, exist_ok=True)
             export_script = (
                 f'tell application "BetterTouchTool" to export_preset '
-                f'"{preset}" outputPath "{backup_target}" compress false includeSettings true'
+                f"{self._applescript_string(preset)} outputPath "
+                f"{self._applescript_string(backup_target)} compress false includeSettings true"
             )
             if backup_target.exists():
                 backup_target.unlink()
@@ -335,12 +392,17 @@ class BetterTouchToolApp(App):
                 if self._wait_for_export(backup_target):
                     ui.dim(f"backup → {backup_target}")
                 else:
-                    ui.warn(f"existing preset backup file did not appear for {preset} (continuing anyway)")
+                    ui.warn(
+                        f"existing preset backup file did not appear for {preset} (continuing anyway)"
+                    )
             except RuntimeError:
-                ui.warn(f"existing preset backup failed for {preset} (continuing anyway)")
+                ui.warn(
+                    f"existing preset backup failed for {preset} (continuing anyway)"
+                )
 
             import_script = (
-                f'tell application "BetterTouchTool" to import_preset "{src}"'
+                f'tell application "BetterTouchTool" to import_preset '
+                f"{self._applescript_string(src)}"
             )
             self._osascript(import_script)
             ui.sub(f"presets/{preset}.bttpreset → BTT")
@@ -348,10 +410,12 @@ class BetterTouchToolApp(App):
 
     def status(self, target_dir: Path) -> AppStatus:
         import tempfile
+
         # 1) any preset whose stored file is missing → state=missing
         missing = [
-            p for p in self.presets
-            if not self._stored(target_dir, p).exists()
+            p
+            for p in self.presets
+            if not self._ensure_stored_preset(target_dir, p).exists()
         ]
         if missing:
             return AppStatus(
@@ -364,11 +428,12 @@ class BetterTouchToolApp(App):
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
             for preset in self.presets:
-                stored = self._stored(target_dir, preset)
+                stored = self._ensure_stored_preset(target_dir, preset)
                 live = tmp / f"{preset}.live.bttpreset"
                 export_script = (
                     f'tell application "BetterTouchTool" to export_preset '
-                    f'"{preset}" outputPath "{live}" compress false includeSettings true'
+                    f"{self._applescript_string(preset)} outputPath "
+                    f"{self._applescript_string(live)} compress false includeSettings true"
                 )
                 try:
                     self._osascript(export_script)

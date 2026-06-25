@@ -82,7 +82,10 @@ def test_format_summary_shows_count_and_duration():
 def test_format_summary_lists_synced_apps(monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
     out = ui.format_summary(
-        ok=3, warn=0, error=0, duration_ms=2300,
+        ok=3,
+        warn=0,
+        error=0,
+        duration_ms=2300,
         synced=["claude", "ghostty", "zsh"],
     )
     assert "synced" in out
@@ -92,7 +95,10 @@ def test_format_summary_lists_synced_apps(monkeypatch):
 def test_format_summary_fits_all_supported_apps(monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
     out = ui.format_summary(
-        ok=5, warn=0, error=0, duration_ms=2300,
+        ok=5,
+        warn=0,
+        error=0,
+        duration_ms=2300,
         synced=["claude", "codex", "ghostty", "bettertouchtool", "zsh"],
     )
     lines = out.splitlines()
@@ -104,7 +110,10 @@ def test_format_summary_separates_applied_and_unchanged(monkeypatch):
     changed (applied) from apps that were already in sync (unchanged)."""
     monkeypatch.setenv("NO_COLOR", "1")
     out = ui.format_summary(
-        ok=4, warn=0, error=0, duration_ms=3100,
+        ok=4,
+        warn=0,
+        error=0,
+        duration_ms=3100,
         applied=["ghostty", "bettertouchtool"],
         unchanged=["claude", "zsh"],
     )
@@ -117,7 +126,10 @@ def test_format_summary_separates_applied_and_unchanged(monkeypatch):
 def test_format_summary_lists_failed_apps(monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
     out = ui.format_summary(
-        ok=2, warn=0, error=1, duration_ms=1100,
+        ok=2,
+        warn=0,
+        error=1,
+        duration_ms=1100,
         synced=["claude", "zsh"],
         failed=["bettertouchtool"],
     )
@@ -168,6 +180,7 @@ def test_format_ask_default_accent_uses_primary(monkeypatch):
 def test_format_status_line_clean(monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
     from dotsync.ui import format_status_line
+
     line = format_status_line("zsh", state="clean", details="", direction="")
     assert "✓" in line
     assert "zsh" in line
@@ -177,7 +190,10 @@ def test_format_status_line_clean(monkeypatch):
 def test_format_status_line_dirty_with_direction(monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
     from dotsync.ui import format_status_line
-    line = format_status_line("zsh", state="dirty", details=".zshrc", direction="local-newer")
+
+    line = format_status_line(
+        "zsh", state="dirty", details=".zshrc", direction="local-newer"
+    )
     assert "⚠" in line
     assert "dirty" in line
     assert ".zshrc" in line
@@ -187,7 +203,10 @@ def test_format_status_line_dirty_with_direction(monkeypatch):
 def test_format_status_line_missing(monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
     from dotsync.ui import format_status_line
-    line = format_status_line("ghostty", state="missing", details="config", direction="")
+
+    line = format_status_line(
+        "ghostty", state="missing", details="config", direction=""
+    )
     assert "✗" in line
     assert "missing" in line
 
@@ -195,7 +214,10 @@ def test_format_status_line_missing(monkeypatch):
 def test_format_status_line_unknown(monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
     from dotsync.ui import format_status_line
-    line = format_status_line("bettertouchtool", state="unknown", details="BTT not running", direction="")
+
+    line = format_status_line(
+        "bettertouchtool", state="unknown", details="BTT not running", direction=""
+    )
     assert "·" in line or "?" in line  # any dim marker
     assert "unknown" in line
 
@@ -206,7 +228,9 @@ def test_format_plan_change_shows_kind_label_and_details(monkeypatch):
 
     monkeypatch.setenv("NO_COLOR", "1")
 
-    out = ui.format_plan_change(Change("rules/", "update", details="1 create, 1 remove"))
+    out = ui.format_plan_change(
+        Change("rules/", "update", details="1 create, 1 remove")
+    )
 
     assert "update" in out
     assert "rules/" in out

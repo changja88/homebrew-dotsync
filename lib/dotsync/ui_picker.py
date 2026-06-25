@@ -21,6 +21,7 @@ The combination drives the row color so misconfigured states stand out:
     [ ] + installed       → yellow dim (add candidate)
     [ ] + not installed   → dim
 """
+
 from __future__ import annotations
 
 import os
@@ -105,9 +106,9 @@ def _read_key() -> "str | None":
     """
     fd = sys.stdin.fileno()
     ch = os.read(fd, 1)
-    if ch == b"\x03":           # ctrl+c
+    if ch == b"\x03":  # ctrl+c
         raise KeyboardInterrupt
-    if ch == b"\x1b":           # ESC — could start an arrow sequence
+    if ch == b"\x1b":  # ESC — could start an arrow sequence
         ready, _, _ = select.select([fd], [], [], 0.05)
         if not ready:
             return "cancel"
@@ -121,7 +122,7 @@ def _read_key() -> "str | None":
             return "up"
         if arrow == b"B":
             return "down"
-        return None             # other CSI sequence — ignore
+        return None  # other CSI sequence — ignore
     if ch == b" ":
         return "space"
     if ch in (b"\r", b"\n"):
@@ -138,12 +139,12 @@ def _row_color(*, selected: bool, installed: bool) -> str:
     so misconfigured states stand out without being loud.
     """
     if selected and installed:
-        return ""                       # healthy → default
+        return ""  # healthy → default
     if selected and not installed:
-        return ui.RED + ui.DIM_ANSI     # tracked but missing
+        return ui.RED + ui.DIM_ANSI  # tracked but missing
     if not selected and installed:
         return ui.YELLOW + ui.DIM_ANSI  # installed but untracked
-    return ui.DIM_ANSI                  # neither
+    return ui.DIM_ANSI  # neither
 
 
 def _render(state: PickerState, title: str, *, first: bool) -> None:
@@ -152,14 +153,16 @@ def _render(state: PickerState, title: str, *, first: bool) -> None:
     out = sys.stdout
     n = len(state.items)
     if not first:
-        out.write(f"\x1b[{n + 2}A")   # move cursor up (n items + title + spacer)
-        out.write("\x1b[J")           # clear from cursor to end of screen
+        out.write(f"\x1b[{n + 2}A")  # move cursor up (n items + title + spacer)
+        out.write("\x1b[J")  # clear from cursor to end of screen
     title_part = ui._wrap(ui.BOLD, title)
     hint = ui._wrap(ui.DIM_ANSI, "↑/↓ move · space toggle · enter submit")
     out.write(f"  {title_part}   {hint}\n")
     out.write("\n")
     for i, name in enumerate(state.items):
-        cursor_marker = ui._wrap(ui.PRIMARY, _GLYPH_CURSOR) if i == state.cursor else " "
+        cursor_marker = (
+            ui._wrap(ui.PRIMARY, _GLYPH_CURSOR) if i == state.cursor else " "
+        )
         is_selected = name in state.selected
         is_installed = name in state.detected
         if is_selected:

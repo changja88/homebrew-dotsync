@@ -9,9 +9,12 @@ These tests run the real script in a throwaway clone wired to a local bare
 "origin", with `gh` / `curl` replaced by PATH stubs, and assert on the state
 of origin after the run.
 """
+
 import hashlib
 import os
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,20 +30,24 @@ OLD_SHA = "a" * 64
 PYPROJECT = 'version = "0.1.19"\n'
 INIT_PY = '__version__ = "0.1.19"\n'
 FORMULA = (
-    'class Dotsync < Formula\n'
+    "class Dotsync < Formula\n"
     '  url "https://github.com/changja88/homebrew-dotsync/archive/refs/tags/v0.1.19.tar.gz"\n'
     f'  sha256 "{OLD_SHA}"\n'
-    '  test do\n'
+    "  test do\n"
     '    assert_match "dotsync 0.1.19", shell_output("#{bin}/dotsync --version")\n'
-    '  end\n'
-    'end\n'
+    "  end\n"
+    "end\n"
 )
 
 
 def _git(cwd, *args, env=None):
     return subprocess.run(
-        ["git", *args], cwd=cwd, env=env,
-        capture_output=True, text=True, check=True,
+        ["git", *args],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
     )
 
 
@@ -58,8 +65,10 @@ def sandbox(tmp_path):
         **os.environ,
         "HOME": str(tmp_path),
         "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
-        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
     }
     origin = tmp_path / "origin.git"
     _git(tmp_path, "init", "--bare", "-b", "main", str(origin), env=env)
@@ -94,15 +103,21 @@ def sandbox(tmp_path):
 def _run_release(sandbox, *, choice="1\n"):
     return subprocess.run(
         ["bash", "scripts/release.sh"],
-        cwd=sandbox["work"], env=sandbox["env"],
-        input=choice, capture_output=True, text=True,
+        cwd=sandbox["work"],
+        env=sandbox["env"],
+        input=choice,
+        capture_output=True,
+        text=True,
     )
 
 
 def _origin_formula(sandbox) -> str:
     r = subprocess.run(
         ["git", "--git-dir", str(sandbox["origin"]), "show", "main:Formula/dotsync.rb"],
-        capture_output=True, text=True, check=True, env=sandbox["env"],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=sandbox["env"],
     )
     return r.stdout
 
@@ -110,7 +125,10 @@ def _origin_formula(sandbox) -> str:
 def _origin_has_tag(sandbox, tag: str) -> bool:
     r = subprocess.run(
         ["git", "--git-dir", str(sandbox["origin"]), "tag", "--list", tag],
-        capture_output=True, text=True, check=True, env=sandbox["env"],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=sandbox["env"],
     )
     return tag in r.stdout.split()
 
@@ -151,3 +169,51 @@ def test_release_leaves_tap_intact_when_tarball_download_fails(sandbox):
     assert OLD_SHA in formula, "origin/main must still serve the previous release"
     assert "v0.1.19" in formula
     assert PLACEHOLDER not in formula
+
+
+@pytest.mark.no_subprocess_block
+def test_release_preflights_pytest_before_version_mutation(sandbox):
+    """A missing pytest runner should abort before version files and Formula
+    are rewritten, otherwise a developer is left with a dirty placeholder SHA."""
+    _write_stub(sandbox["bin"], "fakepython", "exit 1")
+    _write_stub(sandbox["bin"], "gh", "exit 1")
+
+    result = _run_release(sandbox)
+
+    assert result.returncode != 0
+    assert (sandbox["work"] / "pyproject.toml").read_text() == PYPROJECT
+    assert (sandbox["work"] / "lib" / "dotsync" / "__init__.py").read_text() == INIT_PY
+    formula = (sandbox["work"] / "Formula" / "dotsync.rb").read_text()
+    assert OLD_SHA in formula
+    assert PLACEHOLDER not in formula
+    assert "v0.1.19" in formula
+    assert not _origin_has_tag(sandbox, "v0.1.20")
+
+
+def test_formula_wraps_libexec_entrypoint_with_pythonpath():
+    formula = (REPO_ROOT / "Formula" / "dotsync.rb").read_text()
+
+    assert 'libexec.install "lib/dotsync"' in formula
+    assert 'libexec.install "bin"' in formula
+    assert 'inreplace libexec/"bin/dotsync"' in formula
+    assert 'bin.env_script_all_files(libexec/"bin", PYTHONPATH: libexec)' in formula
+    assert 'bin.install "bin/dotsync"' not in formula
+
+
+@pytest.mark.no_subprocess_block
+def test_formula_libexec_entrypoint_can_import_dotsync(tmp_path):
+    libexec = tmp_path / "libexec"
+    shutil.copytree(REPO_ROOT / "lib" / "dotsync", libexec / "dotsync")
+    shutil.copytree(REPO_ROOT / "bin", libexec / "bin")
+    entrypoint = libexec / "bin" / "dotsync"
+    env = {**os.environ, "PYTHONPATH": str(libexec)}
+
+    result = subprocess.run(
+        [sys.executable, "-S", str(entrypoint), "--version"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert "dotsync 0.1.21" in result.stdout

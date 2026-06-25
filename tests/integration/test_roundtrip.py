@@ -1,15 +1,20 @@
 """Round-trip idempotency: from→to and to→from must not mutate the
 non-source side. Regression net for Phase 4's default sync_from/sync_to."""
-import shutil
+
 from pathlib import Path
-import pytest
 from dotsync.apps.codex import CodexApp
 from dotsync.apps.ghostty import GhosttyApp
 from dotsync.apps.zsh import ZshApp
 
 
 def _ghostty_local(home: Path) -> Path:
-    return home / "Library" / "Application Support" / "com.mitchellh.ghostty" / "config.ghostty"
+    return (
+        home
+        / "Library"
+        / "Application Support"
+        / "com.mitchellh.ghostty"
+        / "config.ghostty"
+    )
 
 
 def _codex_dir(home: Path) -> Path:
@@ -20,8 +25,10 @@ def test_ghostty_from_then_to_does_not_change_local(fake_home, tmp_path):
     local = _ghostty_local(fake_home)
     local.parent.mkdir(parents=True)
     local.write_text("font-family = JetBrains Mono\n")
-    target = tmp_path / "sync"; target.mkdir()
-    backup = tmp_path / "backup"; backup.mkdir()
+    target = tmp_path / "sync"
+    target.mkdir()
+    backup = tmp_path / "backup"
+    backup.mkdir()
 
     GhosttyApp().sync_from(target)
     GhosttyApp().sync_to(target, backup)
@@ -30,10 +37,13 @@ def test_ghostty_from_then_to_does_not_change_local(fake_home, tmp_path):
 
 
 def test_ghostty_to_then_from_does_not_change_stored(fake_home, tmp_path):
-    target = tmp_path / "sync"; target.mkdir()
-    stored_dir = target / "ghostty"; stored_dir.mkdir()
+    target = tmp_path / "sync"
+    target.mkdir()
+    stored_dir = target / "ghostty"
+    stored_dir.mkdir()
     (stored_dir / "config.ghostty").write_text("theme = catppuccin\n")
-    backup = tmp_path / "backup"; backup.mkdir()
+    backup = tmp_path / "backup"
+    backup.mkdir()
     _ghostty_local(fake_home).parent.mkdir(parents=True)
     _ghostty_local(fake_home).write_text("old content\n")
 
@@ -46,8 +56,10 @@ def test_ghostty_to_then_from_does_not_change_stored(fake_home, tmp_path):
 def test_zsh_from_then_to_does_not_change_local(fake_home, tmp_path):
     local = fake_home / ".zshrc"
     local.write_text("export FOO=bar\n")
-    target = tmp_path / "sync"; target.mkdir()
-    backup = tmp_path / "backup"; backup.mkdir()
+    target = tmp_path / "sync"
+    target.mkdir()
+    backup = tmp_path / "backup"
+    backup.mkdir()
 
     ZshApp().sync_from(target)
     ZshApp().sync_to(target, backup)
@@ -56,10 +68,12 @@ def test_zsh_from_then_to_does_not_change_local(fake_home, tmp_path):
 
 
 def test_zsh_to_then_from_does_not_change_stored(fake_home, tmp_path):
-    target = tmp_path / "sync"; target.mkdir()
+    target = tmp_path / "sync"
+    target.mkdir()
     (target / "zsh").mkdir()
     (target / "zsh" / ".zshrc").write_text("alias ll='ls -la'\n")
-    backup = tmp_path / "backup"; backup.mkdir()
+    backup = tmp_path / "backup"
+    backup.mkdir()
     (fake_home / ".zshrc").write_text("old\n")
 
     ZshApp().sync_to(target, backup)
@@ -79,8 +93,10 @@ def test_codex_from_then_to_does_not_change_local(fake_home, tmp_path):
     (cdir / "skills" / "mine" / "SKILL.md").write_text("# mine\n")
     (cdir / "skills" / ".system" / "builtin").mkdir(parents=True)
     (cdir / "skills" / ".system" / "builtin" / "SKILL.md").write_text("# builtin\n")
-    target = tmp_path / "sync"; target.mkdir()
-    backup = tmp_path / "backup"; backup.mkdir()
+    target = tmp_path / "sync"
+    target.mkdir()
+    backup = tmp_path / "backup"
+    backup.mkdir()
 
     CodexApp().sync_from(target)
     CodexApp().sync_to(target, backup)
@@ -89,20 +105,25 @@ def test_codex_from_then_to_does_not_change_local(fake_home, tmp_path):
     assert (cdir / "AGENTS.md").read_text() == "# instructions\n"
     assert (cdir / "rules" / "default.rules").read_text() == "allow\n"
     assert (cdir / "skills" / "mine" / "SKILL.md").read_text() == "# mine\n"
-    assert (cdir / "skills" / ".system" / "builtin" / "SKILL.md").read_text() == "# builtin\n"
+    assert (
+        cdir / "skills" / ".system" / "builtin" / "SKILL.md"
+    ).read_text() == "# builtin\n"
     assert not (target / "codex" / "skills" / ".system").exists()
 
 
 def test_codex_to_then_from_does_not_change_stored(fake_home, tmp_path):
-    target = tmp_path / "sync"; target.mkdir()
-    stored_dir = target / "codex"; stored_dir.mkdir()
+    target = tmp_path / "sync"
+    target.mkdir()
+    stored_dir = target / "codex"
+    stored_dir.mkdir()
     (stored_dir / "config.toml").write_text('approval_policy = "on-request"\n')
     (stored_dir / "AGENTS.md").write_text("# shared instructions\n")
     (stored_dir / "rules").mkdir()
     (stored_dir / "rules" / "default.rules").write_text("prompt\n")
     (stored_dir / "skills" / "shared").mkdir(parents=True)
     (stored_dir / "skills" / "shared" / "SKILL.md").write_text("# shared\n")
-    backup = tmp_path / "backup"; backup.mkdir()
+    backup = tmp_path / "backup"
+    backup.mkdir()
     cdir = _codex_dir(fake_home)
     cdir.mkdir()
     (cdir / "config.toml").write_text("old\n")
@@ -111,7 +132,9 @@ def test_codex_to_then_from_does_not_change_stored(fake_home, tmp_path):
     CodexApp().sync_to(target, backup)
     CodexApp().sync_from(target)
 
-    assert (stored_dir / "config.toml").read_text() == 'approval_policy = "on-request"\n'
+    assert (
+        stored_dir / "config.toml"
+    ).read_text() == 'approval_policy = "on-request"\n'
     assert (stored_dir / "AGENTS.md").read_text() == "# shared instructions\n"
     assert (stored_dir / "rules" / "default.rules").read_text() == "prompt\n"
     assert (stored_dir / "skills" / "shared" / "SKILL.md").read_text() == "# shared\n"
@@ -123,8 +146,10 @@ def test_ghostty_from_then_to_creates_backup_before_overwriting(fake_home, tmp_p
     local = _ghostty_local(fake_home)
     local.parent.mkdir(parents=True)
     local.write_text("ORIGINAL\n")
-    target = tmp_path / "sync"; target.mkdir()
-    backup = tmp_path / "backup"; backup.mkdir()
+    target = tmp_path / "sync"
+    target.mkdir()
+    backup = tmp_path / "backup"
+    backup.mkdir()
 
     GhosttyApp().sync_from(target)
     # Mutate local so to has something to overwrite

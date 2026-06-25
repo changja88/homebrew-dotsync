@@ -14,6 +14,7 @@ Layout vocabulary:
   divider    — horizontal rule with optional label
   summary    — bottom rounded box: counts + duration
 """
+
 import os
 import sys
 
@@ -22,9 +23,9 @@ import sys
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
 RED = "\033[31m"
-PURPLE = "\033[38;2;167;139;250m"   # Tailwind violet-400 (truecolor)
-PRIMARY = PURPLE                    # brand / heading / step bullets
-CYAN = "\033[36m"                   # legacy; prefer PRIMARY for new code
+PURPLE = "\033[38;2;167;139;250m"  # Tailwind violet-400 (truecolor)
+PRIMARY = PURPLE  # brand / heading / step bullets
+CYAN = "\033[36m"  # legacy; prefer PRIMARY for new code
 DIM_ANSI = "\033[2m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
@@ -32,15 +33,15 @@ RESET = "\033[0m"
 # --- gradient palette (shared visual identity with the launcher TUI) -------
 # The launcher's serena_mcp_management.ui pins the same hex values; keep these
 # in sync when the brand palette evolves.
-PINK_RGB = (247, 128, 226)    # #F780E2 huh fuchsia
-MID_RGB = (192, 105, 240)     # #C069F0 perceptual midpoint
+PINK_RGB = (247, 128, 226)  # #F780E2 huh fuchsia
+MID_RGB = (192, 105, 240)  # #C069F0 perceptual midpoint
 PURPLE_RGB = (117, 113, 249)  # #7571F9 huh indigo
-_GRADIENT_PERIOD = 80         # cells per full pink→mid→purple→mid→pink cycle
+_GRADIENT_PERIOD = 80  # cells per full pink→mid→purple→mid→pink cycle
 
 # --- glyphs -----------------------------------------------------------------
 
-GLYPH_STEP = "▸"           # section bullet
-GLYPH_SUBSTEP = "▶"        # in-section sub-step
+GLYPH_STEP = "▸"  # section bullet
+GLYPH_SUBSTEP = "▶"  # in-section sub-step
 GLYPH_SUB = "↳"
 GLYPH_OK = "✓"
 GLYPH_WARN = "⚠"
@@ -56,7 +57,7 @@ GLYPH_BOX_BR = "╯"
 
 # --- internals --------------------------------------------------------------
 
-BOX_WIDTH = 64   # inner width of banner / summary boxes
+BOX_WIDTH = 64  # inner width of banner / summary boxes
 
 
 def _color_enabled() -> bool:
@@ -104,6 +105,7 @@ def _box_bottom(width: int) -> str:
 
 
 # --- gradient helpers -------------------------------------------------------
+
 
 def _lerp_rgb(
     a: "tuple[int, int, int]", b: "tuple[int, int, int]", t: float
@@ -155,6 +157,7 @@ def gradient_line(line: str) -> str:
 
 # --- format_* (return strings; testable) ------------------------------------
 
+
 def format_step(msg: str) -> str:
     return f"{_wrap(PRIMARY, GLYPH_SUBSTEP)} {msg}"
 
@@ -199,10 +202,12 @@ def format_banner(title: str, subtitle: str = "") -> str:
     return "\n".join(lines)
 
 
-def format_section(name: str, index: int = None, total: int = None, sub: str = "") -> str:
+def format_section(
+    name: str, index: int = None, total: int = None, sub: str = ""
+) -> str:
     """Per-app header. Examples:
-        ▸ [1/4] claude               claude code
-        ▸ ghostty
+    ▸ [1/4] claude               claude code
+    ▸ ghostty
     """
     bullet = _wrap(PRIMARY, GLYPH_STEP)
     progress = ""
@@ -279,8 +284,7 @@ def format_summary(
         )
     if synced:
         body_lines.append(
-            f"{_wrap(GREEN, GLYPH_OK)} synced     "
-            f"{_wrap(DIM_ANSI, ' · '.join(synced))}"
+            f"{_wrap(GREEN, GLYPH_OK)} synced     {_wrap(DIM_ANSI, ' · '.join(synced))}"
         )
     if applied:
         body_lines.append(
@@ -307,11 +311,13 @@ def format_summary(
     sep = _wrap(DIM_ANSI, "  ·  ")
     body_lines.append(sep.join(parts))
 
-    return "\n".join([
-        _box_top(width),
-        *(_box_line(line, width) for line in body_lines),
-        _box_bottom(width),
-    ])
+    return "\n".join(
+        [
+            _box_top(width),
+            *(_box_line(line, width) for line in body_lines),
+            _box_bottom(width),
+        ]
+    )
 
 
 _STATUS_GLYPH = {
@@ -322,7 +328,9 @@ _STATUS_GLYPH = {
 }
 
 
-def format_status_line(name: str, *, state: str, details: str = "", direction: str = "") -> str:
+def format_status_line(
+    name: str, *, state: str, details: str = "", direction: str = ""
+) -> str:
     """One row of `dotsync status`: `  ✓ zsh         clean` (with optional details/direction)."""
     color, glyph = _STATUS_GLYPH.get(state, (DIM_ANSI, GLYPH_DIM))
     head = f"  {_wrap(color, glyph)} {name:16s} {_wrap(color, state)}"
@@ -355,6 +363,7 @@ def format_plan_change(change) -> str:
 
 
 # --- side-effect printers (use in production code) -------------------------
+
 
 def step(msg: str) -> None:
     print(format_step(msg))
@@ -416,8 +425,16 @@ def summary(
     unchanged: "list[str] | None" = None,
     failed: "list[str] | None" = None,
 ) -> None:
-    print(format_summary(
-        ok=ok, warn=warn, error=error, duration_ms=duration_ms,
-        synced=synced, changed=changed, applied=applied, unchanged=unchanged,
-        failed=failed,
-    ))
+    print(
+        format_summary(
+            ok=ok,
+            warn=warn,
+            error=error,
+            duration_ms=duration_ms,
+            synced=synced,
+            changed=changed,
+            applied=applied,
+            unchanged=unchanged,
+            failed=failed,
+        )
+    )

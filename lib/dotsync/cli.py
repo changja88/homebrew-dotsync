@@ -1,4 +1,5 @@
 """dotsync CLI — argparse-based command dispatch."""
+
 from __future__ import annotations
 import argparse
 import sys
@@ -6,12 +7,11 @@ import time
 from pathlib import Path
 from typing import Sequence
 from dotsync import __version__, ui
-from dotsync.apps import APP_CLASSES, APP_NAMES, app_descriptions, build_app, detect_present
+from dotsync.apps import APP_CLASSES, APP_NAMES, build_app, detect_present
 from dotsync.backup import new_backup_session, rotate_backups
 from dotsync.config import (
     Config,
     ConfigError,
-    ENV_VAR,
     folder_config_path,
     load_config,
     save_config,
@@ -30,7 +30,9 @@ SUPPORTED_APPS = APP_NAMES
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="dotsync", description="Sync app configs with a folder.")
+    p = argparse.ArgumentParser(
+        prog="dotsync", description="Sync app configs with a folder."
+    )
     p.add_argument("--version", action="version", version=f"dotsync {__version__}")
     sub = p.add_subparsers(dest="cmd")
 
@@ -39,11 +41,18 @@ def _build_parser() -> argparse.ArgumentParser:
     init.add_argument("--apps", help="comma-separated app names")
     for app_cls in APP_CLASSES:
         app_cls.extra_init_args(init)
-    init.add_argument("--yes", action="store_true", help="non-interactive: skip prompts")
+    init.add_argument(
+        "--yes", action="store_true", help="non-interactive: skip prompts"
+    )
     init.add_argument("--quiet", action="store_true", help="skip the welcome banner")
-    init.add_argument("--no-hints", action="store_true", help="skip the post-init 'next steps' block")
-    init.add_argument("--no-shell-init", action="store_true",
-                      help="don't add `export DOTSYNC_DIR=...` to ~/.zshrc (or ~/.bash_profile)")
+    init.add_argument(
+        "--no-hints", action="store_true", help="skip the post-init 'next steps' block"
+    )
+    init.add_argument(
+        "--no-shell-init",
+        action="store_true",
+        help="don't add `export DOTSYNC_DIR=...` to ~/.zshrc (or ~/.bash_profile)",
+    )
 
     sub.add_parser("welcome", help="print the welcome banner")
 
@@ -63,18 +72,26 @@ def _build_parser() -> argparse.ArgumentParser:
     sync_from = sub.add_parser("from", help="local → folder")
     sync_from.add_argument("app", nargs="?", help="app name or omit with --all")
     sync_from.add_argument("--all", action="store_true")
-    sync_from.add_argument("--dry-run", action="store_true",
-                           help="print what would change and exit without modifying anything")
-    sync_from.add_argument("--yes", action="store_true",
-                           help="skip the confirmation prompt")
+    sync_from.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print what would change and exit without modifying anything",
+    )
+    sync_from.add_argument(
+        "--yes", action="store_true", help="skip the confirmation prompt"
+    )
 
     sync_to = sub.add_parser("to", help="folder → local")
     sync_to.add_argument("app", nargs="?", help="app name or omit with --all")
     sync_to.add_argument("--all", action="store_true")
-    sync_to.add_argument("--dry-run", action="store_true",
-                         help="print what would change and exit without modifying anything")
-    sync_to.add_argument("--yes", action="store_true",
-                         help="skip the confirmation prompt")
+    sync_to.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print what would change and exit without modifying anything",
+    )
+    sync_to.add_argument(
+        "--yes", action="store_true", help="skip the confirmation prompt"
+    )
 
     return p
 
@@ -125,7 +142,9 @@ def cmd_init(args) -> int:
 
     # Each app supplies its own options via its resolve_options hook.
     interactive = not args.yes
-    app_options = _resolve_app_options(args, prev_apps=[], new_apps=apps, interactive=interactive)
+    app_options = _resolve_app_options(
+        args, prev_apps=[], new_apps=apps, interactive=interactive
+    )
     if interactive:
         for app_name, opts in app_options.items():
             # Surface auto-discovered options so the user can see what was set.
@@ -152,8 +171,12 @@ def _resolve_sync_folder(args) -> Path:
 
     print()
     ui.step("Step 1 — Sync folder")
-    print(f"  {ui._wrap(ui.DIM_ANSI, 'Where should dotsync keep your synced configs?')}")
-    print(f"  {ui._wrap(ui.DIM_ANSI, 'Press Enter to use the default, or paste an absolute path of your own.')}")
+    print(
+        f"  {ui._wrap(ui.DIM_ANSI, 'Where should dotsync keep your synced configs?')}"
+    )
+    print(
+        f"  {ui._wrap(ui.DIM_ANSI, 'Press Enter to use the default, or paste an absolute path of your own.')}"
+    )
     print()
     dir_str = ui.ask("sync folder (absolute path)", default=str(default_dir))
     return Path(dir_str).expanduser().resolve() if dir_str else default_dir
@@ -180,7 +203,10 @@ def _resolve_app_options(
     out: dict[str, dict] = {}
     for app_cls in APP_CLASSES:
         opts = app_cls.resolve_options(
-            args, prev_apps=prev_apps, new_apps=new_apps, interactive=interactive,
+            args,
+            prev_apps=prev_apps,
+            new_apps=new_apps,
+            interactive=interactive,
         )
         if opts is not None:
             out[app_cls.name] = opts
@@ -212,6 +238,7 @@ def _resolve_apps_for_init(args) -> "list[str] | None":
     ui.step("Step 2 — Pick apps to track")
     print()
     from .ui_picker import pick_apps
+
     result = pick_apps(
         sorted(SUPPORTED_APPS),
         preselected=set(detected),
@@ -255,7 +282,9 @@ def _maybe_update_shell_rc(args, dir_path: Path) -> "ShellRcResult | None":
 
     result = update_shell_rc(rc_path, dir_path)
     if result.action in ("added", "updated"):
-        ui.done(f"{rc_path} updated — open a new shell or `source {rc_path.name}` to apply")
+        ui.done(
+            f"{rc_path} updated — open a new shell or `source {rc_path.name}` to apply"
+        )
     elif result.action == "already_set":
         ui.dim(f"{rc_path.name} already has the export — left as is")
     return result
@@ -270,9 +299,16 @@ def _print_init_hints(folder: Path, rc_result: "ShellRcResult | None" = None) ->
     the full export instructions so the user has a copy-paste target.
     """
     bullet = ui._wrap(ui.PRIMARY, "▸")
-    bold = lambda s: ui._wrap(ui.BOLD, s)
-    primary_bold = lambda s: ui._wrap(ui.PRIMARY, ui._wrap(ui.BOLD, s))
-    dim = lambda s: ui._wrap(ui.DIM_ANSI, s)
+
+    def bold(s: str) -> str:
+        return ui._wrap(ui.BOLD, s)
+
+    def primary_bold(s: str) -> str:
+        return ui._wrap(ui.PRIMARY, ui._wrap(ui.BOLD, s))
+
+    def dim(s: str) -> str:
+        return ui._wrap(ui.DIM_ANSI, s)
+
     dim_bullet = ui._wrap(ui.DIM_ANSI, "·")
 
     print()
@@ -280,9 +316,11 @@ def _print_init_hints(folder: Path, rc_result: "ShellRcResult | None" = None) ->
     print()
 
     rc_handled = rc_result is not None and rc_result.action in (
-        "added", "updated", "already_set",
+        "added",
+        "updated",
+        "already_set",
     )
-    export_str = f'export {ENV_VAR}="{folder}"'
+    export_str = export_line(folder)
 
     # 1. shell rc — the most important follow-up
     if rc_handled:
@@ -310,8 +348,12 @@ def _print_init_hints(folder: Path, rc_result: "ShellRcResult | None" = None) ->
     print()
 
     # Trailing dim hints — quiet pointers to the everyday commands.
-    print(f"  {dim_bullet}  {dim('Change tracked apps later: ')} {primary_bold('dotsync apps')}")
-    print(f"  {dim_bullet}  {dim('See current sync state:    ')} {primary_bold('dotsync status')}")
+    print(
+        f"  {dim_bullet}  {dim('Change tracked apps later: ')} {primary_bold('dotsync apps')}"
+    )
+    print(
+        f"  {dim_bullet}  {dim('See current sync state:    ')} {primary_bold('dotsync status')}"
+    )
     print()
 
 
@@ -323,6 +365,7 @@ def cmd_config(args) -> int:
         print(f"backup_dir = {cfg.backup_dir}")
         print(f"backup_keep = {cfg.backup_keep}")
         print(f"bettertouchtool_presets = {cfg.bettertouchtool_presets}")
+        print(f"app_options = {cfg.app_options}")
         return 0
     if args.cfg_cmd == "dir":
         cfg = load_config()
@@ -375,9 +418,13 @@ def cmd_apps(args) -> int:
     apps_changed = set(new_apps) != set(cfg.apps)
     # Construct synthetic args namespace with no flags — apps re-discover by toggle.
     import argparse
+
     args_for_resolve = argparse.Namespace(yes=False)
     new_options = _resolve_app_options(
-        args_for_resolve, prev_apps=cfg.apps, new_apps=new_apps, interactive=True,
+        args_for_resolve,
+        prev_apps=cfg.apps,
+        new_apps=new_apps,
+        interactive=True,
     )
     options_changed = bool(new_options) and any(
         cfg.app_options.get(k) != v for k, v in new_options.items()
@@ -399,7 +446,6 @@ def cmd_apps(args) -> int:
     return 0
 
 
-
 def cmd_status(args) -> int:
     cfg = load_config()
     ui.section("status", sub=str(cfg.dir))
@@ -407,12 +453,14 @@ def cmd_status(args) -> int:
     for name in cfg.apps:
         app = build_app(name, cfg)
         s = app.status(cfg.dir)
-        print(ui.format_status_line(
-            name,
-            state=s.state,
-            details=s.details,
-            direction=getattr(s, "direction", ""),
-        ))
+        print(
+            ui.format_status_line(
+                name,
+                state=s.state,
+                details=s.details,
+                direction=getattr(s, "direction", ""),
+            )
+        )
     return 0
 
 
@@ -433,6 +481,12 @@ def _resolve_app_list(args, cfg: Config) -> list[str]:
         return list(cfg.apps)
     if not args.app:
         print("provide app name or --all", file=sys.stderr)
+        return []
+    if args.app not in SUPPORTED_APPS:
+        print(
+            f"unknown app `{args.app}` (supported: {sorted(SUPPORTED_APPS)})",
+            file=sys.stderr,
+        )
         return []
     return [args.app]
 
@@ -502,8 +556,7 @@ def cmd_from(args) -> int:
         return 0
 
     unchanged_by_plan = {
-        plan.app: bool(plan.changes) and not plan.has_changes
-        for plan in plans
+        plan.app: bool(plan.changes) and not plan.has_changes for plan in plans
     }
     start = time.monotonic()
     changed: list[str] = []
@@ -529,7 +582,8 @@ def cmd_from(args) -> int:
             warnings_by_app[name] = list(app.warnings)
         print()
     ui.summary(
-        ok=len(changed) + len(unchanged), error=len(failed),
+        ok=len(changed) + len(unchanged),
+        error=len(failed),
         duration_ms=int((time.monotonic() - start) * 1000),
         changed=changed or None,
         unchanged=unchanged or None,
@@ -556,13 +610,10 @@ def cmd_to(args) -> int:
     if not _confirm_or_abort(args, direction="to"):
         return 0
     unchanged_by_plan = {
-        plan.app: bool(plan.changes) and not plan.has_changes
-        for plan in plans
+        plan.app: bool(plan.changes) and not plan.has_changes for plan in plans
     }
 
-    session = new_backup_session(cfg.backup_dir)
-    ui.kv("backup", str(session))
-    print()
+    session: Path | None = None
     start = time.monotonic()
     changed: list[str] = []
     unchanged: list[str] = []
@@ -577,6 +628,10 @@ def cmd_to(args) -> int:
             print()
             continue
         try:
+            if session is None:
+                session = new_backup_session(cfg.backup_dir)
+                ui.kv("backup", str(session))
+                print()
             app.sync_to(cfg.dir, session)
             app._finish_ok()
             changed.append(name)
@@ -586,9 +641,11 @@ def cmd_to(args) -> int:
         if app.warnings:
             warnings_by_app[name] = list(app.warnings)
         print()
-    rotate_backups(cfg.backup_dir, cfg.backup_keep)
+    if session is not None:
+        rotate_backups(cfg.backup_dir, cfg.backup_keep)
     ui.summary(
-        ok=len(changed) + len(unchanged), error=len(failed),
+        ok=len(changed) + len(unchanged),
+        error=len(failed),
         duration_ms=int((time.monotonic() - start) * 1000),
         changed=changed or None,
         unchanged=unchanged or None,

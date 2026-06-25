@@ -1,5 +1,3 @@
-import io
-
 import pytest
 
 from dotsync.ui_picker import (
@@ -82,12 +80,12 @@ def test_state_cancel_marks_cancelled():
 def test_state_result_preserves_input_order():
     """Result is items in their input order, not selection order."""
     s = PickerState(ITEMS, preselected=set())
-    s.handle("down")             # cursor at ghostty
-    s.handle("down")             # cursor at btt
-    s.handle("space")            # select btt first
-    s.handle("up")               # back to ghostty
-    s.handle("up")               # back to claude
-    s.handle("space")            # then select claude
+    s.handle("down")  # cursor at ghostty
+    s.handle("down")  # cursor at btt
+    s.handle("space")  # select btt first
+    s.handle("up")  # back to ghostty
+    s.handle("up")  # back to claude
+    s.handle("space")  # then select claude
     s.handle("enter")
     assert s.result == ["claude", "bettertouchtool"]
 
@@ -131,7 +129,7 @@ def _stdin_with(seq: bytes, monkeypatch, *, peek_ready: bool = True):
     monkeypatch.setattr("dotsync.ui_picker.os.read", fake_read)
     monkeypatch.setattr(
         "dotsync.ui_picker.select.select",
-        lambda r, w, x, t: ((r, [], []) if peek_ready else ([], [], [])),
+        lambda r, w, x, t: (r, [], []) if peek_ready else ([], [], []),
     )
 
 
@@ -214,7 +212,7 @@ def test_read_key_arrow_works_when_all_bytes_arrive_together(monkeypatch):
     # real-fd case (bytes on the fd, not slurped into a stdin buffer).
     monkeypatch.setattr(
         "dotsync.ui_picker.select.select",
-        lambda r, w, x, t: ((r, [], []) if buf else ([], [], [])),
+        lambda r, w, x, t: (r, [], []) if buf else ([], [], []),
     )
     assert _read_key() == "down"
 
@@ -237,8 +235,8 @@ def test_render_marks_selected_items(capsys, monkeypatch):
     state = PickerState(ITEMS, preselected={"claude", "zsh"})
     _render(state, "Pick apps", first=True)
     lines = capsys.readouterr().out.splitlines()
-    claude_line = next(l for l in lines if "claude" in l)
-    ghostty_line = next(l for l in lines if "ghostty" in l)
+    claude_line = next(line for line in lines if "claude" in line)
+    ghostty_line = next(line for line in lines if "ghostty" in line)
     assert "[x]" in claude_line
     assert "[ ]" in ghostty_line
 
@@ -246,11 +244,11 @@ def test_render_marks_selected_items(capsys, monkeypatch):
 def test_render_marks_cursor_position(capsys, monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
     state = PickerState(ITEMS, preselected=set())
-    state.handle("down")    # cursor on ghostty
+    state.handle("down")  # cursor on ghostty
     _render(state, "Pick apps", first=True)
     lines = capsys.readouterr().out.splitlines()
-    ghostty_line = next(l for l in lines if "ghostty" in l)
-    claude_line = next(l for l in lines if "claude" in l)
+    ghostty_line = next(line for line in lines if "ghostty" in line)
+    claude_line = next(line for line in lines if "claude" in line)
     # ▸ marker appears on the cursor row, not on others
     assert "▸" in ghostty_line
     assert "▸" not in claude_line
@@ -263,8 +261,8 @@ def test_render_shows_installed_hint_for_detected_apps(capsys, monkeypatch):
     state = PickerState(ITEMS, preselected=set(), detected={"claude", "zsh"})
     _render(state, "Pick apps", first=True)
     lines = capsys.readouterr().out.splitlines()
-    claude_line = next(l for l in lines if "claude" in l)
-    ghostty_line = next(l for l in lines if "ghostty" in l)
+    claude_line = next(line for line in lines if "claude" in line)
+    ghostty_line = next(line for line in lines if "ghostty" in line)
     assert "installed" in claude_line
     assert "not installed" in ghostty_line
 
@@ -280,7 +278,7 @@ def test_render_includes_annotation_when_provided(capsys, monkeypatch):
     )
     _render(state, "Pick apps", first=True)
     out = capsys.readouterr().out
-    btt_line = next(l for l in out.splitlines() if "bettertouchtool" in l)
+    btt_line = next(line for line in out.splitlines() if "bettertouchtool" in line)
     assert "installed" in btt_line
     assert "2 presets" in btt_line
 
@@ -303,6 +301,7 @@ def test_interactive_supported_false_when_stdin_not_tty(monkeypatch):
     class FakeStream:
         def isatty(self):
             return False
+
     monkeypatch.setattr("dotsync.ui_picker.sys.stdin", FakeStream())
     monkeypatch.setattr("dotsync.ui_picker.sys.stdout", FakeStream())
     assert _interactive_supported() is False
@@ -312,6 +311,7 @@ def test_interactive_supported_true_when_both_are_ttys(monkeypatch):
     class FakeStream:
         def isatty(self):
             return True
+
     monkeypatch.setattr("dotsync.ui_picker.sys.stdin", FakeStream())
     monkeypatch.setattr("dotsync.ui_picker.sys.stdout", FakeStream())
     assert _interactive_supported() is True
@@ -367,8 +367,10 @@ def test_pick_apps_accepts_detected_and_annotations(monkeypatch):
     monkeypatch.setattr("dotsync.ui_picker._enter_raw_mode", lambda: object())
     monkeypatch.setattr("dotsync.ui_picker._restore_terminal", lambda token: None)
     rendered = []
+
     def fake_render(state, title, *, first):
         rendered.append((state.detected, state.annotations))
+
     monkeypatch.setattr("dotsync.ui_picker._render", fake_render)
     monkeypatch.setattr("dotsync.ui_picker._read_key", lambda: "enter")
 
@@ -443,8 +445,9 @@ def test_pick_apps_keyboard_interrupt_returns_none_and_restores(monkeypatch):
 
     def boom():
         raise KeyboardInterrupt
+
     monkeypatch.setattr("dotsync.ui_picker._read_key", boom)
 
     result = pick_apps(["claude", "ghostty"], preselected=set(), detected=set())
     assert result is None
-    assert restored == [sentinel]   # terminal was restored exactly once
+    assert restored == [sentinel]  # terminal was restored exactly once

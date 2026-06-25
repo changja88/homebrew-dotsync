@@ -55,7 +55,8 @@ def test_sync_to_creates_local_dir_if_missing(fake_home, tmp_path):
 
 
 def test_status_clean(fake_home, tmp_path):
-    gdir = _ghostty_dir(fake_home); gdir.mkdir(parents=True)
+    gdir = _ghostty_dir(fake_home)
+    gdir.mkdir(parents=True)
     (gdir / "config.ghostty").write_text("X")
     target = tmp_path / "configs"
     (target / "ghostty").mkdir(parents=True)
@@ -64,7 +65,8 @@ def test_status_clean(fake_home, tmp_path):
 
 
 def test_status_dirty(fake_home, tmp_path):
-    gdir = _ghostty_dir(fake_home); gdir.mkdir(parents=True)
+    gdir = _ghostty_dir(fake_home)
+    gdir.mkdir(parents=True)
     (gdir / "config.ghostty").write_text("OLD")
     target = tmp_path / "configs"
     (target / "ghostty").mkdir(parents=True)
@@ -73,7 +75,8 @@ def test_status_dirty(fake_home, tmp_path):
 
 
 def test_is_present_locally_true_when_config_exists(fake_home):
-    gdir = _ghostty_dir(fake_home); gdir.mkdir(parents=True)
+    gdir = _ghostty_dir(fake_home)
+    gdir.mkdir(parents=True)
     (gdir / "config.ghostty").write_text("X")
     assert GhosttyApp.is_present_locally() is True
 

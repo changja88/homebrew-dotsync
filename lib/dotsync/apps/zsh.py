@@ -1,4 +1,5 @@
 """zsh sync — single file ~/.zshrc <-> <dir>/zsh/.zshrc"""
+
 from __future__ import annotations
 from pathlib import Path
 from dotsync import ui
@@ -14,11 +15,13 @@ class ZshApp(App):
         return (Path.home() / ".zshrc").exists()
 
     def tracked_files(self, target_dir: Path) -> list[FilePair]:
-        return [FilePair(
-            local=Path.home() / ".zshrc",
-            stored=target_dir / self.name / ".zshrc",
-            label=".zshrc",
-        )]
+        return [
+            FilePair(
+                local=Path.home() / ".zshrc",
+                stored=target_dir / self.name / ".zshrc",
+                label=".zshrc",
+            )
+        ]
 
     def sync_to(self, target_dir: Path, backup_dir: Path) -> None:
         super().sync_to(target_dir, backup_dir)

@@ -1,4 +1,3 @@
-from pathlib import Path
 import pytest
 from dotsync.apps.zsh import ZshApp
 

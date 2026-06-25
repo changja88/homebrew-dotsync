@@ -1,10 +1,7 @@
-import os
-from pathlib import Path
-from unittest.mock import patch
 import pytest
 from dotsync import __version__
 from dotsync.cli import main
-from dotsync.config import Config, save_config
+from dotsync.shellrc import export_line
 
 
 def _no_btt(monkeypatch, fake_home):
@@ -38,12 +35,18 @@ def test_init_writes_config_noninteractive(fake_home, tmp_path):
 
 def test_init_with_btt_presets_flag(fake_home, tmp_path):
     target = tmp_path / "myconfigs"
-    rc = main([
-        "init", "--dir", str(target),
-        "--apps", "bettertouchtool",
-        "--btt-presets", "MyPreset,Other",
-        "--yes",
-    ])
+    rc = main(
+        [
+            "init",
+            "--dir",
+            str(target),
+            "--apps",
+            "bettertouchtool",
+            "--btt-presets",
+            "MyPreset,Other",
+            "--yes",
+        ]
+    )
     assert rc == 0
     cfg_text = (target / "dotsync.toml").read_text()
     # New format: presets stored under [options.bettertouchtool] sub-table.
@@ -60,14 +63,16 @@ def test_init_yes_without_apps_uses_detected(fake_home, tmp_path, monkeypatch):
     rc = main(["init", "--dir", str(target), "--yes"])
     assert rc == 0
     cfg_text = (target / "dotsync.toml").read_text()
-    apps_line = next(l for l in cfg_text.splitlines() if l.startswith("apps = "))
+    apps_line = next(line for line in cfg_text.splitlines() if line.startswith("apps = "))
     assert "zsh" in apps_line
     assert "claude" in apps_line
     assert "bettertouchtool" not in apps_line
     assert "ghostty" not in apps_line
 
 
-def test_init_yes_no_apps_and_no_detected_errors(fake_home, tmp_path, monkeypatch, capsys):
+def test_init_yes_no_apps_and_no_detected_errors(
+    fake_home, tmp_path, monkeypatch, capsys
+):
     _no_btt(monkeypatch, fake_home)
     target = tmp_path / "configs"
     rc = main(["init", "--dir", str(target), "--yes"])
@@ -81,7 +86,7 @@ def test_init_yes_with_existing_dotsync_toml_reuses_it(fake_home, tmp_path):
     target.mkdir()
     (target / "dotsync.toml").write_text(
         'apps = ["claude"]\n\n[options]\n'
-        'backup_keep = 10\n'
+        "backup_keep = 10\n"
         'bettertouchtool_preset = "Existing"\n'
     )
     rc = main(["init", "--dir", str(target), "--yes"])
@@ -100,12 +105,18 @@ def test_init_yes_existing_toml_with_explicit_overrides(fake_home, tmp_path):
     (target / "dotsync.toml").write_text(
         'apps = ["claude"]\n\n[options]\nbettertouchtool_preset = "Old"\n'
     )
-    rc = main([
-        "init", "--dir", str(target),
-        "--apps", "zsh,ghostty",
-        "--btt-presets", "New",
-        "--yes",
-    ])
+    rc = main(
+        [
+            "init",
+            "--dir",
+            str(target),
+            "--apps",
+            "zsh,ghostty",
+            "--btt-presets",
+            "New",
+            "--yes",
+        ]
+    )
     assert rc == 0
     cfg_text = (target / "dotsync.toml").read_text()
     assert "zsh" in cfg_text and "ghostty" in cfg_text
@@ -114,7 +125,9 @@ def test_init_yes_existing_toml_with_explicit_overrides(fake_home, tmp_path):
     assert "[options.bettertouchtool]" not in cfg_text
 
 
-def test_init_interactive_picker_keeps_detected_on_bare_enter(fake_home, tmp_path, monkeypatch):
+def test_init_interactive_picker_keeps_detected_on_bare_enter(
+    fake_home, tmp_path, monkeypatch
+):
     """In non-TTY (pytest) the picker falls back to per-app y/n with each
     detected app pre-defaulted to Y. Bare Enter on every row therefore
     keeps the detected set."""
@@ -139,7 +152,9 @@ def test_init_interactive_picker_keeps_detected_on_bare_enter(fake_home, tmp_pat
     assert '"bettertouchtool"' not in cfg_text
 
 
-def test_init_interactive_picker_lets_user_change_selection(fake_home, tmp_path, monkeypatch):
+def test_init_interactive_picker_lets_user_change_selection(
+    fake_home, tmp_path, monkeypatch
+):
     """The picker (fallback mode under pytest) lets the user toggle off
     a preselected app and toggle on an undetected one."""
     (fake_home / ".zshrc").write_text("X")
@@ -162,7 +177,9 @@ def test_init_interactive_picker_lets_user_change_selection(fake_home, tmp_path,
     assert '"bettertouchtool"' not in cfg_text
 
 
-def test_init_prints_next_steps_with_apps_command_hint(fake_home, tmp_path, monkeypatch, capsys):
+def test_init_prints_next_steps_with_apps_command_hint(
+    fake_home, tmp_path, monkeypatch, capsys
+):
     """The next-steps block points users at `dotsync apps` for ongoing
     changes (the previous `dotsync config apps` was removed)."""
     (fake_home / ".zshrc").write_text("X")
@@ -184,7 +201,7 @@ def test_init_shows_welcome_by_default(fake_home, tmp_path, monkeypatch, capsys)
     rc = main(["init", "--dir", str(target), "--yes"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "█" in out             # welcome ASCII logo
+    assert "█" in out  # welcome ASCII logo
     assert "Quickstart" in out
 
 
@@ -231,7 +248,9 @@ def test_init_interactive_default_dir_on_empty_input(fake_home, monkeypatch):
     assert (default_dir / "dotsync.toml").exists()
 
 
-def test_init_interactive_custom_dir_overrides_default(fake_home, monkeypatch, tmp_path):
+def test_init_interactive_custom_dir_overrides_default(
+    fake_home, monkeypatch, tmp_path
+):
     _no_btt(monkeypatch, fake_home)
     (fake_home / ".zshrc").write_text("X")
     custom = tmp_path / "elsewhere"
@@ -251,8 +270,18 @@ def test_init_no_hints_skips_next_steps_block(fake_home, tmp_path, capsys):
     """--no-hints suppresses the 'next steps' guidance block (used by demo
     RAW mode to keep the install screen minimal)."""
     target = tmp_path / "configs"
-    rc = main(["init", "--dir", str(target), "--apps", "zsh", "--yes",
-               "--quiet", "--no-hints"])
+    rc = main(
+        [
+            "init",
+            "--dir",
+            str(target),
+            "--apps",
+            "zsh",
+            "--yes",
+            "--quiet",
+            "--no-hints",
+        ]
+    )
     assert rc == 0
     out = capsys.readouterr().out
     assert "next steps" not in out
@@ -303,7 +332,9 @@ def test_no_args_shows_welcome(capsys):
     assert "Quickstart" in out
 
 
-def test_init_btt_auto_uses_single_discovered_preset(fake_home, tmp_path, monkeypatch, capsys):
+def test_init_btt_auto_uses_single_discovered_preset(
+    fake_home, tmp_path, monkeypatch, capsys
+):
     """When BTT discovery returns exactly 1 preset, init uses it without
     prompting — the user sees a confirmation."""
     monkeypatch.setenv("NO_COLOR", "1")
@@ -335,7 +366,9 @@ def test_init_btt_auto_uses_single_discovered_preset(fake_home, tmp_path, monkey
     assert "which preset to track" not in out
 
 
-def test_init_btt_auto_tracks_every_discovered_preset(fake_home, tmp_path, monkeypatch, capsys):
+def test_init_btt_auto_tracks_every_discovered_preset(
+    fake_home, tmp_path, monkeypatch, capsys
+):
     """Multiple presets → all of them tracked automatically. No prompt."""
     monkeypatch.setenv("NO_COLOR", "1")
     (fake_home / ".zshrc").write_text("X")
@@ -363,7 +396,9 @@ def test_init_btt_auto_tracks_every_discovered_preset(fake_home, tmp_path, monke
     assert "which preset to track" not in out
 
 
-def test_init_btt_falls_back_to_default_when_discovery_empty(fake_home, tmp_path, monkeypatch):
+def test_init_btt_falls_back_to_default_when_discovery_empty(
+    fake_home, tmp_path, monkeypatch
+):
     """No presets discovered (BTT not running, schema drift, etc.) →
     DEFAULT_BTT_PRESETS used silently. No prompt under the new flow."""
     (fake_home / ".zshrc").write_text("X")
@@ -398,7 +433,10 @@ def test_init_btt_presets_flag_skips_discovery(fake_home, tmp_path, monkeypatch)
     )
 
     def boom(cls):
-        raise AssertionError("discover_preset_names must not be called when --btt-presets is set")
+        raise AssertionError(
+            "discover_preset_names must not be called when --btt-presets is set"
+        )
+
     monkeypatch.setattr(
         "dotsync.apps.bettertouchtool.BetterTouchToolApp.discover_preset_names",
         classmethod(boom),
@@ -412,7 +450,9 @@ def test_init_btt_presets_flag_skips_discovery(fake_home, tmp_path, monkeypatch)
     assert 'presets = ["Forced", "Other"]' in cfg_text
 
 
-def test_init_btt_yes_without_flag_uses_default_skips_discovery(fake_home, tmp_path, monkeypatch):
+def test_init_btt_yes_without_flag_uses_default_skips_discovery(
+    fake_home, tmp_path, monkeypatch
+):
     """--yes without --btt-presets must not consult discovery; DEFAULT_BTT_PRESETS wins.
     --yes mode is deterministic regardless of what BTT happens to have on the machine."""
     (fake_home / ".zshrc").write_text("X")
@@ -421,8 +461,10 @@ def test_init_btt_yes_without_flag_uses_default_skips_discovery(fake_home, tmp_p
     monkeypatch.setattr(
         "dotsync.apps.bettertouchtool.BetterTouchToolApp.APP_PATH", bttapp
     )
+
     def boom(cls):
         raise AssertionError("discovery must not run under --yes")
+
     monkeypatch.setattr(
         "dotsync.apps.bettertouchtool.BetterTouchToolApp.discover_preset_names",
         classmethod(boom),
@@ -436,6 +478,7 @@ def test_init_btt_yes_without_flag_uses_default_skips_discovery(fake_home, tmp_p
 
 # ---------- shell rc auto-init -------------------------------------------
 
+
 def test_init_yes_auto_adds_export_to_zshrc(fake_home, tmp_path, monkeypatch):
     """--yes mode = explicit user consent → write `export DOTSYNC_DIR=...` to
     ~/.zshrc so future shells find the sync folder without manual setup."""
@@ -448,8 +491,8 @@ def test_init_yes_auto_adds_export_to_zshrc(fake_home, tmp_path, monkeypatch):
     code = main(["init", "--dir", str(target), "--apps", "zsh", "--yes"])
     assert code == 0
     text = rc.read_text()
-    assert "alias ll='ls -la'" in text         # original preserved
-    assert f'export DOTSYNC_DIR="{target}"' in text
+    assert "alias ll='ls -la'" in text  # original preserved
+    assert export_line(target) in text
 
 
 def test_init_yes_with_no_shell_init_flag_skips(fake_home, tmp_path, monkeypatch):
@@ -459,8 +502,9 @@ def test_init_yes_with_no_shell_init_flag_skips(fake_home, tmp_path, monkeypatch
     rc.write_text("# pre-existing\n")
 
     target = tmp_path / "configs"
-    code = main(["init", "--dir", str(target), "--apps", "zsh",
-                 "--yes", "--no-shell-init"])
+    code = main(
+        ["init", "--dir", str(target), "--apps", "zsh", "--yes", "--no-shell-init"]
+    )
     assert code == 0
     assert "DOTSYNC_DIR" not in rc.read_text()
 
@@ -476,11 +520,13 @@ def test_init_yes_is_idempotent_on_rc(fake_home, tmp_path, monkeypatch):
     main(["init", "--dir", str(target), "--apps", "zsh", "--yes"])
     main(["init", "--dir", str(target), "--apps", "zsh", "--yes"])
     text = rc.read_text()
-    line = f'export DOTSYNC_DIR="{target}"'
+    line = export_line(target)
     assert text.count(line) == 1
 
 
-def test_init_yes_replaces_old_export_when_dir_changes(fake_home, tmp_path, monkeypatch):
+def test_init_yes_replaces_old_export_when_dir_changes(
+    fake_home, tmp_path, monkeypatch
+):
     """User moved their sync folder → init points the export at the new path."""
     monkeypatch.setenv("SHELL", "/bin/zsh")
     _no_btt(monkeypatch, fake_home)
@@ -492,11 +538,13 @@ def test_init_yes_replaces_old_export_when_dir_changes(fake_home, tmp_path, monk
     code = main(["init", "--dir", str(new), "--apps", "zsh", "--yes"])
     assert code == 0
     text = rc.read_text()
-    assert f'export DOTSYNC_DIR="{new}"' in text
-    assert f'export DOTSYNC_DIR="{old}"' not in text
+    assert export_line(new) in text
+    assert export_line(old) not in text
 
 
-def test_init_yes_unsupported_shell_falls_back_to_hint(fake_home, tmp_path, monkeypatch, capsys):
+def test_init_yes_unsupported_shell_falls_back_to_hint(
+    fake_home, tmp_path, monkeypatch, capsys
+):
     """fish/nu/etc. → don't touch any rc, but still surface the export line in
     the next-steps hints so the user can wire it manually."""
     monkeypatch.setenv("SHELL", "/usr/local/bin/fish")
@@ -509,7 +557,23 @@ def test_init_yes_unsupported_shell_falls_back_to_hint(fake_home, tmp_path, monk
     assert code == 0
     assert rc.read_text() == "# untouched\n"
     out = capsys.readouterr().out
-    assert "DOTSYNC_DIR" in out                # still in the hints block
+    assert "DOTSYNC_DIR" in out  # still in the hints block
+
+
+def test_init_unsupported_shell_hint_uses_shell_escaped_export(
+    fake_home, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("SHELL", "/usr/local/bin/fish")
+    monkeypatch.setenv("NO_COLOR", "1")
+    _no_btt(monkeypatch, fake_home)
+    target = tmp_path / "configs$(touch owned)"
+
+    code = main(["init", "--dir", str(target), "--apps", "zsh", "--yes"])
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert export_line(target) in out
+    assert f'export DOTSYNC_DIR="{target}"' not in out
 
 
 def test_init_interactive_prompts_and_accepts_default(fake_home, tmp_path, monkeypatch):
@@ -526,7 +590,7 @@ def test_init_interactive_prompts_and_accepts_default(fake_home, tmp_path, monke
 
     code = main(["init"])
     assert code == 0
-    assert f'export DOTSYNC_DIR="{target}"' in rc.read_text()
+    assert export_line(target) in rc.read_text()
 
 
 def test_init_interactive_decline_skips_rc(fake_home, tmp_path, monkeypatch):
@@ -545,7 +609,9 @@ def test_init_interactive_decline_skips_rc(fake_home, tmp_path, monkeypatch):
     assert "DOTSYNC_DIR" not in rc.read_text()
 
 
-def test_init_yes_prints_rc_updated_confirmation(fake_home, tmp_path, monkeypatch, capsys):
+def test_init_yes_prints_rc_updated_confirmation(
+    fake_home, tmp_path, monkeypatch, capsys
+):
     monkeypatch.setenv("SHELL", "/bin/zsh")
     monkeypatch.setenv("NO_COLOR", "1")
     _no_btt(monkeypatch, fake_home)

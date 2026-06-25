@@ -41,6 +41,7 @@ def test_format_welcome_no_color_strips_ansi(monkeypatch):
 
 def test_format_welcome_uses_default_version_when_omitted():
     from dotsync import __version__
+
     out = format_welcome()
     assert __version__ in out
 
@@ -71,6 +72,7 @@ def test_format_welcome_uses_pink_to_purple_gradient_when_color_enabled(monkeypa
     monkeypatch.delenv("NO_COLOR", raising=False)
     out = format_welcome("0.1.0")
     import re as _re
+
     truecolor = _re.findall(r"\033\[1;38;2;\d+;\d+;\d+m", out)
     # Many distinct gradient stops across cells, not 6 line-wide colors.
     assert len(set(truecolor)) >= 8

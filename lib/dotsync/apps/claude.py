@@ -1,12 +1,23 @@
 """Claude Code sync — settings, plugins, MCP servers, with plugin auto-restore."""
+
 from __future__ import annotations
 import json
 import shutil
-import subprocess
+import subprocess  # noqa: F401 - tests patch this shared module object.
 from pathlib import Path
 from typing import Any
 from dotsync import ui
-from dotsync.apps.base import App, AppStatus, diff_files, _hash
+from dotsync.apps.base import (
+    App,
+    AppStatus,
+    copy_file_safely,
+    diff_files,
+    ensure_directory,
+    ensure_not_symlink,
+    ensure_path_within_root,
+    write_text_safely,
+    _hash,
+)
 from dotsync.apps.mcp_sanitizer import filter_claude_mcp_servers
 from dotsync.plan import AppPlan, Change, plan_file_copy, plan_tree_mirror
 
@@ -40,37 +51,66 @@ class ClaudeApp(App):
     def _stored(self, target_dir: Path) -> Path:
         return target_dir / self.name
 
+    def _tree_files(self, root: Path) -> set[Path]:
+        if not root.exists():
+            return set()
+        ensure_not_symlink(root, str(root))
+        if not root.is_dir():
+            raise RuntimeError(f"{root} is not a directory")
+        files: set[Path] = set()
+        for f in root.rglob("*"):
+            rel = f.relative_to(root)
+            ensure_not_symlink(f, str(rel))
+            if f.is_file():
+                files.add(rel)
+        return files
+
     def _diff_tree(
         self, local: Path, stored: Path
     ) -> tuple[set[Path], set[Path], set[Path]]:
         """Return (added_in_stored, removed_in_stored, modified) relative paths."""
-        local_files = (
-            {f.relative_to(local) for f in local.rglob("*") if f.is_file()}
-            if local.exists() else set()
-        )
-        stored_files = (
-            {f.relative_to(stored) for f in stored.rglob("*") if f.is_file()}
-            if stored.exists() else set()
-        )
+        local_files = self._tree_files(local)
+        stored_files = self._tree_files(stored)
         added = stored_files - local_files
         removed = local_files - stored_files
         common = local_files & stored_files
         modified = {rel for rel in common if _hash(local / rel) != _hash(stored / rel)}
         return added, removed, modified
 
-    def _mirror_tree(self, src: Path, dst: Path) -> None:
+    def _mirror_tree(
+        self,
+        src: Path,
+        dst: Path,
+        *,
+        source_root: Path | None = None,
+        dest_root: Path | None = None,
+    ) -> None:
         """Strict full mirror: make dst's file tree match src."""
+        ensure_directory(src, str(src), root=source_root)
+        ensure_directory(dst, str(dst), root=dest_root)
         dst.mkdir(parents=True, exist_ok=True)
-        src_rels = {f.relative_to(src) for f in src.rglob("*") if f.is_file()}
-        dst_rels = {f.relative_to(dst) for f in dst.rglob("*") if f.is_file()}
+        src_rels = self._tree_files(src)
+        dst_rels = self._tree_files(dst)
 
         for rel in src_rels:
             target = dst / rel
+            if target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target)
+            elif target.exists() or target.is_symlink():
+                target.unlink()
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src / rel, target)
+            copy_file_safely(
+                src / rel,
+                target,
+                str(rel),
+                source_root=source_root,
+                dest_root=dest_root,
+            )
 
         for rel in dst_rels - src_rels:
-            (dst / rel).unlink()
+            target = dst / rel
+            if target.exists() or target.is_symlink():
+                target.unlink()
 
         subdirs = sorted(
             (d for d in dst.rglob("*") if d.is_dir()),
@@ -83,22 +123,57 @@ class ClaudeApp(App):
             except OSError:
                 pass
 
+    def _remove_managed_path(
+        self, path: Path, label: str, *, root: Path | None = None
+    ) -> None:
+        if not path.exists() and not path.is_symlink():
+            return
+        if path.is_symlink():
+            if root is not None:
+                ensure_path_within_root(path.parent, root, label)
+            path.unlink()
+        elif path.is_dir():
+            if root is not None:
+                ensure_path_within_root(path, root, label)
+            shutil.rmtree(path)
+        else:
+            if root is not None:
+                ensure_path_within_root(path, root, label)
+            path.unlink()
+
     def _sync_from_global_rules(self, target_dir: Path) -> None:
         """Mirror present user-level Claude global rules from local to stored."""
         cdir = self._claude_dir()
         stored = self._stored(target_dir)
+        ensure_directory(stored, "claude/", root=target_dir)
 
         src_md = cdir / "CLAUDE.md"
+        if src_md.is_symlink():
+            raise RuntimeError(f"{src_md} is a symlink (CLAUDE.md); refusing to sync symlinks")
         if src_md.exists():
             stored.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src_md, stored / "CLAUDE.md")
+            copy_file_safely(
+                src_md, stored / "CLAUDE.md", "CLAUDE.md", dest_root=target_dir
+            )
             ui.ok("CLAUDE.md")
+        else:
+            stale_md = stored / "CLAUDE.md"
+            if stale_md.exists() or stale_md.is_symlink():
+                self._remove_managed_path(stale_md, "CLAUDE.md", root=target_dir)
+                ui.ok("CLAUDE.md removed")
 
         for name in GLOBAL_RULE_DIRECTORIES:
             src_dir = cdir / name
+            if src_dir.is_symlink():
+                raise RuntimeError(f"{src_dir} is a symlink ({name}/); refusing to sync symlinks")
             if src_dir.exists():
-                self._mirror_tree(src_dir, stored / name)
+                self._mirror_tree(src_dir, stored / name, dest_root=target_dir)
                 ui.ok(f"{name}/")
+            else:
+                stale_dir = stored / name
+                if stale_dir.exists() or stale_dir.is_symlink():
+                    self._remove_managed_path(stale_dir, f"{name}/", root=target_dir)
+                    ui.ok(f"{name}/ removed")
 
     def _sync_to_global_rules(self, target_dir: Path, backup_dir: Path) -> None:
         """Restore present stored user-level Claude global rules to local."""
@@ -109,20 +184,25 @@ class ClaudeApp(App):
         stored_md = stored / "CLAUDE.md"
         local_md = cdir / "CLAUDE.md"
         if stored_md.exists():
+            ensure_directory(bdir, "claude backup", root=backup_dir)
             bdir.mkdir(parents=True, exist_ok=True)
             if local_md.exists():
-                shutil.copy2(local_md, bdir / "CLAUDE.md")
+                copy_file_safely(
+                    local_md, bdir / "CLAUDE.md", "CLAUDE.md", dest_root=backup_dir
+                )
+            ensure_directory(cdir, "~/.claude/")
             cdir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(stored_md, local_md)
+            copy_file_safely(stored_md, local_md, "CLAUDE.md", source_root=target_dir)
             ui.ok("CLAUDE.md")
 
         for name in GLOBAL_RULE_DIRECTORIES:
             stored_dir = stored / name
             local_dir = cdir / name
             if stored_dir.exists():
+                ensure_directory(stored_dir, f"{name}/", root=target_dir)
                 if local_dir.exists():
-                    shutil.copytree(local_dir, bdir / name, dirs_exist_ok=True)
-                self._mirror_tree(stored_dir, local_dir)
+                    self._mirror_tree(local_dir, bdir / name, dest_root=backup_dir)
+                self._mirror_tree(stored_dir, local_dir, source_root=target_dir)
                 ui.ok(f"{name}/")
 
     def _diff_global_rules(self, target_dir: Path) -> AppStatus:
@@ -136,6 +216,8 @@ class ClaudeApp(App):
         local_md = cdir / "CLAUDE.md"
         stored_md = stored / "CLAUDE.md"
         md_changed = False
+        if local_md.is_symlink() or stored_md.is_symlink():
+            return AppStatus(state="unknown", details="CLAUDE.md is a symlink")
         if local_md.exists() and stored_md.exists():
             if _hash(local_md) != _hash(stored_md):
                 md_changed = True
@@ -146,7 +228,10 @@ class ClaudeApp(App):
             summary_parts.append(("CLAUDE.md", 1))
 
         for name in GLOBAL_RULE_DIRECTORIES:
-            added, removed, modified = self._diff_tree(cdir / name, stored / name)
+            try:
+                added, removed, modified = self._diff_tree(cdir / name, stored / name)
+            except RuntimeError as exc:
+                return AppStatus(state="unknown", details=str(exc))
             count = len(added) + len(removed) + len(modified)
             if count > 0:
                 for rel in sorted(added | removed | modified):
@@ -164,9 +249,12 @@ class ClaudeApp(App):
 
     @staticmethod
     def _merge_status(base: AppStatus, rules: AppStatus) -> AppStatus:
-        """Merge statuses with missing > dirty > clean priority."""
+        """Merge statuses with missing/unknown > dirty > clean priority."""
         if base.state == "missing":
             return base
+        if base.state == "unknown" or rules.state == "unknown":
+            parts = [s.details for s in (base, rules) if s.details]
+            return AppStatus(state="unknown", details=", ".join(parts))
         if base.state == "clean" and rules.state == "clean":
             return AppStatus(state="clean")
         parts = [s for s in (base.details, rules.details) if s]
@@ -175,13 +263,174 @@ class ClaudeApp(App):
     def _sanitized_mcp_servers(self, servers: dict) -> dict[str, object]:
         return filter_claude_mcp_servers(servers).value
 
-    def _plan_mcp_from(self, stored: Path) -> Change:
+    @staticmethod
+    def _load_json_file(path: Path) -> Any:
+        try:
+            return json.loads(path.read_text())
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f"{path} is corrupted: {e}") from e
+
+    @staticmethod
+    def _require_mapping(value: Any, path: Path, label: str) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise RuntimeError(f"{path} must contain a JSON object ({label})")
+        return value
+
+    @staticmethod
+    def _plugin_config_name(plugin_id: str, source: Path) -> str:
+        if not isinstance(plugin_id, str) or not plugin_id.strip():
+            raise RuntimeError(f"{source} contains invalid plugin id {plugin_id!r}")
+        name = plugin_id.split("@", 1)[0]
+        if (
+            not name
+            or name in {".", ".."}
+            or ".." in plugin_id
+            or "/" in plugin_id
+            or "\\" in plugin_id
+            or any(ord(ch) < 32 for ch in plugin_id)
+        ):
+            raise RuntimeError(f"{source} contains unsafe plugin id {plugin_id!r}")
+        return name
+
+    @staticmethod
+    def _plugins_from_installed_doc(data: Any, path: Path) -> dict[str, Any]:
+        doc = ClaudeApp._require_mapping(data, path, "installed plugins")
+        plugins = doc["plugins"] if "plugins" in doc else {}
+        if plugins is None:
+            plugins = {}
+        if not isinstance(plugins, dict):
+            raise RuntimeError(f"{path} plugins must contain a JSON object")
+        for plugin_id, entries in plugins.items():
+            ClaudeApp._plugin_config_name(plugin_id, path)
+            if entries is None:
+                entry_docs: list[dict[str, Any]] = []
+            elif isinstance(entries, list):
+                if not all(isinstance(entry, dict) for entry in entries):
+                    raise RuntimeError(
+                        f"{path} plugin {plugin_id!r} entries must be JSON objects"
+                    )
+                entry_docs = entries
+            elif isinstance(entries, dict):
+                entry_docs = [entries]
+            else:
+                raise RuntimeError(
+                    f"{path} plugin {plugin_id!r} entries must be a list or object"
+                )
+            for entry in entry_docs:
+                install_path = entry.get("installPath")
+                if install_path is not None and not isinstance(install_path, str):
+                    raise RuntimeError(
+                        f"{path} plugin {plugin_id!r} installPath must be a string"
+                    )
+        return plugins
+
+    @staticmethod
+    def _marketplaces_from_doc(data: Any, path: Path) -> dict[str, Any]:
+        doc = ClaudeApp._require_mapping(data, path, "known marketplaces")
+        for name, meta in doc.items():
+            if not name.strip():
+                raise RuntimeError(f"{path} contains invalid marketplace name {name!r}")
+            if not isinstance(meta, dict):
+                raise RuntimeError(f"{path} marketplace {name!r} must be a JSON object")
+            source = meta.get("source") or {}
+            if not isinstance(source, dict):
+                raise RuntimeError(
+                    f"{path} marketplace {name!r} source must be a JSON object"
+                )
+            kind = source.get("source")
+            if kind is None:
+                continue
+            if not isinstance(kind, str):
+                raise RuntimeError(
+                    f"{path} marketplace {name!r} source kind must be a string"
+                )
+            required_key = {
+                "github": "repo",
+                "directory": "path",
+                "git": "url",
+                "local": "path",
+            }.get(kind)
+            if required_key is not None and not isinstance(
+                source.get(required_key), str
+            ):
+                raise RuntimeError(
+                    f"{path} marketplace {name!r} source {required_key!r} must be a string"
+                )
+        return doc
+
+    @staticmethod
+    def _mcp_servers_from_doc(data: Any, path: Path) -> dict[str, Any]:
+        return ClaudeApp._require_mapping(data, path, "MCP servers")
+
+    @staticmethod
+    def _mcp_servers_from_claude_doc(data: Any, path: Path) -> dict[str, Any]:
+        doc = ClaudeApp._require_mapping(data, path, "Claude config")
+        servers = doc.get("mcpServers", {})
+        if servers is None:
+            servers = {}
+        if not isinstance(servers, dict):
+            raise RuntimeError(f"{path} mcpServers must contain a JSON object")
+        return servers
+
+    @staticmethod
+    def _settings_from_doc(data: Any, path: Path) -> dict[str, Any]:
+        settings = ClaudeApp._require_mapping(data, path, "settings")
+        enabled_map = settings.get("enabledPlugins", {}) or {}
+        if not isinstance(enabled_map, dict):
+            raise RuntimeError(f"{path} enabledPlugins must contain a JSON object")
+        for plugin_id in enabled_map:
+            ClaudeApp._plugin_config_name(plugin_id, path)
+        return settings
+
+    def _validate_sync_from_sources(self) -> dict[str, object]:
+        cdir = self._claude_dir()
+        required_files = [
+            (cdir / "settings.json", "claude/settings.json"),
+            (
+                cdir / "plugins" / "installed_plugins.json",
+                "claude/plugins/installed_plugins.json",
+            ),
+            (
+                cdir / "plugins" / "known_marketplaces.json",
+                "claude/plugins/known_marketplaces.json",
+            ),
+            (self._claude_json(), "~/.claude.json"),
+        ]
+        for path, label in required_files:
+            if not path.is_file():
+                raise FileNotFoundError(f"{path} not found ({label} missing)")
+            ensure_not_symlink(path, label)
+
+        self._settings_from_doc(
+            self._load_json_file(cdir / "settings.json"),
+            cdir / "settings.json",
+        )
+        self._plugins_from_installed_doc(
+            self._load_json_file(cdir / "plugins" / "installed_plugins.json"),
+            cdir / "plugins" / "installed_plugins.json",
+        )
+        self._marketplaces_from_doc(
+            self._load_json_file(cdir / "plugins" / "known_marketplaces.json"),
+            cdir / "plugins" / "known_marketplaces.json",
+        )
+        mcp_servers = self._mcp_servers_from_claude_doc(
+            self._load_json_file(self._claude_json()),
+            self._claude_json(),
+        )
+        return self._sanitized_mcp_servers(mcp_servers)
+
+    def _plan_mcp_from(self, stored: Path, target_dir: Path) -> Change:
         source = self._claude_json()
         dest = stored / "mcp-servers.json"
+        safety = plan_file_copy(
+            "mcp-servers.json", source, dest, dest_root=target_dir
+        )
+        if safety.kind == "unknown":
+            return safety
         if not source.exists():
             return Change("mcp-servers.json", "missing-source", source, dest)
         try:
-            data = self._sanitized_mcp_servers(json.loads(source.read_text()).get("mcpServers", {}))
+            local_doc = json.loads(source.read_text())
         except json.JSONDecodeError:
             return Change(
                 "mcp-servers.json",
@@ -190,11 +439,31 @@ class ClaudeApp(App):
                 dest,
                 "local ~/.claude.json is invalid",
             )
+        if not isinstance(local_doc, dict):
+            return Change(
+                "mcp-servers.json",
+                "unknown",
+                source,
+                dest,
+                "local ~/.claude.json is invalid",
+            )
+        mcp_servers = local_doc.get("mcpServers", {})
+        if mcp_servers is None:
+            mcp_servers = {}
+        if not isinstance(mcp_servers, dict):
+            return Change(
+                "mcp-servers.json",
+                "unknown",
+                source,
+                dest,
+                "local ~/.claude.json mcpServers is invalid",
+            )
+        data = self._sanitized_mcp_servers(mcp_servers)
         planned = json.dumps(data, indent=2, ensure_ascii=False)
         if not dest.exists():
             return Change("mcp-servers.json", "create", source, dest)
         try:
-            current = filter_claude_mcp_servers(json.loads(dest.read_text()))
+            current_doc = json.loads(dest.read_text())
         except json.JSONDecodeError:
             return Change(
                 "mcp-servers.json",
@@ -203,6 +472,15 @@ class ClaudeApp(App):
                 dest,
                 "stored mcp-servers.json is invalid",
             )
+        if not isinstance(current_doc, dict):
+            return Change(
+                "mcp-servers.json",
+                "unknown",
+                source,
+                dest,
+                "stored mcp-servers.json is invalid",
+            )
+        current = filter_claude_mcp_servers(current_doc)
         if current.changed:
             return Change(
                 "mcp-servers.json",
@@ -213,18 +491,25 @@ class ClaudeApp(App):
             )
         return Change(
             "mcp-servers.json",
-            "unchanged" if json.dumps(current.value, indent=2, ensure_ascii=False) == planned else "update",
+            "unchanged"
+            if json.dumps(current.value, indent=2, ensure_ascii=False) == planned
+            else "update",
             source,
             dest,
         )
 
-    def _plan_mcp_to(self, stored: Path) -> Change:
+    def _plan_mcp_to(self, stored: Path, target_dir: Path) -> Change:
         source = stored / "mcp-servers.json"
         dest = self._claude_json()
+        safety = plan_file_copy(
+            "mcp-servers.json", source, dest, source_root=target_dir
+        )
+        if safety.kind == "unknown":
+            return safety
         if not source.exists():
             return Change("mcp-servers.json", "missing-source", source, dest)
         try:
-            stored_mcp = self._sanitized_mcp_servers(json.loads(source.read_text()))
+            stored_doc = json.loads(source.read_text())
         except json.JSONDecodeError:
             return Change(
                 "mcp-servers.json",
@@ -233,9 +518,26 @@ class ClaudeApp(App):
                 dest,
                 "stored mcp-servers.json is invalid",
             )
+        if not isinstance(stored_doc, dict):
+            return Change(
+                "mcp-servers.json",
+                "unknown",
+                source,
+                dest,
+                "stored mcp-servers.json is invalid",
+            )
+        stored_mcp = self._sanitized_mcp_servers(stored_doc)
         try:
             local_doc = json.loads(dest.read_text()) if dest.exists() else {}
         except json.JSONDecodeError:
+            return Change(
+                "mcp-servers.json",
+                "unknown",
+                source,
+                dest,
+                "local ~/.claude.json is invalid",
+            )
+        if not isinstance(local_doc, dict):
             return Change(
                 "mcp-servers.json",
                 "unknown",
@@ -247,6 +549,14 @@ class ClaudeApp(App):
             return Change("mcp-servers.json", "create", source, dest)
         if "mcpServers" not in local_doc:
             return Change("mcp-servers.json", "update", source, dest)
+        if not isinstance(local_doc.get("mcpServers"), dict):
+            return Change(
+                "mcp-servers.json",
+                "unknown",
+                source,
+                dest,
+                "local ~/.claude.json mcpServers is invalid",
+            )
         planned_doc = dict(local_doc)
         planned_doc["mcpServers"] = stored_mcp
         planned = json.dumps(planned_doc, indent=2, ensure_ascii=False)
@@ -263,13 +573,25 @@ class ClaudeApp(App):
         current_doc["mcpServers"] = current_mcp.value
         return Change(
             "mcp-servers.json",
-            "unchanged" if json.dumps(current_doc, indent=2, ensure_ascii=False) == planned else "update",
+            "unchanged"
+            if json.dumps(current_doc, indent=2, ensure_ascii=False) == planned
+            else "update",
             source,
             dest,
         )
 
-    def _plan_tree_mirror(self, label: str, source: Path, dest: Path) -> Change:
-        change = plan_tree_mirror(label, source, dest)
+    def _plan_tree_mirror(
+        self,
+        label: str,
+        source: Path,
+        dest: Path,
+        *,
+        source_root: Path | None = None,
+        dest_root: Path | None = None,
+    ) -> Change:
+        change = plan_tree_mirror(
+            label, source, dest, source_root=source_root, dest_root=dest_root
+        )
         if source.exists() and not dest.exists() and change.kind == "unchanged":
             return Change(
                 change.label,
@@ -283,7 +605,11 @@ class ClaudeApp(App):
     def _installed_plugin_config_changes_from(self, stored: Path) -> list[Change]:
         changes: list[Change] = []
         installed = self._claude_dir() / "plugins" / "installed_plugins.json"
-        for plugin_name in self._installed_plugin_names(installed):
+        try:
+            plugin_names = self._installed_plugin_names(installed)
+        except RuntimeError as exc:
+            return [Change("plugins config", "unknown", installed, None, str(exc))]
+        for plugin_name in plugin_names:
             src = self._claude_dir() / "plugins" / plugin_name / "config.json"
             if src.exists():
                 changes.append(
@@ -298,7 +624,11 @@ class ClaudeApp(App):
     def _installed_plugin_config_changes_to(self, stored: Path) -> list[Change]:
         changes: list[Change] = []
         installed = stored / "plugins" / "installed_plugins.json"
-        for plugin_name in self._installed_plugin_names(installed):
+        try:
+            plugin_names = self._installed_plugin_names(installed)
+        except RuntimeError as exc:
+            return [Change("plugins config", "unknown", installed, None, str(exc))]
+        for plugin_name in plugin_names:
             src = stored / "plugins" / plugin_name / "config.json"
             if src.exists():
                 changes.append(
@@ -314,52 +644,136 @@ class ClaudeApp(App):
         cdir = self._claude_dir()
         stored = self._stored(target_dir)
         changes = [
-            plan_file_copy("settings.json", cdir / "settings.json", stored / "settings.json"),
+            plan_file_copy(
+                "settings.json",
+                cdir / "settings.json",
+                stored / "settings.json",
+                dest_root=target_dir,
+            ),
             plan_file_copy(
                 "plugins/installed_plugins.json",
                 cdir / "plugins" / "installed_plugins.json",
                 stored / "plugins" / "installed_plugins.json",
+                dest_root=target_dir,
             ),
             plan_file_copy(
                 "plugins/known_marketplaces.json",
                 cdir / "plugins" / "known_marketplaces.json",
                 stored / "plugins" / "known_marketplaces.json",
+                dest_root=target_dir,
             ),
-            self._plan_mcp_from(stored),
+            self._plan_mcp_from(stored, target_dir),
         ]
         changes.extend(self._installed_plugin_config_changes_from(stored))
-        if (cdir / "CLAUDE.md").exists():
-            changes.append(plan_file_copy("CLAUDE.md", cdir / "CLAUDE.md", stored / "CLAUDE.md"))
+        local_md = cdir / "CLAUDE.md"
+        stored_md = stored / "CLAUDE.md"
+        if local_md.is_symlink():
+            changes.append(
+                Change(
+                    "CLAUDE.md",
+                    "unknown",
+                    local_md,
+                    stored_md,
+                    f"{local_md} is a symlink",
+                )
+            )
+        elif local_md.exists():
+            changes.append(
+                plan_file_copy(
+                    "CLAUDE.md",
+                    local_md,
+                    stored_md,
+                    dest_root=target_dir,
+                )
+            )
+        elif stored_md.exists() or stored_md.is_symlink():
+            changes.append(
+                Change(
+                    "CLAUDE.md",
+                    "remove",
+                    None,
+                    stored_md,
+                    "local file missing",
+                )
+            )
         for name in GLOBAL_RULE_DIRECTORIES:
             local_dir = cdir / name
-            if local_dir.exists():
-                changes.append(self._plan_tree_mirror(f"{name}/", local_dir, stored / name))
+            if local_dir.is_symlink():
+                changes.append(
+                    Change(
+                        f"{name}/",
+                        "unknown",
+                        local_dir,
+                        stored / name,
+                        f"{local_dir} is a symlink",
+                    )
+                )
+            elif local_dir.exists():
+                changes.append(
+                    self._plan_tree_mirror(
+                        f"{name}/",
+                        local_dir,
+                        stored / name,
+                        dest_root=target_dir,
+                    )
+                )
+            elif (stored / name).exists() or (stored / name).is_symlink():
+                changes.append(
+                    Change(
+                        f"{name}/",
+                        "remove",
+                        None,
+                        stored / name,
+                        "local directory missing",
+                    )
+                )
         return AppPlan(self.name, "from", changes, self.description)
 
     def plan_to(self, target_dir: Path) -> AppPlan:
         cdir = self._claude_dir()
         stored = self._stored(target_dir)
         changes = [
-            plan_file_copy("settings.json", stored / "settings.json", cdir / "settings.json"),
+            plan_file_copy(
+                "settings.json",
+                stored / "settings.json",
+                cdir / "settings.json",
+                source_root=target_dir,
+            ),
             plan_file_copy(
                 "plugins/installed_plugins.json",
                 stored / "plugins" / "installed_plugins.json",
                 cdir / "plugins" / "installed_plugins.json",
+                source_root=target_dir,
             ),
             plan_file_copy(
                 "plugins/known_marketplaces.json",
                 stored / "plugins" / "known_marketplaces.json",
                 cdir / "plugins" / "known_marketplaces.json",
+                source_root=target_dir,
             ),
-            self._plan_mcp_to(stored),
+            self._plan_mcp_to(stored, target_dir),
         ]
         changes.extend(self._installed_plugin_config_changes_to(stored))
         if (stored / "CLAUDE.md").exists():
-            changes.append(plan_file_copy("CLAUDE.md", stored / "CLAUDE.md", cdir / "CLAUDE.md"))
+            changes.append(
+                plan_file_copy(
+                    "CLAUDE.md",
+                    stored / "CLAUDE.md",
+                    cdir / "CLAUDE.md",
+                    source_root=target_dir,
+                )
+            )
         for name in GLOBAL_RULE_DIRECTORIES:
             stored_dir = stored / name
             if stored_dir.exists():
-                changes.append(self._plan_tree_mirror(f"{name}/", stored_dir, cdir / name))
+                changes.append(
+                    self._plan_tree_mirror(
+                        f"{name}/",
+                        stored_dir,
+                        cdir / name,
+                        source_root=target_dir,
+                    )
+                )
         return AppPlan(self.name, "to", changes, self.description)
 
     def sync_from(self, target_dir: Path) -> None:
@@ -367,86 +781,157 @@ class ClaudeApp(App):
 
         cdir = self._claude_dir()
         stored = self._stored(target_dir)
+        mcp_servers = self._validate_sync_from_sources()
+        ensure_directory(stored, "claude/", root=target_dir)
+        ensure_directory(stored / "plugins", "plugins/", root=target_dir)
         (stored / "plugins").mkdir(parents=True, exist_ok=True)
 
-        shutil.copy2(cdir / "settings.json", stored / "settings.json")
+        copy_file_safely(
+            cdir / "settings.json",
+            stored / "settings.json",
+            "settings.json",
+            dest_root=target_dir,
+        )
         ui.ok("settings.json")
 
         for fname in ("installed_plugins.json", "known_marketplaces.json"):
-            shutil.copy2(cdir / "plugins" / fname, stored / "plugins" / fname)
+            copy_file_safely(
+                cdir / "plugins" / fname,
+                stored / "plugins" / fname,
+                f"plugins/{fname}",
+                dest_root=target_dir,
+            )
             ui.ok(f"plugins/{fname}")
 
-        cj = json.loads(self._claude_json().read_text())
-        mcp_servers = self._sanitized_mcp_servers(cj.get("mcpServers", {}))
-        (stored / "mcp-servers.json").write_text(
-            json.dumps(mcp_servers, indent=2, ensure_ascii=False)
+        write_text_safely(
+            stored / "mcp-servers.json",
+            json.dumps(mcp_servers, indent=2, ensure_ascii=False),
+            "mcp-servers.json",
+            dest_root=target_dir,
         )
         ui.ok("mcp-servers.json")
 
-        for plugin_name in self._installed_plugin_names(stored / "plugins" / "installed_plugins.json"):
+        for plugin_name in self._installed_plugin_names(
+            stored / "plugins" / "installed_plugins.json"
+        ):
             src = cdir / "plugins" / plugin_name / "config.json"
             if src.exists():
                 dst_dir = stored / "plugins" / plugin_name
+                ensure_directory(dst_dir, f"plugins/{plugin_name}/", root=target_dir)
                 dst_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dst_dir / "config.json")
+                copy_file_safely(
+                    src,
+                    dst_dir / "config.json",
+                    f"plugins/{plugin_name}/config.json",
+                    dest_root=target_dir,
+                )
                 ui.ok(f"plugins/{plugin_name}/config.json")
 
         self._sync_from_global_rules(target_dir)
 
     def sync_to(self, target_dir: Path, backup_dir: Path) -> None:
         stored = self._stored(target_dir)
-        stored_mcp = self._validate_sync_to_sources(stored)
+        ensure_directory(stored, "claude/", root=target_dir)
+        self._validate_stored_global_rules(stored, target_dir)
+        stored_mcp = self._validate_sync_to_sources(stored, target_dir)
+        self._validate_sync_to_optional_paths(stored, target_dir)
 
         cdir = self._claude_dir()
+        ensure_directory(cdir, "~/.claude/")
         cdir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(cdir / "plugins", "~/.claude/plugins/")
         (cdir / "plugins").mkdir(parents=True, exist_ok=True)
 
         bdir = backup_dir / self.name
+        ensure_directory(bdir, "claude backup", root=backup_dir)
         bdir.mkdir(parents=True, exist_ok=True)
+        ensure_directory(bdir / "plugins", "plugins/", root=backup_dir)
         (bdir / "plugins").mkdir(parents=True, exist_ok=True)
 
         for src, rel in [
             (cdir / "settings.json", "settings.json"),
-            (cdir / "plugins" / "installed_plugins.json", "plugins/installed_plugins.json"),
-            (cdir / "plugins" / "known_marketplaces.json", "plugins/known_marketplaces.json"),
+            (
+                cdir / "plugins" / "installed_plugins.json",
+                "plugins/installed_plugins.json",
+            ),
+            (
+                cdir / "plugins" / "known_marketplaces.json",
+                "plugins/known_marketplaces.json",
+            ),
             (self._claude_json(), ".claude.json"),
         ]:
             if src.exists():
                 dst = bdir / rel
+                ensure_path_within_root(dst, backup_dir, rel)
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dst)
+                copy_file_safely(src, dst, rel, dest_root=backup_dir)
         ui.dim(f"backup → {bdir}")
 
-        shutil.copy2(stored / "settings.json", cdir / "settings.json")
+        copy_file_safely(
+            stored / "settings.json",
+            cdir / "settings.json",
+            "settings.json",
+            source_root=target_dir,
+        )
         ui.ok("settings.json")
-        shutil.copy2(stored / "plugins" / "installed_plugins.json",
-                     cdir / "plugins" / "installed_plugins.json")
+        copy_file_safely(
+            stored / "plugins" / "installed_plugins.json",
+            cdir / "plugins" / "installed_plugins.json",
+            "plugins/installed_plugins.json",
+            source_root=target_dir,
+        )
         ui.ok("plugins/installed_plugins.json")
-        shutil.copy2(stored / "plugins" / "known_marketplaces.json",
-                     cdir / "plugins" / "known_marketplaces.json")
+        copy_file_safely(
+            stored / "plugins" / "known_marketplaces.json",
+            cdir / "plugins" / "known_marketplaces.json",
+            "plugins/known_marketplaces.json",
+            source_root=target_dir,
+        )
         ui.ok("plugins/known_marketplaces.json")
 
         claude_json_path = self._claude_json()
         try:
-            cj = json.loads(claude_json_path.read_text()) if claude_json_path.exists() else {}
+            cj = (
+                json.loads(claude_json_path.read_text())
+                if claude_json_path.exists()
+                else {}
+            )
         except json.JSONDecodeError as e:
             raise RuntimeError(f"~/.claude.json is corrupted: {e}") from e
         cj["mcpServers"] = self._sanitized_mcp_servers(stored_mcp)
-        claude_json_path.write_text(json.dumps(cj, indent=2, ensure_ascii=False))
+        write_text_safely(
+            claude_json_path,
+            json.dumps(cj, indent=2, ensure_ascii=False),
+            "~/.claude.json",
+        )
         ui.ok("mcp-servers.json → ~/.claude.json")
 
-        for plugin_name in self._installed_plugin_names(stored / "plugins" / "installed_plugins.json"):
+        for plugin_name in self._installed_plugin_names(
+            stored / "plugins" / "installed_plugins.json"
+        ):
             src = stored / "plugins" / plugin_name / "config.json"
             if not src.exists():
                 continue
             local_plugin_dir = cdir / "plugins" / plugin_name
+            ensure_directory(local_plugin_dir, f"plugins/{plugin_name}/")
             local_plugin_dir.mkdir(parents=True, exist_ok=True)
             local_cfg = local_plugin_dir / "config.json"
             if local_cfg.exists():
                 bdst = bdir / "plugins" / plugin_name
+                ensure_directory(bdst, f"plugins/{plugin_name}/", root=backup_dir)
                 bdst.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(local_cfg, bdst / "config.json")
-            shutil.copy2(src, local_cfg)
+                copy_file_safely(
+                    local_cfg,
+                    bdst / "config.json",
+                    f"plugins/{plugin_name}/config.json",
+                    dest_root=backup_dir,
+                )
+            copy_file_safely(
+                src,
+                local_cfg,
+                f"plugins/{plugin_name}/config.json",
+                source_root=target_dir,
+            )
             ui.ok(f"plugins/{plugin_name}/config.json")
 
         ui.divider("restore marketplaces · plugins")
@@ -458,7 +943,63 @@ class ClaudeApp(App):
 
         ui.dim("hint: restart Claude Code to pick up new plugins")
 
-    def _validate_sync_to_sources(self, stored: Path) -> Any:
+    def _validate_stored_global_rules(self, stored: Path, target_dir: Path) -> None:
+        stored_md = stored / "CLAUDE.md"
+        if stored_md.exists() or stored_md.is_symlink():
+            ensure_path_within_root(stored_md, target_dir, "CLAUDE.md")
+            ensure_not_symlink(stored_md, "CLAUDE.md")
+            if not stored_md.is_file():
+                raise RuntimeError(f"{stored_md} is not a file (CLAUDE.md)")
+        for name in GLOBAL_RULE_DIRECTORIES:
+            stored_dir = stored / name
+            if stored_dir.exists() or stored_dir.is_symlink():
+                ensure_directory(stored_dir, f"{name}/", root=target_dir)
+                self._tree_files(stored_dir)
+
+    def _validate_sync_to_optional_paths(self, stored: Path, target_dir: Path) -> None:
+        cdir = self._claude_dir()
+        stored_md = stored / "CLAUDE.md"
+        local_md = cdir / "CLAUDE.md"
+        if stored_md.exists() and (local_md.exists() or local_md.is_symlink()):
+            ensure_not_symlink(local_md, "CLAUDE.md")
+            if not local_md.is_file():
+                raise RuntimeError(f"{local_md} is not a file (CLAUDE.md)")
+
+        for name in GLOBAL_RULE_DIRECTORIES:
+            stored_dir = stored / name
+            local_dir = cdir / name
+            if stored_dir.exists() and (local_dir.exists() or local_dir.is_symlink()):
+                ensure_directory(local_dir, f"{name}/")
+                self._tree_files(local_dir)
+
+        for plugin_name in self._installed_plugin_names(
+            stored / "plugins" / "installed_plugins.json"
+        ):
+            stored_cfg = stored / "plugins" / plugin_name / "config.json"
+            if stored_cfg.exists() or stored_cfg.is_symlink():
+                ensure_path_within_root(
+                    stored_cfg,
+                    target_dir,
+                    f"plugins/{plugin_name}/config.json",
+                )
+                ensure_not_symlink(
+                    stored_cfg, f"plugins/{plugin_name}/config.json"
+                )
+                if not stored_cfg.is_file():
+                    raise RuntimeError(
+                        f"{stored_cfg} is not a file (plugins/{plugin_name}/config.json)"
+                    )
+                local_cfg = cdir / "plugins" / plugin_name / "config.json"
+                if local_cfg.exists() or local_cfg.is_symlink():
+                    ensure_not_symlink(
+                        local_cfg, f"plugins/{plugin_name}/config.json"
+                    )
+                    if not local_cfg.is_file():
+                        raise RuntimeError(
+                            f"{local_cfg} is not a file (plugins/{plugin_name}/config.json)"
+                        )
+
+    def _validate_sync_to_sources(self, stored: Path, target_dir: Path) -> Any:
         required_files = [
             (stored / "settings.json", "claude/settings.json"),
             (
@@ -472,39 +1013,75 @@ class ClaudeApp(App):
             (stored / "mcp-servers.json", "claude/mcp-servers.json"),
         ]
         for path, label in required_files:
+            ensure_path_within_root(path, target_dir, label)
             if not path.is_file():
                 raise FileNotFoundError(f"{path} not found ({label} missing)")
 
-        for path, _label in required_files[:-1]:
-            self._load_required_stored_json(path)
-        return self._sanitized_mcp_servers(self._load_required_stored_json(stored / "mcp-servers.json"))
+        self._settings_from_doc(
+            self._load_required_stored_json(stored / "settings.json"),
+            stored / "settings.json",
+        )
+        self._plugins_from_installed_doc(
+            self._load_required_stored_json(
+                stored / "plugins" / "installed_plugins.json"
+            ),
+            stored / "plugins" / "installed_plugins.json",
+        )
+        self._marketplaces_from_doc(
+            self._load_required_stored_json(
+                stored / "plugins" / "known_marketplaces.json"
+            ),
+            stored / "plugins" / "known_marketplaces.json",
+        )
+        stored_mcp = self._mcp_servers_from_doc(
+            self._load_required_stored_json(stored / "mcp-servers.json"),
+            stored / "mcp-servers.json",
+        )
+        return self._sanitized_mcp_servers(stored_mcp)
 
     def _load_required_stored_json(self, path: Path) -> Any:
-        try:
-            return json.loads(path.read_text())
-        except json.JSONDecodeError as e:
-            raise RuntimeError(f"{path} is corrupted: {e}") from e
+        return self._load_json_file(path)
 
     def status(self, target_dir: Path) -> AppStatus:
         stored = self._stored(target_dir)
+        try:
+            ensure_directory(stored, "claude/", root=target_dir)
+        except RuntimeError as exc:
+            return AppStatus(state="unknown", details=str(exc))
         cdir = self._claude_dir()
         pairs = [
             (cdir / "settings.json", stored / "settings.json"),
-            (cdir / "plugins" / "installed_plugins.json", stored / "plugins" / "installed_plugins.json"),
-            (cdir / "plugins" / "known_marketplaces.json", stored / "plugins" / "known_marketplaces.json"),
+            (
+                cdir / "plugins" / "installed_plugins.json",
+                stored / "plugins" / "installed_plugins.json",
+            ),
+            (
+                cdir / "plugins" / "known_marketplaces.json",
+                stored / "plugins" / "known_marketplaces.json",
+            ),
         ]
         base = diff_files(pairs)
         if base.state == "missing":
+            return base
+        if base.state == "unknown":
             return base
         local_cj = self._claude_json()
         stored_mcp = stored / "mcp-servers.json"
         if not local_cj.exists() or not stored_mcp.exists():
             return AppStatus(state="missing", details="mcp-servers.json")
-        local_mcp = self._sanitized_mcp_servers(json.loads(local_cj.read_text()).get("mcpServers", {}))
-        stored_mcp_data = self._sanitized_mcp_servers(json.loads(stored_mcp.read_text()))
+        if local_cj.is_symlink() or stored_mcp.is_symlink():
+            return AppStatus(state="unknown", details="mcp-servers.json is a symlink")
+        local_mcp = self._sanitized_mcp_servers(
+            json.loads(local_cj.read_text()).get("mcpServers", {})
+        )
+        stored_mcp_data = self._sanitized_mcp_servers(
+            json.loads(stored_mcp.read_text())
+        )
         if local_mcp != stored_mcp_data:
             if base.state == "dirty":
-                base = AppStatus(state="dirty", details=f"{base.details}, mcp-servers.json")
+                base = AppStatus(
+                    state="dirty", details=f"{base.details}, mcp-servers.json"
+                )
             else:
                 base = AppStatus(state="dirty", details="mcp-servers.json")
         rules = self._diff_global_rules(target_dir)
@@ -514,17 +1091,31 @@ class ClaudeApp(App):
     def _installed_plugin_names(installed_plugins_path: Path) -> list[str]:
         if not installed_plugins_path.exists():
             return []
-        data = json.loads(installed_plugins_path.read_text())
-        plugins = data.get("plugins") or {}
-        return sorted({k.split("@")[0] for k in plugins.keys()})
+        plugins = ClaudeApp._plugins_from_installed_doc(
+            ClaudeApp._load_json_file(installed_plugins_path),
+            installed_plugins_path,
+        )
+        return sorted(
+            {
+                ClaudeApp._plugin_config_name(plugin_id, installed_plugins_path)
+                for plugin_id in plugins
+            }
+        )
 
     def _restore_plugins(self, stored: Path) -> None:
-        marketplaces = json.loads((stored / "plugins" / "known_marketplaces.json").read_text())
-        installed_doc = json.loads((stored / "plugins" / "installed_plugins.json").read_text())
-        plugins = installed_doc.get("plugins") or {}
+        known_marketplaces = stored / "plugins" / "known_marketplaces.json"
+        installed_plugins = stored / "plugins" / "installed_plugins.json"
+        marketplaces = self._marketplaces_from_doc(
+            self._load_json_file(known_marketplaces),
+            known_marketplaces,
+        )
+        plugins = self._plugins_from_installed_doc(
+            self._load_json_file(installed_plugins),
+            installed_plugins,
+        )
 
         for mp_name, mp_meta in marketplaces.items():
-            source = (mp_meta.get("source") or {})
+            source = mp_meta.get("source") or {}
             spec = self._marketplace_spec(source)
             if not spec:
                 ui.warn(f"marketplace `{mp_name}` source unknown — skipping")
@@ -551,7 +1142,11 @@ class ClaudeApp(App):
             settings = json.loads(settings_json_path.read_text())
         except json.JSONDecodeError:
             return
+        if not isinstance(settings, dict):
+            return
         enabled_map = settings.get("enabledPlugins", {}) or {}
+        if not isinstance(enabled_map, dict):
+            return
         for plugin_id, enabled in enabled_map.items():
             if enabled:
                 continue
@@ -574,7 +1169,9 @@ class ClaudeApp(App):
             return source.get("path")
         return None
 
-    def _run_claude_cli(self, args: list[str], desc: str, tolerate_already: bool = True) -> None:
+    def _run_claude_cli(
+        self, args: list[str], desc: str, tolerate_already: bool = True
+    ) -> None:
         try:
             result = self._run_external(["claude", *args], desc=desc, fail_mode="warn")
         except FileNotFoundError:

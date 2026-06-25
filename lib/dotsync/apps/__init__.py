@@ -5,6 +5,7 @@ class to APP_CLASSES below. APP_NAMES, app_descriptions(), build_app(), and
 detect_present() all derive from this single tuple — no other site requires
 edits.
 """
+
 from __future__ import annotations
 from dotsync.apps.base import App
 from dotsync.apps.claude import ClaudeApp

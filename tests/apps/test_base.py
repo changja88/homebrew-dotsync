@@ -32,8 +32,11 @@ def test_status_default_is_unknown(tmp_path):
         name = "minimal"
         description = ""
 
-        def sync_from(self, target_dir): pass
-        def sync_to(self, target_dir, backup_dir): pass
+        def sync_from(self, target_dir):
+            pass
+
+        def sync_to(self, target_dir, backup_dir):
+            pass
 
     s = MinimalApp().status(tmp_path)
     assert s.state == "unknown"
@@ -45,23 +48,28 @@ def test_appstatus_states():
 
 
 def test_diff_files_clean_when_all_match(tmp_path):
-    a = tmp_path / "a.txt"; a.write_text("X")
-    b = tmp_path / "b.txt"; b.write_text("X")
+    a = tmp_path / "a.txt"
+    a.write_text("X")
+    b = tmp_path / "b.txt"
+    b.write_text("X")
     s = diff_files([(a, b)])
     assert s.state == "clean"
 
 
 def test_diff_files_dirty_when_content_differs(tmp_path):
-    a = tmp_path / "a.txt"; a.write_text("OLD")
-    b = tmp_path / "b.txt"; b.write_text("NEW")
+    a = tmp_path / "a.txt"
+    a.write_text("OLD")
+    b = tmp_path / "b.txt"
+    b.write_text("NEW")
     s = diff_files([(a, b)])
     assert s.state == "dirty"
     assert "a.txt" in s.details
 
 
 def test_diff_files_missing_when_either_side_absent(tmp_path):
-    a = tmp_path / "a.txt"; a.write_text("X")
-    b = tmp_path / "missing.txt"   # not created
+    a = tmp_path / "a.txt"
+    a.write_text("X")
+    b = tmp_path / "missing.txt"  # not created
     s = diff_files([(a, b)])
     assert s.state == "missing"
 
@@ -70,6 +78,7 @@ def test_diff_files_reports_local_newer_when_local_mtime_greater(tmp_path):
     """When dirty and local was modified after stored, direction = local-newer."""
     import os
     from dotsync.apps.base import diff_files
+
     local = tmp_path / "a"
     stored = tmp_path / "b"
     stored.write_text("OLD")
@@ -85,6 +94,7 @@ def test_diff_files_reports_local_newer_when_local_mtime_greater(tmp_path):
 def test_diff_files_reports_folder_newer_when_stored_mtime_greater(tmp_path):
     import os
     from dotsync.apps.base import diff_files
+
     local = tmp_path / "a"
     stored = tmp_path / "b"
     local.write_text("OLD")
@@ -98,6 +108,7 @@ def test_diff_files_reports_folder_newer_when_stored_mtime_greater(tmp_path):
 
 def test_diff_files_clean_has_empty_direction(tmp_path):
     from dotsync.apps.base import diff_files
+
     local = tmp_path / "a"
     stored = tmp_path / "b"
     local.write_text("SAME")
@@ -115,8 +126,12 @@ def test_finish_ok_emits_done_line(capsys, monkeypatch):
     class FakeApp(App):
         name = "fake"
         description = ""
-        def sync_from(self, target_dir): pass
-        def sync_to(self, target_dir, backup_dir): pass
+
+        def sync_from(self, target_dir):
+            pass
+
+        def sync_to(self, target_dir, backup_dir):
+            pass
 
     FakeApp()._finish_ok()
     out = capsys.readouterr().out
@@ -132,8 +147,12 @@ def test_finish_unchanged_emits_dim_line(capsys, monkeypatch):
     class FakeApp(App):
         name = "fake"
         description = ""
-        def sync_from(self, target_dir): pass
-        def sync_to(self, target_dir, backup_dir): pass
+
+        def sync_from(self, target_dir):
+            pass
+
+        def sync_to(self, target_dir, backup_dir):
+            pass
 
     FakeApp()._finish_unchanged()
     out = capsys.readouterr().out
@@ -145,12 +164,17 @@ def test_diff_files_reports_diverged_when_some_local_newer_some_stored_newer(tmp
     direction = diverged so the user knows neither side is fully ahead."""
     import os
     from dotsync.apps.base import diff_files
+
     a_local, a_stored = tmp_path / "a_local", tmp_path / "a_stored"
     b_local, b_stored = tmp_path / "b_local", tmp_path / "b_stored"
-    a_local.write_text("Lnew"); a_stored.write_text("Lold")
-    b_local.write_text("Bold"); b_stored.write_text("Bnew")
-    os.utime(a_local, (2000, 2000)); os.utime(a_stored, (1000, 1000))   # local-newer
-    os.utime(b_local, (1000, 1000)); os.utime(b_stored, (2000, 2000))   # folder-newer
+    a_local.write_text("Lnew")
+    a_stored.write_text("Lold")
+    b_local.write_text("Bold")
+    b_stored.write_text("Bnew")
+    os.utime(a_local, (2000, 2000))
+    os.utime(a_stored, (1000, 1000))  # local-newer
+    os.utime(b_local, (1000, 1000))
+    os.utime(b_stored, (2000, 2000))  # folder-newer
     result = diff_files([(a_local, a_stored), (b_local, b_stored)])
     assert result.state == "dirty"
     assert result.direction == "diverged"
@@ -164,8 +188,12 @@ def test_app_from_config_default_returns_instance_with_no_args(tmp_path):
 
     class _Toy(App):
         name = "toy"
-        def sync_from(self, target_dir): pass
-        def sync_to(self, target_dir, backup_dir): pass
+
+        def sync_from(self, target_dir):
+            pass
+
+        def sync_to(self, target_dir, backup_dir):
+            pass
 
     cfg = Config(dir=tmp_path, apps=["toy"])
     instance = _Toy.from_config(cfg)
@@ -178,14 +206,19 @@ def test_app_tracked_files_default_returns_empty(tmp_path):
 
     class _Toy(App):
         name = "toy"
-        def sync_from(self, target_dir): pass
-        def sync_to(self, target_dir, backup_dir): pass
+
+        def sync_from(self, target_dir):
+            pass
+
+        def sync_to(self, target_dir, backup_dir):
+            pass
 
     assert _Toy().tracked_files(tmp_path) == []
 
 
 def test_file_pair_is_a_dataclass_with_local_stored_label(tmp_path):
     from dotsync.apps.base import FilePair
+
     pair = FilePair(local=tmp_path / "a", stored=tmp_path / "b", label="x")
     assert pair.local == tmp_path / "a"
     assert pair.stored == tmp_path / "b"
@@ -194,17 +227,67 @@ def test_file_pair_is_a_dataclass_with_local_stored_label(tmp_path):
 
 def test_default_sync_from_copies_each_tracked_file(tmp_path):
     from dotsync.apps.base import App, FilePair
-    home = tmp_path / "home"; home.mkdir()
+
+    home = tmp_path / "home"
+    home.mkdir()
     (home / "src.txt").write_text("ALPHA")
 
     class _Toy(App):
         name = "toy"
-        def tracked_files(self, target_dir):
-            return [FilePair(home / "src.txt", target_dir / "toy" / "dst.txt", "dst.txt")]
 
-    target = tmp_path / "sync"; target.mkdir()
+        def tracked_files(self, target_dir):
+            return [
+                FilePair(home / "src.txt", target_dir / "toy" / "dst.txt", "dst.txt")
+            ]
+
+    target = tmp_path / "sync"
+    target.mkdir()
     _Toy().sync_from(target)
     assert (target / "toy" / "dst.txt").read_text() == "ALPHA"
+
+
+def test_default_sync_from_refuses_symlink_destination(tmp_path):
+    from dotsync.apps.base import App, FilePair
+
+    local = tmp_path / "local.txt"
+    local.write_text("SAFE")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("VICTIM")
+    stored = tmp_path / "sync" / "toy" / "dst.txt"
+    stored.parent.mkdir(parents=True)
+    stored.symlink_to(outside)
+
+    class _Toy(App):
+        name = "toy"
+
+        def tracked_files(self, target_dir):
+            return [FilePair(local, stored, "dst.txt")]
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        _Toy().sync_from(tmp_path / "sync")
+    assert outside.read_text() == "VICTIM"
+
+
+def test_default_sync_from_refuses_symlink_stored_parent(tmp_path):
+    from dotsync.apps.base import App, FilePair
+
+    local = tmp_path / "local.txt"
+    local.write_text("SAFE")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = tmp_path / "sync"
+    target.mkdir()
+    (target / "toy").symlink_to(outside, target_is_directory=True)
+
+    class _Toy(App):
+        name = "toy"
+
+        def tracked_files(self, target_dir):
+            return [FilePair(local, target_dir / "toy" / "dst.txt", "dst.txt")]
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        _Toy().sync_from(target)
+    assert not (outside / "dst.txt").exists()
 
 
 def test_default_sync_from_raises_when_local_missing(tmp_path):
@@ -212,42 +295,110 @@ def test_default_sync_from_raises_when_local_missing(tmp_path):
 
     class _Toy(App):
         name = "toy"
-        def tracked_files(self, target_dir):
-            return [FilePair(tmp_path / "missing.txt", target_dir / "toy" / "dst.txt", "dst.txt")]
 
-    target = tmp_path / "sync"; target.mkdir()
+        def tracked_files(self, target_dir):
+            return [
+                FilePair(
+                    tmp_path / "missing.txt", target_dir / "toy" / "dst.txt", "dst.txt"
+                )
+            ]
+
+    target = tmp_path / "sync"
+    target.mkdir()
     with pytest.raises(FileNotFoundError, match="missing.txt"):
         _Toy().sync_from(target)
 
 
 def test_default_sync_to_backs_up_then_copies_stored_over_local(tmp_path):
     from dotsync.apps.base import App, FilePair
-    home = tmp_path / "home"; home.mkdir()
+
+    home = tmp_path / "home"
+    home.mkdir()
     (home / "live.txt").write_text("OLD")
     target = tmp_path / "sync"
     (target / "toy").mkdir(parents=True)
     (target / "toy" / "live.txt").write_text("NEW")
-    backup = tmp_path / "bk"; backup.mkdir()
+    backup = tmp_path / "bk"
+    backup.mkdir()
 
     class _Toy(App):
         name = "toy"
+
         def tracked_files(self, target_dir):
-            return [FilePair(home / "live.txt", target_dir / "toy" / "live.txt", "live.txt")]
+            return [
+                FilePair(home / "live.txt", target_dir / "toy" / "live.txt", "live.txt")
+            ]
 
     _Toy().sync_to(target, backup)
     assert (home / "live.txt").read_text() == "NEW"
     assert (backup / "toy" / "live.txt").read_text() == "OLD"
 
 
-def test_default_sync_to_raises_when_stored_missing(tmp_path):
+def test_default_sync_to_refuses_symlink_local_destination(tmp_path):
     from dotsync.apps.base import App, FilePair
-    home = tmp_path / "home"; home.mkdir()
-    target = tmp_path / "sync"
-    (target / "toy").mkdir(parents=True)
-    backup = tmp_path / "bk"; backup.mkdir()
+
+    outside = tmp_path / "outside.txt"
+    outside.write_text("VICTIM")
+    local = tmp_path / "home" / "live.txt"
+    local.parent.mkdir()
+    local.symlink_to(outside)
+    stored = tmp_path / "sync" / "toy" / "live.txt"
+    stored.parent.mkdir(parents=True)
+    stored.write_text("NEW")
+    backup = tmp_path / "bk"
+    backup.mkdir()
 
     class _Toy(App):
         name = "toy"
+
+        def tracked_files(self, target_dir):
+            return [FilePair(local, stored, "live.txt")]
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        _Toy().sync_to(tmp_path / "sync", backup)
+    assert outside.read_text() == "VICTIM"
+
+
+def test_default_sync_to_refuses_symlink_stored_parent(tmp_path):
+    from dotsync.apps.base import App, FilePair
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "live.txt").write_text("NEW")
+    target = tmp_path / "sync"
+    target.mkdir()
+    (target / "toy").symlink_to(outside, target_is_directory=True)
+    local = tmp_path / "home" / "live.txt"
+    local.parent.mkdir()
+    local.write_text("OLD")
+    backup = tmp_path / "bk"
+    backup.mkdir()
+
+    class _Toy(App):
+        name = "toy"
+
+        def tracked_files(self, target_dir):
+            return [FilePair(local, target_dir / "toy" / "live.txt", "live.txt")]
+
+    with pytest.raises(RuntimeError, match="symlink"):
+        _Toy().sync_to(target, backup)
+    assert local.read_text() == "OLD"
+    assert not (backup / "toy" / "live.txt").exists()
+
+
+def test_default_sync_to_raises_when_stored_missing(tmp_path):
+    from dotsync.apps.base import App, FilePair
+
+    home = tmp_path / "home"
+    home.mkdir()
+    target = tmp_path / "sync"
+    (target / "toy").mkdir(parents=True)
+    backup = tmp_path / "bk"
+    backup.mkdir()
+
+    class _Toy(App):
+        name = "toy"
+
         def tracked_files(self, target_dir):
             return [FilePair(home / "x.txt", target_dir / "toy" / "x.txt", "x.txt")]
 
@@ -257,7 +408,9 @@ def test_default_sync_to_raises_when_stored_missing(tmp_path):
 
 def test_default_status_uses_diff_files_over_tracked_pairs(tmp_path):
     from dotsync.apps.base import App, FilePair
-    home = tmp_path / "home"; home.mkdir()
+
+    home = tmp_path / "home"
+    home.mkdir()
     (home / "a.txt").write_text("X")
     target = tmp_path / "sync"
     (target / "toy").mkdir(parents=True)
@@ -265,6 +418,7 @@ def test_default_status_uses_diff_files_over_tracked_pairs(tmp_path):
 
     class _Toy(App):
         name = "toy"
+
         def tracked_files(self, target_dir):
             return [FilePair(home / "a.txt", target_dir / "toy" / "a.txt", "a.txt")]
 
@@ -272,22 +426,80 @@ def test_default_status_uses_diff_files_over_tracked_pairs(tmp_path):
     assert s.state == "clean"
 
 
-def test_app_warnings_starts_empty():
-    from dotsync.apps.base import App
+def test_default_status_reports_symlink_without_reading_target(tmp_path):
+    from dotsync.apps.base import App, FilePair
+
+    outside = tmp_path / "outside.txt"
+    outside.write_text("SECRET")
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "a.txt").write_text("X")
+    target = tmp_path / "sync"
+    (target / "toy").mkdir(parents=True)
+    (target / "toy" / "a.txt").symlink_to(outside)
+
     class _Toy(App):
         name = "toy"
-        def tracked_files(self, target_dir): return []
+
+        def tracked_files(self, target_dir):
+            return [FilePair(home / "a.txt", target_dir / "toy" / "a.txt", "a.txt")]
+
+    status = _Toy().status(target)
+
+    assert status.state == "unknown"
+    assert "symlink" in status.details
+
+
+def test_default_status_reports_symlink_stored_root_without_reading_target(tmp_path):
+    from dotsync.apps.base import App, FilePair
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "a.txt").write_text("SECRET")
+    target = tmp_path / "sync"
+    target.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "a.txt").write_text("SECRET")
+    (target / "toy").symlink_to(outside, target_is_directory=True)
+
+    class _Toy(App):
+        name = "toy"
+
+        def tracked_files(self, target_dir):
+            return [FilePair(home / "a.txt", target_dir / "toy" / "a.txt", "a.txt")]
+
+    status = _Toy().status(target)
+
+    assert status.state == "unknown"
+    assert "symlink" in status.details
+
+
+def test_app_warnings_starts_empty():
+    from dotsync.apps.base import App
+
+    class _Toy(App):
+        name = "toy"
+
+        def tracked_files(self, target_dir):
+            return []
+
     assert _Toy().warnings == []
 
 
 def test_run_external_warn_mode_returns_result_and_collects_failure(monkeypatch):
     from dotsync.apps.base import App
     import subprocess
+
     class _Toy(App):
         name = "toy"
-        def tracked_files(self, target_dir): return []
 
-    captured = subprocess.CompletedProcess(args=["foo"], returncode=1, stdout="", stderr="boom")
+        def tracked_files(self, target_dir):
+            return []
+
+    captured = subprocess.CompletedProcess(
+        args=["foo"], returncode=1, stdout="", stderr="boom"
+    )
     monkeypatch.setattr("subprocess.run", lambda *a, **kw: captured)
 
     app = _Toy()
@@ -299,11 +511,16 @@ def test_run_external_warn_mode_returns_result_and_collects_failure(monkeypatch)
 def test_run_external_raise_mode_raises_runtime_error_on_failure(monkeypatch):
     from dotsync.apps.base import App
     import subprocess
+
     class _Toy(App):
         name = "toy"
-        def tracked_files(self, target_dir): return []
 
-    captured = subprocess.CompletedProcess(args=["foo"], returncode=1, stdout="", stderr="bad")
+        def tracked_files(self, target_dir):
+            return []
+
+    captured = subprocess.CompletedProcess(
+        args=["foo"], returncode=1, stdout="", stderr="bad"
+    )
     monkeypatch.setattr("subprocess.run", lambda *a, **kw: captured)
 
     with pytest.raises(RuntimeError, match="foo run"):
@@ -314,9 +531,12 @@ def test_app_cli_hooks_have_safe_defaults(tmp_path):
     """Default impls do nothing — apps without CLI customizations stay clean."""
     import argparse
     from dotsync.apps.base import App
+
     class _Toy(App):
         name = "toy"
-        def tracked_files(self, target_dir): return []
+
+        def tracked_files(self, target_dir):
+            return []
 
     parser = argparse.ArgumentParser()
     _Toy.extra_init_args(parser)  # no-op, must not raise
@@ -325,7 +545,9 @@ def test_app_cli_hooks_have_safe_defaults(tmp_path):
 
     # resolve_options returns None (no custom options) by default.
     args = argparse.Namespace()
-    cfg_options = _Toy.resolve_options(args, prev_apps=[], new_apps=["toy"], interactive=False)
+    cfg_options = _Toy.resolve_options(
+        args, prev_apps=[], new_apps=["toy"], interactive=False
+    )
     assert cfg_options is None
 
     # extra_config_subcommands no-op
