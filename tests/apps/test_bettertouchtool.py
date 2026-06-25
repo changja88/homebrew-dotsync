@@ -620,6 +620,64 @@ def test_status_clean_when_only_btt_last_updated_at_differs(tmp_path):
     assert result.state == "clean"
 
 
+def test_status_clean_when_only_btt_last_used_metadata_differs(tmp_path):
+    """BTT records shortcut usage metadata for triggers. That runtime history
+    should not make unchanged shortcuts look dirty."""
+    target = tmp_path / "configs"
+    presets = target / "bettertouchtool" / "presets"
+    presets.mkdir(parents=True)
+    stored_text = (
+        "{\n"
+        '  "BTTPresetName" : "Master_bt",\n'
+        '  "BTTTriggers" : [\n'
+        "    {\n"
+        '      "BTTLastUsed" : 1781942138.774268,\n'
+        '      "BTTLastUsedAt" : 1781942138.774268,\n'
+        '      "BTTUUID" : "7771B270-FB80-4B09-A1A0-76E79E2EFB6E",\n'
+        '      "BTTLayoutIndependentChar" : "HOME",\n'
+        '      "BTTShortcutKeyCode" : 115\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+    )
+    live_text = (
+        "{\n"
+        '  "BTTPresetName" : "Master_bt",\n'
+        '  "BTTTriggers" : [\n'
+        "    {\n"
+        '      "BTTLastUsed" : 1782025426.051253,\n'
+        '      "BTTLastUsedAt" : 1782025426.051253,\n'
+        '      "BTTUUID" : "7771B270-FB80-4B09-A1A0-76E79E2EFB6E",\n'
+        '      "BTTLayoutIndependentChar" : "HOME",\n'
+        '      "BTTShortcutKeyCode" : 115\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+    )
+    (presets / "Master_bt.bttpreset").write_text(stored_text)
+
+    def fake_run(*args, **kwargs):
+        class R:
+            returncode = 0
+            stdout = "done"
+            stderr = ""
+
+        cmd = args[0]
+        for token in cmd:
+            if "outputPath" in token:
+                import re
+
+                m = re.search(r'outputPath "([^"]+)"', token)
+                if m:
+                    Path(m.group(1)).parent.mkdir(parents=True, exist_ok=True)
+                    Path(m.group(1)).write_text(live_text)
+        return R()
+
+    with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=fake_run):
+        result = BetterTouchToolApp(presets=["Master_bt"]).status(target)
+    assert result.state == "clean"
+
+
 def test_status_clean_when_only_container_order_differs(tmp_path):
     """BTT's export_preset emits the per-app containers in BTTPresetContent
     in no guaranteed order — the same preset can export [Global, Finder] one
@@ -715,6 +773,89 @@ def test_status_clean_when_only_trigger_order_differs(tmp_path):
     assert result.state == "clean"
 
 
+def test_status_clean_when_only_trigger_position_metadata_differs(tmp_path):
+    """BTT can rewrite trigger/action order numbers and entity UUIDs without
+    changing the shortcut behavior. A shortcut/action that still exists in the
+    same app scope should compare clean."""
+    import json
+
+    target = tmp_path / "configs"
+    presets = target / "bettertouchtool" / "presets"
+    presets.mkdir(parents=True)
+    stored_trigger = {
+        "BTTUUID": "OLD-TRIGGER-ID",
+        "BTTOrder": 0,
+        "BTTTriggerType": 0,
+        "BTTShortcutKeyCode": 115,
+        "BTTShortcutModifierKeys": 8388608,
+        "BTTAdditionalActions": [
+            {
+                "BTTUUID": "OLD-ACTION-ID",
+                "BTTOrder": 1,
+                "BTTPredefinedActionType": 264,
+                "BTTShortcutToSend": "56,55,42",
+            }
+        ],
+    }
+    live_trigger = {
+        "BTTUUID": "NEW-TRIGGER-ID",
+        "BTTOrder": 12,
+        "BTTTriggerType": 0,
+        "BTTShortcutKeyCode": 115,
+        "BTTShortcutModifierKeys": 8388608,
+        "BTTAdditionalActions": [
+            {
+                "BTTUUID": "NEW-ACTION-ID",
+                "BTTOrder": 1,
+                "BTTPredefinedActionType": 264,
+                "BTTShortcutToSend": "56,55,42",
+            }
+        ],
+    }
+    stored_text = json.dumps(
+        {
+            "BTTPresetContent": [
+                {
+                    "BTTAppBundleIdentifier": "com.google.android.studio",
+                    "BTTTriggers": [stored_trigger],
+                }
+            ],
+        }
+    )
+    live_text = json.dumps(
+        {
+            "BTTPresetContent": [
+                {
+                    "BTTAppBundleIdentifier": "com.google.android.studio",
+                    "BTTTriggers": [live_trigger],
+                }
+            ],
+        }
+    )
+    (presets / "Master_bt.bttpreset").write_text(stored_text)
+
+    def fake_run(*args, **kwargs):
+        class R:
+            returncode = 0
+            stdout = "done"
+            stderr = ""
+
+        cmd = args[0]
+        for token in cmd:
+            if "outputPath" in token:
+                import re
+
+                m = re.search(r'outputPath "([^"]+)"', token)
+                if m:
+                    Path(m.group(1)).parent.mkdir(parents=True, exist_ok=True)
+                    Path(m.group(1)).write_text(live_text)
+        return R()
+
+    with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=fake_run):
+        result = BetterTouchToolApp(presets=["Master_bt"]).status(target)
+    assert result.state == "clean"
+
+
 def test_status_dirty_when_trigger_content_differs_regardless_of_order(tmp_path):
     """Sanity check: order-insensitive comparison must NOT mask a real
     content change — same triggers reordered, but one key remapped."""
@@ -737,6 +878,158 @@ def test_status_dirty_when_trigger_content_differs_regardless_of_order(tmp_path)
         {
             "BTTPresetContent": [
                 {"BTTAppBundleIdentifier": "BT.G", "BTTTriggers": [t2_changed, t1]}
+            ],
+        }
+    )
+    (presets / "Master_bt.bttpreset").write_text(stored_text)
+
+    def fake_run(*args, **kwargs):
+        class R:
+            returncode = 0
+            stdout = "done"
+            stderr = ""
+
+        cmd = args[0]
+        for token in cmd:
+            if "outputPath" in token:
+                import re
+
+                m = re.search(r'outputPath "([^"]+)"', token)
+                if m:
+                    Path(m.group(1)).parent.mkdir(parents=True, exist_ok=True)
+                    Path(m.group(1)).write_text(live_text)
+        return R()
+
+    with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=fake_run):
+        result = BetterTouchToolApp(presets=["Master_bt"]).status(target)
+    assert result.state == "dirty"
+
+
+def test_status_dirty_when_action_order_metadata_differs(tmp_path):
+    """Unlike trigger position, action order can affect behavior for a
+    multi-action shortcut, so BTTOrder inside actions remains significant."""
+    import json
+
+    target = tmp_path / "configs"
+    presets = target / "bettertouchtool" / "presets"
+    presets.mkdir(parents=True)
+    stored_text = json.dumps(
+        {
+            "BTTPresetContent": [
+                {
+                    "BTTAppBundleIdentifier": "BT.G",
+                    "BTTTriggers": [
+                        {
+                            "BTTTriggerType": 0,
+                            "BTTShortcutKeyCode": 115,
+                            "BTTAdditionalActions": [
+                                {
+                                    "BTTPredefinedActionType": 264,
+                                    "BTTShortcutToSend": "1",
+                                    "BTTOrder": 1,
+                                },
+                                {
+                                    "BTTPredefinedActionType": 264,
+                                    "BTTShortcutToSend": "2",
+                                    "BTTOrder": 2,
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    live_text = json.dumps(
+        {
+            "BTTPresetContent": [
+                {
+                    "BTTAppBundleIdentifier": "BT.G",
+                    "BTTTriggers": [
+                        {
+                            "BTTTriggerType": 0,
+                            "BTTShortcutKeyCode": 115,
+                            "BTTAdditionalActions": [
+                                {
+                                    "BTTPredefinedActionType": 264,
+                                    "BTTShortcutToSend": "1",
+                                    "BTTOrder": 2,
+                                },
+                                {
+                                    "BTTPredefinedActionType": 264,
+                                    "BTTShortcutToSend": "2",
+                                    "BTTOrder": 1,
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    (presets / "Master_bt.bttpreset").write_text(stored_text)
+
+    def fake_run(*args, **kwargs):
+        class R:
+            returncode = 0
+            stdout = "done"
+            stderr = ""
+
+        cmd = args[0]
+        for token in cmd:
+            if "outputPath" in token:
+                import re
+
+                m = re.search(r'outputPath "([^"]+)"', token)
+                if m:
+                    Path(m.group(1)).parent.mkdir(parents=True, exist_ok=True)
+                    Path(m.group(1)).write_text(live_text)
+        return R()
+
+    with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=fake_run):
+        result = BetterTouchToolApp(presets=["Master_bt"]).status(target)
+    assert result.state == "dirty"
+
+
+def test_status_dirty_when_action_array_order_differs_without_order_metadata(tmp_path):
+    """If BTT emits actions without explicit BTTOrder, the list position may be
+    the only execution order signal. Do not sort action arrays away."""
+    import json
+
+    target = tmp_path / "configs"
+    presets = target / "bettertouchtool" / "presets"
+    presets.mkdir(parents=True)
+    action_one = {"BTTPredefinedActionType": 264, "BTTShortcutToSend": "1"}
+    action_two = {"BTTPredefinedActionType": 264, "BTTShortcutToSend": "2"}
+    stored_text = json.dumps(
+        {
+            "BTTPresetContent": [
+                {
+                    "BTTAppBundleIdentifier": "BT.G",
+                    "BTTTriggers": [
+                        {
+                            "BTTTriggerType": 0,
+                            "BTTShortcutKeyCode": 115,
+                            "BTTAdditionalActions": [action_one, action_two],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    live_text = json.dumps(
+        {
+            "BTTPresetContent": [
+                {
+                    "BTTAppBundleIdentifier": "BT.G",
+                    "BTTTriggers": [
+                        {
+                            "BTTTriggerType": 0,
+                            "BTTShortcutKeyCode": 115,
+                            "BTTAdditionalActions": [action_two, action_one],
+                        }
+                    ],
+                }
             ],
         }
     )

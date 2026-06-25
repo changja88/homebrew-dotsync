@@ -29,11 +29,13 @@ from dotsync.plan import AppPlan, Change
 _EXPORT_WAIT_TIMEOUT = 5.0
 
 # BTT regenerates BTTPresetUUID on every export_preset call, may rewrite
-# BTTLastUpdatedAt during app updates or database migrations, and emits the
-# BTTPresetContent containers / BTTTriggers arrays in no guaranteed order —
-# all without any user-visible preset content changing. A naive byte-for-byte
-# hash would flag those cases as dirty, so we normalize volatile metadata and
-# entity-collection order before hashing.
+# BTTLastUpdatedAt during app updates or database migrations, records
+# BTTLastUsed runtime history when triggers fire, may rewrite entity UUID/order
+# metadata after imports, and emits the BTTPresetContent containers /
+# BTTTriggers arrays in no guaranteed order — all without any user-visible
+# preset content changing. A naive byte-for-byte hash would flag those cases as
+# dirty, so we normalize volatile metadata and entity-collection order before
+# hashing.
 _BTT_UUID_LINE_RE = re.compile(
     r'^(\s*"BTTPresetUUID"\s*:\s*")[^"]+(",?\s*)$',
     re.MULTILINE,
@@ -42,22 +44,42 @@ _BTT_LAST_UPDATED_LINE_RE = re.compile(
     r'^(\s*"BTTLastUpdatedAt"\s*:\s*)[-+]?\d+(?:\.\d+)?(,?\s*)$',
     re.MULTILINE,
 )
-_VOLATILE_PRESET_KEYS = {"BTTPresetUUID", "BTTLastUpdatedAt"}
+_VOLATILE_PRESET_KEYS = {
+    "BTTPresetUUID",
+    "BTTUUID",
+    "BTTLastUpdatedAt",
+    "BTTLastUsed",
+    "BTTLastUsedAt",
+}
 
 
-def _normalize_preset_data(value):
+def _is_trigger_entity(value: dict) -> bool:
+    return "BTTTriggerType" in value or "BTTTriggerClass" in value
+
+
+_UNORDERED_PRESET_LIST_KEYS = {"BTTPresetContent", "BTTTriggers"}
+
+
+def _normalize_preset_data(value, *, key: str | None = None):
     if isinstance(value, dict):
+        volatile_keys = set(_VOLATILE_PRESET_KEYS)
+        if _is_trigger_entity(value):
+            volatile_keys.add("BTTOrder")
         return {
-            key: _normalize_preset_data(child)
-            for key, child in value.items()
-            if key not in _VOLATILE_PRESET_KEYS
+            child_key: _normalize_preset_data(child, key=child_key)
+            for child_key, child in value.items()
+            if child_key not in volatile_keys
         }
     if isinstance(value, list):
         normalized = [_normalize_preset_data(item) for item in value]
         # export_preset emits entity collections (BTTPresetContent containers,
         # BTTTriggers) in no guaranteed order; user-visible ordering lives in
         # each entity's BTTOrder field, so array position carries no signal.
-        if normalized and all(isinstance(item, dict) for item in normalized):
+        if (
+            key in _UNORDERED_PRESET_LIST_KEYS
+            and normalized
+            and all(isinstance(item, dict) for item in normalized)
+        ):
             normalized.sort(
                 key=lambda item: json.dumps(item, sort_keys=True, ensure_ascii=False)
             )
