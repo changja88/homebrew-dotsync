@@ -12,6 +12,7 @@ of origin after the run.
 
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -38,6 +39,16 @@ FORMULA = (
     "  end\n"
     "end\n"
 )
+
+
+def _project_version() -> str:
+    match = re.search(
+        r'^__version__ = "([^"]+)"$',
+        (REPO_ROOT / "lib" / "dotsync" / "__init__.py").read_text(),
+        re.MULTILINE,
+    )
+    assert match is not None
+    return match.group(1)
 
 
 def _git(cwd, *args, env=None):
@@ -248,4 +259,4 @@ def test_formula_libexec_entrypoint_can_import_dotsync(tmp_path):
         check=True,
     )
 
-    assert "dotsync 0.1.21" in result.stdout
+    assert f"dotsync {_project_version()}" in result.stdout
