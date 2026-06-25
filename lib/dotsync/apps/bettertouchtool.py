@@ -294,18 +294,34 @@ class BetterTouchToolApp(App):
             time.sleep(interval)
             interval = min(interval * 1.5, 0.2)
 
-    def _osascript(self, script: str) -> None:
+    def _launch_btt(self) -> None:
+        subprocess.run(
+            ["open", "-gja", "BetterTouchTool"],
+            capture_output=True,
+            text=True,
+        )
+        time.sleep(1.0)
+
+    def _osascript(self, script: str, *, auto_launch: bool = False) -> None:
         result = subprocess.run(
             ["osascript", "-e", script],
             capture_output=True,
             text=True,
         )
         out = (result.stdout or "").strip()
+        if auto_launch and result.returncode == 0 and out == "missing value":
+            self._launch_btt()
+            result = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                text=True,
+            )
+            out = (result.stdout or "").strip()
         if result.returncode != 0 or out != "done":
             raise RuntimeError(
                 f"osascript failed (rc={result.returncode}): "
                 f"stdout={out!r} stderr={result.stderr.strip()!r}. "
-                f"Is BetterTouchTool running?"
+                f"Is BetterTouchTool installed and running?"
             )
 
     def plan_from(self, target_dir: Path) -> AppPlan:
@@ -377,7 +393,7 @@ class BetterTouchToolApp(App):
             if dst.exists():
                 ensure_not_symlink(dst, f"presets/{preset}.bttpreset")
                 dst.unlink()
-            self._osascript(script)
+            self._osascript(script, auto_launch=True)
             if not self._wait_for_export(dst):
                 raise RuntimeError(f"BTT export file was not created: {dst}")
             ui.sub(f"presets/{preset}.bttpreset")
@@ -412,7 +428,7 @@ class BetterTouchToolApp(App):
             if backup_target.exists():
                 backup_target.unlink()
             try:
-                self._osascript(export_script)
+                self._osascript(export_script, auto_launch=True)
                 if self._wait_for_export(backup_target):
                     ui.dim(f"backup → {backup_target}")
                 else:
@@ -428,7 +444,7 @@ class BetterTouchToolApp(App):
                 f'tell application "BetterTouchTool" to import_preset '
                 f"{self._applescript_string(src)}"
             )
-            self._osascript(import_script)
+            self._osascript(import_script, auto_launch=True)
             ui.sub(f"presets/{preset}.bttpreset → BTT")
         ui.dim("hint: check BetterTouchTool to confirm the presets are active")
 

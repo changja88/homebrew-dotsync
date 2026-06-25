@@ -319,6 +319,32 @@ def test_sync_to_imports_preset(tmp_path):
     assert any("import_preset" in " ".join(c) for c in calls)
 
 
+def test_sync_to_launches_btt_and_retries_missing_value(tmp_path):
+    target = tmp_path / "configs"
+    presets_dir = target / "bettertouchtool" / "presets"
+    presets_dir.mkdir(parents=True)
+    (presets_dir / "Master_bt.bttpreset").write_text("<bttpreset/>")
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, capture_output, text):
+        calls.append(cmd)
+
+        class R:
+            returncode = 0
+            stdout = "missing value" if len(calls) == 1 else "done"
+            stderr = ""
+
+        return R()
+
+    with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=fake_run):
+        BetterTouchToolApp(presets=["Master_bt"]).sync_to(target, backup)
+
+    assert any(c[:3] == ["open", "-gja", "BetterTouchTool"] for c in calls)
+    assert sum("import_preset" in " ".join(c) for c in calls) == 1
+
+
 def test_sync_to_missing_preset_raises(tmp_path):
     target = tmp_path / "configs"
     (target / "bettertouchtool" / "presets").mkdir(parents=True)

@@ -1786,3 +1786,100 @@ def test_plan_to_reports_claude_global_rule_tree_update(fake_home, tmp_path):
     assert commands.kind == "update"
     assert "1 create" in commands.details
     assert "1 remove" in commands.details
+
+
+def _make_plugin_runtime_metadata_fixture(fake_home: Path, tmp_path: Path) -> Path:
+    cdir = fake_home / ".claude"
+    plugins = cdir / "plugins"
+    plugins.mkdir(parents=True)
+    (cdir / "settings.json").write_text("{}")
+    (fake_home / ".claude.json").write_text('{"mcpServers": {}}')
+    (plugins / "installed_plugins.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {
+                    "superpowers@official": [
+                        {
+                            "scope": "user",
+                            "installPath": "/Users/new/.claude/plugins/cache/superpowers/2",
+                            "version": "2",
+                            "installedAt": "2026-06-25T00:00:00Z",
+                            "lastUpdated": "2026-06-25T00:00:00Z",
+                            "gitCommitSha": "new",
+                        }
+                    ]
+                },
+            }
+        )
+    )
+    (plugins / "known_marketplaces.json").write_text(
+        json.dumps(
+            {
+                "official": {
+                    "source": {"source": "github", "repo": "anthropics/plugins"},
+                    "installLocation": "/Users/new/.claude/plugins/marketplaces/official",
+                    "lastUpdated": "2026-06-25T00:00:00Z",
+                }
+            }
+        )
+    )
+
+    stored = tmp_path / "sync" / "claude"
+    stored_plugins = stored / "plugins"
+    stored_plugins.mkdir(parents=True)
+    (stored / "settings.json").write_text("{}")
+    (stored / "mcp-servers.json").write_text("{}")
+    (stored_plugins / "installed_plugins.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {
+                    "superpowers@official": [
+                        {
+                            "scope": "user",
+                            "installPath": "/Users/old/.claude/plugins/cache/superpowers/1",
+                            "version": "1",
+                            "installedAt": "2026-06-10T00:00:00Z",
+                            "lastUpdated": "2026-06-10T00:00:00Z",
+                            "gitCommitSha": "old",
+                        }
+                    ]
+                },
+            }
+        )
+    )
+    (stored_plugins / "known_marketplaces.json").write_text(
+        json.dumps(
+            {
+                "official": {
+                    "source": {"source": "github", "repo": "anthropics/plugins"},
+                    "installLocation": "/Users/old/.claude/plugins/marketplaces/official",
+                    "lastUpdated": "2026-06-10T00:00:00Z",
+                }
+            }
+        )
+    )
+    return tmp_path / "sync"
+
+
+def test_plan_to_ignores_claude_plugin_runtime_metadata(fake_home, tmp_path):
+    sync_dir = _make_plugin_runtime_metadata_fixture(fake_home, tmp_path)
+
+    plan = ClaudeApp().plan_to(sync_dir)
+
+    changes = {c.label: c for c in plan.changes}
+    assert changes["plugins/installed_plugins.json"].kind == "unchanged"
+    assert changes["plugins/known_marketplaces.json"].kind == "unchanged"
+    assert plan.has_changes is False
+
+
+def test_plan_from_ignores_claude_plugin_runtime_metadata(fake_home, tmp_path):
+    sync_dir = _make_plugin_runtime_metadata_fixture(fake_home, tmp_path)
+
+    plan = ClaudeApp().plan_from(sync_dir)
+
+    changes = {c.label: c for c in plan.changes}
+    assert changes["plugins/installed_plugins.json"].kind == "unchanged"
+    assert changes["plugins/known_marketplaces.json"].kind == "unchanged"
+    assert plan.has_changes is False

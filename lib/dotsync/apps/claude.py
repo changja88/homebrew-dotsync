@@ -22,6 +22,13 @@ from dotsync.apps.mcp_sanitizer import filter_claude_mcp_servers
 from dotsync.plan import AppPlan, Change, plan_file_copy, plan_tree_mirror
 
 GLOBAL_RULE_DIRECTORIES = ("commands", "agents", "skills", "output-styles")
+PLUGIN_RUNTIME_KEYS = {
+    "installPath",
+    "version",
+    "installedAt",
+    "lastUpdated",
+    "gitCommitSha",
+}
 
 # Manual verification checklist for Claude global rules sync:
 # 1. Run `PYTHONPATH=lib python3 -m dotsync status` and confirm the Claude row
@@ -382,6 +389,70 @@ class ClaudeApp(App):
             ClaudeApp._plugin_config_name(plugin_id, path)
         return settings
 
+    @staticmethod
+    def _normalized_installed_plugins(data: Any, path: Path) -> dict[str, Any]:
+        plugins = ClaudeApp._plugins_from_installed_doc(data, path)
+        normalized: dict[str, list[dict[str, Any]]] = {}
+        for plugin_id, entries in plugins.items():
+            if entries is None:
+                entry_docs = []
+            elif isinstance(entries, list):
+                entry_docs = entries
+            elif isinstance(entries, dict):
+                entry_docs = [entries]
+            else:
+                entry_docs = []
+            normalized_entries = [
+                {
+                    key: value
+                    for key, value in entry.items()
+                    if key not in PLUGIN_RUNTIME_KEYS
+                }
+                for entry in entry_docs
+            ]
+            normalized[plugin_id] = sorted(
+                normalized_entries,
+                key=lambda entry: json.dumps(
+                    entry, sort_keys=True, ensure_ascii=False
+                ),
+            )
+        return {"plugins": normalized}
+
+    @staticmethod
+    def _normalized_known_marketplaces(data: Any, path: Path) -> dict[str, Any]:
+        marketplaces = ClaudeApp._marketplaces_from_doc(data, path)
+        return {
+            name: {"source": meta.get("source") or {}}
+            for name, meta in sorted(marketplaces.items())
+        }
+
+    def _plan_json_semantic_copy(
+        self,
+        label: str,
+        source: Path,
+        dest: Path,
+        normalizer,
+        *,
+        source_root: Path | None = None,
+        dest_root: Path | None = None,
+    ) -> Change:
+        safety = plan_file_copy(
+            label, source, dest, source_root=source_root, dest_root=dest_root
+        )
+        if safety.kind != "update":
+            return safety
+        try:
+            source_doc = normalizer(self._load_json_file(source), source)
+            dest_doc = normalizer(self._load_json_file(dest), dest)
+        except (RuntimeError, json.JSONDecodeError) as exc:
+            return Change(label, "unknown", source, dest, str(exc))
+        return Change(
+            label,
+            "unchanged" if source_doc == dest_doc else "update",
+            source,
+            dest,
+        )
+
     def _validate_sync_from_sources(self) -> dict[str, object]:
         cdir = self._claude_dir()
         required_files = [
@@ -650,16 +721,18 @@ class ClaudeApp(App):
                 stored / "settings.json",
                 dest_root=target_dir,
             ),
-            plan_file_copy(
+            self._plan_json_semantic_copy(
                 "plugins/installed_plugins.json",
                 cdir / "plugins" / "installed_plugins.json",
                 stored / "plugins" / "installed_plugins.json",
+                self._normalized_installed_plugins,
                 dest_root=target_dir,
             ),
-            plan_file_copy(
+            self._plan_json_semantic_copy(
                 "plugins/known_marketplaces.json",
                 cdir / "plugins" / "known_marketplaces.json",
                 stored / "plugins" / "known_marketplaces.json",
+                self._normalized_known_marketplaces,
                 dest_root=target_dir,
             ),
             self._plan_mcp_from(stored, target_dir),
@@ -739,16 +812,18 @@ class ClaudeApp(App):
                 cdir / "settings.json",
                 source_root=target_dir,
             ),
-            plan_file_copy(
+            self._plan_json_semantic_copy(
                 "plugins/installed_plugins.json",
                 stored / "plugins" / "installed_plugins.json",
                 cdir / "plugins" / "installed_plugins.json",
+                self._normalized_installed_plugins,
                 source_root=target_dir,
             ),
-            plan_file_copy(
+            self._plan_json_semantic_copy(
                 "plugins/known_marketplaces.json",
                 stored / "plugins" / "known_marketplaces.json",
                 cdir / "plugins" / "known_marketplaces.json",
+                self._normalized_known_marketplaces,
                 source_root=target_dir,
             ),
             self._plan_mcp_to(stored, target_dir),
