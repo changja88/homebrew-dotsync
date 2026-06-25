@@ -678,6 +678,58 @@ def test_status_clean_when_only_btt_last_used_metadata_differs(tmp_path):
     assert result.state == "clean"
 
 
+def test_status_clean_when_only_btt_runtime_stats_differ(tmp_path):
+    """BTT updates app runtime counters/version markers in the exported
+    general settings. Those do not change preset behavior."""
+    import json
+
+    target = tmp_path / "configs"
+    presets = target / "bettertouchtool" / "presets"
+    presets.mkdir(parents=True)
+    stored_text = json.dumps(
+        {
+            "BTTPresetName": "Master_bt",
+            "BTTGeneralSettings": {
+                "BTTDidRegisterForUpdateStats": "6.521",
+                "BTTNumberOfStarts": 5731,
+                "BTTDefaultTBIconHeight": 22,
+            },
+        }
+    )
+    live_text = json.dumps(
+        {
+            "BTTPresetName": "Master_bt",
+            "BTTGeneralSettings": {
+                "BTTDidRegisterForUpdateStats": "6.591",
+                "BTTNumberOfStarts": 5734,
+                "BTTDefaultTBIconHeight": 22,
+            },
+        }
+    )
+    (presets / "Master_bt.bttpreset").write_text(stored_text)
+
+    def fake_run(*args, **kwargs):
+        class R:
+            returncode = 0
+            stdout = "done"
+            stderr = ""
+
+        cmd = args[0]
+        for token in cmd:
+            if "outputPath" in token:
+                import re
+
+                m = re.search(r'outputPath "([^"]+)"', token)
+                if m:
+                    Path(m.group(1)).parent.mkdir(parents=True, exist_ok=True)
+                    Path(m.group(1)).write_text(live_text)
+        return R()
+
+    with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=fake_run):
+        result = BetterTouchToolApp(presets=["Master_bt"]).status(target)
+    assert result.state == "clean"
+
+
 def test_status_clean_when_only_container_order_differs(tmp_path):
     """BTT's export_preset emits the per-app containers in BTTPresetContent
     in no guaranteed order — the same preset can export [Global, Finder] one

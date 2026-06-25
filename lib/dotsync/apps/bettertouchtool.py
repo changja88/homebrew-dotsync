@@ -30,12 +30,12 @@ _EXPORT_WAIT_TIMEOUT = 5.0
 
 # BTT regenerates BTTPresetUUID on every export_preset call, may rewrite
 # BTTLastUpdatedAt during app updates or database migrations, records
-# BTTLastUsed runtime history when triggers fire, may rewrite entity UUID/order
-# metadata after imports, and emits the BTTPresetContent containers /
-# BTTTriggers arrays in no guaranteed order — all without any user-visible
-# preset content changing. A naive byte-for-byte hash would flag those cases as
-# dirty, so we normalize volatile metadata and entity-collection order before
-# hashing.
+# BTTLastUsed runtime history when triggers fire, bumps app runtime counters in
+# BTTGeneralSettings, may rewrite entity UUID/order metadata after imports, and
+# emits the BTTPresetContent containers / BTTTriggers arrays in no guaranteed
+# order — all without any user-visible preset content changing. A naive
+# byte-for-byte hash would flag those cases as dirty, so we normalize volatile
+# metadata and entity-collection order before hashing.
 _BTT_UUID_LINE_RE = re.compile(
     r'^(\s*"BTTPresetUUID"\s*:\s*")[^"]+(",?\s*)$',
     re.MULTILINE,
@@ -50,6 +50,8 @@ _VOLATILE_PRESET_KEYS = {
     "BTTLastUpdatedAt",
     "BTTLastUsed",
     "BTTLastUsedAt",
+    "BTTDidRegisterForUpdateStats",
+    "BTTNumberOfStarts",
 }
 
 
