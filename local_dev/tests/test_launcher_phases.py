@@ -536,6 +536,30 @@ def test_v2_preflight_offers_node_install_for_unmet_homebrew_statusline(monkeypa
     assert "installed at /opt/homebrew/bin/node" in text
 
 
+def test_v2_preflight_node_success_reports_actual_resolved_path(monkeypatch):
+    """②: 성공 행은 하드코딩된 /opt/homebrew/bin/node가 아니라 실제로 해석된
+    node 경로를 보고해야 한다 (설치됐다고 거짓 보고하던 문제의 정직화)."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch)
+
+    out = io.StringIO()
+    answers = iter(["y"])
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        node_need_check=lambda client: NodeNeed(generic=True, homebrew=False),
+        resolve_node=_node_resolver(None, ["/usr/local/bin/node"]),
+        homebrew_node_present=lambda: True,
+        install_node=lambda *, stream=None: 0,
+    )
+    text = _strip_ansi(out.getvalue())
+    assert "installed at /usr/local/bin/node" in text
+    assert "/opt/homebrew/bin/node" not in text  # must not hardcode
+
+
 def test_v2_preflight_skips_node_when_path_node_satisfies_generic_need(monkeypatch):
     """generic need(npx MCP)만 있고 PATH에 node가 있으면 묻지 않는다."""
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
@@ -922,7 +946,7 @@ def test_v2_serena_init_create_calls_serena_cli(monkeypatch, tmp_path):
         # simulate Serena writing project.yml
         (project_root / ".serena").mkdir(exist_ok=True)
         (project_root / ".serena" / "project.yml").write_text("ok\n")
-        return 0
+        return 0, ""
 
     monkeypatch.setattr(launcher, "_serena_project_create", fake_create, raising=False)
     out = io.StringIO()
@@ -936,7 +960,7 @@ def test_v2_serena_init_create_failure_returns_failed(monkeypatch, tmp_path):
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
     monkeypatch.setattr(launcher, "_serena_project_create",
-                        lambda project_root: 1, raising=False)
+                        lambda project_root: (1, ""), raising=False)
     out = io.StringIO()
     answers = iter(["y"])
     result = launcher._run_serena_init_v2(stream=out, input_fn=lambda: next(answers))
@@ -1614,7 +1638,7 @@ def test_v2_serena_init_create_promotes_env_status_to_managed(monkeypatch, tmp_p
     def fake_create(project_root):
         (project_root / ".serena").mkdir(exist_ok=True)
         (project_root / ".serena" / "project.yml").write_text("ok\n")
-        return 0
+        return 0, ""
 
     monkeypatch.setattr(launcher, "_serena_project_create", fake_create, raising=False)
     out = io.StringIO()
@@ -1886,22 +1910,30 @@ def test_serena_project_create_runs_resolved_command(monkeypatch, tmp_path):
                         lambda cmd, stdout=None: FakeYesProc())
 
     run_calls = []
+    run_kwargs = {}
 
     class _Result:
         returncode = 0
+        stdout = "noisy serena output\n"
 
-    def fake_run(cmd, stdin=None, check=False):
+    def fake_run(cmd, **kwargs):
         run_calls.append(cmd)
+        run_kwargs.update(kwargs)
         return _Result()
 
     monkeypatch.setattr(launcher.subprocess, "run", fake_run)
 
-    rc = launcher._serena_project_create(tmp_path)
+    rc, output = launcher._serena_project_create(tmp_path)
     assert rc == 0
+    assert output == "noisy serena output\n"
     assert run_calls == [
         ["/opt/homebrew/bin/uvx", "--from", "spec", "serena",
          "project", "create", str(tmp_path)]
     ]
+    # Output is captured (not leaked to the terminal) and the pydantic-on-3.14
+    # warning is silenced in the child.
+    assert run_kwargs["stdout"] is launcher.subprocess.PIPE
+    assert run_kwargs["env"]["PYTHONWARNINGS"] == "ignore"
 
 
 def test_serena_project_create_returns_2_when_cli_unresolvable(monkeypatch, tmp_path):
@@ -1911,7 +1943,50 @@ def test_serena_project_create_returns_2_when_cli_unresolvable(monkeypatch, tmp_
         launcher.subprocess, "run",
         lambda *a, **k: pytest.fail("must not spawn anything"),
     )
-    assert launcher._serena_project_create(tmp_path) == 2
+    assert launcher._serena_project_create(tmp_path) == (2, "")
+
+
+def test_v2_serena_init_success_shows_clean_row_not_raw_output(monkeypatch, tmp_path):
+    """③: 생성 성공 시 serena의 날 출력(언어 프롬프트/pydantic 경고)을 흘리지 않고
+    깔끔한 한 줄 상태 행만 보여준다."""
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
+
+    def fake_create(project_root):
+        (project_root / ".serena").mkdir(exist_ok=True)
+        (project_root / ".serena" / "project.yml").write_text("ok\n")
+        return 0, (
+            "UserWarning: Core Pydantic V1 ...\n"
+            "Enable ruby (0.97%)? [y/N] Enable bash? [y/N]\n"
+            "Generated project with languages {python} ...\n"
+        )
+
+    monkeypatch.setattr(launcher, "_serena_project_create", fake_create, raising=False)
+    out = io.StringIO()
+    answers = iter(["y"])
+    result = launcher._run_serena_init_v2(stream=out, input_fn=lambda: next(answers))
+    text = _strip_ansi(out.getvalue())
+    assert result == "created"
+    assert "project created" in text
+    assert "Enable ruby" not in text  # raw serena noise suppressed on success
+    assert "Pydantic" not in text
+
+
+def test_v2_serena_init_failure_dumps_captured_output(monkeypatch, tmp_path):
+    """③: 실패 시에는 캡처한 serena 출력을 들여쓰기 덤프해 원인 추적을 돕는다."""
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
+    monkeypatch.setattr(
+        launcher, "_serena_project_create",
+        lambda project_root: (1, "serena exploded: real traceback line\n"),
+        raising=False,
+    )
+    out = io.StringIO()
+    answers = iter(["y"])
+    result = launcher._run_serena_init_v2(stream=out, input_fn=lambda: next(answers))
+    text = _strip_ansi(out.getvalue())
+    assert result == "failed"
+    assert "serena exploded: real traceback line" in text  # dumped for diagnosis
 
 
 def test_graphify_install_actions_run_resolved_command(monkeypatch, tmp_path):

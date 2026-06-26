@@ -29,7 +29,11 @@ from local_dev.serena_mcp_management.external_cli import (
     serena_oneshot_command,
     serena_server_command,
 )
-from local_dev.serena_mcp_management.node_preflight import NodeNeed, node_need
+from local_dev.serena_mcp_management.node_preflight import (
+    HOMEBREW_NODE_PATH,
+    NodeNeed,
+    node_need,
+)
 from local_dev.serena_mcp_management.serena_mcp.diagnostics import snapshot_global_lifecycle
 from local_dev.serena_mcp_management.serena_mcp.paths import Scope, find_project_root
 from local_dev.serena_mcp_management.serena_mcp.registry import locked_registry, touch_lease
@@ -1045,8 +1049,18 @@ def _run_node_runtime_check_v2(
 
     rc = install_fn(stream=out)
     if rc == 0 and not _node_need_unmet(need, resolve_fn, homebrew_fn):
+        # Report the path that actually satisfied the need, not a hardcoded
+        # guess — a `brew install node` returning 0 without a durable install
+        # must not be announced as success at a path that isn't there. A
+        # homebrew need is verified at the hardcoded statusLine path; a generic
+        # need reports wherever node resolved on PATH.
+        if need.homebrew:
+            where = HOMEBREW_NODE_PATH
+        else:
+            resolved = resolve_fn()
+            where = resolved[0] if resolved else "node"
         out.write(render_inline_row(
-            "node runtime", "installed at /opt/homebrew/bin/node", status="done"))
+            "node runtime", f"installed at {where}", status="done"))
     else:
         message = (
             f"node install failed (exit {rc})"
@@ -1265,20 +1279,33 @@ def _run_final_confirm_v2(
     )
 
 
-def _serena_project_create(project_root: Path) -> int:
-    """Run `serena project create <root>` feeding default answers via `yes ""`.
+def _serena_project_create(project_root: Path) -> tuple[int, str]:
+    """Run `serena project create <root>` quietly, feeding default answers.
+
+    Serena's CLI is verbose (language auto-detection, interactive language
+    prompts auto-answered via `yes ""`, a stale last-project "skipping" notice,
+    and a Pydantic-on-3.14 UserWarning). Capture all of it and silence the
+    warning so the launcher's box UI stays clean; the caller surfaces a single
+    status row and dumps this output only on failure.
 
     Returns:
-        0 on success, non-zero on failure (2 when no serena runner is available).
+        (exit_code, captured_output). exit_code 2 means no serena runner.
     """
     serena = serena_oneshot_command()
     if serena is None:
-        return 2
+        return 2, ""
+    env = {**os.environ, "PYTHONWARNINGS": "ignore"}
     yes_proc = subprocess.Popen(["yes", ""], stdout=subprocess.PIPE)
     try:
         proc = subprocess.run(
             [*serena, "project", "create", str(project_root)],
             stdin=yes_proc.stdout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
             check=False,
         )
     finally:
@@ -1286,7 +1313,7 @@ def _serena_project_create(project_root: Path) -> int:
             yes_proc.stdout.close()
         yes_proc.terminate()
         yes_proc.wait()
-    return proc.returncode
+    return proc.returncode, proc.stdout or ""
 
 
 def _run_serena_init_v2(
@@ -1315,11 +1342,15 @@ def _run_serena_init_v2(
         out.flush()
         return "skipped"
 
-    rc = _serena_project_create(project_root)
+    rc, output = _serena_project_create(project_root)
     if rc != 0 or not (project_root / ".serena" / "project.yml").exists():
         out.write("  ! serena    failed    . launching without Serena project config\n")
+        for line in output.splitlines():
+            out.write("    " + line + "\n")
         out.flush()
         return "failed"
+    out.write(render_inline_row("serena", "project created", status="done"))
+    out.flush()
     os.environ["SERENA_AGENT_PREFLIGHT_SERENA_STATUS"] = "managed"
     return "created"
 

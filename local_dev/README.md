@@ -88,6 +88,13 @@ runs cleanup and starts the scoped Serena MCP server with inline progress rows
 below the preflight box. When the agent TUI exits, a summary box reports
 session duration, cleanup result, MCP lifecycle, and any accumulated warnings.
 
+`serena project create` (run on Initialize) is **captured, not streamed**: its
+verbose language detection, the interactive language prompts auto-answered via
+`yes ""`, the stale last-project "skipping" notice, and the Pydantic-on-3.14
+`UserWarning` (silenced via `PYTHONWARNINGS=ignore`) would otherwise flood the
+box UI. On success the launcher prints a single `serena  project created` row;
+on failure it dumps the captured output indented for diagnosis.
+
 Graphify hooks are git `post-commit`/`post-checkout` hooks, so the hook step
 requires a git repo. When the project isn't one yet, the launcher swaps the
 "Install graphify hooks?" prompt for a one-line `git init` consent (default
