@@ -109,3 +109,61 @@ def test_graphify_install_command_uses_uv_tool():
 def test_install_commands_require_uv():
     assert external_cli.serena_install_command(which=_which_map({})) is None
     assert external_cli.graphify_install_command(which=_which_map({})) is None
+
+
+def test_node_command_prefers_path_hit():
+    cmd = external_cli.node_command(which=_which_map({"node": "/usr/bin/node"}))
+    assert cmd == ["/usr/bin/node"]
+
+
+def test_node_command_falls_back_to_homebrew_node(tmp_path):
+    brew_node = tmp_path / "node"
+    brew_node.write_text("#!/bin/sh\n")
+    brew_node.chmod(0o755)
+    cmd = external_cli.node_command(which=_which_map({}), brew_node=brew_node)
+    assert cmd == [str(brew_node)]
+
+
+def test_node_command_ignores_non_executable_homebrew_node(tmp_path):
+    brew_node = tmp_path / "node"
+    brew_node.write_text("")
+    brew_node.chmod(0o644)
+    assert external_cli.node_command(which=_which_map({}), brew_node=brew_node) is None
+
+
+def test_node_command_returns_none_when_absent(tmp_path):
+    assert (
+        external_cli.node_command(which=_which_map({}), brew_node=tmp_path / "nope")
+        is None
+    )
+
+
+def test_homebrew_node_command_resolves_executable(tmp_path):
+    brew_node = tmp_path / "node"
+    brew_node.write_text("#!/bin/sh\n")
+    brew_node.chmod(0o755)
+    assert external_cli.homebrew_node_command(brew_node=brew_node) == [str(brew_node)]
+
+
+def test_homebrew_node_command_none_when_missing(tmp_path):
+    assert external_cli.homebrew_node_command(brew_node=tmp_path / "nope") is None
+
+
+def test_node_command_path_hit_does_not_imply_homebrew(tmp_path):
+    # node on PATH (e.g. nvm) satisfies node_command, but the homebrew-specific
+    # resolver still reports missing — the basis for the statusLine F2 fix.
+    assert external_cli.node_command(which=_which_map({"node": "/Users/x/.nvm/node"})) == [
+        "/Users/x/.nvm/node"
+    ]
+    assert external_cli.homebrew_node_command(brew_node=tmp_path / "nope") is None
+
+
+def test_node_install_command_uses_brew():
+    cmd = external_cli.node_install_command(
+        which=_which_map({"brew": "/opt/homebrew/bin/brew"})
+    )
+    assert cmd == ["/opt/homebrew/bin/brew", "install", "node"]
+
+
+def test_node_install_command_requires_brew():
+    assert external_cli.node_install_command(which=_which_map({})) is None

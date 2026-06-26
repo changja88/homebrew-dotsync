@@ -1,12 +1,14 @@
 import io
 import os
 import re
+import shutil
 import time
 from unittest import mock
 
 import pytest
 
 from local_dev.serena_mcp_management import serena_agent_launcher as launcher
+from local_dev.serena_mcp_management.node_preflight import NodeNeed
 from local_dev.serena_mcp_management.serena_mcp.diagnostics import GlobalLifecycleSnapshot
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -37,6 +39,13 @@ def stub_external_cli_resolution(monkeypatch):
         launcher, "graphify_install_command",
         lambda: ["/stub/uv", "tool", "install", "graphifyy"],
         raising=False)
+    # Default to a machine that needs no node runtime, so the node-runtime
+    # preflight step is inert unless a test opts in. (Without this, the check
+    # would read the real ~/.claude / ~/.codex and fire on machines lacking
+    # node, breaking unrelated phase tests.)
+    monkeypatch.setattr(
+        launcher, "_client_node_need",
+        lambda client: NodeNeed(generic=False, homebrew=False), raising=False)
 
 
 def test_main_always_dispatches_to_v2(monkeypatch):
@@ -319,6 +328,7 @@ def test_v2_preflight_marks_graphify_hook_missing(monkeypatch):
     launcher._run_preflight_v2(
         stream=out,
         input_fn=lambda: next(answers),
+        is_git_repo=lambda project_root: True,
         install_graphify_hooks=lambda project_root: 0,
     )
     text = _strip_ansi(out.getvalue())
@@ -344,6 +354,7 @@ def test_v2_preflight_runs_graphify_hook_install_when_user_confirms(monkeypatch)
     rc = launcher._run_preflight_v2(
         stream=out,
         input_fn=lambda: next(answers),
+        is_git_repo=lambda project_root: True,
         install_graphify_hooks=fake_install,
     )
     text = _strip_ansi(out.getvalue())
@@ -352,6 +363,309 @@ def test_v2_preflight_runs_graphify_hook_install_when_user_confirms(monkeypatch)
     # After successful install, the hook row flips to the done variant.
     assert "post-commit + post-checkout hooks installed" in text
     assert rc == 0  # preflight always returns 0; abort moved to _run_final_confirm_v2
+
+
+def test_v2_preflight_offers_git_init_when_hook_step_in_non_git_repo(monkeypatch):
+    """graphify hook은 git post-commit/post-checkout 훅이라 git repo가 전제다.
+    프로젝트가 git repo가 아니면 hook 단계에서 `git init`을 한 줄 동의로 제안하고,
+    수락하면 init → hook install 순으로 진행해야 한다 (수동 git init 요구 없이)."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch, hook="missing")
+
+    init_calls: list = []
+    hook_calls: list = []
+
+    out = io.StringIO()
+    answers = iter(["y"])  # accept git init (which also implies hook install)
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        is_git_repo=lambda project_root: False,
+        init_git=lambda project_root: init_calls.append(project_root) or 0,
+        install_graphify_hooks=lambda project_root: hook_calls.append(project_root) or 0,
+    )
+    text = _strip_ansi(out.getvalue())
+    assert "need a git repo" in text
+    assert init_calls, "git init should run when the project is not a git repo"
+    assert hook_calls, "hook install should run after git init succeeds"
+    assert "initialized empty repo" in text
+    assert "post-commit + post-checkout hooks installed" in text
+
+
+def test_v2_preflight_skips_hooks_when_git_init_declined(monkeypatch):
+    """git repo가 아닌데 사용자가 `git init`을 거절하면 init도 hook install도
+    하지 않고, 사유(git init 필요)를 한 줄로 알려야 한다."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch, hook="missing")
+
+    init_calls: list = []
+    hook_calls: list = []
+
+    out = io.StringIO()
+    answers = iter(["n"])  # decline git init
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        is_git_repo=lambda project_root: False,
+        init_git=lambda project_root: init_calls.append(project_root) or 0,
+        install_graphify_hooks=lambda project_root: hook_calls.append(project_root) or 0,
+    )
+    text = _strip_ansi(out.getvalue())
+    assert init_calls == [], "git init must not run when declined"
+    assert hook_calls == [], "hook install must not run without a git repo"
+    assert "git repo" in text
+    assert "git init" in text
+
+
+def test_v2_preflight_skips_hooks_when_git_init_fails(monkeypatch):
+    """`git init` 자체가 실패하면 hook install을 시도하지 않고 실패를 surface한다."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch, hook="missing")
+
+    hook_calls: list = []
+
+    out = io.StringIO()
+    answers = iter(["y"])  # accept git init, but it fails
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        is_git_repo=lambda project_root: False,
+        init_git=lambda project_root: 1,
+        install_graphify_hooks=lambda project_root: hook_calls.append(project_root) or 0,
+    )
+    text = _strip_ansi(out.getvalue())
+    assert hook_calls == [], "hook install must not run after git init fails"
+    assert "git init failed" in text
+
+
+def test_is_git_repo_and_git_init_roundtrip(tmp_path):
+    """_is_git_repo는 init 전 False, _git_init 후 True여야 한다 (실제 git 사용)."""
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+    assert launcher._is_git_repo(tmp_path) is False
+    assert launcher._git_init(tmp_path) == 0
+    assert launcher._is_git_repo(tmp_path) is True
+
+
+def test_is_git_repo_false_inside_git_dir(tmp_path):
+    """B2: `.git` 내부는 work tree가 아니다. `git rev-parse --is-inside-work-tree`는
+    거기서 'false'를 찍으면서도 exit 0이라, exit code만 보면 오탐한다."""
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+    launcher._git_init(tmp_path)
+    assert launcher._is_git_repo(tmp_path) is True
+    assert launcher._is_git_repo(tmp_path / ".git") is False
+
+
+def _node_resolver(*values):
+    """A resolve_node stub returning each value in turn (last value sticks).
+
+    Used to model node being missing on the first probe (triggering the prompt)
+    and present on the post-install probe (reporting success)."""
+    it = iter(values)
+    state = {"last": None}
+
+    def resolve():
+        try:
+            state["last"] = next(it)
+        except StopIteration:
+            pass
+        return state["last"]
+
+    return resolve
+
+
+def test_v2_preflight_offers_node_install_when_required_and_missing(monkeypatch):
+    """node를 쓰는 플러그인/MCP가 있는데 node가 없으면 `brew install node`를
+    동의 프롬프트로 제안하고, 수락하면 설치 후 성공을 surface해야 한다."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch)  # graphify fully installed -> no graphify prompts
+
+    install_calls: list = []
+
+    out = io.StringIO()
+    answers = iter(["y"])  # accept node install
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        node_need_check=lambda client: NodeNeed(generic=True, homebrew=False),
+        resolve_node=_node_resolver(None, ["/opt/homebrew/bin/node"]),
+        homebrew_node_present=lambda: True,
+        install_node=lambda *, stream=None: install_calls.append(1) or 0,
+    )
+    text = _strip_ansi(out.getvalue())
+    assert install_calls, "brew install node should run"
+    assert "brew install node" in text
+    assert "installed at /opt/homebrew/bin/node" in text
+
+
+def test_v2_preflight_offers_node_install_for_unmet_homebrew_statusline(monkeypatch):
+    """PATH에 node가 있어도(generic 충족) statusLine이 hardcode한
+    /opt/homebrew/bin/node가 없으면(homebrew need 미충족) 설치를 제안해야 한다 (F2)."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch)
+
+    install_calls: list = []
+    out = io.StringIO()
+    answers = iter(["y"])
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        node_need_check=lambda client: NodeNeed(generic=False, homebrew=True),
+        resolve_node=lambda: ["/Users/x/.nvm/node"],  # PATH node exists...
+        homebrew_node_present=_node_resolver(False, True),  # ...but homebrew path missing then present
+        install_node=lambda *, stream=None: install_calls.append(1) or 0,
+    )
+    text = _strip_ansi(out.getvalue())
+    assert install_calls, "should offer install when only the homebrew need is unmet"
+    assert "installed at /opt/homebrew/bin/node" in text
+
+
+def test_v2_preflight_skips_node_when_path_node_satisfies_generic_need(monkeypatch):
+    """generic need(npx MCP)만 있고 PATH에 node가 있으면 묻지 않는다."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch)
+
+    install_calls: list = []
+    out = io.StringIO()
+    answers = iter([])  # no prompt expected
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        node_need_check=lambda client: NodeNeed(generic=True, homebrew=False),
+        resolve_node=lambda: ["/usr/bin/node"],
+        homebrew_node_present=lambda: False,  # irrelevant: no homebrew need
+        install_node=lambda *, stream=None: install_calls.append(1) or 0,
+    )
+    assert install_calls == []
+    assert "brew install node" not in out.getvalue()
+
+
+def test_v2_preflight_skips_node_when_not_required(monkeypatch):
+    """node를 쓰는 플러그인/MCP가 없으면 node가 없어도 묻지 않는다."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch)
+
+    install_calls: list = []
+    out = io.StringIO()
+    answers = iter([])
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        node_need_check=lambda client: NodeNeed(generic=False, homebrew=False),
+        resolve_node=lambda: None,
+        homebrew_node_present=lambda: False,
+        install_node=lambda *, stream=None: install_calls.append(1) or 0,
+    )
+    assert install_calls == []
+    assert "node runtime" not in out.getvalue()
+
+
+def test_v2_preflight_warns_when_node_install_declined(monkeypatch):
+    """node 설치를 거절하면 설치하지 않고 사유를 한 줄로 알린다."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch)
+
+    install_calls: list = []
+    out = io.StringIO()
+    answers = iter(["n"])
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        node_need_check=lambda client: NodeNeed(generic=True, homebrew=False),
+        resolve_node=lambda: None,
+        homebrew_node_present=lambda: False,
+        install_node=lambda *, stream=None: install_calls.append(1) or 0,
+    )
+    text = _strip_ansi(out.getvalue())
+    assert install_calls == []
+    assert "node-based plugins/MCP will not start" in text
+
+
+def test_v2_preflight_runs_node_check_even_when_graphify_unavailable(monkeypatch):
+    """B1: graphify CLI를 해석 못 해 graphify 단계가 조기 종료돼도 node 체크는
+    독립적으로 실행돼야 한다 (node와 graphify는 무관)."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch, global_="missing")  # triggers graphify-missing branch
+    # graphify entirely unresolvable -> cli install offer returns "unavailable",
+    # which makes _run_preflight_v2 early-return from the graphify section.
+    monkeypatch.setattr(launcher, "graphify_command", lambda: None, raising=False)
+    monkeypatch.setattr(launcher, "graphify_install_command", lambda: None, raising=False)
+    monkeypatch.setattr(
+        launcher, "node_install_command",
+        lambda: ["/stub/brew", "install", "node"], raising=False)
+
+    install_calls: list = []
+    out = io.StringIO()
+    answers = iter(["y"])  # accept node install
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        node_need_check=lambda client: NodeNeed(generic=True, homebrew=False),
+        resolve_node=_node_resolver(None, ["/opt/homebrew/bin/node"]),
+        homebrew_node_present=lambda: True,
+        install_node=lambda *, stream=None: install_calls.append(1) or 0,
+    )
+    text = _strip_ansi(out.getvalue())
+    assert "cli unavailable" in text, "graphify section should have early-returned"
+    assert install_calls, "node check must still run despite graphify early-return"
+    assert "installed at /opt/homebrew/bin/node" in text
+
+
+def test_v2_preflight_does_not_prompt_node_when_brew_missing(monkeypatch):
+    """brew가 없으면 설치할 수 없으니 묻지 않고 수동 설치 안내만 남긴다 (F1).
+
+    serena/graphify가 'uv not found'일 때 프롬프트를 띄우지 않는 것과 동일한 흐름."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch)
+    # brew unresolvable -> install argv is None
+    monkeypatch.setattr(launcher, "node_install_command", lambda: None, raising=False)
+
+    install_calls: list = []
+    out = io.StringIO()
+    answers = iter([])  # a prompt firing would raise StopIteration
+    launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        node_need_check=lambda client: NodeNeed(generic=True, homebrew=False),
+        resolve_node=lambda: None,
+        homebrew_node_present=lambda: False,
+        install_node=lambda *, stream=None: install_calls.append(1) or 0,
+    )
+    text = _strip_ansi(out.getvalue())
+    assert install_calls == [], "must not install when brew is unavailable"
+    assert "brew install node" not in text, "must not prompt when it can't install"
+    assert "brew not found" in text
 
 
 def test_v2_preflight_skips_graphify_hook_prompt_when_already_installed(monkeypatch):
@@ -542,6 +856,7 @@ def test_v2_preflight_does_not_redraw_box_after_install(monkeypatch):
     launcher._run_preflight_v2(
         stream=out,
         input_fn=lambda: next(answers),
+        is_git_repo=lambda project_root: True,
         install_graphify_integration=lambda project_root, client: 0,
         install_graphify_hooks=lambda project_root: 0,
     )
@@ -1003,6 +1318,7 @@ def test_v2_preflight_asks_hook_after_successful_integration_install(monkeypatch
     launcher._run_preflight_v2(
         stream=out,
         input_fn=lambda: next(answers),
+        is_git_repo=lambda project_root: True,
         install_graphify_integration=lambda project_root, client: 0,
         install_graphify_hooks=lambda project_root: hook_calls.append(project_root) or 0,
     )
@@ -1496,6 +1812,7 @@ def test_v2_preflight_graphify_hook_prompt_defaults_to_yes(monkeypatch):
     launcher._run_preflight_v2(
         stream=out,
         input_fn=lambda: next(answers),
+        is_git_repo=lambda project_root: True,
         install_graphify_hooks=lambda root: hook_calls.append(root) or 0,
     )
     assert len(hook_calls) == 1

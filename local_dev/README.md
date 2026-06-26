@@ -88,6 +88,46 @@ runs cleanup and starts the scoped Serena MCP server with inline progress rows
 below the preflight box. When the agent TUI exits, a summary box reports
 session duration, cleanup result, MCP lifecycle, and any accumulated warnings.
 
+Graphify hooks are git `post-commit`/`post-checkout` hooks, so the hook step
+requires a git repo. When the project isn't one yet, the launcher swaps the
+"Install graphify hooks?" prompt for a one-line `git init` consent (default
+Yes); accepting it runs `git init` and then installs the hooks, while declining
+skips the hook step with a "needs a git repo — run `git init` first" note.
+
+An early preflight step checks the **Node.js runtime** — it runs *before* the
+graphify section so the graphify CLI being unavailable (which early-returns that
+section) can't skip it; node and graphify are independent concerns.
+context7/playwright MCP servers run via `npx` and the claude-hud statusLine runs
+via `node`; all fail at startup with `os error 2` when node is absent. The
+launcher scans the active
+client's configured commands — the claude statusLine, each enabled plugin's
+`.mcp.json`, and `.claude.json` mcpServers for claude; `~/.codex/config.toml`'s
+`[mcp_servers.*]` for codex — and classifies the need into two kinds
+(`node_preflight.NodeNeed`):
+
+- **generic** — an `npx`/`node` command that *any* node on PATH satisfies
+  (npx-based MCP servers).
+- **homebrew** — a command that hardcodes `/opt/homebrew/bin/node` (the
+  claude-hud statusLine), which only a node at that *exact* path satisfies. A
+  PATH node elsewhere (e.g. nvm) does not make the HUD work.
+
+The two are resolved independently (`node_command` vs `homebrew_node_command`),
+so a machine with nvm node but no homebrew node is still offered an install for
+the HUD. Only when an *unmet* need exists does the step act, and — mirroring the
+serena/graphify CLI prompts — it checks Homebrew is available *before* asking:
+no brew, no prompt, just a "brew not found — install node manually" note.
+Otherwise it offers a one-line `brew install node` consent (default Yes); brew
+node lands at `/opt/homebrew/bin/node`, exactly where the statusLine looks.
+Clients with no node-based plugin/MCP are never prompted. Detection lives in
+`node_preflight.py`; node resolution/install argv in `external_cli.py`.
+
+> **Known limitation (Apple Silicon assumption).** The homebrew need is checked
+> at the literal `/opt/homebrew/bin/node` because that is what the claude-hud
+> statusLine hardcodes. On Intel macs (`brew --prefix` = `/usr/local`) a
+> `brew install node` lands elsewhere, so the homebrew need stays unmet and the
+> HUD can't be fixed from here regardless — the same hardcode is claude-hud's,
+> not ours. npx-based MCP (the generic need) still works on Intel via PATH.
+
 The session and memory rows are computed in Python from the current launcher
 context, not predicted by the zsh shim:
 

@@ -79,3 +79,44 @@ def graphify_install_command(*, which: WhichFn = shutil.which) -> list[str] | No
     if uv is None:
         return None
     return [uv, "tool", "install", "graphifyy"]
+
+
+def homebrew_node_command(*, brew_node: Path | None = None) -> list[str] | None:
+    """Resolve node at the homebrew path the claude-hud statusLine hardcodes.
+
+    The HUD statusLine execs `/opt/homebrew/bin/node` literally, so a node
+    elsewhere on PATH (e.g. nvm) does not make it work — only a node at this
+    exact path does. Returns None when that path has no executable node.
+    """
+    candidate = brew_node if brew_node is not None else Path("/opt/homebrew/bin/node")
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return [str(candidate)]
+    return None
+
+
+def node_command(
+    *, which: WhichFn = shutil.which, brew_node: Path | None = None
+) -> list[str] | None:
+    """Resolve any node binary for npx/node-based plugins and MCP servers.
+
+    Prefer a PATH hit; otherwise fall back to the homebrew path. Returns None
+    when node is unavailable anywhere. (For the statusLine's hardcoded path
+    specifically, use `homebrew_node_command`.)
+    """
+    found = which("node")
+    if found:
+        return [found]
+    return homebrew_node_command(brew_node=brew_node)
+
+
+def node_install_command(*, which: WhichFn = shutil.which) -> list[str] | None:
+    """`brew install node` argv. None when Homebrew is unavailable.
+
+    Specifically Homebrew node: its binary lands at `/opt/homebrew/bin/node`,
+    exactly where the claude-hud statusLine looks, so npx-based MCP servers and
+    the HUD start working without rewriting the hardcoded path.
+    """
+    brew = which("brew")
+    if brew is None:
+        return None
+    return [brew, "install", "node"]

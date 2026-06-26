@@ -22,10 +22,14 @@ if str(_REPO_ROOT) not in sys.path:
 from local_dev.serena_mcp_management.external_cli import (
     graphify_command,
     graphify_install_command,
+    homebrew_node_command,
+    node_command,
+    node_install_command,
     serena_install_command,
     serena_oneshot_command,
     serena_server_command,
 )
+from local_dev.serena_mcp_management.node_preflight import NodeNeed, node_need
 from local_dev.serena_mcp_management.serena_mcp.diagnostics import snapshot_global_lifecycle
 from local_dev.serena_mcp_management.serena_mcp.paths import Scope, find_project_root
 from local_dev.serena_mcp_management.serena_mcp.registry import locked_registry, touch_lease
@@ -871,6 +875,35 @@ def _run_graphify_cli_install_v2(
     return "failed"
 
 
+def _is_git_repo(project_root: Path) -> bool:
+    """True if ``project_root`` is inside a git work tree (at or above).
+
+    Matches graphify's "at or above" search: ``graphify hook install`` walks
+    up for a ``.git`` and aborts with ``RuntimeError`` when none is found, so
+    the launcher must gate the hook step on the same condition.
+    """
+    proc = subprocess.run(
+        ["git", "-C", str(project_root), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    # Inside a `.git` dir (but outside the work tree) git prints "false" yet
+    # exits 0, so the exit code alone is not enough — require a "true" answer.
+    return proc.returncode == 0 and proc.stdout.strip() == "true"
+
+
+def _git_init(project_root: Path) -> int:
+    """Run ``git init`` in ``project_root``. Returns the exit code."""
+    proc = subprocess.run(
+        ["git", "init", str(project_root)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return proc.returncode
+
+
 def _graphify_hook_install(project_root: Path) -> int:
     """Run `graphify hook install` for the given project root.
 
@@ -919,6 +952,111 @@ def _graphify_integration_install(project_root: Path, client: str) -> int:
     return proc.returncode
 
 
+def _client_node_need(client: str) -> NodeNeed:
+    """The Node.js need for the active client's plugins/MCP/statusLine."""
+    if client == "claude":
+        config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+        claude_dir = Path(config_dir) if config_dir else Path.home() / ".claude"
+        return node_need(
+            "claude", claude_dir=claude_dir, claude_json=Path.home() / ".claude.json"
+        )
+    return node_need("codex", codex_home=_codex_home_from_env())
+
+
+def _homebrew_node_present() -> bool:
+    """True if node exists at the homebrew path the statusLine hardcodes."""
+    return homebrew_node_command() is not None
+
+
+def _node_runtime_install(*, stream: TextIO | None = None) -> int:
+    """Install Node.js via Homebrew. Returns the exit code; 2 means no brew."""
+    cmd = node_install_command()
+    if cmd is None:
+        return 2
+    return _run_tool_install_streaming(cmd, label="node", stream=stream)
+
+
+def _node_need_unmet(
+    need: NodeNeed,
+    resolve_fn: Callable[[], list[str] | None],
+    homebrew_fn: Callable[[], bool],
+) -> bool:
+    """True if any part of the node need is not satisfied.
+
+    A generic need (npx MCP) is met by any node on PATH; a homebrew need (the
+    claude-hud statusLine's hardcoded `/opt/homebrew/bin/node`) is met only by
+    a node at that exact path — a PATH node elsewhere does not count.
+    """
+    generic_unmet = need.generic and resolve_fn() is None
+    homebrew_unmet = need.homebrew and not homebrew_fn()
+    return generic_unmet or homebrew_unmet
+
+
+def _run_node_runtime_check_v2(
+    client: str,
+    *,
+    stream: TextIO | None = None,
+    input_fn: Callable[[], str] | None = None,
+    node_need_fn: Callable[[str], NodeNeed] | None = None,
+    resolve_node: Callable[[], list[str] | None] | None = None,
+    homebrew_node_present: Callable[[], bool] | None = None,
+    install_node: Callable[..., int] | None = None,
+) -> None:
+    """Offer to install Node.js when the client needs it but it is missing.
+
+    context7/playwright MCP run via `npx` and claude-hud's statusLine via a
+    hardcoded `/opt/homebrew/bin/node`; all fail with `os error 2` when node is
+    absent. The prompt only fires when a node-based plugin/MCP is actually
+    configured and unsatisfied, so users who don't need node are never nagged.
+    A node on PATH satisfies npx needs but NOT the statusLine's homebrew path,
+    so both are checked independently.
+    """
+    need_fn = node_need_fn or _client_node_need
+    resolve_fn = resolve_node or node_command
+    homebrew_fn = homebrew_node_present or _homebrew_node_present
+    install_fn = install_node or _node_runtime_install
+
+    need = need_fn(client)
+    if not need.any or not _node_need_unmet(need, resolve_fn, homebrew_fn):
+        return
+
+    out = stream if stream is not None else sys.stdout
+    # Check installability before prompting — don't offer what we can't do
+    # (mirrors the serena/graphify CLI-install prompts).
+    if node_install_command() is None:
+        out.write(render_inline_row(
+            "node runtime", "brew not found — install node manually", status="warn"))
+        out.flush()
+        return
+
+    if not confirm(
+        "node-based plugins/MCP need Node.js — run `brew install node`?",
+        default=True,
+        stream=out,
+        input_fn=input_fn,
+    ):
+        out.write(render_inline_row(
+            "node runtime",
+            "skipped — node-based plugins/MCP will not start",
+            status="warn",
+        ))
+        out.flush()
+        return
+
+    rc = install_fn(stream=out)
+    if rc == 0 and not _node_need_unmet(need, resolve_fn, homebrew_fn):
+        out.write(render_inline_row(
+            "node runtime", "installed at /opt/homebrew/bin/node", status="done"))
+    else:
+        message = (
+            f"node install failed (exit {rc})"
+            if rc != 0
+            else "install finished but node is still unresolvable"
+        )
+        out.write(render_inline_row("node runtime", message, status="warn"))
+    out.flush()
+
+
 def _run_preflight_v2(
     *,
     stream: TextIO | None = None,
@@ -928,6 +1066,12 @@ def _run_preflight_v2(
     install_graphify_global: Callable[[str], int] | None = None,
     install_graphify_integration: Callable[[Path, str], int] | None = None,
     install_graphify_hooks: Callable[[Path], int] | None = None,
+    is_git_repo: Callable[[Path], bool] | None = None,
+    init_git: Callable[[Path], int] | None = None,
+    node_need_check: Callable[[str], NodeNeed] | None = None,
+    resolve_node: Callable[[], list[str] | None] | None = None,
+    homebrew_node_present: Callable[[], bool] | None = None,
+    install_node: Callable[..., int] | None = None,
 ) -> int:
     """Run the v2 preflight phase with confirmation prompt.
 
@@ -945,6 +1089,8 @@ def _run_preflight_v2(
     install_global_fn = install_graphify_global or _graphify_global_install
     install_integration_fn = install_graphify_integration or _graphify_integration_install
     install_hook_fn = install_graphify_hooks or _graphify_hook_install
+    is_git_repo_fn = is_git_repo or _is_git_repo
+    init_git_fn = init_git or _git_init
 
     client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
     project_root = Path(os.environ.get("SERENA_AGENT_PROJECT_ROOT", ".")).resolve()
@@ -952,6 +1098,18 @@ def _run_preflight_v2(
     def _emit(label: str, value: str, *, ok: bool) -> None:
         out.write(render_inline_row(label, value, status="done" if ok else "warn"))
         out.flush()
+
+    # Node runtime is independent of graphify — run it first so the graphify
+    # section's early-return (when its CLI is unavailable) can't skip it.
+    _run_node_runtime_check_v2(
+        client,
+        stream=out,
+        input_fn=input_fn,
+        node_need_fn=node_need_check,
+        resolve_node=resolve_node,
+        homebrew_node_present=homebrew_node_present,
+        install_node=install_node,
+    )
 
     graphify_statuses = {
         os.environ.get("SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS", "unknown"),
@@ -1028,12 +1186,36 @@ def _run_preflight_v2(
         "SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS", "unknown"
     )
     if hook_status == "missing" and integration_present:
-        if confirm(
-            "Install graphify hooks for this project?",
+        # graphify hooks are git post-commit/post-checkout hooks, so a git repo
+        # is a hard prerequisite — `graphify hook install` aborts otherwise. When
+        # the project isn't a repo yet, offer a one-line `git init` instead of
+        # letting the install fail; consenting to that implies installing hooks.
+        if is_git_repo_fn(project_root):
+            proceed = confirm(
+                "Install graphify hooks for this project?",
+                default=True,
+                stream=out,
+                input_fn=input_fn,
+            )
+        elif confirm(
+            "graphify hooks need a git repo — run `git init` here?",
             default=True,
             stream=out,
             input_fn=input_fn,
         ):
+            rc_init = init_git_fn(project_root)
+            if rc_init == 0:
+                _emit("git", "initialized empty repo", ok=True)
+                proceed = True
+            else:
+                _emit("git", f"git init failed (exit {rc_init})", ok=False)
+                proceed = False
+        else:
+            _emit("graphify hook",
+                  "skipped: needs a git repo — run `git init` first", ok=False)
+            proceed = False
+
+        if proceed:
             rc = install_hook_fn(project_root)
             if rc == 0:
                 _emit("graphify hook",
