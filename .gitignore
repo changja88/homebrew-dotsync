@@ -87,10 +87,11 @@ docs/superpowers/
 .worktrees/
 
 # --- Local agent/tool state ---------------------------------------------
+# This repo does not use Serena or graphify (see "drop graphify integration");
+# the local_dev launcher may still create these when testing — keep them out.
 .serena/
-graphify-out/cache/
-graphify-out/manifest.json
-graphify-out/cost.json
+graphify-out/
+.codex/
 
 # --- dotsync's own dogfooding (keep developer's local sync state out of git)
 dotsync.toml
