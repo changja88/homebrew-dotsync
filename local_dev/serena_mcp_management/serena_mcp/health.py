@@ -25,13 +25,25 @@ def pid_is_alive(pid: int) -> bool:
 
 
 def process_identity(pid: int) -> str | None:
-    """Return process start time and command text, or None if unusable."""
+    """Return a stable per-process identity (start time), or None if unusable.
+
+    Identity is the process start time (`ps lstart`), which together with the
+    pid pins a process for reuse detection. The command text is deliberately
+    NOT queried: macOS framework Python re-execs itself moments after launch
+    (the symlinked `…/bin/python3.12` becomes `…/Python.app/Contents/MacOS/
+    Python`), which changes its `ps command=` argv0. Keying identity on the
+    command made every `python -m` child — notably the MCP proxy — fail its
+    identity match seconds after start, so `server_is_healthy` never became
+    true and the scoped server timed out. Start time is immutable across the
+    re-exec; the other health probes (http, dashboard, pid-alive) supply the
+    remaining process-correctness guarantees.
+    """
 
     if pid <= 0:
         return None
     try:
         proc = subprocess.run(
-            ["ps", "-o", "stat=", "-o", "lstart=", "-o", "command=", "-p", str(pid)],
+            ["ps", "-o", "stat=", "-o", "lstart=", "-p", str(pid)],
             check=False,
             text=True,
             capture_output=True,

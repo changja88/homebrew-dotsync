@@ -30,20 +30,23 @@ def test_pid_is_alive_for_current_process():
     assert pid_is_alive(os.getpid()) is True
 
 
-def test_process_identity_returns_start_time_and_command_from_ps(monkeypatch):
+def test_process_identity_returns_start_time_from_ps(monkeypatch):
     def fake_run(cmd, check, text, capture_output):
-        assert cmd == ["ps", "-o", "stat=", "-o", "lstart=", "-o", "command=", "-p", "1234"]
+        # command= must NOT be queried — it is the volatile field that breaks
+        # identity across macOS framework-Python re-exec.
+        assert cmd == ["ps", "-o", "stat=", "-o", "lstart=", "-p", "1234"]
+        assert "command=" not in cmd
         assert check is False
         assert text is True
         assert capture_output is True
         return SimpleNamespace(
             returncode=0,
-            stdout="S Fri May  8 10:00:00 2026 /usr/bin/python launcher --flag\n",
+            stdout="S Fri May  8 10:00:00 2026\n",
         )
 
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.health.subprocess.run", fake_run)
 
-    assert process_identity(1234) == "Fri May  8 10:00:00 2026 /usr/bin/python launcher --flag"
+    assert process_identity(1234) == "Fri May  8 10:00:00 2026"
 
 
 def test_process_identity_returns_none_for_zombie_status(monkeypatch):
@@ -76,17 +79,25 @@ def test_process_identity_returns_none_for_nonzero_ps_exit(monkeypatch):
     assert process_identity(999) is None
 
 
-def test_process_identity_preserves_long_command_text(monkeypatch):
-    command = "/usr/bin/python -c " + " ".join(["print('launcher identity survives')"] * 20)
+def test_process_identity_stable_across_argv0_reexec(monkeypatch):
+    """Regression: macOS framework Python re-execs moments after launch, changing
+    its `ps command=` argv0 (e.g. a `python -m` proxy child). Identity must stay
+    stable across that — it is keyed on the immutable start time and never reads
+    the command — so the scoped server's identity match keeps holding."""
+    calls = []
+
+    def fake_run(cmd, check, text, capture_output):
+        calls.append(cmd)
+        assert "command=" not in cmd
+        return SimpleNamespace(returncode=0, stdout="S Fri May  8 10:00:00 2026\n")
+
     monkeypatch.setattr(
-        "local_dev.serena_mcp_management.serena_mcp.health.subprocess.run",
-        lambda *args, **kwargs: SimpleNamespace(
-            returncode=0,
-            stdout=f"S Fri May  8 10:00:00 2026 {command}\n",
-        ),
+        "local_dev.serena_mcp_management.serena_mcp.health.subprocess.run", fake_run
     )
 
-    assert process_identity(1234) == f"Fri May  8 10:00:00 2026 {command}"
+    first = process_identity(1234)
+    second = process_identity(1234)
+    assert first == second == "Fri May  8 10:00:00 2026"
 
 
 def test_process_identity_returns_none_when_ps_cannot_run(monkeypatch):
