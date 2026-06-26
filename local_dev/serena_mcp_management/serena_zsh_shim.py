@@ -256,10 +256,17 @@ def default_binary_path(name: str) -> Path:
 
 
 def default_python_executable() -> Path:
-    """Return a Python executable that can run the launcher modules."""
+    """Return a Python executable that can run the launcher modules.
 
-    if sys.version_info >= (3, 12):
-        return Path(sys.executable)
+    Prefer a durable, system-managed interpreter (Homebrew/python.org) over the
+    interpreter currently running this generator. ``make install-shim`` may run
+    us under an ephemeral uv/venv python that uv can later garbage-collect,
+    which would leave ``SERENA_AGENT_PYTHON`` pointing at a dangling path (the
+    v0.1.x uv-3.13 breakage). The stable candidates never vanish out from under
+    the shim, so they win whenever one is present; ``sys.executable`` is only a
+    last resort for hosts without a managed Python.
+    """
+
     for path in PYTHON_CANDIDATES:
         if path.is_file():
             return path

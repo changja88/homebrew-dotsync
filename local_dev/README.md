@@ -9,17 +9,21 @@
 ## Two locations: dev (here) and runtime (stable)
 
 Develop here, run from a stable directory. `make install-shim` mirrors the
-launcher tree to a long-lived path **and provisions a self-contained Python
-venv there** before patching `~/.zshrc`. Both the `SERENA_AGENT_LAUNCHER` and
-`SERENA_AGENT_PYTHON` lines in `~/.zshrc` point inside `$STABLE_DIR` — never at
-this checkout (neither its code nor its `.venv`). Moving or deleting this repo
-therefore does **not** break the installed `claude` / `codex` shim functions.
+launcher tree to a long-lived path before patching `~/.zshrc`. The
+`SERENA_AGENT_LAUNCHER` line in `~/.zshrc` points inside `$STABLE_DIR` — never
+at this checkout — so moving or deleting this repo does **not** break the
+installed `claude` / `codex` shim functions. `SERENA_AGENT_PYTHON` points at a
+durable system-managed interpreter (Homebrew/python.org, first choice
+`/opt/homebrew/bin/python3.12`), **not** a generated venv: uv-managed
+standalone pythons get garbage-collected and would leave `SERENA_AGENT_PYTHON`
+dangling (the v0.1.x uv-3.13 breakage). The launcher is stdlib-only, so any
+3.12+ works.
 
 | | Path | Purpose |
 |---|---|---|
 | Dev source | `local_dev/serena_mcp_management/` (this dir) | Edit, test, iterate. |
 | Runtime mirror | `~/Desktop/dotsync_config/agent_launcher/local_dev/serena_mcp_management/` | What `~/.zshrc` actually executes. |
-| Runtime interpreter | `~/Desktop/dotsync_config/agent_launcher/.venv/` | The stdlib-only Python that runs the launcher (`SERENA_AGENT_PYTHON`). |
+| Runtime interpreter | `/opt/homebrew/bin/python3.12` (auto-detected) | The stdlib-only Python that runs the launcher (`SERENA_AGENT_PYTHON`). |
 
 The mirror copies the source tree exactly (same `local_dev/serena_mcp_management/`
 layout) because `serena_agent_launcher.py` resolves its package root via
@@ -105,13 +109,14 @@ dotsync from   # ~/.zshrc 변경을 dotsync sync 폴더본에도 반영 (안 하
 exec zsh   # reload claude/codex shell functions
 ```
 
-`install-shim` is the only command. It rsyncs the dev tree to `$STABLE_DIR`,
-creates the runtime venv at `$STABLE_DIR/.venv` if missing with `uv venv
---managed-python` (a uv-managed standalone interpreter, independent of brew or
-system Python; version pinned by `PYTHON_VERSION`, default `3.13`), and
-rewrites the managed block in `~/.zshrc` — pointing `SERENA_AGENT_PYTHON` at
-that venv — in one step. The launcher is stdlib-only, so the venv needs no
-packages and any Python 3.12+ base works.
+`install-shim` is the only command. It rsyncs the dev tree to `$STABLE_DIR` and
+rewrites the managed block in `~/.zshrc` in one step, pointing
+`SERENA_AGENT_PYTHON` at a durable system-managed interpreter chosen by
+`serena_zsh_shim.py`'s `default_python_executable()` (Homebrew/python.org,
+first choice `/opt/homebrew/bin/python3.12`). No venv is created — uv-managed
+standalone pythons get pruned and would leave the path dangling. The launcher
+is stdlib-only, so any Python 3.12+ works. Override the recorded interpreter
+with `PYTHON_EXECUTABLE=/path/to/python3.12` if you need a specific one.
 
 If you ever need to remove the managed block (e.g. retiring this tool), the
 prior `~/.zshrc` is auto-backed up to `~/.zshrc.dotsync-serena.bak` on every

@@ -381,6 +381,22 @@ def test_default_python_executable_prefers_python_312_when_current_is_too_old(mo
     assert default_python_executable() == python312
 
 
+def test_default_python_executable_prefers_stable_candidate_over_ephemeral_venv(monkeypatch, tmp_path):
+    # `make install-shim` may run this generator under an ephemeral uv/venv
+    # python (3.12+) that uv can later garbage-collect, which leaves
+    # SERENA_AGENT_PYTHON dangling (the v0.1.x uv-3.13 breakage). A durable
+    # homebrew/framework candidate must win over the running interpreter even
+    # when that interpreter is new enough to run the launcher itself.
+    stable = tmp_path / "python3.12"
+    stable.write_text("")
+    ephemeral_venv = tmp_path / ".venv" / "bin" / "python3"
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_zsh_shim.sys.version_info", (3, 13, 1))
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_zsh_shim.sys.executable", str(ephemeral_venv))
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_zsh_shim.PYTHON_CANDIDATES", (stable,))
+
+    assert default_python_executable() == stable
+
+
 def test_zsh_shim_cli_install_honors_explicit_python_executable(monkeypatch, tmp_path):
     # Auto-detection would record the interpreter currently running the
     # generator; an explicit --python-executable must override it so the shim
