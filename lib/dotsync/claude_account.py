@@ -19,9 +19,11 @@ from __future__ import annotations
 import getpass
 import json
 import re
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from dotsync import keychain
 
@@ -146,6 +148,94 @@ def _visible(store: dict[str, Any]) -> dict[str, Any]:
 
 
 # --- operations --------------------------------------------------------------
+
+def _derive_account_name(email: Any, taken: set[str]) -> str:
+    """Make a valid, unique account name from an email (its local-part).
+
+    dev@numchida.com -> 'dev'. On collision, try the full-email slug, then a
+    numeric suffix. Falls back to 'account' when there's no usable email.
+    """
+    local = (email or "").split("@")[0] if isinstance(email, str) else ""
+    base = re.sub(r"[^A-Za-z0-9._-]", "-", local).strip("-_.").lower()
+    if not _NAME_RE.match(base) or base.startswith("__"):
+        base = "account"
+    if base not in taken:
+        return base
+    slug = re.sub(r"[^A-Za-z0-9._-]", "-", email if isinstance(email, str) else "")
+    slug = slug.strip("-_.").lower()
+    if _NAME_RE.match(slug) and not slug.startswith("__") and slug not in taken:
+        return slug
+    n = 2
+    while f"{base}-{n}" in taken:
+        n += 1
+    return f"{base}-{n}"
+
+
+def _run_claude_login_default() -> int:
+    """Shell out to the real `claude auth login` (interactive browser flow).
+
+    `shutil.which` finds the on-PATH binary (the interactive shell's `claude`
+    launcher function is not visible to a subprocess), so this never recurses
+    back into the launcher. stdio is inherited so the user completes the login.
+    """
+    exe = shutil.which("claude")
+    if not exe:
+        raise AccountError("`claude` CLI not found on PATH")
+    return subprocess.run([exe, "auth", "login"]).returncode
+
+
+def login(
+    name: str | None = None, *, login_fn: Callable[[], int] | None = None
+) -> str:
+    """Run `claude auth login`, then save the resulting account. Returns its name.
+
+    `name` is optional: when omitted, it's derived from the account's email after
+    login (dev@x.com -> 'dev'). Does NOT call `claude auth logout` first — a
+    logout can revoke the previous account's tokens server-side, which would kill
+    an already-saved account. The user picks the target account in the browser. A
+    dupe-guard refuses to save the same account under a second name (e.g. when the
+    browser re-authed the account you were already on).
+    """
+    store = _load_store()
+    if name is not None:
+        _validate_name(name)
+        if name in _visible(store):
+            raise AccountError(f"account `{name}` already exists (remove it first)")
+    before_account, _before_uid = _read_live_identity()
+    before_uuid = (before_account or {}).get("accountUuid")
+    runner = login_fn or _run_claude_login_default
+    if runner() != 0:
+        raise AccountError("`claude auth login` did not complete — nothing saved")
+    creds = _read_live_credentials()
+    if not creds:
+        raise AccountError("login finished but no live Claude credential was found")
+    oauth_account, user_id = _read_live_identity()
+    new_uuid = (oauth_account or {}).get("accountUuid")
+    if before_uuid and new_uuid == before_uuid:
+        raise AccountError(
+            "still logged in as the same account — the browser re-authed the "
+            "account you were already on. Pick the other account in the browser "
+            "(sign out of it / use an incognito window), then retry"
+        )
+    existing = _match_visible_name(store, oauth_account)
+    if existing:
+        raise AccountError(
+            f"you logged in as the account already saved as `{existing}` — "
+            "to register a different account, pick the other account in the browser "
+            "(sign out of it / use an incognito window), then retry"
+        )
+    if name is None:
+        email = (oauth_account or {}).get("emailAddress")
+        name = _derive_account_name(email, set(_visible(store)))
+    store["accounts"][name] = {
+        "credentials": creds,
+        "oauthAccount": oauth_account,
+        "userID": user_id,
+    }
+    store["active"] = name
+    _save_store(store)
+    return name
+
 
 def add(name: str) -> None:
     """Snapshot the currently logged-in account under `name` and make it active."""

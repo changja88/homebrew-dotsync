@@ -91,3 +91,11 @@ def test_add_without_login_returns_nonzero(fake_home, fake_keychain, capsys):
     # no live credential seeded
     rc = main(["claude", "account", "add", "work"])
     assert rc != 0
+
+
+def test_login_dispatches_to_account_login(fake_home, fake_keychain, monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr("dotsync.claude_account.login", lambda name: calls.append(name))
+    rc = main(["claude", "account", "login", "gmail2"])
+    assert rc == 0
+    assert calls == ["gmail2"]

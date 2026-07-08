@@ -101,6 +101,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_add = acct_sub.add_parser("add", help="save the current login under a name")
     p_add.add_argument("name")
+    p_login = acct_sub.add_parser(
+        "login", help="run `claude auth login`, then save that account (name optional)"
+    )
+    p_login.add_argument(
+        "name", nargs="?", help="name to save it under; omit to derive from the email"
+    )
     p_rm = acct_sub.add_parser("remove", help="forget a saved account")
     p_rm.add_argument("name")
     p_use = acct_sub.add_parser("use", help="switch to a saved account (or pick one)")
@@ -775,6 +781,11 @@ def cmd_claude_account(args) -> int:
         if sub == "add":
             ca.add(args.name)
             ui.done(f"saved `{args.name}` and set it active")
+            return 0
+        if sub == "login":
+            saved = ca.login(args.name)
+            ui.done(f"logged in and saved `{saved}` as the active account")
+            ui.dim("start a new Claude session to pick it up")
             return 0
         if sub == "remove":
             ca.remove(args.name)

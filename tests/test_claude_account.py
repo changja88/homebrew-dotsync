@@ -168,3 +168,87 @@ def test_current_unmatched_when_live_identity_unknown(fake_home, fake_keychain):
     cur = ca.current()
     assert cur.name is None
     assert cur.matched is False
+
+
+def test_login_runs_claude_login_then_saves_new_account(fake_home, fake_keychain):
+    _seed_live(fake_home, fake_keychain, blob=_blob2("G1", "D1"), uid="G1")
+    ca.add("gmail1")  # already on gmail1
+
+    def fake_login():  # simulates the browser flow landing on gmail2
+        _seed_live(fake_home, fake_keychain, blob=_blob2("G2", "D2"), uid="G2")
+        return 0
+
+    ca.login("gmail2", login_fn=fake_login)
+
+    infos = {i.name: i for i in ca.list_accounts()}
+    assert set(infos) == {"gmail1", "gmail2"}
+    assert infos["gmail2"].active is True
+
+
+def test_login_dupe_guard_refuses_same_account_under_new_name(fake_home, fake_keychain):
+    _seed_live(fake_home, fake_keychain, uid="G1")
+    ca.add("gmail1")
+
+    def fake_login():  # browser re-authed the SAME account
+        _seed_live(fake_home, fake_keychain, uid="G1")
+        return 0
+
+    with pytest.raises(ca.AccountError):
+        ca.login("gmail2", login_fn=fake_login)
+    # no duplicate created
+    assert [i.name for i in ca.list_accounts()] == ["gmail1"]
+
+
+def test_login_aborts_when_claude_login_fails(fake_home, fake_keychain):
+    with pytest.raises(ca.AccountError):
+        ca.login("gmail2", login_fn=lambda: 1)
+    assert ca.list_accounts() == []
+
+
+def test_login_without_name_derives_from_email(fake_home, fake_keychain):
+    _seed_live(fake_home, fake_keychain, uid="G1", email="dev@numchida.com")
+    ca.add("gmail1")
+
+    def fake_login():
+        _seed_live(fake_home, fake_keychain, uid="G2", email="work@numchida.com")
+        return 0
+
+    saved = ca.login(None, login_fn=fake_login)
+
+    assert saved == "work"  # derived from work@numchida.com local-part
+    assert "work" in {i.name for i in ca.list_accounts()}
+
+
+def test_login_derived_name_avoids_collision(fake_home, fake_keychain):
+    # an account already named 'work' exists; a different login with a 'work@'
+    # email must not clobber it — it gets a distinct derived name.
+    _seed_live(fake_home, fake_keychain, uid="G1", email="work@a.com")
+    ca.add("work")
+
+    def fake_login():
+        _seed_live(fake_home, fake_keychain, uid="G2", email="work@b.com")
+        return 0
+
+    saved = ca.login(None, login_fn=fake_login)
+    assert saved != "work"
+    assert {"work", saved} <= {i.name for i in ca.list_accounts()}
+
+
+def test_login_refuses_when_still_same_account(fake_home, fake_keychain):
+    # currently on gmail1 (not even saved); the browser re-auths the SAME account
+    _seed_live(fake_home, fake_keychain, uid="G1")
+
+    def fake_login():
+        _seed_live(fake_home, fake_keychain, uid="G1")  # unchanged
+        return 0
+
+    with pytest.raises(ca.AccountError):
+        ca.login("gmail2", login_fn=fake_login)
+    assert ca.list_accounts() == []
+
+
+def test_login_rejects_duplicate_name(fake_home, fake_keychain):
+    _seed_live(fake_home, fake_keychain, uid="G1")
+    ca.add("gmail1")
+    with pytest.raises(ca.AccountError):
+        ca.login("gmail1", login_fn=lambda: 0)

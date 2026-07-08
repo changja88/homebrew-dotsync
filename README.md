@@ -233,8 +233,10 @@ Use several Claude logins with one shared local config — only the auth credent
 # save the account you're logged in as right now, under a name
 dotsync claude account add work
 
-# ...later, after `claude auth login` to your other account:
-dotsync claude account add personal
+# ...to add another account: either log into it first then `add`, or let
+# dotsync run the browser login for you and save the result:
+dotsync claude account login            # opens the browser login, then saves (name optional)
+dotsync claude account login personal   # ...or pass an explicit name
 
 dotsync claude account list          # ● marks the active one, with plan
 dotsync claude account current       # which account is live right now
@@ -246,6 +248,7 @@ dotsync claude account remove work   # forget a saved account
 
 - Switching swaps the Keychain OAuth token **and** the on-disk identity in `~/.claude.json` (`oauthAccount`/`userID`) together — the design-tool auth (`designOauth`) is left untouched.
 - The credential being replaced is auto-snapshotted first, so a switch is always undoable (`undo`) even if the current login was never saved.
+- `add` saves your current login; `login` runs `claude auth login` for you then saves the result (its name is optional — omitted, it's derived from the account's email). `login` never logs you out (a logout can revoke a saved account's tokens) and refuses to duplicate the account you're already on.
 - **Start a new Claude Code session** to pick up the switched account.
 - These accounts live in the Keychain, not the sync folder — `dotsync backup`/`apply` never touch them, and a new machine starts with zero saved accounts.
 
@@ -508,8 +511,10 @@ $ dotsync status
 # 지금 로그인돼 있는 계정을 이름 붙여 저장
 dotsync claude account add work
 
-# ...나중에 `claude auth login` 으로 다른 계정에 로그인한 뒤:
-dotsync claude account add personal
+# ...다른 계정 추가: 먼저 로그인 후 `add`, 또는 dotsync가 브라우저 로그인을
+# 대신 실행하고 그 결과를 저장:
+dotsync claude account login            # 브라우저 로그인 실행 후 저장 (이름 생략 시 이메일에서 자동)
+dotsync claude account login personal   # ...또는 이름을 직접 지정
 
 dotsync claude account list          # ● 가 활성 계정, 옆에 요금제
 dotsync claude account current       # 지금 live 계정
@@ -521,6 +526,7 @@ dotsync claude account remove work   # 저장된 계정 삭제
 
 - 전환은 Keychain OAuth 토큰**과** `~/.claude.json` 의 온디스크 정체성(`oauthAccount`/`userID`)을 함께 교체한다 — 디자인 툴 인증(`designOauth`)은 건드리지 않는다.
 - 교체되는 자격증명은 먼저 자동 스냅샷되므로, 현재 로그인을 저장하지 않았어도 전환은 항상 되돌릴 수 있다(`undo`).
+- `add`는 현재 로그인을 저장하고, `login`은 `claude auth login`을 대신 실행한 뒤 그 결과를 저장한다(이름은 생략 가능 — 생략하면 계정 이메일에서 자동 유도). `login`은 로그아웃을 하지 않으며(로그아웃은 저장된 계정의 토큰을 revoke할 수 있음), 이미 로그인돼 있는 계정을 중복 저장하지 않는다.
 - 전환을 반영하려면 **Claude Code 세션을 새로 시작**한다.
 - 이 계정들은 sync 폴더가 아니라 Keychain 에 있다 — `dotsync backup`/`apply` 는 이들을 건드리지 않고, 새 머신은 저장된 계정 0개로 시작한다.
 
