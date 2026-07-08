@@ -20,6 +20,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from local_dev.serena_mcp_management.external_cli import (
+    dotsync_command,
     graphify_command,
     graphify_install_command,
     homebrew_node_command,
@@ -404,6 +405,9 @@ def _main_v2(args: list[str]) -> int:
     if interactive:
         _render_preflight_overview_v2()
         _run_serena_cli_install_v2()
+        _run_account_select_v2(
+            infer_client_type(os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0]))
+        )
 
     serena_state = _run_serena_init_v2() if interactive else "managed"
 
@@ -1069,6 +1073,65 @@ def _run_node_runtime_check_v2(
         )
         out.write(render_inline_row("node runtime", message, status="warn"))
     out.flush()
+
+
+def _dotsync_account_list_default(argv: list[str]) -> tuple[int, str]:
+    result = subprocess.run(
+        argv + ["claude", "account", "list", "--porcelain"],
+        capture_output=True,
+        text=True,
+        timeout=3,
+    )
+    return result.returncode, result.stdout
+
+
+def _dotsync_account_select_default(argv: list[str]) -> None:
+    # Interactive: dotsync draws its own picker; inherit the tty. Best-effort.
+    subprocess.run(argv + ["claude", "account", "use"])
+
+
+def _run_account_select_v2(
+    client: str,
+    *,
+    stream: TextIO | None = None,
+    resolve_fn: Callable[[], list[str] | None] | None = None,
+    list_fn: Callable[[list[str]], tuple[int, str]] | None = None,
+    select_fn: Callable[[list[str]], None] | None = None,
+) -> None:
+    """Offer to switch Claude account when more than one is saved.
+
+    Fully best-effort — the primary `claude` launch must never be blocked or
+    slowed by this. Runs only for the claude client and only when the `dotsync`
+    CLI is installed; a missing / old / slow / failing dotsync is swallowed
+    (the probe is timeout-bounded). The picker is owned by dotsync itself
+    (`dotsync claude account use`), so no Claude auth logic lives here.
+    """
+    if client != "claude":
+        return
+    resolve = resolve_fn or dotsync_command
+    dotsync = resolve()
+    if not dotsync:
+        return
+    lister = list_fn or _dotsync_account_list_default
+    try:
+        rc, stdout = lister(dotsync)
+    except Exception:
+        return  # timeout / spawn failure — skip, never block the launch
+    if rc != 0:
+        return  # old dotsync without the subcommand, keychain error, etc.
+    names = [line.split("\t", 1)[0] for line in stdout.splitlines() if line.strip()]
+    out = stream if stream is not None else sys.stdout
+    if not names:
+        return
+    if len(names) == 1:
+        out.write(render_inline_row("claude account", names[0], status="info"))
+        out.flush()
+        return
+    selector = select_fn or _dotsync_account_select_default
+    try:
+        selector(dotsync)
+    except Exception:
+        return
 
 
 def _run_preflight_v2(
