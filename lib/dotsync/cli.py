@@ -88,6 +88,27 @@ def _build_parser() -> argparse.ArgumentParser:
     apply = sub.add_parser("apply", help="folder → local")
     _add_sync_args(apply)
 
+    # `dotsync claude account ...` — Claude login switching. Standalone (not a
+    # sync app): it swaps Keychain credentials + on-disk identity, needs no
+    # dotsync.toml, and is wired directly rather than through the app registry.
+    claude_p = sub.add_parser("claude", help="Claude Code account (auth) switching")
+    claude_sub = claude_p.add_subparsers(dest="claude_cmd", required=True)
+    acct = claude_sub.add_parser("account", help="switch between saved Claude logins")
+    acct_sub = acct.add_subparsers(dest="account_cmd", required=True)
+    p_ls = acct_sub.add_parser("list", help="list saved accounts")
+    p_ls.add_argument(
+        "--porcelain", action="store_true", help="machine-readable tab-separated output"
+    )
+    p_add = acct_sub.add_parser("add", help="save the current login under a name")
+    p_add.add_argument("name")
+    p_rm = acct_sub.add_parser("remove", help="forget a saved account")
+    p_rm.add_argument("name")
+    p_use = acct_sub.add_parser("use", help="switch to a saved account (or pick one)")
+    p_use.add_argument("name", nargs="?", help="account name; omit to pick interactively")
+    p_use.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    acct_sub.add_parser("current", help="show the active account")
+    acct_sub.add_parser("undo", help="revert the last switch")
+
     return p
 
 
@@ -663,6 +684,117 @@ def cmd_to(args) -> int:
     return 0 if not failed else 6
 
 
+def _account_confirm(question: str) -> bool:
+    return ui.ask(question, default="y/N", accent="warn").lower() in ("y", "yes")
+
+
+def _account_list(ca, *, porcelain: bool) -> int:
+    infos = ca.list_accounts()
+    if porcelain:
+        for i in infos:
+            print(f"{i.name}\t{'active' if i.active else ''}\t{i.subscription or ''}")
+        return 0
+    if not infos:
+        ui.dim(
+            "no saved accounts — run `dotsync claude account add <name>` "
+            "to save the current login"
+        )
+        return 0
+    ui.section("claude accounts")
+    for i in infos:
+        marker = ui._wrap(ui.GREEN, "●") if i.active else "○"
+        sub = f"  ({i.subscription})" if i.subscription else ""
+        print(f"  {marker} {i.name}{sub}")
+    return 0
+
+
+def _account_current(ca) -> int:
+    cur = ca.current()
+    if cur.name:
+        extra = f"  ({cur.subscription})" if cur.subscription else ""
+        ui.done(f"current: {cur.name}{extra}")
+    elif cur.account_uuid:
+        ui.warn(
+            f"current login ({cur.email or 'unknown email'}) is not saved — "
+            "`dotsync claude account add <name>` to save it"
+        )
+    else:
+        ui.dim("no active Claude login detected")
+    return 0
+
+
+def _account_use(ca, args) -> int:
+    if args.name:
+        if not args.yes:
+            frm = ca.current().name or "unknown"
+            if not _account_confirm(f"Switch Claude account: {frm} → {args.name}?"):
+                ui.dim("aborted")
+                return 0
+        ca.use(args.name)
+        ui.done(f"switched to `{args.name}`")
+        ui.dim("start a new Claude session to pick it up")
+        return 0
+
+    infos = ca.list_accounts()
+    if not infos:
+        ui.dim("no saved accounts — run `dotsync claude account add <name>`")
+        return 0
+    if len(infos) == 1:
+        ui.dim(f"only one saved account: {infos[0].name} (nothing to switch)")
+        return 0
+
+    from .ui_picker import pick_one
+
+    cur = ca.current()
+    labels = {
+        i.name: i.name + (f"  ({i.subscription})" if i.subscription else "")
+        for i in infos
+    }
+    chosen = pick_one(
+        [i.name for i in infos],
+        current=cur.name,
+        title="Switch Claude account",
+        labels=labels,
+    )
+    if chosen is None or chosen == cur.name:
+        ui.dim("kept current account")
+        return 0
+    ca.use(chosen)
+    ui.done(f"switched to `{chosen}`")
+    ui.dim("start a new Claude session to pick it up")
+    return 0
+
+
+def cmd_claude_account(args) -> int:
+    from dotsync import claude_account as ca
+
+    sub = args.account_cmd
+    try:
+        if sub == "list":
+            return _account_list(ca, porcelain=args.porcelain)
+        if sub == "add":
+            ca.add(args.name)
+            ui.done(f"saved `{args.name}` and set it active")
+            return 0
+        if sub == "remove":
+            ca.remove(args.name)
+            ui.done(f"removed `{args.name}`")
+            return 0
+        if sub == "current":
+            return _account_current(ca)
+        if sub == "undo":
+            ca.undo()
+            ui.done("reverted to the previous account")
+            ui.dim("start a new Claude session to pick it up")
+            return 0
+        if sub == "use":
+            return _account_use(ca, args)
+    except ca.AccountError as e:
+        ui.error(str(e))
+        return 2
+    return 2
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     argv = _normalize_legacy_command(argv)
@@ -685,6 +817,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return cmd_from(args)
         if args.cmd == "apply":
             return cmd_to(args)
+        if args.cmd == "claude":
+            return cmd_claude_account(args)
         parser.print_help()
         return 2
     except ConfigError as e:

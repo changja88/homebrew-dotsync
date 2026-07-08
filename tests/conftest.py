@@ -23,6 +23,40 @@ def fake_home(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture
+def fake_keychain(monkeypatch):
+    """In-memory stand-in for the macOS `security` CLI.
+
+    Replaces dotsync.keychain.{read,write,delete}_secret with an in-memory
+    (service, account) -> secret map so account tests never touch the real
+    Keychain. `.set(service, account, secret)` seeds an entry.
+    """
+    from dotsync import keychain
+
+    store: dict = {}
+
+    def read(service, account):
+        return store.get((service, account))
+
+    def write(service, account, secret):
+        store[(service, account)] = secret
+
+    def delete(service, account):
+        return store.pop((service, account), None) is not None
+
+    monkeypatch.setattr(keychain, "read_secret", read)
+    monkeypatch.setattr(keychain, "write_secret", write)
+    monkeypatch.setattr(keychain, "delete_secret", delete)
+
+    class Handle:
+        raw = store
+
+        def set(self, service, account, secret):
+            store[(service, account)] = secret
+
+    return Handle()
+
+
 @pytest.fixture(autouse=True)
 def subprocess_blocked(monkeypatch, request):
     """Default: subprocess.run raises so tests can't accidentally execute real

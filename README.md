@@ -225,6 +225,30 @@ Legend:
 - `✗ missing` — at least one side is absent
 - `· unknown` — couldn't determine (e.g., BTT not running)
 
+#### 5. Switch Claude accounts (auth-token switching)
+
+Use several Claude logins with one shared local config — only the auth credential is swapped. Accounts are stored **only in the macOS Keychain** (no plaintext on disk), so they do **not** travel with the sync folder — each machine keeps its own. Independent of `init`/`backup`/`apply`; works without a sync folder.
+
+```bash
+# save the account you're logged in as right now, under a name
+dotsync claude account add work
+
+# ...later, after `claude auth login` to your other account:
+dotsync claude account add personal
+
+dotsync claude account list          # ● marks the active one, with plan
+dotsync claude account current       # which account is live right now
+dotsync claude account use work      # switch (asks to confirm; --yes to skip)
+dotsync claude account use           # no name → interactive picker (current pre-selected)
+dotsync claude account undo          # revert the last switch
+dotsync claude account remove work   # forget a saved account
+```
+
+- Switching swaps the Keychain OAuth token **and** the on-disk identity in `~/.claude.json` (`oauthAccount`/`userID`) together — the design-tool auth (`designOauth`) is left untouched.
+- The credential being replaced is auto-snapshotted first, so a switch is always undoable (`undo`) even if the current login was never saved.
+- **Start a new Claude Code session** to pick up the switched account.
+- These accounts live in the Keychain, not the sync folder — `dotsync backup`/`apply` never touch them, and a new machine starts with zero saved accounts.
+
 #### Change the folder or app list later
 
 `dotsync apps` opens the same picker as init's Step 2. Toggling BTT on re-runs preset discovery and writes the result back to config — no separate command needed.
@@ -475,6 +499,30 @@ $ dotsync status
 - `⚠ dirty` — 다름; direction 은 `local-newer`, `folder-newer`, `diverged` (양쪽 섞임) 중 하나
 - `✗ missing` — 한쪽이라도 파일이 없음
 - `· unknown` — 비교 불가 (예: BTT 미실행)
+
+#### 5. Claude 계정 전환 (인증 토큰 교체)
+
+로컬 설정 하나를 공유하면서 여러 Claude 로그인을 오간다 — 인증 자격증명만 교체된다. 계정은 **macOS Keychain에만** 저장되며(평문 디스크 저장 없음), 그래서 sync 폴더를 따라 이동하지 않는다 — 머신마다 따로 관리한다. `init`/`backup`/`apply`와 무관하고 sync 폴더 없이도 동작한다.
+
+```bash
+# 지금 로그인돼 있는 계정을 이름 붙여 저장
+dotsync claude account add work
+
+# ...나중에 `claude auth login` 으로 다른 계정에 로그인한 뒤:
+dotsync claude account add personal
+
+dotsync claude account list          # ● 가 활성 계정, 옆에 요금제
+dotsync claude account current       # 지금 live 계정
+dotsync claude account use work      # 전환 (확인 프롬프트; --yes 로 생략)
+dotsync claude account use           # 이름 생략 → 대화형 picker (현재 계정 기본 선택)
+dotsync claude account undo          # 직전 전환 되돌리기
+dotsync claude account remove work   # 저장된 계정 삭제
+```
+
+- 전환은 Keychain OAuth 토큰**과** `~/.claude.json` 의 온디스크 정체성(`oauthAccount`/`userID`)을 함께 교체한다 — 디자인 툴 인증(`designOauth`)은 건드리지 않는다.
+- 교체되는 자격증명은 먼저 자동 스냅샷되므로, 현재 로그인을 저장하지 않았어도 전환은 항상 되돌릴 수 있다(`undo`).
+- 전환을 반영하려면 **Claude Code 세션을 새로 시작**한다.
+- 이 계정들은 sync 폴더가 아니라 Keychain 에 있다 — `dotsync backup`/`apply` 는 이들을 건드리지 않고, 새 머신은 저장된 계정 0개로 시작한다.
 
 #### 폴더/앱 목록을 나중에 바꾸고 싶으면
 

@@ -92,6 +92,40 @@ class PickerState:
         return [a for a in self.items if a in self.selected]
 
 
+class SingleChoiceState:
+    """Pure logic for a radio (choose-exactly-one) picker.
+
+    Unlike PickerState there is no toggle set: the cursor *is* the selection.
+    Events: 'up', 'down', 'enter', 'cancel'. 'space' and unknown keys are no-ops.
+    """
+
+    def __init__(self, items: list[str], current: "str | None" = None) -> None:
+        self.items = list(items)
+        self.cursor = self.items.index(current) if current in self.items else 0
+        self.done = False
+        self.cancelled = False
+
+    def handle(self, key: str) -> None:
+        n = len(self.items)
+        if not n:
+            return
+        if key == "up":
+            self.cursor = (self.cursor - 1) % n
+        elif key == "down":
+            self.cursor = (self.cursor + 1) % n
+        elif key == "enter":
+            self.done = True
+        elif key == "cancel":
+            self.cancelled = True
+        # 'space' and unknown keys: silent no-op (radio has nothing to toggle)
+
+    @property
+    def result(self) -> "str | None":
+        if self.cancelled or not self.items:
+            return None
+        return self.items[self.cursor]
+
+
 def _read_key() -> "str | None":
     """Read a single keystroke event. Caller must already have set the
     terminal to cbreak/raw mode. Returns one of:
@@ -231,6 +265,78 @@ def _restore_terminal(token) -> None:
     termios.tcsetattr(fd, termios.TCSADRAIN, old)
     sys.stdout.write(_CURSOR_SHOW)
     sys.stdout.flush()
+
+
+def _drain_input() -> None:
+    """Flush any pre-typed bytes so muscle-memory keystrokes typed before the
+    picker appeared can't move the cursor or submit a selection."""
+    try:
+        termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    except (termios.error, ValueError, OSError):
+        pass
+
+
+def _render_one(
+    state: SingleChoiceState,
+    title: str,
+    labels: "dict[str, str] | None",
+    *,
+    first: bool,
+) -> None:
+    out = sys.stdout
+    n = len(state.items)
+    if not first:
+        out.write(f"\x1b[{n + 2}A")
+        out.write("\x1b[J")
+    title_part = ui._wrap(ui.BOLD, title)
+    hint = ui._wrap(ui.DIM_ANSI, "↑/↓ move · enter switch · esc keep current")
+    out.write(f"  {title_part}   {hint}\n\n")
+    for i, name in enumerate(state.items):
+        cursor_marker = (
+            ui._wrap(ui.PRIMARY, _GLYPH_CURSOR) if i == state.cursor else " "
+        )
+        dot = ui._wrap(ui.GREEN, "●") if i == state.cursor else "○"
+        label = (labels or {}).get(name, name)
+        out.write(f"  {cursor_marker} {dot} {label}\n")
+    out.flush()
+
+
+def pick_one(
+    items: list[str],
+    *,
+    current: "str | None" = None,
+    title: str = "Select an account",
+    labels: "dict[str, str] | None" = None,
+) -> "str | None":
+    """Interactive radio picker. Returns the chosen item, or None.
+
+    Returns None on cancel (esc / q / ctrl+c) AND in any non-TTY environment
+    (CI, pipe, pytest) — the caller must treat None as "no change", so an
+    account is never switched unattended.
+    """
+    if not items:
+        return None
+    if not _interactive_supported():
+        return None
+
+    state = SingleChoiceState(items, current=current)
+    token = _enter_raw_mode()
+    try:
+        _drain_input()
+        _render_one(state, title, labels, first=True)
+        while not state.done and not state.cancelled:
+            try:
+                key = _read_key()
+            except KeyboardInterrupt:
+                state.cancelled = True
+                break
+            if key is not None:
+                state.handle(key)
+            _render_one(state, title, labels, first=False)
+    finally:
+        _restore_terminal(token)
+    print()
+    return state.result
 
 
 def pick_apps(
