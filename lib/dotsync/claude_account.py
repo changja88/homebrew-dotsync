@@ -11,6 +11,11 @@ swapping only the token leaves a split-brain (disk says A, token says B).
 `designOauth` is left untouched — it carries its own `clientId` and is not part
 of the Claude account identity.
 
+Because Claude rotates the refresh token on every access-token renewal (revoking
+the previous one), switching AWAY from an account (`use`/`login`) first writes its
+CURRENT live token back into its saved slot — otherwise switching back later would
+reinstall a revoked credential and Claude reports "Not logged in".
+
 Every saved account lives in ONE consolidated Keychain item (atomic
 read-modify-write) — never a plaintext file. Nothing here writes tokens to disk.
 """
@@ -203,6 +208,19 @@ def login(
             raise AccountError(f"account `{name}` already exists (remove it first)")
     before_account, _before_uid = _read_live_identity()
     before_uuid = (before_account or {}).get("accountUuid")
+    # Write-back: the login below overwrites the live token with the new account.
+    # If the outgoing account is one we've saved, its live token may have rotated
+    # since we snapshotted it (a token renewal revokes the old refresh token), so
+    # persist the current live token back into its slot first — otherwise it's
+    # left holding a revoked credential. Saved now so it survives even if the
+    # interactive login is cancelled.
+    before_creds = _read_live_credentials()
+    if before_creds:
+        before_snap = _snapshot_live(before_creds)
+        outgoing = _match_visible_name(store, before_snap["oauthAccount"])
+        if outgoing:
+            store["accounts"][outgoing] = before_snap
+            _save_store(store)
     runner = login_fn or _run_claude_login_default
     if runner() != 0:
         raise AccountError("`claude auth login` did not complete — nothing saved")
@@ -355,7 +373,16 @@ def use(name: str) -> None:
         raise AccountError(f"no saved account `{name}` (saved: {have})")
     live_creds = _read_live_credentials()
     if live_creds:
-        store["accounts"][PREVIOUS_NAME] = _snapshot_live(live_creds)
+        snap = _snapshot_live(live_creds)
+        # Write-back: Claude rotates the refresh token whenever it renews the
+        # access token, revoking the one we saved. So the live credential for
+        # the OUTGOING account is likely fresher than its saved snapshot. Persist
+        # it back into that account's own slot before switching, or a later
+        # switch back reinstalls a revoked token -> "Not logged in".
+        outgoing = _match_visible_name(store, snap["oauthAccount"])
+        if outgoing:
+            store["accounts"][outgoing] = snap
+        store["accounts"][PREVIOUS_NAME] = snap
     _install(visible[name], live_creds)
     store["active"] = name
     _save_store(store)

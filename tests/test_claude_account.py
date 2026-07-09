@@ -130,6 +130,30 @@ def test_use_restores_token_and_identity_preserving_designoauth(fake_home, fake_
     assert next(i for i in ca.list_accounts() if i.name == "work").active
 
 
+def test_use_writes_back_outgoing_rotated_live_token(fake_home, fake_keychain):
+    """Switching away must re-snapshot the outgoing account's CURRENT live token
+    into its own slot. Claude rotates the refresh token whenever it renews the
+    access token, invalidating the one we saved; without a write-back, switching
+    back later reinstalls a revoked refresh token -> 'Not logged in'.
+    """
+    _two_accounts(fake_home, fake_keychain)  # live = personal (uid PPP)
+    ca.use("work")  # live -> work (accessToken WORK), identity uid WWW
+
+    # Claude renews the live token in the background: access + refresh both rotate.
+    live = json.loads(keychain.read_secret(ca.LIVE_SERVICE, LOGIN))
+    live["claudeAiOauth"]["accessToken"] = "WORK-NEW"
+    live["claudeAiOauth"]["refreshToken"] = "WORK-NEW-r"
+    fake_keychain.set(ca.LIVE_SERVICE, LOGIN, json.dumps(live))
+
+    ca.use("personal")  # switch away from work
+
+    # work's saved slot must now hold the ROTATED token, not the stale one.
+    store = json.loads(keychain.read_secret(ca.STORE_SERVICE, ca.STORE_ACCOUNT))
+    saved = json.loads(store["accounts"]["work"]["credentials"])
+    assert saved["claudeAiOauth"]["accessToken"] == "WORK-NEW"
+    assert saved["claudeAiOauth"]["refreshToken"] == "WORK-NEW-r"
+
+
 def test_use_unknown_account_raises(fake_home, fake_keychain):
     _seed_live(fake_home, fake_keychain)
     ca.add("work")
@@ -183,6 +207,33 @@ def test_login_runs_claude_login_then_saves_new_account(fake_home, fake_keychain
     infos = {i.name: i for i in ca.list_accounts()}
     assert set(infos) == {"gmail1", "gmail2"}
     assert infos["gmail2"].active is True
+
+
+def test_login_writes_back_outgoing_rotated_token(fake_home, fake_keychain):
+    """`login` overwrites the live token with the newly-authed account. The
+    OUTGOING account's live token may have rotated since it was saved, so snapshot
+    it back into its own slot first — otherwise it keeps a revoked token and
+    breaks the next time you switch to it.
+    """
+    _seed_live(fake_home, fake_keychain, blob=_blob2("G1", "D1"), uid="G1")
+    ca.add("gmail1")  # store[gmail1] = G1 (initial)
+
+    # Claude rotates gmail1's live token in the background before the new login.
+    live = json.loads(keychain.read_secret(ca.LIVE_SERVICE, LOGIN))
+    live["claudeAiOauth"]["accessToken"] = "G1-NEW"
+    live["claudeAiOauth"]["refreshToken"] = "G1-NEW-r"
+    fake_keychain.set(ca.LIVE_SERVICE, LOGIN, json.dumps(live))
+
+    def fake_login():  # browser lands on gmail2
+        _seed_live(fake_home, fake_keychain, blob=_blob2("G2", "D2"), uid="G2")
+        return 0
+
+    ca.login("gmail2", login_fn=fake_login)
+
+    store = json.loads(keychain.read_secret(ca.STORE_SERVICE, ca.STORE_ACCOUNT))
+    saved = json.loads(store["accounts"]["gmail1"]["credentials"])
+    assert saved["claudeAiOauth"]["accessToken"] == "G1-NEW"
+    assert saved["claudeAiOauth"]["refreshToken"] == "G1-NEW-r"
 
 
 def test_login_dupe_guard_refuses_same_account_under_new_name(fake_home, fake_keychain):
