@@ -223,10 +223,14 @@ def _render(state: PickerState, title: str, *, first: bool) -> None:
     out.flush()
 
 
-def _interactive_supported() -> bool:
-    """True only if both stdin and stdout are real TTYs. Pytest captures
-    streams (isatty=False) → fallback path is used during tests."""
-    return sys.stdin.isatty() and sys.stdout.isatty()
+def _interactive_supported(out=None) -> bool:
+    """True only if both stdin and the picker's output stream are real TTYs.
+    Pytest captures streams (isatty=False) → fallback path is used during tests.
+
+    `out` lets a caller drive the picker on stderr (so stdout can carry a
+    machine-readable result) — the tty check then targets that stream."""
+    out = out if out is not None else sys.stdout
+    return sys.stdin.isatty() and out.isatty()
 
 
 def _fallback_per_app(items: list[str], preselected) -> list[str]:
@@ -248,23 +252,25 @@ def _fallback_per_app(items: list[str], preselected) -> list[str]:
     return selected
 
 
-def _enter_raw_mode():
+def _enter_raw_mode(out=None):
     """Switch terminal to cbreak mode and hide the cursor. Returns an
-    opaque token to pass back into _restore_terminal."""
+    opaque token to pass back into _restore_terminal. Cursor control is
+    written to `out` (default stdout) so it lands on the picker's stream."""
+    out = out if out is not None else sys.stdout
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     tty.setcbreak(fd)
-    sys.stdout.write(_CURSOR_HIDE)
-    sys.stdout.flush()
-    return (fd, old)
+    out.write(_CURSOR_HIDE)
+    out.flush()
+    return (fd, old, out)
 
 
 def _restore_terminal(token) -> None:
     """Revert what _enter_raw_mode did. Always safe to call."""
-    fd, old = token
+    fd, old, out = token
     termios.tcsetattr(fd, termios.TCSADRAIN, old)
-    sys.stdout.write(_CURSOR_SHOW)
-    sys.stdout.flush()
+    out.write(_CURSOR_SHOW)
+    out.flush()
 
 
 def _drain_input() -> None:
@@ -282,8 +288,9 @@ def _render_one(
     labels: "dict[str, str] | None",
     *,
     first: bool,
+    out=None,
 ) -> None:
-    out = sys.stdout
+    out = out if out is not None else sys.stdout
     n = len(state.items)
     if not first:
         out.write(f"\x1b[{n + 2}A")
@@ -307,23 +314,29 @@ def pick_one(
     current: "str | None" = None,
     title: str = "Select an account",
     labels: "dict[str, str] | None" = None,
+    stream=None,
 ) -> "str | None":
     """Interactive radio picker. Returns the chosen item, or None.
 
     Returns None on cancel (esc / q / ctrl+c) AND in any non-TTY environment
     (CI, pipe, pytest) — the caller must treat None as "no change", so an
     account is never switched unattended.
+
+    `stream` (default stdout) is where the picker draws. Pass `sys.stderr` when
+    the caller captures stdout for a machine-readable result (e.g. the launcher
+    reading the chosen account name).
     """
+    out = stream if stream is not None else sys.stdout
     if not items:
         return None
-    if not _interactive_supported():
+    if not _interactive_supported(out):
         return None
 
     state = SingleChoiceState(items, current=current)
-    token = _enter_raw_mode()
+    token = _enter_raw_mode(out)
     try:
         _drain_input()
-        _render_one(state, title, labels, first=True)
+        _render_one(state, title, labels, first=True, out=out)
         while not state.done and not state.cancelled:
             try:
                 key = _read_key()
@@ -332,10 +345,10 @@ def pick_one(
                 break
             if key is not None:
                 state.handle(key)
-            _render_one(state, title, labels, first=False)
+            _render_one(state, title, labels, first=False, out=out)
     finally:
         _restore_terminal(token)
-    print()
+    print(file=out)
     return state.result
 
 

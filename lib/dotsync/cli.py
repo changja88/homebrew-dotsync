@@ -126,6 +126,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "env", help="print a saved account's per-tab token to stdout (for scripts)"
     )
     p_env.add_argument("name")
+    acct_sub.add_parser(
+        "pick", help="interactively pick an account; print its name to stdout"
+    )
 
     return p
 
@@ -828,6 +831,43 @@ def _account_env(ca, args) -> int:
     return 0
 
 
+def _account_pick(ca) -> int:
+    """Interactively pick an account; print the chosen NAME to stdout.
+
+    Picker UI is drawn on stderr so stdout carries only the name (the launcher
+    captures it). 0 accounts or a cancelled/non-TTY pick → exit 1, no stdout.
+    A single account needs no prompt — its name is printed directly.
+    """
+    import sys
+
+    infos = ca.list_accounts()
+    if not infos:
+        return 1
+    if len(infos) == 1:
+        print(infos[0].name)
+        return 0
+    from .ui_picker import pick_one
+
+    cur = ca.current()
+    labels = {
+        i.name: i.name
+        + (f"  ({i.subscription})" if i.subscription else "")
+        + ("" if i.has_token else "  · no per-tab token")
+        for i in infos
+    }
+    chosen = pick_one(
+        [i.name for i in infos],
+        current=cur.name,
+        title="Pick Claude account for this tab",
+        labels=labels,
+        stream=sys.stderr,
+    )
+    if not chosen:
+        return 1
+    print(chosen)
+    return 0
+
+
 def cmd_claude_account(args) -> int:
     from dotsync import claude_account as ca
 
@@ -861,6 +901,8 @@ def cmd_claude_account(args) -> int:
             return _account_token(ca, args)
         if sub == "env":
             return _account_env(ca, args)
+        if sub == "pick":
+            return _account_pick(ca)
     except ca.AccountError as e:
         ui.error(str(e))
         return 2

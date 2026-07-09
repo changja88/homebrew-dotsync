@@ -173,3 +173,31 @@ def test_list_porcelain_has_token_column(fake_home, fake_keychain, monkeypatch, 
     assert fields[0] == "work"
     assert fields[2] == "max"
     assert fields[3] == "token"
+
+
+def test_pick_single_account_prints_name(fake_home, fake_keychain, capsys):
+    _seed_live(fake_home, fake_keychain)
+    main(["claude", "account", "add", "work"])
+    capsys.readouterr()
+    rc = main(["claude", "account", "pick"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out.strip() == "work"  # name on stdout, nothing else
+
+
+def test_pick_no_accounts_exits_nonzero(fake_home, fake_keychain, capsys):
+    rc = main(["claude", "account", "pick"])
+    assert rc == 1
+    assert capsys.readouterr().out.strip() == ""
+
+
+def test_pick_multi_account_nontty_returns_nonzero(fake_home, fake_keychain, capsys):
+    # pytest streams aren't TTYs → picker makes no selection → nonzero, no stdout
+    _seed_live(fake_home, fake_keychain, uid="AAA")
+    main(["claude", "account", "add", "work"])
+    _seed_live(fake_home, fake_keychain, uid="BBB")
+    main(["claude", "account", "add", "personal"])
+    capsys.readouterr()
+    rc = main(["claude", "account", "pick"])
+    assert rc == 1
+    assert capsys.readouterr().out.strip() == ""
