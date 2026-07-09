@@ -243,17 +243,19 @@ dotsync claude account env work                    # print its token to stdout (
 2. `claude setup-token` → copy the printed `sk-ant-oat01-…` value (1-year, subscription-billed).
 3. `dotsync claude account set <name>` → paste at the hidden prompt (invisible input is normal).
 
-**Daily use — the launcher picks per tab (recommended):** open a new terminal tab, run `claude`; the launcher shows a picker, you choose the account, and it injects that token into **this tab only** and states the identity (a `this tab: <name>` row + the terminal tab title). Other tabs pick other accounts — all running at once.
+**Daily use — the launcher picks per tab (recommended):** open a new terminal tab, run `claude`; the launcher shows a picker, you choose the account, and it launches the tab with that token **plus a per-account `CLAUDE_CONFIG_DIR` profile**, stating the identity (a `this tab: <name>` row + the terminal tab title). Other tabs pick other accounts — all running at once. The profile is what makes the token stick: if the machine also has a global `/login`, Claude Code reads that credential **before** `CLAUDE_CODE_OAUTH_TOKEN`, so a token injected into the default config dir is silently ignored. The launcher's profiles share your settings/plugins/history with `~/.claude` via symlinks, so tabs feel like your normal setup.
 
 **Or manually (no launcher):**
 
 ```bash
-export CLAUDE_CODE_OAUTH_TOKEN="$(dotsync claude account env work)"; claude
+export CLAUDE_CODE_OAUTH_TOKEN="$(dotsync claude account env work)"
+export CLAUDE_CONFIG_DIR="$HOME/.claude-work"   # any login-free dir — without this, an existing global login outranks the token
+claude
 ```
 
 - These are **subscription** tokens (`sk-ant-oat01-…`), not metered API keys — usage counts against your Pro/Max plan. To keep it that way, don't set `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` or an `apiKeyHelper` in `settings.json` (they outrank the token), and avoid `claude -p` (print mode can bill as API). The launcher scrubs those env vars from the tab automatically and warns if `apiKeyHelper` is configured.
 - `setup-token` binds to whichever account is signed in to claude.ai in your browser; dotsync trusts the name you pass (it can't verify which account an opaque token belongs to).
-- `claude auth status` reports your machine-global login, **not** the injected tab token — trust the launcher's `this tab:` row / tab title instead.
+- For the tab's identity, trust the launcher's `this tab:` row / tab title — the token account has no email for Claude Code to display.
 - Tokens are long-lived (~1 year); if one expires mid-session, relaunch that tab (there's no in-process refresh).
 - Accounts live in the Keychain, not the sync folder — `dotsync backup`/`apply` never touch them, and a new machine starts with none.
 
@@ -526,17 +528,19 @@ dotsync claude account env work                    # 그 토큰을 stdout에 출
 2. `claude setup-token` → 출력된 `sk-ant-oat01-…` 값 복사(1년, 구독 청구).
 3. `dotsync claude account set <name>` → 가려진 프롬프트에 붙여넣기(입력이 안 보이는 게 정상).
 
-**일상 사용 — launcher가 탭마다 선택(권장):** 새 터미널 탭에서 `claude` 실행 → 피커가 뜨면 계정 선택 → 그 토큰을 **이 탭에만** 주입하고 신원을 표기(`this tab: <name>` 행 + 터미널 탭 제목). 다른 탭은 다른 계정 선택 → 동시에 실행.
+**일상 사용 — launcher가 탭마다 선택(권장):** 새 터미널 탭에서 `claude` 실행 → 피커가 뜨면 계정 선택 → 그 토큰과 **계정별 `CLAUDE_CONFIG_DIR` 프로필**로 탭을 실행하고 신원을 표기(`this tab: <name>` 행 + 터미널 탭 제목). 다른 탭은 다른 계정 선택 → 동시에 실행. 토큰이 실제로 먹히게 하는 건 프로필이다: 머신에 전역 `/login`이 있으면 Claude Code는 그 credential을 `CLAUDE_CODE_OAUTH_TOKEN`보다 **먼저** 읽으므로, 기본 config dir에 토큰만 주입하면 조용히 무시된다. launcher 프로필은 설정/플러그인/히스토리를 `~/.claude`와 symlink로 공유하므로 탭은 평소 환경 그대로 동작한다.
 
 **또는 수동(launcher 없이):**
 
 ```bash
-export CLAUDE_CODE_OAUTH_TOKEN="$(dotsync claude account env work)"; claude
+export CLAUDE_CODE_OAUTH_TOKEN="$(dotsync claude account env work)"
+export CLAUDE_CONFIG_DIR="$HOME/.claude-work"   # 로그인 없는 아무 dir — 없으면 기존 전역 로그인이 토큰을 이긴다
+claude
 ```
 
 - 이건 **구독** 토큰(`sk-ant-oat01-…`)이지 종량제 API 키가 아니다 — Pro/Max 플랜에서 차감된다. 그러려면 `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`을 설정하지 말고 `settings.json`에 `apiKeyHelper`도 두지 말 것(이들이 토큰보다 우선), `claude -p`(print 모드는 API로 과금될 수 있음)도 피한다. launcher는 그 env 변수들을 탭에서 자동 제거하고 `apiKeyHelper`가 설정돼 있으면 경고한다.
 - `setup-token`은 브라우저에 로그인된 claude.ai 계정에 묶인다. dotsync는 전달한 이름을 신뢰한다(불투명 토큰이 어느 계정 것인지 검증 불가).
-- `claude auth status`는 머신 전역 로그인을 보여주지 **주입된 탭 토큰이 아니다** — launcher의 `this tab:` 행/탭 제목을 믿을 것.
+- 탭의 신원은 launcher의 `this tab:` 행/탭 제목을 믿을 것 — 토큰 계정에는 Claude Code가 표시할 이메일이 없다.
 - 토큰은 장수명(~1년)이지만 세션 중 만료되면 그 탭을 재실행한다(in-process 갱신 없음).
 - 이 계정들은 sync 폴더가 아니라 Keychain에 있다 — `dotsync backup`/`apply`는 건드리지 않고, 새 머신은 0개로 시작한다.
 
