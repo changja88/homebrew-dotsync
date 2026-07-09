@@ -267,6 +267,12 @@ def add(name: str) -> None:
             "no live Claude credential to save — run `claude auth login` first"
         )
     oauth_account, user_id = _read_live_identity()
+    existing = _match_visible_name(store, oauth_account)
+    if existing:
+        raise AccountError(
+            f"this account is already saved as `{existing}` — each Claude account "
+            "can only be registered once (you are logged in as that account now)"
+        )
     store["accounts"][name] = {
         "credentials": creds,
         "oauthAccount": oauth_account,

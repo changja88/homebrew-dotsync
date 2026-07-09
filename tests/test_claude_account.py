@@ -71,6 +71,20 @@ def test_add_duplicate_name_raises(fake_home, fake_keychain):
         ca.add("work")
 
 
+def test_add_rejects_same_account_under_second_name(fake_home, fake_keychain):
+    """The same Claude account must not be registerable under two names. `add`
+    snapshots whoever is currently live, so `add other` while logged in as an
+    already-saved account would silently duplicate it (same accountUuid, two
+    names). Match by accountUuid, like login's dupe-guard.
+    """
+    _seed_live(fake_home, fake_keychain, uid="AAA")
+    ca.add("work")
+    # still logged in as the SAME account (uid AAA) — a second name must be refused
+    with pytest.raises(ca.AccountError):
+        ca.add("work-again")
+    assert [i.name for i in ca.list_accounts()] == ["work"]
+
+
 def test_remove_deletes_and_clears_active(fake_home, fake_keychain):
     _seed_live(fake_home, fake_keychain)
     ca.add("work")
