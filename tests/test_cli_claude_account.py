@@ -116,11 +116,31 @@ def test_token_set_reads_hidden_prompt_and_saves(
     monkeypatch.setattr("getpass.getpass", lambda *a, **k: TOKEN)
     capsys.readouterr()
 
-    rc = main(["claude", "account", "token", "set", "work"])
+    rc = main(["claude", "account", "token", "set", "work"])  # no token arg → prompt
     assert rc == 0
     assert ca.token_of("work") == TOKEN
     # the token itself must not be echoed to stdout
     assert TOKEN not in capsys.readouterr().out
+
+
+def test_token_set_accepts_token_as_argument(
+    fake_home, fake_keychain, monkeypatch, capsys
+):
+    """`token set <name> <token>` must work directly — no hidden prompt."""
+    from dotsync import claude_account as ca
+
+    _seed_live(fake_home, fake_keychain)
+    main(["claude", "account", "add", "work"])
+
+    def _boom(*a, **k):
+        raise AssertionError("getpass must not be called when token is passed")
+
+    monkeypatch.setattr("getpass.getpass", _boom)
+    capsys.readouterr()
+
+    rc = main(["claude", "account", "token", "set", "work", TOKEN])
+    assert rc == 0
+    assert ca.token_of("work") == TOKEN
 
 
 def test_token_set_unknown_account_nonzero(fake_home, fake_keychain, monkeypatch):

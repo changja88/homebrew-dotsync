@@ -119,9 +119,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     token_sub = p_token.add_subparsers(dest="token_cmd", required=True)
     p_token_set = token_sub.add_parser(
-        "set", help="paste a `claude setup-token` value for a saved account"
+        "set", help="save a `claude setup-token` value for a saved account"
     )
     p_token_set.add_argument("name")
+    p_token_set.add_argument(
+        "token",
+        nargs="?",
+        help="the sk-ant-oat01-... value; omit to be prompted (hidden input)",
+    )
     p_env = acct_sub.add_parser(
         "env", help="print a saved account's per-tab token to stdout (for scripts)"
     )
@@ -795,9 +800,15 @@ def _account_token(ca, args) -> int:
     import getpass
 
     if args.token_cmd == "set":
-        token = getpass.getpass(
-            f"paste the `claude setup-token` value for `{args.name}` (hidden): "
-        )
+        # Token may be passed as an argument (convenient, but lands in shell
+        # history — prefix the command with a space if HISTCONTROL=ignorespace)
+        # or, when omitted, entered at a hidden prompt.
+        token = getattr(args, "token", None)
+        if not token:
+            token = getpass.getpass(
+                f"paste the `claude setup-token` value for `{args.name}` "
+                "(input hidden — paste and press Enter): "
+            )
         ca.set_token(args.name, token)
         ui.done(f"saved a per-tab token for `{args.name}`")
         return 0
