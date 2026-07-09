@@ -1130,25 +1130,32 @@ def _child_env_with_token(base: dict, token: str) -> dict:
     return env
 
 
-def _parse_account_rows(stdout: str) -> list[tuple[str, bool]]:
-    """Parse `account list --porcelain` into (name, has_token) pairs.
+def _parse_account_names(stdout: str) -> list[str]:
+    """Parse `account list --porcelain` (one account name per line)."""
+    return [line.strip() for line in stdout.splitlines() if line.strip()]
 
-    Format: name<TAB>active<TAB>subscription<TAB>token-flag. Tolerates a 3-column
-    row from an older dotsync (treated as no token)."""
-    rows: list[tuple[str, bool]] = []
-    for line in stdout.splitlines():
-        if not line.strip():
+
+def _apikeyhelper_active() -> bool:
+    """True if a settings.json `apiKeyHelper` is configured. It outranks the
+    injected CLAUDE_CODE_OAUTH_TOKEN in Claude Code's auth precedence and is NOT
+    an env var, so it can't be scrubbed — the injected tab token would be
+    silently overridden. Best-effort read; any error → assume not configured."""
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    bases = [Path(config_dir) if config_dir else Path.home() / ".claude"]
+    for base in bases:
+        try:
+            if json.loads((base / "settings.json").read_text()).get("apiKeyHelper"):
+                return True
+        except (OSError, ValueError):
             continue
-        fields = line.split("\t")
-        rows.append((fields[0], len(fields) > 3 and fields[3] == "token"))
-    return rows
+    return False
 
 
 def _emit_tab_identity(out: TextIO, name: str) -> None:
     """Make this tab's identity unmistakable: a framed row + the terminal tab
-    title (via OSC). `claude auth status` can show the global keychain account,
-    so the launcher must state the truth itself."""
-    out.write(render_inline_row("this tab", f"{name}  · per-tab account", status="done"))
+    title (via OSC). `claude auth status` shows the machine-global keychain
+    login, NOT this injected token, so the launcher states the truth itself."""
+    out.write(render_inline_row("this tab", f"{name}  · tab account", status="done"))
     out.write(f"\x1b]0;claude: {name}\x07")  # set terminal tab/window title
     out.flush()
 
@@ -1195,14 +1202,12 @@ def _resolve_tab_account_v2(
     pick_fn: Callable[[list[str]], "str | None"] | None = None,
     token_fn: Callable[[list[str], str], "str | None"] | None = None,
 ) -> "TabAccount | None":
-    """Resolve which saved account (and token) THIS tab should use, or None.
+    """Resolve which saved tab account (and token) THIS tab should use, or None.
 
     Fully best-effort — the primary `claude` launch is never blocked or slowed;
-    a missing / old / slow / failing dotsync is swallowed. Returns a
-    `TabAccount` only when a token-backed account is chosen; otherwise None (the
-    tab falls back to the normal global login). A token-less account that the
-    user *explicitly picked* is warned about loudly rather than silently run
-    under the global login (that reproduces the "always the same account" bug).
+    a missing / old / slow / failing dotsync is swallowed. 0 accounts → None
+    (plain launch). 1 account → use it. 2+ → interactive pick. Every saved tab
+    account has a token, so there is no token-less branch.
     """
     if client != "claude":
         return None
@@ -1216,20 +1221,13 @@ def _resolve_tab_account_v2(
         return None  # timeout / spawn failure — skip, never block the launch
     if rc != 0:
         return None  # old dotsync without the subcommand, keychain error, etc.
-    accounts = _parse_account_rows(stdout)
+    names = _parse_account_names(stdout)
     out = stream if stream is not None else sys.stdout
-    if not accounts:
+    if not names:
         return None
 
-    if len(accounts) == 1:
-        name, has_token = accounts[0]
-        if not has_token:
-            # No per-tab token yet — preserve the prior single-account behavior
-            # (info row, no injection). The tab uses the normal global login.
-            out.write(render_inline_row("claude account", name, status="info"))
-            out.flush()
-            return None
-        chosen = name
+    if len(names) == 1:
+        chosen = names[0]
     else:
         picker = pick_fn or _dotsync_account_pick_default
         try:
@@ -1237,17 +1235,6 @@ def _resolve_tab_account_v2(
         except Exception:
             return None
         if not chosen:
-            return None
-        if not dict(accounts).get(chosen, False):
-            out.write(
-                render_inline_row(
-                    "claude account",
-                    f"{chosen} has no per-tab token — this tab uses your global "
-                    f"login. run `dotsync claude account token set {chosen}`",
-                    status="warn",
-                )
-            )
-            out.flush()
             return None
 
     getter = token_fn or _dotsync_account_env_default
@@ -1257,6 +1244,16 @@ def _resolve_tab_account_v2(
         return None
     if not token:
         return None
+    if _apikeyhelper_active():
+        out.write(
+            render_inline_row(
+                "claude account",
+                f"WARNING: apiKeyHelper in settings.json outranks the tab token — "
+                f"`{chosen}` may be overridden (billing/identity)",
+                status="warn",
+            )
+        )
+        out.flush()
     return TabAccount(chosen, token)
 
 
