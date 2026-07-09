@@ -13,7 +13,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
+from typing import NamedTuple, TextIO
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -244,13 +244,26 @@ def clear_terminal_before_child() -> None:
     print("\x1b[3J\x1b[H\x1b[2J", end="", flush=True)
 
 
-def _launch_bare_child(args: list[str]) -> int:
-    """Run the real agent binary without the scoped Serena MCP server."""
+def _launch_bare_child(
+    args: list[str],
+    *,
+    tab_account: "TabAccount | None" = None,
+    stream: TextIO | None = None,
+) -> int:
+    """Run the real agent binary without the scoped Serena MCP server.
+
+    Still honors a resolved per-tab account: injects its token and states the
+    identity, so the token path works even when Serena is unavailable."""
 
     client_type = infer_client_type(os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0]))
     real_binary = find_real_binary(client_type)
     if os.environ.get("SERENA_AGENT_CLEAR_BEFORE_CHILD") == "1":
         clear_terminal_before_child()
+    if tab_account is not None:
+        if stream is not None:
+            _emit_tab_identity(stream, tab_account.name)
+        env = _child_env_with_token(os.environ.copy(), tab_account.token)
+        return int(subprocess.run([real_binary, *args], env=env).returncode)
     return int(subprocess.run([real_binary, *args]).returncode)
 
 
@@ -402,11 +415,13 @@ def _main_v2(args: list[str]) -> int:
     interactive = os.environ.get("SERENA_AGENT_INTERACTIVE") == "1"
     out = sys.stdout
 
+    tab_account: "TabAccount | None" = None
     if interactive:
         _render_preflight_overview_v2()
         _run_serena_cli_install_v2()
-        _run_account_select_v2(
-            infer_client_type(os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0]))
+        tab_account = _resolve_tab_account_v2(
+            infer_client_type(os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0])),
+            stream=out,
         )
 
     serena_state = _run_serena_init_v2() if interactive else "managed"
@@ -421,7 +436,7 @@ def _main_v2(args: list[str]) -> int:
 
     if serena_state in {"skipped", "failed"}:
         warnings.append(f"serena project create {serena_state}")
-        return _launch_bare_child(args)
+        return _launch_bare_child(args, tab_account=tab_account, stream=out)
 
     if serena_server_command() is None:
         out.write(
@@ -429,7 +444,7 @@ def _main_v2(args: list[str]) -> int:
             " launching without scoped server\n"
         )
         out.flush()
-        return _launch_bare_child(args)
+        return _launch_bare_child(args, tab_account=tab_account, stream=out)
 
     summary_state = _run_launch_prep_v2() if interactive else None
 
@@ -461,7 +476,15 @@ def _main_v2(args: list[str]) -> int:
         open_dashboard_if_requested(record.dashboard_url)
         if os.environ.get("SERENA_AGENT_CLEAR_BEFORE_CHILD") == "1":
             clear_terminal_before_child()
-        child = subprocess.Popen(cmd, cwd=str(project_root))
+        if tab_account is not None:
+            _emit_tab_identity(out, tab_account.name)
+            child = subprocess.Popen(
+                cmd,
+                cwd=str(project_root),
+                env=_child_env_with_token(os.environ.copy(), tab_account.token),
+            )
+        else:
+            child = subprocess.Popen(cmd, cwd=str(project_root))
 
         def shutdown(signum=None, frame=None):
             stop.set()
@@ -1075,6 +1098,61 @@ def _run_node_runtime_check_v2(
     out.flush()
 
 
+class TabAccount(NamedTuple):
+    """A resolved per-tab Claude identity: the account name + the token to inject
+    as CLAUDE_CODE_OAUTH_TOKEN into that tab's child process."""
+
+    name: str
+    token: str
+
+
+# Credential sources that OUTRANK CLAUDE_CODE_OAUTH_TOKEN in Claude Code's auth
+# precedence — if any is left in the child env it wins and diverts identity/
+# billing (API metering), silently defeating the injected subscription token.
+_OVERRIDING_ENV_VARS = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+)
+
+
+def _child_env_with_token(base: dict, token: str) -> dict:
+    """A child env = base + injected token − every higher-priority source.
+
+    Copies `base` (never mutates it) so `PATH`, `SERENA_REAL_*`, etc. survive.
+    """
+    env = dict(base)
+    env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+    for key in _OVERRIDING_ENV_VARS:
+        env.pop(key, None)
+    return env
+
+
+def _parse_account_rows(stdout: str) -> list[tuple[str, bool]]:
+    """Parse `account list --porcelain` into (name, has_token) pairs.
+
+    Format: name<TAB>active<TAB>subscription<TAB>token-flag. Tolerates a 3-column
+    row from an older dotsync (treated as no token)."""
+    rows: list[tuple[str, bool]] = []
+    for line in stdout.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split("\t")
+        rows.append((fields[0], len(fields) > 3 and fields[3] == "token"))
+    return rows
+
+
+def _emit_tab_identity(out: TextIO, name: str) -> None:
+    """Make this tab's identity unmistakable: a framed row + the terminal tab
+    title (via OSC). `claude auth status` can show the global keychain account,
+    so the launcher must state the truth itself."""
+    out.write(render_inline_row("this tab", f"{name}  · per-tab account", status="done"))
+    out.write(f"\x1b]0;claude: {name}\x07")  # set terminal tab/window title
+    out.flush()
+
+
 def _dotsync_account_list_default(argv: list[str]) -> tuple[int, str]:
     result = subprocess.run(
         argv + ["claude", "account", "list", "--porcelain"],
@@ -1085,53 +1163,101 @@ def _dotsync_account_list_default(argv: list[str]) -> tuple[int, str]:
     return result.returncode, result.stdout
 
 
-def _dotsync_account_select_default(argv: list[str]) -> None:
-    # Interactive: dotsync draws its own picker; inherit the tty. Best-effort.
-    subprocess.run(argv + ["claude", "account", "use"])
+def _dotsync_account_pick_default(argv: list[str]) -> str | None:
+    """Run dotsync's picker (UI on the inherited tty=stderr); capture the chosen
+    name from stdout. Returns None on cancel / non-tty / failure."""
+    result = subprocess.run(
+        argv + ["claude", "account", "pick"], stdout=subprocess.PIPE, text=True
+    )
+    if result.returncode != 0:
+        return None
+    return (result.stdout or "").strip() or None
 
 
-def _run_account_select_v2(
+def _dotsync_account_env_default(argv: list[str], name: str) -> str | None:
+    result = subprocess.run(
+        argv + ["claude", "account", "env", name],
+        capture_output=True,
+        text=True,
+        timeout=3,
+    )
+    if result.returncode != 0:
+        return None
+    return (result.stdout or "").strip() or None
+
+
+def _resolve_tab_account_v2(
     client: str,
     *,
     stream: TextIO | None = None,
     resolve_fn: Callable[[], list[str] | None] | None = None,
     list_fn: Callable[[list[str]], tuple[int, str]] | None = None,
-    select_fn: Callable[[list[str]], None] | None = None,
-) -> None:
-    """Offer to switch Claude account when more than one is saved.
+    pick_fn: Callable[[list[str]], "str | None"] | None = None,
+    token_fn: Callable[[list[str], str], "str | None"] | None = None,
+) -> "TabAccount | None":
+    """Resolve which saved account (and token) THIS tab should use, or None.
 
-    Fully best-effort — the primary `claude` launch must never be blocked or
-    slowed by this. Runs only for the claude client and only when the `dotsync`
-    CLI is installed; a missing / old / slow / failing dotsync is swallowed
-    (the probe is timeout-bounded). The picker is owned by dotsync itself
-    (`dotsync claude account use`), so no Claude auth logic lives here.
+    Fully best-effort — the primary `claude` launch is never blocked or slowed;
+    a missing / old / slow / failing dotsync is swallowed. Returns a
+    `TabAccount` only when a token-backed account is chosen; otherwise None (the
+    tab falls back to the normal global login). A token-less account that the
+    user *explicitly picked* is warned about loudly rather than silently run
+    under the global login (that reproduces the "always the same account" bug).
     """
     if client != "claude":
-        return
-    resolve = resolve_fn or dotsync_command
-    dotsync = resolve()
+        return None
+    dotsync = (resolve_fn or dotsync_command)()
     if not dotsync:
-        return
+        return None
     lister = list_fn or _dotsync_account_list_default
     try:
         rc, stdout = lister(dotsync)
     except Exception:
-        return  # timeout / spawn failure — skip, never block the launch
+        return None  # timeout / spawn failure — skip, never block the launch
     if rc != 0:
-        return  # old dotsync without the subcommand, keychain error, etc.
-    names = [line.split("\t", 1)[0] for line in stdout.splitlines() if line.strip()]
+        return None  # old dotsync without the subcommand, keychain error, etc.
+    accounts = _parse_account_rows(stdout)
     out = stream if stream is not None else sys.stdout
-    if not names:
-        return
-    if len(names) == 1:
-        out.write(render_inline_row("claude account", names[0], status="info"))
-        out.flush()
-        return
-    selector = select_fn or _dotsync_account_select_default
+    if not accounts:
+        return None
+
+    if len(accounts) == 1:
+        name, has_token = accounts[0]
+        if not has_token:
+            # No per-tab token yet — preserve the prior single-account behavior
+            # (info row, no injection). The tab uses the normal global login.
+            out.write(render_inline_row("claude account", name, status="info"))
+            out.flush()
+            return None
+        chosen = name
+    else:
+        picker = pick_fn or _dotsync_account_pick_default
+        try:
+            chosen = picker(dotsync)
+        except Exception:
+            return None
+        if not chosen:
+            return None
+        if not dict(accounts).get(chosen, False):
+            out.write(
+                render_inline_row(
+                    "claude account",
+                    f"{chosen} has no per-tab token — this tab uses your global "
+                    f"login. run `dotsync claude account token set {chosen}`",
+                    status="warn",
+                )
+            )
+            out.flush()
+            return None
+
+    getter = token_fn or _dotsync_account_env_default
     try:
-        selector(dotsync)
+        token = getter(dotsync, chosen)
     except Exception:
-        return
+        return None
+    if not token:
+        return None
+    return TabAccount(chosen, token)
 
 
 def _run_preflight_v2(
