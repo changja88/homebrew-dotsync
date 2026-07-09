@@ -146,6 +146,47 @@ context, not predicted by the zsh shim:
 Preflight displays each row as `client total . to delete/reset . to keep`, and
 the final summary uses `N sessions deleted . M memory files reset`.
 
+## Per-tab Claude accounts (launcher side)
+
+For interactive `claude` launches the launcher resolves a per-tab account from
+`dotsync claude account` (0 saved → plain launch, 1 → auto, 2+ → picker) and
+launches the child with **two** injections:
+
+- `CLAUDE_CODE_OAUTH_TOKEN` — the account's `claude setup-token` value.
+- `CLAUDE_CONFIG_DIR` — a **per-account profile dir**. This is what makes the
+  token effective: Claude Code (≥2.1, verified empirically on 2.1.197 via OTEL
+  `user.id`) reads the machine-global `/login` keychain credential **before**
+  `CLAUDE_CODE_OAUTH_TOKEN`, contrary to its documented precedence, so a token
+  injected into the default config dir is silently ignored and every tab bills
+  the global login. The keychain credential is keyed by config dir and can't be
+  scrubbed from the env — a login-free profile dir is the only way to make the
+  tab token win.
+
+Profiles live at
+`~/Library/Application Support/dotsync-agent-launcher/claude-tab-profiles/<name>/`
+and are created lazily and healed on every launch (`_ensure_tab_profile`):
+
+- Durable user assets are **symlinked to `~/.claude`** (`plugins`, `skills`,
+  `agents`, `commands`, `projects`, `plans`, `tasks`, `CLAUDE.md`,
+  `settings.json`, `keybindings.json`, `history.jsonl`) so every tab sees the
+  same settings/plugins/history and writes flow through to the shared files.
+  Caveat: a tool that replaces one of these *files* by atomic rename (e.g.
+  editing settings from inside a tab) forks that profile's copy silently.
+- `.claude.json` is **seeded once** from `~/.claude.json` minus the keys that
+  carry the global login's identity (`oauthAccount`, `userID`, …) — onboarding,
+  theme, and per-project trust prompts carry over; identity comes from the
+  token.
+- Volatile state (`cache`, `shell-snapshots`, `todos`, …) stays per-profile;
+  Claude creates it on demand.
+
+Failure semantics (no silent identity fallback): if the profile can't be built
+after an explicit pick, the launcher prints a warning and injects **nothing** —
+the tab knowingly runs as the machine-global login and never claims otherwise.
+If `CLAUDE_CONFIG_DIR` is already set in the parent env the launcher stays out
+of the way entirely (warn row, no picker, no injection). Removing an account
+(`dotsync claude account remove`) leaves its profile dir behind; it is inert
+and can be deleted manually.
+
 ## Workflow
 
 ```bash

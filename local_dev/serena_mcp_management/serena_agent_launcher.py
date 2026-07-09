@@ -252,17 +252,16 @@ def _launch_bare_child(
 ) -> int:
     """Run the real agent binary without the scoped Serena MCP server.
 
-    Still honors a resolved per-tab account: injects its token and states the
-    identity, so the token path works even when Serena is unavailable."""
+    Still honors a resolved per-tab account: injects its profile + token and
+    states the identity, so the account path works even when Serena is
+    unavailable."""
 
     client_type = infer_client_type(os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0]))
     real_binary = find_real_binary(client_type)
     if os.environ.get("SERENA_AGENT_CLEAR_BEFORE_CHILD") == "1":
         clear_terminal_before_child()
-    if tab_account is not None:
-        if stream is not None:
-            _emit_tab_identity(stream, tab_account.name)
-        env = _child_env_with_token(os.environ.copy(), tab_account.token)
+    env = _tab_launch_env(tab_account, stream if stream is not None else sys.stdout)
+    if env is not None:
         return int(subprocess.run([real_binary, *args], env=env).returncode)
     return int(subprocess.run([real_binary, *args]).returncode)
 
@@ -476,13 +475,9 @@ def _main_v2(args: list[str]) -> int:
         open_dashboard_if_requested(record.dashboard_url)
         if os.environ.get("SERENA_AGENT_CLEAR_BEFORE_CHILD") == "1":
             clear_terminal_before_child()
-        if tab_account is not None:
-            _emit_tab_identity(out, tab_account.name)
-            child = subprocess.Popen(
-                cmd,
-                cwd=str(project_root),
-                env=_child_env_with_token(os.environ.copy(), tab_account.token),
-            )
+        tab_env = _tab_launch_env(tab_account, out)
+        if tab_env is not None:
+            child = subprocess.Popen(cmd, cwd=str(project_root), env=tab_env)
         else:
             child = subprocess.Popen(cmd, cwd=str(project_root))
 
@@ -1117,17 +1112,125 @@ _OVERRIDING_ENV_VARS = (
     "CLAUDE_CODE_USE_FOUNDRY",
 )
 
+# The machine-global /login credential ALSO outranks the injected token (Claude
+# Code ≥2.1 reads it before CLAUDE_CODE_OAUTH_TOKEN, contrary to the documented
+# precedence — verified empirically via OTEL user.id). It lives in the macOS
+# Keychain, keyed by config dir, so it can't be scrubbed from the env; the only
+# way to make the tab token effective is a per-account CLAUDE_CONFIG_DIR that
+# never holds a login. The profile stays a normal-looking setup by sharing the
+# user's durable assets with ~/.claude via symlinks (writes flow through to the
+# shared files; volatile state stays per-profile) and seeding .claude.json —
+# minus the keys that carry the global login's identity — for onboarding/trust
+# continuity.
+_PROFILE_SHARED_ENTRIES = (
+    "plugins",
+    "skills",
+    "agents",
+    "commands",
+    "projects",
+    "plans",
+    "tasks",
+    "CLAUDE.md",
+    "settings.json",
+    "keybindings.json",
+    "history.jsonl",
+)
+_PROFILE_STATE_IDENTITY_KEYS = (
+    "oauthAccount",
+    "userID",
+    "bridgeOauthDeadExpiresAt",
+    "bridgeOauthDeadFailCount",
+    "orgModelDefaultCache",
+)
 
-def _child_env_with_token(base: dict, token: str) -> dict:
-    """A child env = base + injected token − every higher-priority source.
+
+def _tab_profile_root() -> Path:
+    return (
+        Path.home() / "Library" / "Application Support"
+        / "dotsync-agent-launcher" / "claude-tab-profiles"
+    )
+
+
+def _ensure_tab_profile(
+    name: str,
+    *,
+    profile_root: Path,
+    home_claude_dir: "Path | None" = None,
+    home_state_file: "Path | None" = None,
+) -> Path:
+    """Create (or heal) the per-account CLAUDE_CONFIG_DIR profile and return it.
+
+    Idempotent: existing symlinks and the profile's own evolving .claude.json
+    are left alone; shared entries added to ~/.claude later are linked on the
+    next launch. Raises OSError when the profile can't be built — the caller
+    decides how to launch without it.
+    """
+    home_claude = home_claude_dir if home_claude_dir is not None else Path.home() / ".claude"
+    home_state = home_state_file if home_state_file is not None else Path.home() / ".claude.json"
+    profile = profile_root / name
+    profile.mkdir(parents=True, exist_ok=True)
+    for entry in _PROFILE_SHARED_ENTRIES:
+        source = home_claude / entry
+        link = profile / entry
+        if source.exists() and not (link.exists() or link.is_symlink()):
+            link.symlink_to(source)
+    state = profile / ".claude.json"
+    if not state.exists():
+        try:
+            seeded = json.loads(home_state.read_text())
+        except (OSError, ValueError):
+            return profile  # no usable seed — the tab onboards fresh
+        for key in _PROFILE_STATE_IDENTITY_KEYS:
+            seeded.pop(key, None)
+        state.write_text(json.dumps(seeded))
+    return profile
+
+
+def _child_env_for_tab(base: dict, token: str, config_dir: Path) -> dict:
+    """A child env = base + token + per-account config dir − every env source
+    that outranks the token.
 
     Copies `base` (never mutates it) so `PATH`, `SERENA_REAL_*`, etc. survive.
     """
     env = dict(base)
     env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+    env["CLAUDE_CONFIG_DIR"] = str(config_dir)
     for key in _OVERRIDING_ENV_VARS:
         env.pop(key, None)
     return env
+
+
+def _tab_launch_env(
+    tab_account: "TabAccount | None",
+    out: TextIO,
+    *,
+    ensure_fn: "Callable[[str], Path] | None" = None,
+) -> "dict | None":
+    """The env for this tab's child, or None for a plain (uninjected) launch.
+
+    On profile failure the launcher warns and injects nothing — it never claims
+    an identity it didn't deliver (the tab then runs as the machine-global
+    login, and says so)."""
+    if tab_account is None:
+        return None
+    ensure = ensure_fn or (
+        lambda name: _ensure_tab_profile(name, profile_root=_tab_profile_root())
+    )
+    try:
+        profile = ensure(tab_account.name)
+    except OSError as exc:
+        out.write(
+            render_inline_row(
+                "claude account",
+                f"WARNING: tab profile setup failed ({exc}) — launching on the "
+                f"machine-global login instead of `{tab_account.name}`",
+                status="warn",
+            )
+        )
+        out.flush()
+        return None
+    _emit_tab_identity(out, tab_account.name)
+    return _child_env_for_tab(os.environ.copy(), tab_account.token, profile)
 
 
 def _parse_account_names(stdout: str) -> list[str]:
@@ -1153,8 +1256,8 @@ def _apikeyhelper_active() -> bool:
 
 def _emit_tab_identity(out: TextIO, name: str) -> None:
     """Make this tab's identity unmistakable: a framed row + the terminal tab
-    title (via OSC). `claude auth status` shows the machine-global keychain
-    login, NOT this injected token, so the launcher states the truth itself."""
+    title (via OSC). The token account has no email claude can display, so the
+    launcher states the human-readable name itself."""
     out.write(render_inline_row("this tab", f"{name}  · tab account", status="done"))
     out.write(f"\x1b]0;claude: {name}\x07")  # set terminal tab/window title
     out.flush()
@@ -1211,6 +1314,19 @@ def _resolve_tab_account_v2(
     """
     if client != "claude":
         return None
+    out = stream if stream is not None else sys.stdout
+    if os.environ.get("CLAUDE_CONFIG_DIR"):
+        # Injection would repoint the user's own CLAUDE_CONFIG_DIR setup —
+        # state it and stay out of the way (no picker either).
+        out.write(
+            render_inline_row(
+                "claude account",
+                "CLAUDE_CONFIG_DIR is set — per-tab account injection disabled",
+                status="warn",
+            )
+        )
+        out.flush()
+        return None
     dotsync = (resolve_fn or dotsync_command)()
     if not dotsync:
         return None
@@ -1222,7 +1338,6 @@ def _resolve_tab_account_v2(
     if rc != 0:
         return None  # old dotsync without the subcommand, keychain error, etc.
     names = _parse_account_names(stdout)
-    out = stream if stream is not None else sys.stdout
     if not names:
         return None
 
