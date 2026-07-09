@@ -244,7 +244,26 @@ dotsync claude account use work      # switch (asks to confirm; --yes to skip)
 dotsync claude account use           # no name → interactive picker (current pre-selected)
 dotsync claude account undo          # revert the last switch
 dotsync claude account remove work   # forget a saved account
+
+# per-tab identity (run different accounts in different terminal tabs at once)
+dotsync claude account token set work   # paste a `claude setup-token` value (hidden prompt)
+dotsync claude account env work         # print that token to stdout (for scripts/launcher)
 ```
+
+**Per-tab identity (optional).** The switching above is *machine-global* — one live account at a time. To run **different accounts in different terminal tabs simultaneously**, save each account's long-lived subscription token (`CLAUDE_CODE_OAUTH_TOKEN`, from `claude setup-token`) and inject it per process:
+
+```bash
+# once per account: log into claude.ai AS THAT ACCOUNT in your browser, then
+claude setup-token                      # prints an sk-ant-oat01-... token (1-year, subscription)
+dotsync claude account token set work   # paste it under the matching name (input hidden)
+
+# then, per tab:
+export CLAUDE_CODE_OAUTH_TOKEN="$(dotsync claude account env work)"; claude
+```
+
+- This is a **subscription** token (`sk-ant-oat01-…`), not a metered API key — usage counts against your Pro/Max plan. To keep it that way, unset `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` in that shell (they outrank it) and avoid `claude -p` (print mode can bill as API).
+- `setup-token` binds to whichever account is signed in to claude.ai in your browser; dotsync trusts the name you pass (it can't verify which account an opaque token belongs to). Tokens are stored in the Keychain only.
+- The token is long-lived but if it expires mid-session that tab must be relaunched (there's no in-process refresh).
 
 - Switching swaps the Keychain OAuth token **and** the on-disk identity in `~/.claude.json` (`oauthAccount`/`userID`) together — the design-tool auth (`designOauth`) is left untouched.
 - The credential being replaced is auto-snapshotted first, so a switch is always undoable (`undo`) even if the current login was never saved.
@@ -522,7 +541,26 @@ dotsync claude account use work      # 전환 (확인 프롬프트; --yes 로 �
 dotsync claude account use           # 이름 생략 → 대화형 picker (현재 계정 기본 선택)
 dotsync claude account undo          # 직전 전환 되돌리기
 dotsync claude account remove work   # 저장된 계정 삭제
+
+# 탭별 정체성 (여러 터미널 탭에서 서로 다른 계정 동시 사용)
+dotsync claude account token set work   # `claude setup-token` 값을 붙여넣기(가려진 입력)
+dotsync claude account env work         # 그 토큰을 stdout에 출력(스크립트/launcher용)
 ```
+
+**탭별 정체성 (선택).** 위 전환은 *머신 전역* — 한 번에 한 계정만 live다. **여러 터미널 탭에서 서로 다른 계정을 동시에** 쓰려면, 계정마다 장수명 구독 토큰(`CLAUDE_CODE_OAUTH_TOKEN`, `claude setup-token` 산출)을 저장해 프로세스별로 주입한다:
+
+```bash
+# 계정마다 한 번: 브라우저에서 claude.ai를 그 계정으로 로그인한 뒤
+claude setup-token                      # sk-ant-oat01-... 토큰 출력(1년, 구독)
+dotsync claude account token set work   # 해당 이름으로 붙여넣기(입력 가려짐)
+
+# 이후 탭마다:
+export CLAUDE_CODE_OAUTH_TOKEN="$(dotsync claude account env work)"; claude
+```
+
+- 이건 **구독** 토큰(`sk-ant-oat01-…`)이지 종량제 API 키가 아니다 — 사용량이 Pro/Max 플랜에서 차감된다. 그러려면 그 셸에서 `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`을 해제하고(이들이 우선순위상 이김) `claude -p`(print 모드는 API로 과금될 수 있음)를 피한다.
+- `setup-token`은 브라우저에 로그인된 claude.ai 계정에 묶인다. dotsync는 전달한 이름을 신뢰한다(불투명 토큰이 어느 계정 것인지 검증 불가). 토큰은 Keychain에만 저장된다.
+- 토큰은 장수명이지만 세션 중 만료되면 그 탭은 재실행해야 한다(in-process 갱신 없음).
 
 - 전환은 Keychain OAuth 토큰**과** `~/.claude.json` 의 온디스크 정체성(`oauthAccount`/`userID`)을 함께 교체한다 — 디자인 툴 인증(`designOauth`)은 건드리지 않는다.
 - 교체되는 자격증명은 먼저 자동 스냅샷되므로, 현재 로그인을 저장하지 않았어도 전환은 항상 되돌릴 수 있다(`undo`).

@@ -114,6 +114,18 @@ def _build_parser() -> argparse.ArgumentParser:
     p_use.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
     acct_sub.add_parser("current", help="show the active account")
     acct_sub.add_parser("undo", help="revert the last switch")
+    p_token = acct_sub.add_parser(
+        "token", help="manage per-tab tokens (CLAUDE_CODE_OAUTH_TOKEN)"
+    )
+    token_sub = p_token.add_subparsers(dest="token_cmd", required=True)
+    p_token_set = token_sub.add_parser(
+        "set", help="paste a `claude setup-token` value for a saved account"
+    )
+    p_token_set.add_argument("name")
+    p_env = acct_sub.add_parser(
+        "env", help="print a saved account's per-tab token to stdout (for scripts)"
+    )
+    p_env.add_argument("name")
 
     return p
 
@@ -698,7 +710,11 @@ def _account_list(ca, *, porcelain: bool) -> int:
     infos = ca.list_accounts()
     if porcelain:
         for i in infos:
-            print(f"{i.name}\t{'active' if i.active else ''}\t{i.subscription or ''}")
+            token = "token" if i.has_token else ""
+            print(
+                f"{i.name}\t{'active' if i.active else ''}\t"
+                f"{i.subscription or ''}\t{token}"
+            )
         return 0
     if not infos:
         ui.dim(
@@ -710,7 +726,8 @@ def _account_list(ca, *, porcelain: bool) -> int:
     for i in infos:
         marker = ui._wrap(ui.GREEN, "●") if i.active else "○"
         sub = f"  ({i.subscription})" if i.subscription else ""
-        print(f"  {marker} {i.name}{sub}")
+        note = "" if i.has_token else "  · no per-tab token"
+        print(f"  {marker} {i.name}{sub}{note}")
     return 0
 
 
@@ -771,6 +788,46 @@ def _account_use(ca, args) -> int:
     return 0
 
 
+def _account_token(ca, args) -> int:
+    import getpass
+
+    if args.token_cmd == "set":
+        token = getpass.getpass(
+            f"paste the `claude setup-token` value for `{args.name}` (hidden): "
+        )
+        ca.set_token(args.name, token)
+        ui.done(f"saved a per-tab token for `{args.name}`")
+        return 0
+    return 2
+
+
+def _account_env(ca, args) -> int:
+    """Print a saved account's per-tab token to stdout (for the launcher).
+
+    Token on stdout ONLY; all diagnostics on stderr. Distinct exit codes let the
+    caller tell "no such account" (3) from "account exists but no token" (1).
+    Refuses to run when stdout is a terminal so the secret can't hit scrollback.
+    """
+    import sys
+
+    if sys.stdout.isatty():
+        ui.error("refusing to print a token to a terminal — this is for piping")
+        return 2
+    try:
+        token = ca.token_of(args.name)
+    except ca.AccountError:
+        ui.error(f"no saved account `{args.name}`")
+        return 3
+    if not token:
+        ui.error(
+            f"`{args.name}` has no per-tab token — "
+            f"run `dotsync claude account token set {args.name}`"
+        )
+        return 1
+    print(token)
+    return 0
+
+
 def cmd_claude_account(args) -> int:
     from dotsync import claude_account as ca
 
@@ -800,6 +857,10 @@ def cmd_claude_account(args) -> int:
             return 0
         if sub == "use":
             return _account_use(ca, args)
+        if sub == "token":
+            return _account_token(ca, args)
+        if sub == "env":
+            return _account_env(ca, args)
     except ca.AccountError as e:
         ui.error(str(e))
         return 2

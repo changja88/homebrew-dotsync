@@ -317,3 +317,104 @@ def test_login_rejects_duplicate_name(fake_home, fake_keychain):
     ca.add("gmail1")
     with pytest.raises(ca.AccountError):
         ca.login("gmail1", login_fn=lambda: 0)
+
+
+# --- per-tab setup-token (CLAUDE_CODE_OAUTH_TOKEN) -----------------------------
+
+TOKEN_A = "sk-ant-oat01-" + "A" * 40
+TOKEN_B = "sk-ant-oat01-" + "B" * 40
+
+
+def test_set_token_stores_and_token_of_returns(fake_home, fake_keychain):
+    _seed_live(fake_home, fake_keychain)
+    ca.add("work")
+
+    ca.set_token("work", TOKEN_A)
+
+    assert ca.token_of("work") == TOKEN_A
+
+
+def test_set_token_unknown_account_raises(fake_home, fake_keychain):
+    _seed_live(fake_home, fake_keychain)
+    ca.add("work")
+    with pytest.raises(ca.AccountError):
+        ca.set_token("ghost", TOKEN_A)
+
+
+def test_set_token_rejects_empty_or_malformed(fake_home, fake_keychain):
+    _seed_live(fake_home, fake_keychain)
+    ca.add("work")
+    for bad in ("", "   ", "not-a-token", "sk-ant-api03-xxx"):
+        with pytest.raises(ca.AccountError):
+            ca.set_token("work", bad)
+    # nothing stored after the rejected attempts
+    assert ca.token_of("work") is None
+
+
+def test_token_of_unknown_account_raises(fake_home, fake_keychain):
+    _seed_live(fake_home, fake_keychain)
+    ca.add("work")
+    with pytest.raises(ca.AccountError):
+        ca.token_of("ghost")
+
+
+def test_token_of_returns_none_when_no_token(fake_home, fake_keychain):
+    _seed_live(fake_home, fake_keychain)
+    ca.add("work")
+    assert ca.token_of("work") is None
+
+
+def test_list_accounts_reports_token_presence(fake_home, fake_keychain):
+    _seed_live(fake_home, fake_keychain, uid="AAA")
+    ca.add("work")
+    _seed_live(fake_home, fake_keychain, email="b@y.io", uid="BBB")
+    ca.add("personal")
+    ca.set_token("work", TOKEN_A)
+
+    infos = {i.name: i for i in ca.list_accounts()}
+    assert infos["work"].has_token is True
+    assert infos["personal"].has_token is False
+
+
+def test_set_token_trims_surrounding_whitespace(fake_home, fake_keychain):
+    _seed_live(fake_home, fake_keychain)
+    ca.add("work")
+    ca.set_token("work", f"  {TOKEN_A}\n")
+    assert ca.token_of("work") == TOKEN_A
+
+
+def test_use_preserves_setup_token_on_outgoing_account(fake_home, fake_keychain):
+    """Switching AWAY must not wipe the outgoing account's saved setupToken.
+    `use`/`login` write the outgoing account's live snapshot back into its slot;
+    that snapshot has no setupToken, so a naive overwrite would drop it.
+    """
+    _two_accounts(fake_home, fake_keychain)  # live = personal
+    ca.set_token("personal", TOKEN_B)
+    ca.set_token("work", TOKEN_A)
+
+    ca.use("work")  # switches away from personal -> write-back personal
+
+    assert ca.token_of("personal") == TOKEN_B
+    assert ca.token_of("work") == TOKEN_A
+
+
+def test_use_does_not_leak_token_into_previous_slot(fake_home, fake_keychain):
+    """The reserved __previous__ snapshot must not carry a setupToken."""
+    _two_accounts(fake_home, fake_keychain)  # live = personal
+    ca.set_token("personal", TOKEN_B)
+
+    ca.use("work")
+
+    store = json.loads(keychain.read_secret(ca.STORE_SERVICE, ca.STORE_ACCOUNT))
+    assert "setupToken" not in store["accounts"][ca.PREVIOUS_NAME]
+
+
+def test_remove_clears_token(fake_home, fake_keychain):
+    _seed_live(fake_home, fake_keychain)
+    ca.add("work")
+    ca.set_token("work", TOKEN_A)
+    ca.remove("work")
+    # re-adding the same name must not resurrect the old token
+    _seed_live(fake_home, fake_keychain, email="c@z.io", uid="CCC")
+    ca.add("work")
+    assert ca.token_of("work") is None

@@ -52,6 +52,7 @@ class AccountInfo:
     name: str
     active: bool
     subscription: str | None
+    has_token: bool = False
 
 
 @dataclass(frozen=True)
@@ -132,6 +133,35 @@ def _validate_name(name: str) -> None:
             f"invalid account name `{name}` "
             "(use letters, digits, dot, dash, underscore)"
         )
+
+
+def _validate_token(token: str) -> str:
+    """Normalize + validate a `claude setup-token` value (CLAUDE_CODE_OAUTH_TOKEN).
+
+    These are OAuth *subscription* tokens (`sk-ant-oat...`), NOT metered API keys
+    (`sk-ant-api...`). Reject anything that isn't shaped like an oat token so a
+    stray API key can't be stored and silently divert billing.
+    """
+    stripped = (token or "").strip()
+    if not stripped.startswith("sk-ant-oat"):
+        raise AccountError(
+            "invalid OAuth token — expected a `claude setup-token` value "
+            "(starts with `sk-ant-oat`), not an API key"
+        )
+    return stripped
+
+
+def _writeback_outgoing(store: dict[str, Any], name: str, snap: dict[str, Any]) -> None:
+    """Replace `name`'s record with the live snapshot, PRESERVING its setupToken.
+
+    `snap` (from `_snapshot_live`) carries only credential+identity, so a plain
+    overwrite would drop a saved per-tab token. Keep it.
+    """
+    token = store["accounts"].get(name, {}).get("setupToken")
+    rec = dict(snap)
+    if token is not None:
+        rec["setupToken"] = token
+    store["accounts"][name] = rec
 
 
 def _subscription_of(record: dict[str, Any]) -> str | None:
@@ -219,7 +249,7 @@ def login(
         before_snap = _snapshot_live(before_creds)
         outgoing = _match_visible_name(store, before_snap["oauthAccount"])
         if outgoing:
-            store["accounts"][outgoing] = before_snap
+            _writeback_outgoing(store, outgoing, before_snap)
             _save_store(store)
     runner = login_fn or _run_claude_login_default
     if runner() != 0:
@@ -287,9 +317,42 @@ def list_accounts() -> list[AccountInfo]:
     store = _load_store()
     active = store.get("active")
     return [
-        AccountInfo(name=name, active=(name == active), subscription=_subscription_of(rec))
+        AccountInfo(
+            name=name,
+            active=(name == active),
+            subscription=_subscription_of(rec),
+            has_token=bool(rec.get("setupToken")),
+        )
         for name, rec in sorted(_visible(store).items())
     ]
+
+
+def set_token(name: str, token: str) -> None:
+    """Save a long-lived per-tab token (CLAUDE_CODE_OAUTH_TOKEN) for `name`.
+
+    From `claude setup-token`, run while logged in to claude.ai as that account.
+    The account↔token binding is user-asserted — setup-token leaves no local
+    identity trace to verify against (see the design spike), so dotsync trusts
+    the caller's `name`.
+    """
+    store = _load_store()
+    if name not in _visible(store):
+        raise AccountError(f"no saved account `{name}`")
+    store["accounts"][name]["setupToken"] = _validate_token(token)
+    _save_store(store)
+
+
+def token_of(name: str) -> str | None:
+    """The saved per-tab token for `name`, or None if it has none.
+
+    Raises `AccountError` if `name` isn't a saved account, so callers can tell
+    "no such account" apart from "account exists but no token yet".
+    """
+    store = _load_store()
+    visible = _visible(store)
+    if name not in visible:
+        raise AccountError(f"no saved account `{name}`")
+    return visible[name].get("setupToken")
 
 
 def remove(name: str) -> None:
@@ -387,7 +450,7 @@ def use(name: str) -> None:
         # switch back reinstalls a revoked token -> "Not logged in".
         outgoing = _match_visible_name(store, snap["oauthAccount"])
         if outgoing:
-            store["accounts"][outgoing] = snap
+            _writeback_outgoing(store, outgoing, snap)
         store["accounts"][PREVIOUS_NAME] = snap
     _install(visible[name], live_creds)
     store["active"] = name

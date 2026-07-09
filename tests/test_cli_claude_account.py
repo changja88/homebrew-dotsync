@@ -99,3 +99,77 @@ def test_login_dispatches_to_account_login(fake_home, fake_keychain, monkeypatch
     rc = main(["claude", "account", "login", "gmail2"])
     assert rc == 0
     assert calls == ["gmail2"]
+
+
+# --- per-tab token subcommands -------------------------------------------------
+
+TOKEN = "sk-ant-oat01-" + "Z" * 40
+
+
+def test_token_set_reads_hidden_prompt_and_saves(
+    fake_home, fake_keychain, monkeypatch, capsys
+):
+    from dotsync import claude_account as ca
+
+    _seed_live(fake_home, fake_keychain)
+    main(["claude", "account", "add", "work"])
+    monkeypatch.setattr("getpass.getpass", lambda *a, **k: TOKEN)
+    capsys.readouterr()
+
+    rc = main(["claude", "account", "token", "set", "work"])
+    assert rc == 0
+    assert ca.token_of("work") == TOKEN
+    # the token itself must not be echoed to stdout
+    assert TOKEN not in capsys.readouterr().out
+
+
+def test_token_set_unknown_account_nonzero(fake_home, fake_keychain, monkeypatch):
+    _seed_live(fake_home, fake_keychain)
+    monkeypatch.setattr("getpass.getpass", lambda *a, **k: TOKEN)
+    rc = main(["claude", "account", "token", "set", "ghost"])
+    assert rc != 0
+
+
+def test_env_prints_token_only(fake_home, fake_keychain, monkeypatch, capsys):
+    _seed_live(fake_home, fake_keychain)
+    main(["claude", "account", "add", "work"])
+    monkeypatch.setattr("getpass.getpass", lambda *a, **k: TOKEN)
+    main(["claude", "account", "token", "set", "work"])
+    capsys.readouterr()
+
+    rc = main(["claude", "account", "env", "work"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out.strip() == TOKEN  # token, nothing else
+
+
+def test_env_no_token_exit_1(fake_home, fake_keychain, capsys):
+    _seed_live(fake_home, fake_keychain)
+    main(["claude", "account", "add", "work"])  # no token yet
+    capsys.readouterr()
+    rc = main(["claude", "account", "env", "work"])
+    assert rc == 1
+
+
+def test_env_no_account_exit_3(fake_home, fake_keychain, capsys):
+    _seed_live(fake_home, fake_keychain)
+    main(["claude", "account", "add", "work"])
+    capsys.readouterr()
+    rc = main(["claude", "account", "env", "ghost"])
+    assert rc == 3
+
+
+def test_list_porcelain_has_token_column(fake_home, fake_keychain, monkeypatch, capsys):
+    _seed_live(fake_home, fake_keychain)
+    main(["claude", "account", "add", "work"])
+    monkeypatch.setattr("getpass.getpass", lambda *a, **k: TOKEN)
+    main(["claude", "account", "token", "set", "work"])
+    capsys.readouterr()
+
+    main(["claude", "account", "list", "--porcelain"])
+    line = next(l for l in capsys.readouterr().out.splitlines() if l.startswith("work"))
+    fields = line.split("\t")
+    # existing 3 fields unchanged; token flag appended as a trailing 4th column
+    assert fields[0] == "work"
+    assert fields[2] == "max"
+    assert fields[3] == "token"
