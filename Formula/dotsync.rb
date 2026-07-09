@@ -1,8 +1,8 @@
 class Dotsync < Formula
   desc "Sync app configs with a local folder"
   homepage "https://github.com/changja88/homebrew-dotsync"
-  url "https://github.com/changja88/homebrew-dotsync/archive/refs/tags/v0.1.32.tar.gz"
-  sha256 "d03f57a6a83cfbb5b23e3305a85d0ce94994a9e19fa386e2272f692ca9b275a2"
+  url "https://github.com/changja88/homebrew-dotsync/archive/refs/tags/v0.1.33.tar.gz"
+  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "MIT"
 
   # Reuse an existing Python 3.12+ binary if the user already has one — avoids
@@ -46,6 +46,6 @@ class Dotsync < Formula
   end
 
   test do
-    assert_match "dotsync 0.1.32", shell_output("#{bin}/dotsync --version")
+    assert_match "dotsync 0.1.33", shell_output("#{bin}/dotsync --version")
   end
 end
