@@ -248,7 +248,7 @@ dotsync claude account remove work   # forget a saved account
 
 - Switching swaps the Keychain OAuth token **and** the on-disk identity in `~/.claude.json` (`oauthAccount`/`userID`) together — the design-tool auth (`designOauth`) is left untouched.
 - The credential being replaced is auto-snapshotted first, so a switch is always undoable (`undo`) even if the current login was never saved.
-- `add` saves your current login; `login` runs `claude auth login` for you then saves the result (its name is optional — omitted, it's derived from the account's email). `login` never logs you out (a logout can revoke a saved account's tokens) and refuses to duplicate the account you're already on.
+- `add` saves your current login; `login` runs `claude auth login` for you then saves the result (its name is optional — omitted, it's derived from the account's email). `login` never logs you out (a logout can revoke a saved account's tokens), and both `add` and `login` refuse to register an account that's already saved under another name — each Claude account is stored once.
 - **Start a new Claude Code session** to pick up the switched account.
 - These accounts live in the Keychain, not the sync folder — `dotsync backup`/`apply` never touch them, and a new machine starts with zero saved accounts.
 
@@ -526,7 +526,7 @@ dotsync claude account remove work   # 저장된 계정 삭제
 
 - 전환은 Keychain OAuth 토큰**과** `~/.claude.json` 의 온디스크 정체성(`oauthAccount`/`userID`)을 함께 교체한다 — 디자인 툴 인증(`designOauth`)은 건드리지 않는다.
 - 교체되는 자격증명은 먼저 자동 스냅샷되므로, 현재 로그인을 저장하지 않았어도 전환은 항상 되돌릴 수 있다(`undo`).
-- `add`는 현재 로그인을 저장하고, `login`은 `claude auth login`을 대신 실행한 뒤 그 결과를 저장한다(이름은 생략 가능 — 생략하면 계정 이메일에서 자동 유도). `login`은 로그아웃을 하지 않으며(로그아웃은 저장된 계정의 토큰을 revoke할 수 있음), 이미 로그인돼 있는 계정을 중복 저장하지 않는다.
+- `add`는 현재 로그인을 저장하고, `login`은 `claude auth login`을 대신 실행한 뒤 그 결과를 저장한다(이름은 생략 가능 — 생략하면 계정 이메일에서 자동 유도). `login`은 로그아웃을 하지 않으며(로그아웃은 저장된 계정의 토큰을 revoke할 수 있음), `add`와 `login` 모두 이미 저장된 계정을 다른 이름으로 중복 등록하지 않는다(각 Claude 계정은 한 번만 저장).
 - 전환을 반영하려면 **Claude Code 세션을 새로 시작**한다.
 - 이 계정들은 sync 폴더가 아니라 Keychain 에 있다 — `dotsync backup`/`apply` 는 이들을 건드리지 않고, 새 머신은 저장된 계정 0개로 시작한다.
 
