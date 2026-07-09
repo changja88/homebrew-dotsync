@@ -225,51 +225,37 @@ Legend:
 - `✗ missing` — at least one side is absent
 - `· unknown` — couldn't determine (e.g., BTT not running)
 
-#### 5. Switch Claude accounts (auth-token switching)
+#### 5. Per-tab Claude accounts (run different accounts in different tabs)
 
-Use several Claude logins with one shared local config — only the auth credential is swapped. Accounts are stored **only in the macOS Keychain** (no plaintext on disk), so they do **not** travel with the sync folder — each machine keeps its own. Independent of `init`/`backup`/`apply`; works without a sync folder.
+Map account names to `claude setup-token` values so **different terminal tabs can run different Claude accounts at the same time** — each billed to its own subscription. Tokens are stored **only in the macOS Keychain** (no plaintext on disk), so they don't travel with the sync folder. dotsync never touches your machine-global Claude login or `~/.claude.json` — for that, use Claude Code's own `claude auth login`. Independent of `init`/`backup`/`apply`; works without a sync folder.
 
 ```bash
-# save the account you're logged in as right now, under a name
-dotsync claude account add work
-
-# ...to add another account: either log into it first then `add`, or let
-# dotsync run the browser login for you and save the result:
-dotsync claude account login            # opens the browser login, then saves (name optional)
-dotsync claude account login personal   # ...or pass an explicit name
-
-dotsync claude account list          # ● marks the active one, with plan
-dotsync claude account current       # which account is live right now
-dotsync claude account use work      # switch (asks to confirm; --yes to skip)
-dotsync claude account use           # no name → interactive picker (current pre-selected)
-dotsync claude account undo          # revert the last switch
-dotsync claude account remove work   # forget a saved account
-
-# per-tab identity (run different accounts in different terminal tabs at once)
-dotsync claude account token set work   # paste a `claude setup-token` value (hidden prompt)
-dotsync claude account env work         # print that token to stdout (for scripts/launcher)
+dotsync claude account set work                    # save a `claude setup-token` value (paste at a hidden prompt)
+dotsync claude account set work sk-ant-oat01-...    # ...or pass it directly
+dotsync claude account list                        # list saved tab accounts
+dotsync claude account remove work                 # forget one
+dotsync claude account env work                    # print its token to stdout (for scripts)
 ```
 
-**Per-tab identity (optional).** The switching above is *machine-global* — one live account at a time. To run **different accounts in different terminal tabs simultaneously**, save each account's long-lived subscription token (`CLAUDE_CODE_OAUTH_TOKEN`, from `claude setup-token`) and inject it per process:
+**One-time setup, per account:**
+
+1. In your browser, sign in to claude.ai **as that account** (use a separate browser profile / incognito window so both accounts coexist).
+2. `claude setup-token` → copy the printed `sk-ant-oat01-…` value (1-year, subscription-billed).
+3. `dotsync claude account set <name>` → paste at the hidden prompt (invisible input is normal).
+
+**Daily use — the launcher picks per tab (recommended):** open a new terminal tab, run `claude`; the launcher shows a picker, you choose the account, and it injects that token into **this tab only** and states the identity (a `this tab: <name>` row + the terminal tab title). Other tabs pick other accounts — all running at once.
+
+**Or manually (no launcher):**
 
 ```bash
-# once per account: log into claude.ai AS THAT ACCOUNT in your browser, then
-claude setup-token                      # prints an sk-ant-oat01-... token (1-year, subscription)
-dotsync claude account token set work   # paste it under the matching name (input hidden)
-
-# then, per tab:
 export CLAUDE_CODE_OAUTH_TOKEN="$(dotsync claude account env work)"; claude
 ```
 
-- This is a **subscription** token (`sk-ant-oat01-…`), not a metered API key — usage counts against your Pro/Max plan. To keep it that way, unset `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` in that shell (they outrank it) and avoid `claude -p` (print mode can bill as API).
-- `setup-token` binds to whichever account is signed in to claude.ai in your browser; dotsync trusts the name you pass (it can't verify which account an opaque token belongs to). Tokens are stored in the Keychain only.
-- The token is long-lived but if it expires mid-session that tab must be relaunched (there's no in-process refresh).
-
-- Switching swaps the Keychain OAuth token **and** the on-disk identity in `~/.claude.json` (`oauthAccount`/`userID`) together — the design-tool auth (`designOauth`) is left untouched.
-- The credential being replaced is auto-snapshotted first, so a switch is always undoable (`undo`) even if the current login was never saved.
-- `add` saves your current login; `login` runs `claude auth login` for you then saves the result (its name is optional — omitted, it's derived from the account's email). `login` never logs you out (a logout can revoke a saved account's tokens), and both `add` and `login` refuse to register an account that's already saved under another name — each Claude account is stored once.
-- **Start a new Claude Code session** to pick up the switched account.
-- These accounts live in the Keychain, not the sync folder — `dotsync backup`/`apply` never touch them, and a new machine starts with zero saved accounts.
+- These are **subscription** tokens (`sk-ant-oat01-…`), not metered API keys — usage counts against your Pro/Max plan. To keep it that way, don't set `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` or an `apiKeyHelper` in `settings.json` (they outrank the token), and avoid `claude -p` (print mode can bill as API). The launcher scrubs those env vars from the tab automatically and warns if `apiKeyHelper` is configured.
+- `setup-token` binds to whichever account is signed in to claude.ai in your browser; dotsync trusts the name you pass (it can't verify which account an opaque token belongs to).
+- `claude auth status` reports your machine-global login, **not** the injected tab token — trust the launcher's `this tab:` row / tab title instead.
+- Tokens are long-lived (~1 year); if one expires mid-session, relaunch that tab (there's no in-process refresh).
+- Accounts live in the Keychain, not the sync folder — `dotsync backup`/`apply` never touch them, and a new machine starts with none.
 
 #### Change the folder or app list later
 
@@ -522,51 +508,37 @@ $ dotsync status
 - `✗ missing` — 한쪽이라도 파일이 없음
 - `· unknown` — 비교 불가 (예: BTT 미실행)
 
-#### 5. Claude 계정 전환 (인증 토큰 교체)
+#### 5. 탭별 Claude 계정 (탭마다 다른 계정 동시 사용)
 
-로컬 설정 하나를 공유하면서 여러 Claude 로그인을 오간다 — 인증 자격증명만 교체된다. 계정은 **macOS Keychain에만** 저장되며(평문 디스크 저장 없음), 그래서 sync 폴더를 따라 이동하지 않는다 — 머신마다 따로 관리한다. `init`/`backup`/`apply`와 무관하고 sync 폴더 없이도 동작한다.
+계정 이름을 `claude setup-token` 값에 매핑해서 **여러 터미널 탭이 서로 다른 Claude 계정을 동시에** 쓰게 한다 — 각 탭은 자기 구독으로 청구된다. 토큰은 **macOS Keychain에만** 저장되며(평문 디스크 저장 없음) sync 폴더를 따라 이동하지 않는다. dotsync는 머신 전역 Claude 로그인이나 `~/.claude.json`을 건드리지 않는다 — 그건 Claude Code 자체 `claude auth login`이 한다. `init`/`backup`/`apply`와 무관하고 sync 폴더 없이도 동작한다.
 
 ```bash
-# 지금 로그인돼 있는 계정을 이름 붙여 저장
-dotsync claude account add work
-
-# ...다른 계정 추가: 먼저 로그인 후 `add`, 또는 dotsync가 브라우저 로그인을
-# 대신 실행하고 그 결과를 저장:
-dotsync claude account login            # 브라우저 로그인 실행 후 저장 (이름 생략 시 이메일에서 자동)
-dotsync claude account login personal   # ...또는 이름을 직접 지정
-
-dotsync claude account list          # ● 가 활성 계정, 옆에 요금제
-dotsync claude account current       # 지금 live 계정
-dotsync claude account use work      # 전환 (확인 프롬프트; --yes 로 생략)
-dotsync claude account use           # 이름 생략 → 대화형 picker (현재 계정 기본 선택)
-dotsync claude account undo          # 직전 전환 되돌리기
-dotsync claude account remove work   # 저장된 계정 삭제
-
-# 탭별 정체성 (여러 터미널 탭에서 서로 다른 계정 동시 사용)
-dotsync claude account token set work   # `claude setup-token` 값을 붙여넣기(가려진 입력)
-dotsync claude account env work         # 그 토큰을 stdout에 출력(스크립트/launcher용)
+dotsync claude account set work                    # `claude setup-token` 값 저장(가려진 프롬프트에 붙여넣기)
+dotsync claude account set work sk-ant-oat01-...    # ...또는 인자로 직접 전달
+dotsync claude account list                        # 저장된 탭 계정 목록
+dotsync claude account remove work                 # 하나 삭제
+dotsync claude account env work                    # 그 토큰을 stdout에 출력(스크립트용)
 ```
 
-**탭별 정체성 (선택).** 위 전환은 *머신 전역* — 한 번에 한 계정만 live다. **여러 터미널 탭에서 서로 다른 계정을 동시에** 쓰려면, 계정마다 장수명 구독 토큰(`CLAUDE_CODE_OAUTH_TOKEN`, `claude setup-token` 산출)을 저장해 프로세스별로 주입한다:
+**계정마다 1회 셋업:**
+
+1. 브라우저에서 claude.ai를 **그 계정으로 로그인**(계정이 공존하도록 별도 브라우저 프로필/시크릿 창 사용).
+2. `claude setup-token` → 출력된 `sk-ant-oat01-…` 값 복사(1년, 구독 청구).
+3. `dotsync claude account set <name>` → 가려진 프롬프트에 붙여넣기(입력이 안 보이는 게 정상).
+
+**일상 사용 — launcher가 탭마다 선택(권장):** 새 터미널 탭에서 `claude` 실행 → 피커가 뜨면 계정 선택 → 그 토큰을 **이 탭에만** 주입하고 신원을 표기(`this tab: <name>` 행 + 터미널 탭 제목). 다른 탭은 다른 계정 선택 → 동시에 실행.
+
+**또는 수동(launcher 없이):**
 
 ```bash
-# 계정마다 한 번: 브라우저에서 claude.ai를 그 계정으로 로그인한 뒤
-claude setup-token                      # sk-ant-oat01-... 토큰 출력(1년, 구독)
-dotsync claude account token set work   # 해당 이름으로 붙여넣기(입력 가려짐)
-
-# 이후 탭마다:
 export CLAUDE_CODE_OAUTH_TOKEN="$(dotsync claude account env work)"; claude
 ```
 
-- 이건 **구독** 토큰(`sk-ant-oat01-…`)이지 종량제 API 키가 아니다 — 사용량이 Pro/Max 플랜에서 차감된다. 그러려면 그 셸에서 `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`을 해제하고(이들이 우선순위상 이김) `claude -p`(print 모드는 API로 과금될 수 있음)를 피한다.
-- `setup-token`은 브라우저에 로그인된 claude.ai 계정에 묶인다. dotsync는 전달한 이름을 신뢰한다(불투명 토큰이 어느 계정 것인지 검증 불가). 토큰은 Keychain에만 저장된다.
-- 토큰은 장수명이지만 세션 중 만료되면 그 탭은 재실행해야 한다(in-process 갱신 없음).
-
-- 전환은 Keychain OAuth 토큰**과** `~/.claude.json` 의 온디스크 정체성(`oauthAccount`/`userID`)을 함께 교체한다 — 디자인 툴 인증(`designOauth`)은 건드리지 않는다.
-- 교체되는 자격증명은 먼저 자동 스냅샷되므로, 현재 로그인을 저장하지 않았어도 전환은 항상 되돌릴 수 있다(`undo`).
-- `add`는 현재 로그인을 저장하고, `login`은 `claude auth login`을 대신 실행한 뒤 그 결과를 저장한다(이름은 생략 가능 — 생략하면 계정 이메일에서 자동 유도). `login`은 로그아웃을 하지 않으며(로그아웃은 저장된 계정의 토큰을 revoke할 수 있음), `add`와 `login` 모두 이미 저장된 계정을 다른 이름으로 중복 등록하지 않는다(각 Claude 계정은 한 번만 저장).
-- 전환을 반영하려면 **Claude Code 세션을 새로 시작**한다.
-- 이 계정들은 sync 폴더가 아니라 Keychain 에 있다 — `dotsync backup`/`apply` 는 이들을 건드리지 않고, 새 머신은 저장된 계정 0개로 시작한다.
+- 이건 **구독** 토큰(`sk-ant-oat01-…`)이지 종량제 API 키가 아니다 — Pro/Max 플랜에서 차감된다. 그러려면 `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`을 설정하지 말고 `settings.json`에 `apiKeyHelper`도 두지 말 것(이들이 토큰보다 우선), `claude -p`(print 모드는 API로 과금될 수 있음)도 피한다. launcher는 그 env 변수들을 탭에서 자동 제거하고 `apiKeyHelper`가 설정돼 있으면 경고한다.
+- `setup-token`은 브라우저에 로그인된 claude.ai 계정에 묶인다. dotsync는 전달한 이름을 신뢰한다(불투명 토큰이 어느 계정 것인지 검증 불가).
+- `claude auth status`는 머신 전역 로그인을 보여주지 **주입된 탭 토큰이 아니다** — launcher의 `this tab:` 행/탭 제목을 믿을 것.
+- 토큰은 장수명(~1년)이지만 세션 중 만료되면 그 탭을 재실행한다(in-process 갱신 없음).
+- 이 계정들은 sync 폴더가 아니라 Keychain에 있다 — `dotsync backup`/`apply`는 건드리지 않고, 새 머신은 0개로 시작한다.
 
 #### 폴더/앱 목록을 나중에 바꾸고 싶으면
 

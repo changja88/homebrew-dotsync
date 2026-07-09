@@ -20,16 +20,33 @@ class KeychainError(RuntimeError):
     """A `security` invocation failed (non-zero exit)."""
 
 
+# `security` exit code for errSecItemNotFound — the item is genuinely absent.
+# EVERY OTHER non-zero exit (45 ACL deny, 51 keychain locked, 128 dismissed
+# prompt, ...) is a REAL error and must NOT be mistaken for "absent".
+_ITEM_NOT_FOUND = 44
+
+
 def read_secret(service: str, account: str) -> str | None:
-    """Return the stored secret for (service, account), or None if absent."""
+    """Return the stored secret for (service, account), or None if genuinely absent.
+
+    Raises `KeychainError` on any real read failure. This distinction is
+    load-bearing: a caller that does read-modify-write over a consolidated item
+    would, if a transient failure were reported as None (= "empty"), persist an
+    empty value and destroy the stored data. Fail closed instead.
+    """
     result = subprocess.run(
         ["security", "find-generic-password", "-s", service, "-a", account, "-w"],
         capture_output=True,
         text=True,
     )
-    if result.returncode != 0:
+    if result.returncode == 0:
+        return result.stdout.rstrip("\n")
+    if result.returncode == _ITEM_NOT_FOUND:
         return None
-    return result.stdout.rstrip("\n")
+    raise KeychainError(
+        f"failed to read keychain item {service}/{account}: "
+        f"exit {result.returncode}: {result.stderr.strip() or 'unknown error'}"
+    )
 
 
 def write_secret(service: str, account: str, secret: str) -> None:

@@ -41,6 +41,22 @@ def test_read_secret_returns_none_when_absent():
         assert keychain.read_secret("svc", "missing") is None
 
 
+def test_read_secret_raises_on_transient_error_not_absent():
+    """A non-44 failure (keychain locked=51, ACL deny=45, dismissed prompt) is a
+    REAL error, not "absent". It must raise, never return None — else a caller
+    treats a transient read failure as an empty store and a later write wipes it.
+    """
+    import pytest
+
+    for code in (45, 51, 128, 1):
+        with patch(
+            "dotsync.keychain.subprocess.run",
+            return_value=_completed(returncode=code, stderr="SecKeychain error"),
+        ):
+            with pytest.raises(keychain.KeychainError):
+                keychain.read_secret("svc", "acct")
+
+
 def test_write_secret_uses_update_flag_and_passes_secret_on_argv():
     with patch(
         "dotsync.keychain.subprocess.run", return_value=_completed()
