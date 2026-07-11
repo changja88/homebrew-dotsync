@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -20,7 +21,6 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from local_dev.serena_mcp_management.external_cli import (
-    dotsync_command,
     graphify_command,
     graphify_install_command,
     homebrew_node_command,
@@ -61,6 +61,7 @@ from local_dev.serena_mcp_management.ui import (
     SpinnerTicker,
     confirm,
     render_inline_row,
+    select_one,
     style_criteria,
     style_count,
     style_inventory_counts,
@@ -247,20 +248,19 @@ def clear_terminal_before_child() -> None:
 def _launch_bare_child(
     args: list[str],
     *,
-    tab_account: "TabAccount | None" = None,
+    tab_profile: "TabProfile | None" = None,
     stream: TextIO | None = None,
 ) -> int:
     """Run the real agent binary without the scoped Serena MCP server.
 
-    Still honors a resolved per-tab account: injects its profile + token and
-    states the identity, so the account path works even when Serena is
-    unavailable."""
+    Still honors a resolved per-tab Claude profile, so account isolation works
+    even when Serena is unavailable."""
 
     client_type = infer_client_type(os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0]))
     real_binary = find_real_binary(client_type)
     if os.environ.get("SERENA_AGENT_CLEAR_BEFORE_CHILD") == "1":
         clear_terminal_before_child()
-    env = _tab_launch_env(tab_account, stream if stream is not None else sys.stdout)
+    env = _tab_launch_env(tab_profile, stream if stream is not None else sys.stdout)
     if env is not None:
         return int(subprocess.run([real_binary, *args], env=env).returncode)
     return int(subprocess.run([real_binary, *args]).returncode)
@@ -283,7 +283,12 @@ def main(argv: list[str] | None = None) -> int:
     """Run the scoped Serena launcher."""
 
     args = list(sys.argv[1:] if argv is None else argv)
-    return _main_v2(args)
+    try:
+        if os.environ.get("SERENA_AGENT_PROFILE_ONLY") == "1":
+            return _run_claude_profile_command(args)
+        return _main_v2(args)
+    except TabProfileError:
+        return 2
 
 
 def _run_launch_prep_v2(
@@ -414,11 +419,11 @@ def _main_v2(args: list[str]) -> int:
     interactive = os.environ.get("SERENA_AGENT_INTERACTIVE") == "1"
     out = sys.stdout
 
-    tab_account: "TabAccount | None" = None
+    tab_profile: "TabProfile | None" = None
     if interactive:
         _render_preflight_overview_v2()
         _run_serena_cli_install_v2()
-        tab_account = _resolve_tab_account_v2(
+        tab_profile = _resolve_tab_profile(
             infer_client_type(os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0])),
             stream=out,
         )
@@ -435,7 +440,7 @@ def _main_v2(args: list[str]) -> int:
 
     if serena_state in {"skipped", "failed"}:
         warnings.append(f"serena project create {serena_state}")
-        return _launch_bare_child(args, tab_account=tab_account, stream=out)
+        return _launch_bare_child(args, tab_profile=tab_profile, stream=out)
 
     if serena_server_command() is None:
         out.write(
@@ -443,7 +448,7 @@ def _main_v2(args: list[str]) -> int:
             " launching without scoped server\n"
         )
         out.flush()
-        return _launch_bare_child(args, tab_account=tab_account, stream=out)
+        return _launch_bare_child(args, tab_profile=tab_profile, stream=out)
 
     summary_state = _run_launch_prep_v2() if interactive else None
 
@@ -475,7 +480,7 @@ def _main_v2(args: list[str]) -> int:
         open_dashboard_if_requested(record.dashboard_url)
         if os.environ.get("SERENA_AGENT_CLEAR_BEFORE_CHILD") == "1":
             clear_terminal_before_child()
-        tab_env = _tab_launch_env(tab_account, out)
+        tab_env = _tab_launch_env(tab_profile, out)
         if tab_env is not None:
             child = subprocess.Popen(cmd, cwd=str(project_root), env=tab_env)
         else:
@@ -1093,18 +1098,24 @@ def _run_node_runtime_check_v2(
     out.flush()
 
 
-class TabAccount(NamedTuple):
-    """A resolved per-tab Claude identity: the account name + the token to inject
-    as CLAUDE_CODE_OAUTH_TOKEN into that tab's child process."""
+class TabProfile(NamedTuple):
+    """The Claude login profile selected for one terminal tab."""
 
     name: str
-    token: str
 
 
-# Credential sources that OUTRANK CLAUDE_CODE_OAUTH_TOKEN in Claude Code's auth
-# precedence — if any is left in the child env it wins and diverts identity/
-# billing (API metering), silently defeating the injected subscription token.
-_OVERRIDING_ENV_VARS = (
+class TabProfileError(RuntimeError):
+    """A selected Claude profile could not be prepared safely."""
+
+
+ADD_PROFILE_CHOICE = "+ Add account profile"
+_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+# A selected profile must have exactly one authentication source: Claude's own
+# /login credential for that CLAUDE_CONFIG_DIR. Remove inherited API/provider
+# credentials and legacy setup-token injection before starting the child.
+_COMPETING_CREDENTIAL_ENV_VARS = (
+    "CLAUDE_CODE_OAUTH_TOKEN",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "CLAUDE_CODE_USE_BEDROCK",
@@ -1112,21 +1123,18 @@ _OVERRIDING_ENV_VARS = (
     "CLAUDE_CODE_USE_FOUNDRY",
 )
 
-# The machine-global /login credential ALSO outranks the injected token (Claude
-# Code ≥2.1 reads it before CLAUDE_CODE_OAUTH_TOKEN, contrary to the documented
-# precedence — verified empirically via OTEL user.id). It lives in the macOS
-# Keychain, keyed by config dir, so it can't be scrubbed from the env; the only
-# way to make the tab token effective is a per-account CLAUDE_CONFIG_DIR that
-# never holds a login. The profile stays a normal-looking setup by sharing the
-# user's durable assets with ~/.claude via symlinks (writes flow through to the
-# shared files; volatile state stays per-profile) and seeding .claude.json —
-# minus the keys that carry the global login's identity — for onboarding/trust
-# continuity.
+# Claude's macOS login credential is namespaced by CLAUDE_CONFIG_DIR. Each tab
+# therefore gets a distinct profile directory, while durable user assets remain
+# shared with ~/.claude through symlinks.
 _PROFILE_SHARED_ENTRIES = (
     "plugins",
     "skills",
     "agents",
+    "agent-memory",
     "commands",
+    "rules",
+    "output-styles",
+    "themes",
     "projects",
     "plans",
     "tasks",
@@ -1151,6 +1159,23 @@ def _tab_profile_root() -> Path:
     )
 
 
+def _valid_profile_name(name: str) -> bool:
+    return bool(_PROFILE_NAME_RE.fullmatch(name or ""))
+
+
+def _tab_profile_names(profile_root: Path) -> list[str]:
+    """Return safe, real profile-directory names in stable display order."""
+    if not profile_root.exists():
+        return []
+    names = []
+    for child in profile_root.iterdir():
+        if child.is_symlink() or not child.is_dir():
+            continue
+        if _valid_profile_name(child.name):
+            names.append(child.name)
+    return sorted(names)
+
+
 def _ensure_tab_profile(
     name: str,
     *,
@@ -1162,11 +1187,21 @@ def _ensure_tab_profile(
 
     Idempotent: existing symlinks and the profile's own evolving .claude.json
     are left alone; shared entries added to ~/.claude later are linked on the
-    next launch. Raises OSError when the profile can't be built — the caller
-    decides how to launch without it.
+    next launch. Raises when the profile cannot be built safely; launchers fail
+    closed rather than falling back to another account.
     """
-    home_claude = home_claude_dir if home_claude_dir is not None else Path.home() / ".claude"
-    home_state = home_state_file if home_state_file is not None else Path.home() / ".claude.json"
+    if not _valid_profile_name(name):
+        raise ValueError(f"invalid Claude profile name: {name!r}")
+    home_claude = (
+        home_claude_dir
+        if home_claude_dir is not None
+        else Path.home() / ".claude"
+    )
+    home_state = (
+        home_state_file
+        if home_state_file is not None
+        else Path.home() / ".claude.json"
+    )
     profile = profile_root / name
     profile.mkdir(parents=True, exist_ok=True)
     for entry in _PROFILE_SHARED_ENTRIES:
@@ -1186,132 +1221,97 @@ def _ensure_tab_profile(
     return profile
 
 
-def _child_env_for_tab(base: dict, token: str, config_dir: Path) -> dict:
-    """A child env = base + token + per-account config dir − every env source
-    that outranks the token.
-
-    Copies `base` (never mutates it) so `PATH`, `SERENA_REAL_*`, etc. survive.
-    """
+def _child_env_for_profile(base: dict, config_dir: Path) -> dict:
+    """Build an isolated Claude /login environment without mutating ``base``."""
     env = dict(base)
-    env["CLAUDE_CODE_OAUTH_TOKEN"] = token
     env["CLAUDE_CONFIG_DIR"] = str(config_dir)
-    for key in _OVERRIDING_ENV_VARS:
+    for key in _COMPETING_CREDENTIAL_ENV_VARS:
         env.pop(key, None)
     return env
 
 
 def _tab_launch_env(
-    tab_account: "TabAccount | None",
+    tab_profile: "TabProfile | None",
     out: TextIO,
     *,
     ensure_fn: "Callable[[str], Path] | None" = None,
 ) -> "dict | None":
-    """The env for this tab's child, or None for a plain (uninjected) launch.
-
-    On profile failure the launcher warns and injects nothing — it never claims
-    an identity it didn't deliver (the tab then runs as the machine-global
-    login, and says so)."""
-    if tab_account is None:
+    """Return the selected profile env, or ``None`` for a plain launch."""
+    if tab_profile is None:
         return None
     ensure = ensure_fn or (
         lambda name: _ensure_tab_profile(name, profile_root=_tab_profile_root())
     )
     try:
-        profile = ensure(tab_account.name)
-    except OSError as exc:
+        profile = ensure(tab_profile.name)
+    except (OSError, ValueError) as exc:
         out.write(
             render_inline_row(
-                "claude account",
-                f"WARNING: tab profile setup failed ({exc}) — launching on the "
-                f"machine-global login instead of `{tab_account.name}`",
+                "claude profile",
+                f"profile setup failed ({exc}) — aborting launch",
                 status="warn",
             )
         )
         out.flush()
-        return None
-    _emit_tab_identity(out, tab_account.name)
-    return _child_env_for_tab(os.environ.copy(), tab_account.token, profile)
+        raise TabProfileError(str(exc)) from exc
+    if _apikeyhelper_active(profile):
+        out.write(
+            render_inline_row(
+                "claude profile",
+                "WARNING: shared settings.json has apiKeyHelper; it may override /login",
+                status="warn",
+            )
+        )
+        out.flush()
+    _emit_tab_identity(out, tab_profile.name)
+    return _child_env_for_profile(os.environ.copy(), profile)
 
 
-def _parse_account_names(stdout: str) -> list[str]:
-    """Parse `account list --porcelain` (one account name per line)."""
-    return [line.strip() for line in stdout.splitlines() if line.strip()]
-
-
-def _apikeyhelper_active() -> bool:
-    """True if a settings.json `apiKeyHelper` is configured. It outranks the
-    injected CLAUDE_CODE_OAUTH_TOKEN in Claude Code's auth precedence and is NOT
-    an env var, so it can't be scrubbed — the injected tab token would be
-    silently overridden. Best-effort read; any error → assume not configured."""
-    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
-    bases = [Path(config_dir) if config_dir else Path.home() / ".claude"]
-    for base in bases:
-        try:
-            if json.loads((base / "settings.json").read_text()).get("apiKeyHelper"):
-                return True
-        except (OSError, ValueError):
-            continue
-    return False
+def _apikeyhelper_active(config_dir: Path) -> bool:
+    """Best-effort detection of a shared API-key helper that overrides login."""
+    try:
+        return bool(
+            json.loads((config_dir / "settings.json").read_text()).get("apiKeyHelper")
+        )
+    except (OSError, ValueError):
+        return False
 
 
 def _emit_tab_identity(out: TextIO, name: str) -> None:
-    """Make this tab's identity unmistakable: a framed row + the terminal tab
-    title (via OSC). The token account has no email claude can display, so the
-    launcher states the human-readable name itself."""
-    out.write(render_inline_row("this tab", f"{name}  · tab account", status="done"))
+    """Make the selected login profile visible in the row and terminal title."""
+    out.write(render_inline_row("this tab", f"{name}  · login profile", status="done"))
     out.write(f"\x1b]0;claude: {name}\x07")  # set terminal tab/window title
     out.flush()
 
 
-def _dotsync_account_list_default(argv: list[str]) -> tuple[int, str]:
-    result = subprocess.run(
-        argv + ["claude", "account", "list", "--porcelain"],
-        capture_output=True,
-        text=True,
-        timeout=3,
-    )
-    return result.returncode, result.stdout
+def _pick_tab_profile_default(names: list[str], *, allow_create: bool) -> str | None:
+    choices = [*names]
+    if allow_create:
+        choices.append(ADD_PROFILE_CHOICE)
+    return select_one("Pick Claude account for this tab", choices)
 
 
-def _dotsync_account_pick_default(argv: list[str]) -> str | None:
-    """Run dotsync's picker (UI on the inherited tty=stderr); capture the chosen
-    name from stdout. Returns None on cancel / non-tty / failure."""
-    result = subprocess.run(
-        argv + ["claude", "account", "pick"], stdout=subprocess.PIPE, text=True
-    )
-    if result.returncode != 0:
+def _prompt_new_tab_profile_name(out: TextIO) -> str | None:
+    out.write("  > New Claude account profile name: ")
+    out.flush()
+    try:
+        value = input().strip()
+    except (EOFError, KeyboardInterrupt):
         return None
-    return (result.stdout or "").strip() or None
+    return value or None
 
 
-def _dotsync_account_env_default(argv: list[str], name: str) -> str | None:
-    result = subprocess.run(
-        argv + ["claude", "account", "env", name],
-        capture_output=True,
-        text=True,
-        timeout=3,
-    )
-    if result.returncode != 0:
-        return None
-    return (result.stdout or "").strip() or None
-
-
-def _resolve_tab_account_v2(
+def _resolve_tab_profile(
     client: str,
     *,
     stream: TextIO | None = None,
-    resolve_fn: Callable[[], list[str] | None] | None = None,
-    list_fn: Callable[[list[str]], tuple[int, str]] | None = None,
+    profile_root: Path | None = None,
+    list_fn: Callable[[Path], list[str]] | None = None,
     pick_fn: Callable[[list[str]], "str | None"] | None = None,
-    token_fn: Callable[[list[str], str], "str | None"] | None = None,
-) -> "TabAccount | None":
-    """Resolve which saved tab account (and token) THIS tab should use, or None.
-
-    Fully best-effort — the primary `claude` launch is never blocked or slowed;
-    a missing / old / slow / failing dotsync is swallowed. 0 accounts → None
-    (plain launch). 1 account → use it. 2+ → interactive pick. Every saved tab
-    account has a token, so there is no token-less branch.
-    """
+    new_name_fn: Callable[[], "str | None"] | None = None,
+    allow_create: bool = False,
+) -> "TabProfile | None":
+    """Resolve a launcher-owned Claude profile for this terminal tab."""
     if client != "claude":
         return None
     out = stream if stream is not None else sys.stdout
@@ -1320,56 +1320,89 @@ def _resolve_tab_account_v2(
         # state it and stay out of the way (no picker either).
         out.write(
             render_inline_row(
-                "claude account",
-                "CLAUDE_CONFIG_DIR is set — per-tab account injection disabled",
+                "claude profile",
+                "CLAUDE_CONFIG_DIR is set — launcher profile selection disabled",
                 status="warn",
             )
         )
         out.flush()
         return None
-    dotsync = (resolve_fn or dotsync_command)()
-    if not dotsync:
-        return None
-    lister = list_fn or _dotsync_account_list_default
+    root = profile_root if profile_root is not None else _tab_profile_root()
+    lister = list_fn or _tab_profile_names
     try:
-        rc, stdout = lister(dotsync)
-    except Exception:
-        return None  # timeout / spawn failure — skip, never block the launch
-    if rc != 0:
-        return None  # old dotsync without the subcommand, keychain error, etc.
-    names = _parse_account_names(stdout)
-    if not names:
-        return None
-
-    if len(names) == 1:
-        chosen = names[0]
-    else:
-        picker = pick_fn or _dotsync_account_pick_default
-        try:
-            chosen = picker(dotsync)
-        except Exception:
-            return None
-        if not chosen:
-            return None
-
-    getter = token_fn or _dotsync_account_env_default
-    try:
-        token = getter(dotsync, chosen)
-    except Exception:
-        return None
-    if not token:
-        return None
-    if _apikeyhelper_active():
+        names = lister(root)
+    except OSError as exc:
         out.write(
             render_inline_row(
-                "claude account",
-                f"WARNING: apiKeyHelper in settings.json outranks the tab token — "
-                f"`{chosen}` may be overridden (billing/identity)",
-                status="warn",
+                "claude profile", f"profile discovery failed ({exc})", status="warn"
             )
         )
         out.flush()
-    return TabAccount(chosen, token)
+        return None
+    if not names:
+        if not allow_create:
+            return None
+        creator = new_name_fn or (lambda: _prompt_new_tab_profile_name(out))
+        chosen = creator()
+    elif len(names) == 1 and not allow_create:
+        chosen: str | None = names[0]
+    else:
+        picker = pick_fn or (
+            lambda options: _pick_tab_profile_default(
+                options, allow_create=allow_create
+            )
+        )
+        try:
+            chosen = picker(names)
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if chosen == ADD_PROFILE_CHOICE:
+            creator = new_name_fn or (lambda: _prompt_new_tab_profile_name(out))
+            chosen = creator()
+    if not chosen and names:
+        out.write(
+            render_inline_row(
+                "claude profile", "selection cancelled — aborting launch", status="warn"
+            )
+        )
+        out.flush()
+        raise TabProfileError("Claude profile selection cancelled")
+    if not chosen:
+        return None
+    if not _valid_profile_name(chosen):
+        out.write(
+            render_inline_row(
+                "claude profile", f"invalid profile name `{chosen}`", status="warn"
+            )
+        )
+        out.flush()
+        return None
+    return TabProfile(chosen)
+
+
+def _run_claude_profile_command(
+    args: list[str], *, stream: TextIO | None = None
+) -> int:
+    """Run ``claude auth`` against a profile without Serena preflight."""
+    out = stream if stream is not None else sys.stdout
+    if len(args) < 2 or args[0] != "auth" or args[1] not in {
+        "login",
+        "logout",
+        "status",
+    }:
+        out.write("  ! claude profile command must be auth login/logout/status\n")
+        out.flush()
+        return 2
+    selection = _resolve_tab_profile(
+        "claude", stream=out, allow_create=args[1] == "login"
+    )
+    if selection is None:
+        out.write("  ! claude profile selection cancelled or unavailable\n")
+        out.flush()
+        return 1
+    env = _tab_launch_env(selection, out)
+    real_binary = find_real_binary("claude")
+    return int(subprocess.run([real_binary, *args], env=env).returncode)
 
 
 def _run_preflight_v2(

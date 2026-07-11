@@ -167,20 +167,3 @@ def test_node_install_command_uses_brew():
 
 def test_node_install_command_requires_brew():
     assert external_cli.node_install_command(which=_which_map({})) is None
-
-
-def test_dotsync_command_prefers_path_hit(tmp_path):
-    cmd = external_cli.dotsync_command(
-        which=_which_map({"dotsync": "/opt/homebrew/bin/dotsync"}), home=tmp_path
-    )
-    assert cmd == ["/opt/homebrew/bin/dotsync"]
-
-
-def test_dotsync_command_falls_back_to_uv_tool_bin(tmp_path):
-    tool = _make_tool(tmp_path, "dotsync")
-    cmd = external_cli.dotsync_command(which=_which_map({}), home=tmp_path)
-    assert cmd == [str(tool)]
-
-
-def test_dotsync_command_none_when_absent(tmp_path):
-    assert external_cli.dotsync_command(which=_which_map({}), home=tmp_path) is None

@@ -148,44 +148,52 @@ the final summary uses `N sessions deleted . M memory files reset`.
 
 ## Per-tab Claude accounts (launcher side)
 
-For interactive `claude` launches the launcher resolves a per-tab account from
-`dotsync claude account` (0 saved → plain launch, 1 → auto, 2+ → picker) and
-launches the child with **two** injections:
+The launcher owns per-tab Claude profile selection. Claude Code owns the actual
+credentials through `claude auth login` or `/login`; dotsync is not involved in
+account registration, storage, selection, or launch-time authentication.
 
-- `CLAUDE_CODE_OAUTH_TOKEN` — the account's `claude setup-token` value.
-- `CLAUDE_CONFIG_DIR` — a **per-account profile dir**. This is what makes the
-  token effective: Claude Code (≥2.1, verified empirically on 2.1.197 via OTEL
-  `user.id`) reads the machine-global `/login` keychain credential **before**
-  `CLAUDE_CODE_OAUTH_TOKEN`, contrary to its documented precedence, so a token
-  injected into the default config dir is silently ignored and every tab bills
-  the global login. The keychain credential is keyed by config dir and can't be
-  scrubbed from the env — a login-free profile dir is the only way to make the
-  tab token win.
+Profile directory names are the account list:
+
+- 0 profiles → normal machine-global Claude launch.
+- 1 profile → select it automatically.
+- 2+ profiles → show the launcher picker for every new interactive tab.
+
+Create or re-authenticate a profile through the existing wrapper:
+
+```bash
+claude auth login    # pick an existing profile or choose “+ Add account profile”
+claude auth status   # pick a profile and inspect its Claude-owned login
+claude auth logout   # pick a profile and remove only that profile's login
+```
+
+Running plain `claude` keeps the full Serena/graphify launcher flow. Once a
+profile is selected, `/login` inside that session also authenticates that
+profile. The child receives `CLAUDE_CONFIG_DIR` only; inherited
+`CLAUDE_CODE_OAUTH_TOKEN`, API-key, Bedrock, Vertex, and Foundry credential
+variables are removed so they cannot override the selected `/login` identity.
 
 Profiles live at
 `~/Library/Application Support/dotsync-agent-launcher/claude-tab-profiles/<name>/`
 and are created lazily and healed on every launch (`_ensure_tab_profile`):
 
 - Durable user assets are **symlinked to `~/.claude`** (`plugins`, `skills`,
-  `agents`, `commands`, `projects`, `plans`, `tasks`, `CLAUDE.md`,
-  `settings.json`, `keybindings.json`, `history.jsonl`) so every tab sees the
-  same settings/plugins/history and writes flow through to the shared files.
+  `agents`, `agent-memory`, `commands`, `rules`, `output-styles`, `themes`,
+  `projects`, `plans`, `tasks`, `CLAUDE.md`, `settings.json`,
+  `keybindings.json`, `history.jsonl`) so every tab sees the same durable
+  settings/plugins/history and writes flow through to the shared files.
   Caveat: a tool that replaces one of these *files* by atomic rename (e.g.
   editing settings from inside a tab) forks that profile's copy silently.
-- `.claude.json` is **seeded once** from `~/.claude.json` minus the keys that
-  carry the global login's identity (`oauthAccount`, `userID`, …) — onboarding,
-  theme, and per-project trust prompts carry over; identity comes from the
-  token.
+- `.claude.json` is **seeded once** from `~/.claude.json` minus identity keys
+  (`oauthAccount`, `userID`, …). It cannot be shared wholesale because Claude
+  stores OAuth identity and app state in the same document.
 - Volatile state (`cache`, `shell-snapshots`, `todos`, …) stays per-profile;
   Claude creates it on demand.
 
-Failure semantics (no silent identity fallback): if the profile can't be built
-after an explicit pick, the launcher prints a warning and injects **nothing** —
-the tab knowingly runs as the machine-global login and never claims otherwise.
+Failure semantics are fail-closed: if a selected profile cannot be built, the
+launcher aborts instead of silently using the machine-global login.
 If `CLAUDE_CONFIG_DIR` is already set in the parent env the launcher stays out
-of the way entirely (warn row, no picker, no injection). Removing an account
-(`dotsync claude account remove`) leaves its profile dir behind; it is inert
-and can be deleted manually.
+of the way entirely (warn row, no picker, no injection). A profile is removed
+by logging it out and deleting its directory under the profile root.
 
 ## Workflow
 

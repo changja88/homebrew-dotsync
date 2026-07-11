@@ -324,7 +324,9 @@ def test_render_zsh_shim_defers_clear_to_launcher_after_claude_cleanup():
 
     assert "printf '\\e[3J\\e[H\\e[2J'" not in claude_body
     assert 'SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"' in claude_body
-    assert claude_body.index('SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"') < claude_body.index('"$SERENA_AGENT_PYTHON" "$SERENA_AGENT_LAUNCHER" "$@"')
+    assert claude_body.rindex(
+        'SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"'
+    ) < claude_body.rindex('"$SERENA_AGENT_PYTHON" "$SERENA_AGENT_LAUNCHER" "$@"')
 
 
 def test_render_zsh_shim_does_not_depend_on_path_wrapper_installation():
@@ -506,6 +508,50 @@ def test_zsh_shim_should_manage_only_tty_no_arg_agent_starts(tmp_path):
     assert "managed_empty=0" in result.stdout
     assert "managed_args=1" in result.stdout
     assert "managed_notty=1" in result.stdout
+
+
+@pytest.mark.no_subprocess_block
+def test_zsh_shim_recognizes_interactive_claude_auth_profile_commands(tmp_path):
+    shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
+    result = subprocess.run(
+        [
+            "zsh",
+            "-fc",
+            (
+                f"source {shim_path}; "
+                "_dotsync_agent_is_claude_profile_command 1 auth login; "
+                "print login=$?; "
+                "_dotsync_agent_is_claude_profile_command 1 auth status --json; "
+                "print status=$?; "
+                "_dotsync_agent_is_claude_profile_command 0 auth login; "
+                "print notty=$?; "
+                "_dotsync_agent_is_claude_profile_command 1 --help; "
+                "print help=$?"
+            ),
+        ],
+        env={**os.environ, "HOME": str(tmp_path)},
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert "login=0" in result.stdout
+    assert "status=0" in result.stdout
+    assert "notty=1" in result.stdout
+    assert "help=1" in result.stdout
+
+
+def test_render_zsh_shim_routes_claude_auth_through_profile_only_launcher():
+    text = render_zsh_shim(
+        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
+        python_executable=Path("/repo/.venv/bin/python3"),
+        codex_binary=Path("/opt/homebrew/bin/codex"),
+        claude_binary=Path("/opt/homebrew/bin/claude"),
+    )
+
+    claude_body = text.split("\nclaude() {", 1)[1].split("\ncodex() {", 1)[0]
+    assert "_dotsync_agent_is_claude_profile_command" in claude_body
+    assert "SERENA_AGENT_PROFILE_ONLY=1" in claude_body
 
 
 def test_install_zshrc_shim_replaces_managed_block(tmp_path):

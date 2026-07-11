@@ -65,19 +65,6 @@ def graphify_command(
     return [binary] if binary else None
 
 
-def dotsync_command(
-    *, which: WhichFn = shutil.which, home: Path | None = None
-) -> list[str] | None:
-    """Argv prefix for the `dotsync` CLI, or None when it isn't installed.
-
-    The launcher shells out to `dotsync claude account ...` for the optional
-    account-select preflight. dotsync is a separate product (Homebrew-installed);
-    a None here means "skip the account step" — never an error.
-    """
-    binary = _direct_binary("dotsync", which, home)
-    return [binary] if binary else None
-
-
 def serena_install_command(*, which: WhichFn = shutil.which) -> list[str] | None:
     """`uv tool install` argv that persistently installs the serena CLI."""
     uv = which("uv")
