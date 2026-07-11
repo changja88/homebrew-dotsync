@@ -88,39 +88,6 @@ def _build_parser() -> argparse.ArgumentParser:
     apply = sub.add_parser("apply", help="folder → local")
     _add_sync_args(apply)
 
-    # `dotsync claude account ...` — per-tab Claude account tokens. Standalone
-    # (not a sync app): it maps names to `claude setup-token` values in dotsync's
-    # own Keychain item, needs no dotsync.toml, and never touches the machine
-    # login or ~/.claude.json. The launcher injects the right token per tab.
-    claude_p = sub.add_parser("claude", help="per-tab Claude account tokens")
-    claude_sub = claude_p.add_subparsers(dest="claude_cmd", required=True)
-    acct = claude_sub.add_parser(
-        "account", help="manage per-tab Claude account tokens"
-    )
-    acct_sub = acct.add_subparsers(dest="account_cmd", required=True)
-    p_set = acct_sub.add_parser(
-        "set", help="save a `claude setup-token` value for a tab account"
-    )
-    p_set.add_argument("name")
-    p_set.add_argument(
-        "token",
-        nargs="?",
-        help="the sk-ant-oat01-... value; omit to be prompted (hidden input)",
-    )
-    p_ls = acct_sub.add_parser("list", help="list saved tab accounts")
-    p_ls.add_argument(
-        "--porcelain", action="store_true", help="machine-readable: one name per line"
-    )
-    p_rm = acct_sub.add_parser("remove", help="forget a saved tab account")
-    p_rm.add_argument("name")
-    p_env = acct_sub.add_parser(
-        "env", help="print a tab account's token to stdout (for scripts / launcher)"
-    )
-    p_env.add_argument("name")
-    acct_sub.add_parser(
-        "pick", help="interactively pick a tab account; print its name to stdout"
-    )
-
     return p
 
 
@@ -696,112 +663,6 @@ def cmd_to(args) -> int:
     return 0 if not failed else 6
 
 
-def _account_set(ca, args) -> int:
-    import getpass
-
-    # Token may be passed as an argument (convenient, but lands in shell history —
-    # prefix the command with a space if HISTCONTROL/HIST_IGNORE_SPACE is on) or,
-    # when omitted, entered at a hidden prompt.
-    token = getattr(args, "token", None)
-    if not token:
-        token = getpass.getpass(
-            f"paste the `claude setup-token` value for `{args.name}` "
-            "(input hidden — paste and press Enter): "
-        )
-    ca.set_token(args.name, token)
-    ui.done(f"saved tab account `{args.name}`")
-    return 0
-
-
-def _account_list(ca, *, porcelain: bool) -> int:
-    infos = ca.list_accounts()
-    if porcelain:
-        for i in infos:
-            print(i.name)  # one name per line
-        return 0
-    if not infos:
-        ui.dim(
-            "no tab accounts — run `dotsync claude account set <name>` "
-            "(paste a `claude setup-token` value)"
-        )
-        return 0
-    ui.section("claude tab accounts")
-    for i in infos:
-        print(f"  ○ {i.name}")
-    return 0
-
-
-def _account_env(ca, args) -> int:
-    """Print a tab account's token to stdout (for the launcher / scripts).
-
-    Token on stdout ONLY; diagnostics on stderr. Exit 3 = no such account.
-    Refuses when stdout is a terminal so the secret can't hit scrollback.
-    """
-    import sys
-
-    if sys.stdout.isatty():
-        ui.error("refusing to print a token to a terminal — this is for piping")
-        return 2
-    try:
-        token = ca.token_of(args.name)
-    except ca.AccountError:
-        ui.error(f"no tab account `{args.name}`")
-        return 3
-    print(token)
-    return 0
-
-
-def _account_pick(ca) -> int:
-    """Interactively pick a tab account; print the chosen NAME to stdout.
-
-    Picker UI draws on stderr so stdout carries only the name (the launcher
-    captures it). 0 accounts or a cancelled/non-TTY pick → exit 1, no stdout.
-    A single account needs no prompt — its name is printed directly.
-    """
-    import sys
-
-    infos = ca.list_accounts()
-    if not infos:
-        return 1
-    if len(infos) == 1:
-        print(infos[0].name)
-        return 0
-    from .ui_picker import pick_one
-
-    chosen = pick_one(
-        [i.name for i in infos],
-        title="Pick Claude account for this tab",
-        stream=sys.stderr,
-    )
-    if not chosen:
-        return 1
-    print(chosen)
-    return 0
-
-
-def cmd_claude_account(args) -> int:
-    from dotsync import claude_account as ca
-
-    sub = args.account_cmd
-    try:
-        if sub == "set":
-            return _account_set(ca, args)
-        if sub == "list":
-            return _account_list(ca, porcelain=args.porcelain)
-        if sub == "remove":
-            ca.remove(args.name)
-            ui.done(f"removed tab account `{args.name}`")
-            return 0
-        if sub == "env":
-            return _account_env(ca, args)
-        if sub == "pick":
-            return _account_pick(ca)
-    except ca.AccountError as e:
-        ui.error(str(e))
-        return 2
-    return 2
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     argv = _normalize_legacy_command(argv)
@@ -824,8 +685,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             return cmd_from(args)
         if args.cmd == "apply":
             return cmd_to(args)
-        if args.cmd == "claude":
-            return cmd_claude_account(args)
         parser.print_help()
         return 2
     except ConfigError as e:

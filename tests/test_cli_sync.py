@@ -1,4 +1,7 @@
 from unittest.mock import patch
+
+import pytest
+
 from dotsync.cli import _build_parser, main
 from dotsync.config import Config, save_config
 from dotsync.plan import AppPlan
@@ -52,6 +55,15 @@ def test_help_lists_backup_apply_without_legacy_from_to():
     assert "from                " not in help_text
     assert "to                  " not in help_text
     assert "from,to" not in help_text
+
+
+def test_help_and_parser_do_not_expose_claude_account_commands():
+    help_text = _build_parser().format_help()
+
+    assert "per-tab Claude account" not in help_text
+    with pytest.raises(SystemExit) as exc:
+        main(["claude", "account", "list"])
+    assert exc.value.code == 2
 
 
 def test_no_config_shows_init_hint(fake_home, monkeypatch, tmp_path, capsys):
