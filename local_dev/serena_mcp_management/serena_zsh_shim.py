@@ -98,6 +98,21 @@ _dotsync_agent_is_claude_profile_command() {
   esac
 }
 
+_dotsync_agent_is_claude_session_command() {
+  local interactive="$1"
+  shift
+
+  # `claude -c`/`--continue`/`-r`/`--resume` resume an existing conversation —
+  # a real interactive session, so it is managed like a bare `claude`. Only the
+  # leading token is inspected: non-session invocations (`-p` pipe, `--version`,
+  # `mcp`/`config` subcommands) keep passing straight through.
+  [[ "$interactive" == "1" ]] || return 1
+  case "${1:-}" in
+    -c|--continue|-r|--resume) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 _dotsync_agent_serena_project_available() {
   local project_root="$1"
 
@@ -185,7 +200,8 @@ claude() {
 
   if _dotsync_agent_is_claude_profile_command "$interactive" "$@"; then
     profile_only=1
-  elif ! _dotsync_agent_should_manage_launch "$interactive" "$#"; then
+  elif ! _dotsync_agent_should_manage_launch "$interactive" "$#" \
+    && ! _dotsync_agent_is_claude_session_command "$interactive" "$@"; then
     "$real_binary" "$@"
     return $?
   fi

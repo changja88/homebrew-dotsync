@@ -541,6 +541,47 @@ def test_zsh_shim_recognizes_interactive_claude_auth_profile_commands(tmp_path):
     assert "help=1" in result.stdout
 
 
+@pytest.mark.no_subprocess_block
+def test_zsh_shim_recognizes_interactive_claude_session_resume_commands(tmp_path):
+    """`claude -c`/`--continue`/`-r`/`--resume` resume an existing session, so
+    they must be managed (Serena scoped MCP + preflight + tab profile) just like
+    a bare `claude`. Non-session invocations (`-p` pipe, `--version`, `mcp`
+    subcommands) stay pass-through, and only a tty session counts."""
+    shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
+    result = subprocess.run(
+        [
+            "zsh",
+            "-fc",
+            (
+                f"source {shim_path}; "
+                "_dotsync_agent_is_claude_session_command 1 -c; print continue_short=$?; "
+                "_dotsync_agent_is_claude_session_command 1 --continue; print continue_long=$?; "
+                "_dotsync_agent_is_claude_session_command 1 -r; print resume_short=$?; "
+                "_dotsync_agent_is_claude_session_command 1 -r abc123; print resume_value=$?; "
+                "_dotsync_agent_is_claude_session_command 1 --resume; print resume_long=$?; "
+                "_dotsync_agent_is_claude_session_command 1 -p hi; print print_mode=$?; "
+                "_dotsync_agent_is_claude_session_command 1 --version; print version=$?; "
+                "_dotsync_agent_is_claude_session_command 1 mcp list; print mcp=$?; "
+                "_dotsync_agent_is_claude_session_command 0 -c; print notty=$?"
+            ),
+        ],
+        env={**os.environ, "HOME": str(tmp_path)},
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert "continue_short=0" in result.stdout
+    assert "continue_long=0" in result.stdout
+    assert "resume_short=0" in result.stdout
+    assert "resume_value=0" in result.stdout
+    assert "resume_long=0" in result.stdout
+    assert "print_mode=1" in result.stdout
+    assert "version=1" in result.stdout
+    assert "mcp=1" in result.stdout
+    assert "notty=1" in result.stdout
+
+
 def test_render_zsh_shim_routes_claude_auth_through_profile_only_launcher():
     text = render_zsh_shim(
         launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
@@ -552,6 +593,25 @@ def test_render_zsh_shim_routes_claude_auth_through_profile_only_launcher():
     claude_body = text.split("\nclaude() {", 1)[1].split("\ncodex() {", 1)[0]
     assert "_dotsync_agent_is_claude_profile_command" in claude_body
     assert "SERENA_AGENT_PROFILE_ONLY=1" in claude_body
+
+
+def test_render_zsh_shim_routes_claude_session_resume_through_managed_launcher():
+    text = render_zsh_shim(
+        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
+        python_executable=Path("/repo/.venv/bin/python3"),
+        codex_binary=Path("/opt/homebrew/bin/codex"),
+        claude_binary=Path("/opt/homebrew/bin/claude"),
+    )
+
+    # The session-resume flags are recognized by a dedicated helper (defined
+    # once, above the functions) and the claude() body must consult it so that
+    # `claude -c`/`-r` are managed instead of passed straight to the binary.
+    assert "-c|--continue|-r|--resume" in text
+    claude_body = text.split("\nclaude() {", 1)[1].split("\ncodex() {", 1)[0]
+    assert "_dotsync_agent_is_claude_session_command" in claude_body
+    # codex has no session-resume concept — the helper is claude-only.
+    codex_body = text.split("\ncodex() {", 1)[1]
+    assert "_dotsync_agent_is_claude_session_command" not in codex_body
 
 
 def test_install_zshrc_shim_replaces_managed_block(tmp_path):

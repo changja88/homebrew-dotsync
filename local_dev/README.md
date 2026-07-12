@@ -78,7 +78,15 @@ The managed zsh flow is:
   -> real codex or claude binary
 ```
 
-Interactive no-argument `codex` / `claude` launches show a single ANSI
+The shim manages interactive launches that **start or resume a session**: a
+bare `codex` / `claude`, plus `claude -c` / `--continue` / `-r` / `--resume`.
+Every other invocation passes straight through to the real binary untouched —
+`-p` pipes, `--version`, `mcp` / `config` subcommands, and any argument-bearing
+`codex` (which has no session-resume concept). `claude auth login/logout/status`
+takes a separate profile-only path (see below). Only a leading session flag
+counts, so `claude --model … -c` is not managed; put `-c` / `-r` first.
+
+A managed launch shows a single ANSI
 preflight box from the Python launcher: workspace, Serena project status,
 machine-wide Serena MCP inventory, Graphify status (4 rows: global / graph /
 integration / hook), context, session inventory, memory inventory, and the
