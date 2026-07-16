@@ -78,15 +78,7 @@ The managed zsh flow is:
   -> real codex or claude binary
 ```
 
-The shim manages interactive launches that **start or resume a session**: a
-bare `codex` / `claude`, plus `claude -c` / `--continue` / `-r` / `--resume`.
-Every other invocation passes straight through to the real binary untouched —
-`-p` pipes, `--version`, `mcp` / `config` subcommands, and any argument-bearing
-`codex` (which has no session-resume concept). `claude auth login/logout/status`
-takes a separate profile-only path (see below). Only a leading session flag
-counts, so `claude --model … -c` is not managed; put `-c` / `-r` first.
-
-A managed launch shows a single ANSI
+Interactive no-argument `codex` / `claude` launches show a single ANSI
 preflight box from the Python launcher: workspace, Serena project status,
 machine-wide Serena MCP inventory, Graphify status (4 rows: global / graph /
 integration / hook), context, session inventory, memory inventory, and the
@@ -153,55 +145,6 @@ context, not predicted by the zsh shim:
 
 Preflight displays each row as `client total . to delete/reset . to keep`, and
 the final summary uses `N sessions deleted . M memory files reset`.
-
-## Per-tab Claude accounts (launcher side)
-
-The launcher owns per-tab Claude profile selection. Claude Code owns the actual
-credentials through `claude auth login` or `/login`; dotsync is not involved in
-account registration, storage, selection, or launch-time authentication.
-
-Profile directory names are the account list:
-
-- 0 profiles → normal machine-global Claude launch.
-- 1 profile → select it automatically.
-- 2+ profiles → show the launcher picker for every new interactive tab.
-
-Create or re-authenticate a profile through the existing wrapper:
-
-```bash
-claude auth login    # pick an existing profile or choose “+ Add account profile”
-claude auth status   # pick a profile and inspect its Claude-owned login
-claude auth logout   # pick a profile and remove only that profile's login
-```
-
-Running plain `claude` keeps the full Serena/graphify launcher flow. Once a
-profile is selected, `/login` inside that session also authenticates that
-profile. The child receives `CLAUDE_CONFIG_DIR` only; inherited
-`CLAUDE_CODE_OAUTH_TOKEN`, API-key, Bedrock, Vertex, and Foundry credential
-variables are removed so they cannot override the selected `/login` identity.
-
-Profiles live at
-`~/Library/Application Support/dotsync-agent-launcher/claude-tab-profiles/<name>/`
-and are created lazily and healed on every launch (`_ensure_tab_profile`):
-
-- Durable user assets are **symlinked to `~/.claude`** (`plugins`, `skills`,
-  `agents`, `agent-memory`, `commands`, `rules`, `output-styles`, `themes`,
-  `projects`, `plans`, `tasks`, `CLAUDE.md`, `settings.json`,
-  `keybindings.json`, `history.jsonl`) so every tab sees the same durable
-  settings/plugins/history and writes flow through to the shared files.
-  Caveat: a tool that replaces one of these *files* by atomic rename (e.g.
-  editing settings from inside a tab) forks that profile's copy silently.
-- `.claude.json` is **seeded once** from `~/.claude.json` minus identity keys
-  (`oauthAccount`, `userID`, …). It cannot be shared wholesale because Claude
-  stores OAuth identity and app state in the same document.
-- Volatile state (`cache`, `shell-snapshots`, `todos`, …) stays per-profile;
-  Claude creates it on demand.
-
-Failure semantics are fail-closed: if a selected profile cannot be built, the
-launcher aborts instead of silently using the machine-global login.
-If `CLAUDE_CONFIG_DIR` is already set in the parent env the launcher stays out
-of the way entirely (warn row, no picker, no injection). A profile is removed
-by logging it out and deleting its directory under the profile root.
 
 ## Workflow
 

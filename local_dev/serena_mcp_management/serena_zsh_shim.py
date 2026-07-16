@@ -86,33 +86,6 @@ _dotsync_agent_should_manage_launch() {
   [[ "$interactive" == "1" && "$arg_count" == "0" ]]
 }
 
-_dotsync_agent_is_claude_profile_command() {
-  local interactive="$1"
-  shift
-
-  [[ "$interactive" == "1" ]] || return 1
-  [[ "${1:-}" == "auth" ]] || return 1
-  case "${2:-}" in
-    login|logout|status) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-_dotsync_agent_is_claude_session_command() {
-  local interactive="$1"
-  shift
-
-  # `claude -c`/`--continue`/`-r`/`--resume` resume an existing conversation —
-  # a real interactive session, so it is managed like a bare `claude`. Only the
-  # leading token is inspected: non-session invocations (`-p` pipe, `--version`,
-  # `mcp`/`config` subcommands) keep passing straight through.
-  [[ "$interactive" == "1" ]] || return 1
-  case "${1:-}" in
-    -c|--continue|-r|--resume) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 _dotsync_agent_serena_project_available() {
   local project_root="$1"
 
@@ -196,22 +169,9 @@ claude() {
   local interactive=0
   [[ -t 0 && -t 1 ]] && interactive=1
   local real_binary="__CLAUDE_BINARY__"
-  local profile_only=0
 
-  if _dotsync_agent_is_claude_profile_command "$interactive" "$@"; then
-    profile_only=1
-  elif ! _dotsync_agent_should_manage_launch "$interactive" "$#" \
-    && ! _dotsync_agent_is_claude_session_command "$interactive" "$@"; then
+  if ! _dotsync_agent_should_manage_launch "$interactive" "$#"; then
     "$real_binary" "$@"
-    return $?
-  fi
-
-  if [[ "$profile_only" == "1" ]]; then
-    SERENA_AGENT_PROFILE_ONLY=1 \
-    SERENA_AGENT_CLIENT=claude \
-    SERENA_AGENT_INTERACTIVE="$interactive" \
-    SERENA_REAL_CLAUDE=__CLAUDE_BINARY__ \
-    "$SERENA_AGENT_PYTHON" "$SERENA_AGENT_LAUNCHER" "$@"
     return $?
   fi
 

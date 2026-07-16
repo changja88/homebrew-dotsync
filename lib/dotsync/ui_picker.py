@@ -189,14 +189,10 @@ def _render(state: PickerState, title: str, *, first: bool) -> None:
     out.flush()
 
 
-def _interactive_supported(out=None) -> bool:
-    """True only if both stdin and the picker's output stream are real TTYs.
-    Pytest captures streams (isatty=False) → fallback path is used during tests.
-
-    `out` lets a caller drive the picker on stderr (so stdout can carry a
-    machine-readable result) — the tty check then targets that stream."""
-    out = out if out is not None else sys.stdout
-    return sys.stdin.isatty() and out.isatty()
+def _interactive_supported() -> bool:
+    """True only if both stdin and stdout are real TTYs. Pytest captures
+    streams (isatty=False) → fallback path is used during tests."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
 
 
 def _fallback_per_app(items: list[str], preselected) -> list[str]:
@@ -218,34 +214,23 @@ def _fallback_per_app(items: list[str], preselected) -> list[str]:
     return selected
 
 
-def _enter_raw_mode(out=None):
+def _enter_raw_mode():
     """Switch terminal to cbreak mode and hide the cursor. Returns an
-    opaque token to pass back into _restore_terminal. Cursor control is
-    written to `out` (default stdout) so it lands on the picker's stream."""
-    out = out if out is not None else sys.stdout
+    opaque token to pass back into _restore_terminal."""
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     tty.setcbreak(fd)
-    out.write(_CURSOR_HIDE)
-    out.flush()
-    return (fd, old, out)
+    sys.stdout.write(_CURSOR_HIDE)
+    sys.stdout.flush()
+    return (fd, old)
 
 
 def _restore_terminal(token) -> None:
     """Revert what _enter_raw_mode did. Always safe to call."""
-    fd, old, out = token
+    fd, old = token
     termios.tcsetattr(fd, termios.TCSADRAIN, old)
-    out.write(_CURSOR_SHOW)
-    out.flush()
-
-
-def _drain_input() -> None:
-    """Flush any pre-typed bytes so muscle-memory keystrokes typed before the
-    picker appeared can't move the cursor or submit a selection."""
-    try:
-        termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
-    except (termios.error, ValueError, OSError):
-        pass
+    sys.stdout.write(_CURSOR_SHOW)
+    sys.stdout.flush()
 
 
 def pick_apps(

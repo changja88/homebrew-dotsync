@@ -1,6 +1,6 @@
 import io
 
-from local_dev.serena_mcp_management.ui import confirm, select_one
+from local_dev.serena_mcp_management.ui import confirm
 
 
 def test_confirm_returns_true_for_yes_input():
@@ -53,27 +53,3 @@ def test_confirm_falls_back_to_line_mode_when_input_fn_supplied():
     assert "[Y/n]" in stream.getvalue()
     # No huh-style ▶ marker should appear when not in arrow-select mode.
     assert "▶" not in stream.getvalue()
-
-
-def test_select_one_line_mode_accepts_one_based_choice():
-    stream = io.StringIO()
-
-    chosen = select_one(
-        "Pick Claude profile",
-        ["work", "personal"],
-        stream=stream,
-        input_fn=lambda: "2",
-    )
-
-    assert chosen == "personal"
-    assert "1) work" in stream.getvalue()
-    assert "2) personal" in stream.getvalue()
-
-
-def test_select_one_line_mode_can_cancel():
-    assert select_one(
-        "Pick Claude profile",
-        ["work", "personal"],
-        stream=io.StringIO(),
-        input_fn=lambda: "q",
-    ) is None
