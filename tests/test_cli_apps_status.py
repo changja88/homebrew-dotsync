@@ -160,3 +160,38 @@ def test_apps_requires_initialized_config(fake_home, monkeypatch, tmp_path, caps
     assert rc != 0
     err = capsys.readouterr().err
     assert "dotsync init" in err or "DOTSYNC_DIR" in err
+
+
+def test_status_lists_changed_files_with_summary(
+    fake_home, monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setenv("NO_COLOR", "1")
+    target = tmp_path / "configs"
+    (target / "zsh").mkdir(parents=True)
+    (target / "zsh" / ".zshrc").write_text("STORED\n")
+    (fake_home / ".zshrc").write_text("LOCAL\n")
+    save_config(Config(dir=target, apps=["zsh"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+
+    rc = main(["status"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert ".zshrc" in out
+    assert "update" in out
+    assert "+1 −1" in out
+
+
+def test_status_clean_app_prints_single_line(fake_home, monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("NO_COLOR", "1")
+    target = tmp_path / "configs"
+    (target / "zsh").mkdir(parents=True)
+    (target / "zsh" / ".zshrc").write_text("SAME")
+    (fake_home / ".zshrc").write_text("SAME")
+    save_config(Config(dir=target, apps=["zsh"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+
+    rc = main(["status"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    zsh_lines = [line for line in out.splitlines() if ".zshrc" in line]
+    assert zsh_lines == []  # 차이 없으면 파일 라인 없음

@@ -469,6 +469,10 @@ def cmd_status(args) -> int:
                 direction=getattr(s, "direction", ""),
             )
         )
+        plan = app.plan_from(cfg.dir)
+        for change in plan.changes:
+            if change.is_change:
+                print("  " + ui.format_plan_change(change))
     return 0
 
 
