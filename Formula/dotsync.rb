@@ -2,7 +2,7 @@ class Dotsync < Formula
   desc "Sync app configs with a local folder"
   homepage "https://github.com/changja88/homebrew-dotsync"
   url "https://github.com/changja88/homebrew-dotsync/archive/refs/tags/v0.1.38.tar.gz"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "3da52bc0b2ae2fa44bcef1648c372f883a6032952f92291e3684b36698622a35"
   license "MIT"
 
   # Reuse an existing Python 3.12+ binary if the user already has one — avoids
