@@ -469,7 +469,10 @@ def cmd_status(args) -> int:
                 direction=getattr(s, "direction", ""),
             )
         )
-        plan = app.plan_from(cfg.dir)
+        try:
+            plan = app.plan_from(cfg.dir)
+        except (OSError, RuntimeError, ValueError):
+            continue
         for change in plan.changes:
             if change.is_change:
                 print("  " + ui.format_plan_change(change))

@@ -195,3 +195,26 @@ def test_status_clean_app_prints_single_line(fake_home, monkeypatch, tmp_path, c
     out = capsys.readouterr().out
     zsh_lines = [line for line in out.splitlines() if ".zshrc" in line]
     assert zsh_lines == []  # 차이 없으면 파일 라인 없음
+
+
+def test_status_survives_plan_from_failure(fake_home, monkeypatch, tmp_path, capsys):
+    """plan_from이 raise해도 status는 기존 한 줄 보고를 유지하고 죽지 않는다."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    target = tmp_path / "configs"
+    (target / "zsh").mkdir(parents=True)
+    (target / "zsh" / ".zshrc").write_text("STORED")
+    (fake_home / ".zshrc").write_text("LOCAL")
+    save_config(Config(dir=target, apps=["zsh"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+
+    from dotsync.apps.zsh import ZshApp
+
+    def boom(self, target_dir):
+        raise RuntimeError("plan exploded")
+
+    monkeypatch.setattr(ZshApp, "plan_from", boom)
+
+    rc = main(["status"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "zsh" in out  # 기존 상태 라인은 그대로
