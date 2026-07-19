@@ -167,7 +167,7 @@ The summary box separates apps that actually changed (`✓ changed`) from apps t
 ╰──────────────────────────────────────────────────────────────────╯
 ```
 
-The preview annotates every changing file with line counts (`+added −removed`); JSON/TOML files additionally list their changed top-level keys (e.g. `+113 −1 · model, hooks`), and directories list the changed file names.
+The preview annotates each file-copy entry with line counts (`+added −removed`) — binary files show a size summary instead (e.g. `binary · 50B → 200B`). JSON/TOML files additionally list their changed top-level keys (e.g. `+113 −1 · model, hooks`), and directories list the changed file names.
 
 Type `d` at the confirmation prompt to inspect the full diff before
 applying (capped at 200 lines per file; `y`/`n` behave as before):
@@ -432,7 +432,7 @@ dotsync apply --all --yes          # automation (no prompt)
 ╰──────────────────────────────────────────────────────────────────╯
 ```
 
-프리뷰는 바뀌는 파일마다 `+추가 −삭제` 줄 수 요약을 보여준다 — JSON/TOML은 여기에 바뀐 최상위 키 이름이 덧붙고(예: `+113 −1 · model, hooks`), 디렉토리는 바뀐 파일 이름 목록을 보여준다.
+프리뷰는 파일 복사 항목마다 `+추가 −삭제` 줄 수 요약을 보여준다 — 바이너리 파일은 대신 크기 요약을 보여준다(예: `binary · 50B → 200B`). JSON/TOML은 여기에 바뀐 최상위 키 이름이 덧붙고(예: `+113 −1 · model, hooks`), 디렉토리는 바뀐 파일 이름 목록을 보여준다.
 
 확인 프롬프트에서 `d`를 입력하면 적용 전에 전체 diff를 볼 수 있다
 (파일당 최대 200줄, `y`/`n`은 그대로 진행/중단):

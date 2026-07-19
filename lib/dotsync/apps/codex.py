@@ -16,6 +16,7 @@ from dotsync.apps.base import (
     ensure_path_within_root,
 )
 from dotsync.apps.mcp_sanitizer import sanitize_codex_config, sanitize_codex_config_text
+from dotsync.diffinfo import summarize_pair
 from dotsync.plan import AppPlan, Change, plan_file_copy, plan_tree_mirror
 
 OPTIONAL_FILES = (
@@ -298,11 +299,13 @@ class CodexApp(App):
                 dest,
                 "remove dynamic Serena MCP URL",
             )
+        kind = "unchanged" if planned == current.text else "update"
         return Change(
             "config.toml",
-            "unchanged" if planned == current.text else "update",
+            kind,
             source,
             dest,
+            summarize_pair(source, dest) if kind == "update" else "",
         )
 
     def _config_status(self, target_dir: Path) -> AppStatus:

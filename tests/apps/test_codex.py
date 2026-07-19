@@ -885,9 +885,14 @@ def test_plan_to_reports_codex_optional_file_update(fake_home, tmp_path):
 
     plan = app.plan_to(target)
 
-    labels = {c.label: c.kind for c in plan.changes}
-    assert labels["config.toml"] == "update"
-    assert labels["AGENTS.md"] == "create"
+    changes = {c.label: c for c in plan.changes}
+    assert changes["config.toml"].kind == "update"
+    assert changes["AGENTS.md"].kind == "create"
+    # config.toml is sanitized TOML on both sides — a line-count summary is
+    # safe and meaningful (unlike claude's mcp-servers.json, which compares
+    # structurally different files).
+    assert changes["config.toml"].details.startswith("+")
+    assert changes["config.toml"].details != ""
 
 
 def test_plan_to_reports_plugin_restore_when_plugins_manifest_exists(
