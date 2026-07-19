@@ -167,9 +167,7 @@ The summary box separates apps that actually changed (`✓ changed`) from apps t
 ╰──────────────────────────────────────────────────────────────────╯
 ```
 
-The preview annotates every changing file — line counts (`+added −removed`)
-for text files, changed top-level keys for JSON/TOML, and the list of
-changed file names for directories.
+The preview annotates every changing file with line counts (`+added −removed`); JSON/TOML files additionally list their changed top-level keys (e.g. `+113 −1 · model, hooks`), and directories list the changed file names.
 
 Type `d` at the confirmation prompt to inspect the full diff before
 applying (capped at 200 lines per file; `y`/`n` behave as before):
@@ -434,15 +432,14 @@ dotsync apply --all --yes          # automation (no prompt)
 ╰──────────────────────────────────────────────────────────────────╯
 ```
 
-프리뷰는 바뀌는 파일마다 요약을 보여줍니다 — 텍스트는 `+추가 −삭제` 줄 수,
-JSON/TOML은 바뀐 최상위 키 이름, 디렉토리는 바뀐 파일 이름 목록.
+프리뷰는 바뀌는 파일마다 `+추가 −삭제` 줄 수 요약을 보여준다 — JSON/TOML은 여기에 바뀐 최상위 키 이름이 덧붙고(예: `+113 −1 · model, hooks`), 디렉토리는 바뀐 파일 이름 목록을 보여준다.
 
-확인 프롬프트에서 `d`를 입력하면 적용 전에 전체 diff를 볼 수 있습니다
+확인 프롬프트에서 `d`를 입력하면 적용 전에 전체 diff를 볼 수 있다
 (파일당 최대 200줄, `y`/`n`은 그대로 진행/중단):
 
     ? Apply these changes to the sync folder? [y/N/d] › d
 
-`dotsync status`도 차이가 있는 앱 아래에 같은 요약을 표시합니다.
+`dotsync status`도 차이가 있는 앱 아래에 같은 요약을 표시한다.
 
 `apply` 직전 로컬 파일은 `<sync 폴더>/.backups/<YYYYMMDD_HHMMSS>/<app>/`에 자동 백업된다 (사용자 폴더 안에만 쌓이므로 git에 올리고 싶지 않으면 `.gitignore`에 `.backups/` 추가). 백업은 최근 10세션만 유지되며, `dotsync.toml` 의 `backup_keep` 으로 조절한다.
 
