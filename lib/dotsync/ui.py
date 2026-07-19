@@ -354,12 +354,43 @@ _PLAN_KIND_GLYPH = {
 }
 
 
+_FILE_LIST_LIMIT = 6
+_FILE_CHANGE_COLOR = {"+": GREEN, "~": YELLOW, "−": RED}
+
+
 def format_plan_change(change) -> str:
     color, glyph = _PLAN_KIND_GLYPH.get(change.kind, (DIM_ANSI, GLYPH_DIM))
     head = f"  {_wrap(color, glyph)} {change.kind:14s} {change.label}"
     if change.details:
-        return f"{head}  {_wrap(DIM_ANSI, '— ' + change.details)}"
-    return head
+        head = f"{head}  {_wrap(DIM_ANSI, '— ' + change.details)}"
+    entries = list(change.file_changes)
+    if len(entries) > _FILE_LIST_LIMIT:
+        hidden = len(entries) - _FILE_LIST_LIMIT
+        entries = entries[:_FILE_LIST_LIMIT] + [f"…외 {hidden}개"]
+    lines = [head]
+    for entry in entries:
+        symbol = entry[:1]
+        entry_color = _FILE_CHANGE_COLOR.get(symbol)
+        if entry_color is None:
+            lines.append("      " + _wrap(DIM_ANSI, entry))
+        else:
+            lines.append(f"      {_wrap(entry_color, symbol)}{entry[1:]}")
+    return "\n".join(lines)
+
+
+def format_diff(text: str) -> str:
+    """Colorize a unified-diff (or +/− full-file listing) line by line."""
+    lines: list[str] = []
+    for line in text.splitlines():
+        if line.startswith(("+++", "---", "@@", "…", "(")):
+            lines.append(_wrap(DIM_ANSI, line))
+        elif line.startswith("+"):
+            lines.append(_wrap(GREEN, line))
+        elif line.startswith(("-", "−")):
+            lines.append(_wrap(RED, line))
+        else:
+            lines.append(line)
+    return "\n".join(lines)
 
 
 # --- side-effect printers (use in production code) -------------------------
@@ -411,6 +442,10 @@ def divider(label: str = "") -> None:
 
 def plan_change(change) -> None:
     print(format_plan_change(change))
+
+
+def diff(text: str) -> None:
+    print(format_diff(text))
 
 
 def summary(

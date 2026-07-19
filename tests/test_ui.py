@@ -1,4 +1,5 @@
 from dotsync import ui
+from dotsync.plan import Change
 
 
 def test_step_outputs_cyan_arrow():
@@ -267,3 +268,46 @@ def test_format_summary_lists_changed_apps(monkeypatch):
     assert "codex" in out
     assert "unchanged" in out
     assert "zsh" in out
+
+
+def test_format_plan_change_renders_file_changes_indented(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    change = Change(
+        label="commands/",
+        kind="update",
+        details="1 create, 1 update",
+        file_changes=("+ new.md", "~ changed.md"),
+    )
+    out = ui.format_plan_change(change)
+    lines = out.splitlines()
+    assert len(lines) == 3
+    assert "commands/" in lines[0]
+    assert lines[1].strip() == "+ new.md"
+    assert lines[2].strip() == "~ changed.md"
+
+
+def test_format_plan_change_caps_file_listing_at_six(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    change = Change(
+        label="skills/",
+        kind="update",
+        file_changes=tuple(f"+ f{i}.md" for i in range(8)),
+    )
+    out = ui.format_plan_change(change)
+    lines = out.splitlines()
+    assert len(lines) == 8  # 헤더 1 + 파일 6 + 축약 1
+    assert lines[-1].strip() == "…외 2개"
+
+
+def test_format_diff_colors_added_and_removed(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setattr("dotsync.ui._color_enabled", lambda: True)
+    out = ui.format_diff("+new\n-old\n@@ -1 +1 @@\n context")
+    assert ui.GREEN in out
+    assert ui.RED in out
+
+
+def test_format_diff_no_color_passthrough(monkeypatch):
+    monkeypatch.setenv("NO_COLOR", "1")
+    text = "+new\n-old\n context"
+    assert ui.format_diff(text) == text
