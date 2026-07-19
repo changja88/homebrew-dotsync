@@ -572,6 +572,8 @@ def _print_full_diffs(plans: "list[AppPlan]") -> None:
 
 
 def _change_diff_text(change) -> str:
+    if not change.diffable:
+        return "(semantic change — no file diff)"
     unavailable = "(diff unavailable: no on-disk copy to compare)"
     if change.file_changes:  # tree mirror: 파일별 diff
         if change.source is None or change.dest is None:

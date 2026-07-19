@@ -839,7 +839,13 @@ def test_plan_from_marks_update_when_stored_has_only_stale_serena_mcp(
 
     plan = ClaudeApp().plan_from(tmp_path / "configs")
 
-    assert {c.label: c.kind for c in plan.changes}["mcp-servers.json"] == "update"
+    changes = {c.label: c for c in plan.changes}
+    assert changes["mcp-servers.json"].kind == "update"
+    # source is the full ~/.claude.json (may hold secrets), dest is the
+    # extracted mcp-servers.json — structurally different, so a file diff
+    # would be meaningless (and could leak secrets). d-key preview must
+    # skip it.
+    assert changes["mcp-servers.json"].diffable is False
 
 
 def test_plan_to_marks_update_when_local_has_only_stale_serena_mcp(fake_home, tmp_path):
@@ -854,7 +860,9 @@ def test_plan_to_marks_update_when_local_has_only_stale_serena_mcp(fake_home, tm
 
     plan = ClaudeApp().plan_to(tmp_path / "configs")
 
-    assert {c.label: c.kind for c in plan.changes}["mcp-servers.json"] == "update"
+    changes = {c.label: c for c in plan.changes}
+    assert changes["mcp-servers.json"].kind == "update"
+    assert changes["mcp-servers.json"].diffable is False
 
 
 def test_status_dirty_when_settings_differ(fake_home, tmp_path):
@@ -1587,8 +1595,9 @@ def test_plan_from_reports_claude_mcp_servers_create(fake_home, tmp_path):
 
     plan = ClaudeApp().plan_from(tmp_path / "sync")
 
-    labels = {c.label: c.kind for c in plan.changes}
-    assert labels["mcp-servers.json"] == "create"
+    changes = {c.label: c for c in plan.changes}
+    assert changes["mcp-servers.json"].kind == "create"
+    assert changes["mcp-servers.json"].diffable is False
 
 
 def test_plan_to_reports_unknown_for_corrupt_stored_mcp_when_local_json_missing(

@@ -532,7 +532,7 @@ class ClaudeApp(App):
         data = self._sanitized_mcp_servers(mcp_servers)
         planned = json.dumps(data, indent=2, ensure_ascii=False)
         if not dest.exists():
-            return Change("mcp-servers.json", "create", source, dest)
+            return Change("mcp-servers.json", "create", source, dest, diffable=False)
         try:
             current_doc = json.loads(dest.read_text())
         except json.JSONDecodeError:
@@ -559,6 +559,7 @@ class ClaudeApp(App):
                 source,
                 dest,
                 "remove dynamic Serena MCP URL",
+                diffable=False,
             )
         return Change(
             "mcp-servers.json",
@@ -567,6 +568,7 @@ class ClaudeApp(App):
             else "update",
             source,
             dest,
+            diffable=False,
         )
 
     def _plan_mcp_to(self, stored: Path, target_dir: Path) -> Change:
@@ -617,9 +619,9 @@ class ClaudeApp(App):
                 "local ~/.claude.json is invalid",
             )
         if not dest.exists():
-            return Change("mcp-servers.json", "create", source, dest)
+            return Change("mcp-servers.json", "create", source, dest, diffable=False)
         if "mcpServers" not in local_doc:
-            return Change("mcp-servers.json", "update", source, dest)
+            return Change("mcp-servers.json", "update", source, dest, diffable=False)
         if not isinstance(local_doc.get("mcpServers"), dict):
             return Change(
                 "mcp-servers.json",
@@ -639,6 +641,7 @@ class ClaudeApp(App):
                 source,
                 dest,
                 "remove dynamic Serena MCP URL",
+                diffable=False,
             )
         current_doc = dict(local_doc)
         current_doc["mcpServers"] = current_mcp.value
@@ -649,6 +652,7 @@ class ClaudeApp(App):
             else "update",
             source,
             dest,
+            diffable=False,
         )
 
     def _plan_tree_mirror(

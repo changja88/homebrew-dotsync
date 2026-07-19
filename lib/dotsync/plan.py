@@ -28,6 +28,7 @@ class Change:
     dest: Path | None = None
     details: str = ""
     file_changes: tuple[str, ...] = ()
+    diffable: bool = True
 
     @property
     def is_change(self) -> bool:

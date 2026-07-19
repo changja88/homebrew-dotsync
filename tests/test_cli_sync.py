@@ -555,3 +555,19 @@ def test_change_diff_text_tree_lists_per_file_blocks(tmp_path):
     assert "◦ a.md" in text
     assert "◦ b.md" in text
     assert "◦ c.md" in text
+
+
+def test_change_diff_text_non_diffable_change_skips_file_diff(tmp_path):
+    """A semantic change (e.g. claude's mcp-servers.json extraction, where
+    source and dest are structurally different files) must not dump raw
+    file contents just because it happens to have real paths."""
+    source = tmp_path / "claude.json"
+    source.write_text('{"mcpServers": {"secret-token": "abc"}}')
+    dest = tmp_path / "mcp-servers.json"
+    dest.write_text("{}")
+    change = Change("mcp-servers.json", "update", source=source, dest=dest, diffable=False)
+
+    text = _change_diff_text(change)
+
+    assert text == "(semantic change — no file diff)"
+    assert "secret-token" not in text
