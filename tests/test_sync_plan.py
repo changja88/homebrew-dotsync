@@ -171,3 +171,22 @@ def test_app_plan_changed_excludes_unchanged_but_includes_missing_source(tmp_pat
 
     assert plan.has_changes
     assert plan.changed_labels() == ["missing"]
+
+
+def test_change_defaults_to_empty_file_changes():
+    change = Change(label="x", kind="unchanged")
+    assert change.file_changes == ()
+
+
+def test_plan_file_copy_update_carries_line_summary(tmp_path):
+    src = tmp_path / "local" / "config"
+    dst = tmp_path / "stored" / "config"
+    src.parent.mkdir()
+    dst.parent.mkdir()
+    src.write_text("a\nb\n")
+    dst.write_text("a\n")
+
+    change = plan_file_copy("config", src, dst)
+
+    assert change.kind == "update"
+    assert change.details == "+1 −0"

@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Literal
 
+from dotsync.diffinfo import summarize_pair
+
 ChangeKind = Literal[
     "create",
     "update",
@@ -25,6 +27,7 @@ class Change:
     source: Path | None = None
     dest: Path | None = None
     details: str = ""
+    file_changes: tuple[str, ...] = ()
 
     @property
     def is_change(self) -> bool:
@@ -115,7 +118,13 @@ def plan_file_copy(
         return Change(label=label, kind="create", source=source, dest=dest)
     if source.is_file() and dest.is_file() and _hash(source) == _hash(dest):
         return Change(label=label, kind="unchanged", source=source, dest=dest)
-    return Change(label=label, kind="update", source=source, dest=dest)
+    return Change(
+        label=label,
+        kind="update",
+        source=source,
+        dest=dest,
+        details=summarize_pair(source, dest),
+    )
 
 
 def _tree_files(root: Path, ignored_top_dirs: Iterable[str] = ()) -> set[Path]:
