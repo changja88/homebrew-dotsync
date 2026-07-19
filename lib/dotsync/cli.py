@@ -469,6 +469,8 @@ def cmd_status(args) -> int:
                 direction=getattr(s, "direction", ""),
             )
         )
+        if s.state != "dirty":
+            continue
         try:
             plan = app.plan_from(cfg.dir)
         except (OSError, RuntimeError, ValueError):

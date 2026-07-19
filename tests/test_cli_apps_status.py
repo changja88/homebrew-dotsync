@@ -197,6 +197,31 @@ def test_status_clean_app_prints_single_line(fake_home, monkeypatch, tmp_path, c
     assert zsh_lines == []  # 차이 없으면 파일 라인 없음
 
 
+def test_status_clean_app_does_not_call_plan_from(
+    fake_home, monkeypatch, tmp_path, capsys
+):
+    """A clean app needs no change preview, so status must not pay the
+    plan_from cost for it — BetterTouchTool's plan_from shells out to
+    osascript, so calling it unconditionally doubles the export cost."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    target = tmp_path / "configs"
+    (target / "zsh").mkdir(parents=True)
+    (target / "zsh" / ".zshrc").write_text("SAME")
+    (fake_home / ".zshrc").write_text("SAME")
+    save_config(Config(dir=target, apps=["zsh"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+
+    from dotsync.apps.zsh import ZshApp
+
+    def must_not_be_called(self, target_dir):
+        raise AssertionError("must not be called")
+
+    monkeypatch.setattr(ZshApp, "plan_from", must_not_be_called)
+
+    rc = main(["status"])
+    assert rc == 0
+
+
 def test_status_survives_plan_from_failure(fake_home, monkeypatch, tmp_path, capsys):
     """plan_from이 raise해도 status는 기존 한 줄 보고를 유지하고 죽지 않는다."""
     monkeypatch.setenv("NO_COLOR", "1")
