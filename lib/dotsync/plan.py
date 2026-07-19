@@ -192,10 +192,14 @@ def plan_tree_mirror(
     if not parts:
         return Change(label=label, kind="unchanged", source=source, dest=dest)
     kind: ChangeKind = "create" if creates and not updates and not removes else "update"
+    entries = [f"+ {rel.as_posix()}" for rel in sorted(creates)]
+    entries += [f"~ {rel.as_posix()}" for rel in sorted(updates)]
+    entries += [f"− {rel.as_posix()}" for rel in sorted(removes)]
     return Change(
         label=label,
         kind=kind,
         source=source,
         dest=dest,
         details=", ".join(parts),
+        file_changes=tuple(entries),
     )

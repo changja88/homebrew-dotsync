@@ -190,3 +190,19 @@ def test_plan_file_copy_update_carries_line_summary(tmp_path):
 
     assert change.kind == "update"
     assert change.details == "+1 −0"
+
+
+def test_plan_tree_mirror_lists_file_changes(tmp_path):
+    src = tmp_path / "local"
+    dst = tmp_path / "stored"
+    src.mkdir()
+    dst.mkdir()
+    (src / "new.md").write_text("N")
+    (src / "changed.md").write_text("AFTER")
+    (dst / "changed.md").write_text("BEFORE")
+    (dst / "gone.md").write_text("G")
+
+    change = plan_tree_mirror("commands/", src, dst)
+
+    assert change.kind == "update"
+    assert change.file_changes == ("+ new.md", "~ changed.md", "− gone.md")
