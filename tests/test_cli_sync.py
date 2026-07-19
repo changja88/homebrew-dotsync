@@ -1,7 +1,7 @@
 from unittest.mock import patch
-from dotsync.cli import _build_parser, main
+from dotsync.cli import _build_parser, _change_diff_text, main
 from dotsync.config import Config, save_config
-from dotsync.plan import AppPlan
+from dotsync.plan import AppPlan, Change
 
 
 def test_backup_single_app_calls_sync_from(fake_home, monkeypatch, tmp_path):
@@ -498,3 +498,60 @@ def test_cmd_to_surfaces_app_warnings_in_summary(
     assert rc == 0
     out = capsys.readouterr().out
     assert "simulated network blip" in out
+
+
+def test_change_diff_text_update_with_none_source_is_guarded(tmp_path):
+    """BetterTouchTool's plan_from builds update Changes with source=None
+    (live preset export, nothing on disk to diff against). d-key preview
+    must not crash with AttributeError on None.read_bytes()."""
+    dest = tmp_path / "dest.bttpreset"
+    dest.write_text("STORED")
+    change = Change("presets/x.bttpreset", "update", source=None, dest=dest)
+
+    text = _change_diff_text(change)
+
+    assert text == "(diff unavailable: no on-disk copy to compare)"
+
+
+def test_change_diff_text_create_dumps_full_source(tmp_path):
+    source = tmp_path / "new.txt"
+    source.write_text("LINE1\nLINE2")
+    change = Change("f", "create", source=source, dest=None)
+
+    text = _change_diff_text(change)
+
+    assert text == "+LINE1\n+LINE2"
+
+
+def test_change_diff_text_remove_dumps_full_dest(tmp_path):
+    dest = tmp_path / "old.txt"
+    dest.write_text("BYE")
+    change = Change("f", "remove", source=None, dest=dest)
+
+    text = _change_diff_text(change)
+
+    assert text == "-BYE"
+
+
+def test_change_diff_text_tree_lists_per_file_blocks(tmp_path):
+    source_dir = tmp_path / "src"
+    dest_dir = tmp_path / "dst"
+    source_dir.mkdir()
+    dest_dir.mkdir()
+    (source_dir / "a.md").write_text("A")
+    (dest_dir / "b.md").write_text("B_OLD")
+    (source_dir / "b.md").write_text("B_NEW")
+    (dest_dir / "c.md").write_text("C")
+    change = Change(
+        "tree",
+        "update",
+        source=source_dir,
+        dest=dest_dir,
+        file_changes=("+ a.md", "~ b.md", "− c.md"),
+    )
+
+    text = _change_diff_text(change)
+
+    assert "◦ a.md" in text
+    assert "◦ b.md" in text
+    assert "◦ c.md" in text

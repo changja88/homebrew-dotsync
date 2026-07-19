@@ -570,12 +570,21 @@ def _print_full_diffs(plans: "list[AppPlan]") -> None:
 
 
 def _change_diff_text(change) -> str:
+    unavailable = "(diff unavailable: no on-disk copy to compare)"
     if change.file_changes:  # tree mirror: 파일별 diff
+        if change.source is None or change.dest is None:
+            return unavailable
         return _tree_diff_text(change)
     if change.kind == "update":
+        if change.source is None or change.dest is None:
+            return unavailable
         return diffinfo.unified_diff_text(change.source, change.dest)
     if change.kind == "create":
+        if change.source is None:
+            return unavailable
         return diffinfo.full_file_lines(change.source, "+")
+    if change.dest is None:
+        return unavailable
     return diffinfo.full_file_lines(change.dest, "-")
 
 
