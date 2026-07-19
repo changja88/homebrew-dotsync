@@ -6,7 +6,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Sequence
-from dotsync import __version__, ui
+from dotsync import __version__, ui, diffinfo
 from dotsync.apps import APP_CLASSES, APP_NAMES, build_app, detect_present
 from dotsync.backup import new_backup_session, rotate_backups
 from dotsync.config import (
@@ -528,22 +528,64 @@ def _print_preview(plans: list[AppPlan], *, direction: str) -> None:
         print()
 
 
-def _confirm_or_abort(args, *, direction: str) -> bool:
+def _confirm_or_abort(args, plans: "list[AppPlan]", *, direction: str) -> bool:
     if args.dry_run:
         ui.dim("dry-run: no files will be modified")
         return False
     if args.yes:
         return True
     target = "the sync folder" if direction == "from" else "your local machine"
-    answer = ui.ask(
-        f"Apply these changes to {target}?",
-        default="y/N",
-        accent="warn",
-    ).lower()
-    if answer not in ("y", "yes"):
+    while True:
+        answer = ui.ask(
+            f"Apply these changes to {target}?",
+            default="y/N/d",
+            accent="warn",
+        ).lower()
+        if answer == "d":
+            _print_full_diffs(plans)
+            continue
+        if answer in ("y", "yes"):
+            return True
         ui.dim("aborted")
         return False
-    return True
+
+
+def _print_full_diffs(plans: "list[AppPlan]") -> None:
+    """d키: 변경 항목마다 구분선 + 전체 diff를 lazy 계산해 출력."""
+    for plan in plans:
+        for change in plan.changes:
+            if change.kind not in ("create", "update", "remove"):
+                continue
+            print()
+            ui.divider(f"{plan.app}/{change.label}")
+            ui.diff(_change_diff_text(change))
+    print()
+
+
+def _change_diff_text(change) -> str:
+    if change.file_changes:  # tree mirror: 파일별 diff
+        return _tree_diff_text(change)
+    if change.kind == "update":
+        return diffinfo.unified_diff_text(change.source, change.dest)
+    if change.kind == "create":
+        return diffinfo.full_file_lines(change.source, "+")
+    return diffinfo.full_file_lines(change.dest, "-")
+
+
+def _tree_diff_text(change) -> str:
+    blocks: "list[str]" = []
+    for entry in change.file_changes:
+        symbol, _, rel = entry.partition(" ")
+        if symbol == "+":
+            block = diffinfo.full_file_lines(change.source / rel, "+")
+        elif symbol == "−":
+            block = diffinfo.full_file_lines(change.dest / rel, "-")
+        elif symbol == "~":
+            block = diffinfo.unified_diff_text(change.source / rel, change.dest / rel)
+        else:
+            continue
+        blocks.append(f"◦ {rel}\n{block}")
+    return "\n\n".join(blocks)
 
 
 def cmd_from(args) -> int:
@@ -560,7 +602,7 @@ def cmd_from(args) -> int:
     print()
     plans = _build_plans(apps, cfg, "from")
     _print_preview(plans, direction="from")
-    if not _confirm_or_abort(args, direction="from"):
+    if not _confirm_or_abort(args, plans, direction="from"):
         return 0
 
     unchanged_by_plan = {
@@ -615,7 +657,7 @@ def cmd_to(args) -> int:
     print()
     plans = _build_plans(apps, cfg, "to")
     _print_preview(plans, direction="to")
-    if not _confirm_or_abort(args, direction="to"):
+    if not _confirm_or_abort(args, plans, direction="to"):
         return 0
     unchanged_by_plan = {
         plan.app: bool(plan.changes) and not plan.has_changes for plan in plans

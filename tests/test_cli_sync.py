@@ -199,6 +199,53 @@ def test_from_unknown_app_returns_cli_error(fake_home, monkeypatch, tmp_path, ca
     assert "unknown app" in err
 
 
+def test_backup_d_key_shows_diff_then_reprompts(
+    fake_home, monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setenv("NO_COLOR", "1")
+    target = tmp_path / "configs"
+    (target / "zsh").mkdir(parents=True)
+    (target / "zsh" / ".zshrc").write_text("OLD\n")
+    save_config(Config(dir=target, apps=["zsh"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+    (fake_home / ".zshrc").write_text("NEW\n")
+
+    prompts: list[str] = []
+    answers = iter(["d", "n"])
+
+    def fake_input(prompt=""):
+        prompts.append(prompt)
+        return next(answers)
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    rc = main(["backup", "zsh"])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "-OLD" in out  # 폴더의 기존 내용이 빠지고
+    assert "+NEW" in out  # 로컬의 새 내용이 들어간다
+    assert "zsh/.zshrc" in out  # 구분선 라벨
+    assert len(prompts) == 2  # d 후 재질문
+    assert "y/N/d" in prompts[0]
+    # n으로 중단했으므로 폴더는 그대로
+    assert (target / "zsh" / ".zshrc").read_text() == "OLD\n"
+
+
+def test_backup_yes_flag_skips_prompt_entirely(fake_home, monkeypatch, tmp_path):
+    target = tmp_path / "configs"
+    target.mkdir()
+    save_config(Config(dir=target, apps=["zsh"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+    (fake_home / ".zshrc").write_text("X")
+
+    def boom(prompt=""):
+        raise AssertionError("prompt must not be shown with --yes")
+
+    monkeypatch.setattr("builtins.input", boom)
+    assert main(["backup", "zsh", "--yes"]) == 0
+
+
 def test_from_unknown_empty_plan_still_applies_after_yes(monkeypatch, tmp_path):
     monkeypatch.setenv("NO_COLOR", "1")
     target = tmp_path / "configs"
