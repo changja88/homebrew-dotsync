@@ -89,3 +89,47 @@ def _key_summary(suffix: str, old_text: str, new_text: str) -> str:
     if len(keys) > _KEY_LIMIT:
         return ", ".join(keys[:_KEY_LIMIT]) + f" …외 {len(keys) - _KEY_LIMIT}"
     return ", ".join(keys)
+
+
+def _truncate(lines: "list[str]", max_lines: int) -> "list[str]":
+    if len(lines) <= max_lines:
+        return lines
+    hidden = len(lines) - max_lines
+    return lines[:max_lines] + [f"… (+{hidden} lines truncated)"]
+
+
+def unified_diff_text(
+    source: Path, dest: Path, *, max_lines: int = DIFF_MAX_LINES
+) -> str:
+    """Unified diff of dest → source (what applying the change does to dest)."""
+    new_text, new_err = _load(source)
+    old_text, old_err = _load(dest)
+    if new_err or old_err:
+        return f"(diff unavailable: {new_err or old_err})"
+    if new_text is None or old_text is None:
+        return "(binary — no diff)"
+    lines = list(
+        difflib.unified_diff(
+            old_text.splitlines(),
+            new_text.splitlines(),
+            fromfile=str(dest),
+            tofile=str(source),
+            lineterm="",
+        )
+    )
+    if not lines:
+        return "(no line-level changes)"
+    return "\n".join(_truncate(lines, max_lines))
+
+
+def full_file_lines(
+    path: Path, prefix: str, *, max_lines: int = DIFF_MAX_LINES
+) -> str:
+    """Whole-file listing for create (+) / remove (-) entries in the diff view."""
+    text, err = _load(path)
+    if err:
+        return f"(diff unavailable: {err})"
+    if text is None:
+        return "(binary — no diff)"
+    lines = [f"{prefix}{line}" for line in text.splitlines()]
+    return "\n".join(_truncate(lines, max_lines))
