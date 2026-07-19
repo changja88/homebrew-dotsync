@@ -34,3 +34,49 @@ def test_summarize_pair_unreadable_file_returns_empty(tmp_path):
     dest.write_text("a\n")
 
     assert summarize_pair(source, dest) == ""
+
+
+def test_summarize_pair_json_lists_changed_top_level_keys(tmp_path):
+    dest = tmp_path / "settings.json"
+    source = tmp_path / "local.json"
+    dest.write_text('{"model": "opus", "keep": 1}')
+    source.write_text('{"model": "fable", "keep": 1, "hooks": {"a": 1}}')
+
+    assert summarize_pair(source, dest) == "+1 −1 · model, hooks"
+
+
+def test_summarize_pair_json_includes_removed_keys(tmp_path):
+    dest = tmp_path / "settings.json"
+    source = tmp_path / "local.json"
+    dest.write_text('{"gone": 1, "keep": 1}')
+    source.write_text('{"keep": 1}')
+
+    assert summarize_pair(source, dest) == "+1 −1 · gone"
+
+
+def test_summarize_pair_key_list_caps_at_four(tmp_path):
+    dest = tmp_path / "settings.json"
+    source = tmp_path / "local.json"
+    dest.write_text("{}")
+    source.write_text('{"k1": 1, "k2": 2, "k3": 3, "k4": 4, "k5": 5, "k6": 6}')
+
+    assert summarize_pair(source, dest) == "+1 −1 · k1, k2, k3, k4 …외 2"
+
+
+def test_summarize_pair_toml_lists_changed_tables(tmp_path):
+    dest = tmp_path / "config.toml"
+    source = tmp_path / "local.toml"
+    dest.write_text('notify = ["x"]\n\n[tui]\na = 1\n')
+    source.write_text("[tui]\na = 2\n")
+
+    out = summarize_pair(source, dest)
+    assert out.endswith("· tui, notify")
+
+
+def test_summarize_pair_invalid_json_falls_back_to_line_counts(tmp_path):
+    dest = tmp_path / "broken.json"
+    source = tmp_path / "local.json"
+    dest.write_text("{not json")
+    source.write_text("{not json either")
+
+    assert summarize_pair(source, dest) == "+1 −1"

@@ -8,6 +8,8 @@ every function here is "dest becomes source" — the same source/dest meaning
 from __future__ import annotations
 
 import difflib
+import json
+import tomllib
 from pathlib import Path
 
 DIFF_MAX_LINES = 200
@@ -59,4 +61,31 @@ def summarize_pair(source: Path, dest: Path) -> str:
         new_size = source.stat().st_size
         return f"binary · {_human_size(old_size)} → {_human_size(new_size)}"
     added, removed = _line_counts(old_text, new_text)
-    return f"+{added} −{removed}"
+    summary = f"+{added} −{removed}"
+    keys = _key_summary(source.suffix, old_text, new_text)
+    if keys:
+        summary += f" · {keys}"
+    return summary
+
+
+_PARSERS = {".json": json.loads, ".toml": tomllib.loads}
+
+
+def _key_summary(suffix: str, old_text: str, new_text: str) -> str:
+    loads = _PARSERS.get(suffix)
+    if loads is None:
+        return ""
+    try:
+        old = loads(old_text)
+        new = loads(new_text)
+    except ValueError:  # JSONDecodeError/TOMLDecodeError 모두 ValueError 하위
+        return ""
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return ""
+    keys = [k for k in new if k not in old or old[k] != new[k]]
+    keys += [k for k in old if k not in new]
+    if not keys:
+        return ""
+    if len(keys) > _KEY_LIMIT:
+        return ", ".join(keys[:_KEY_LIMIT]) + f" …외 {len(keys) - _KEY_LIMIT}"
+    return ", ".join(keys)
