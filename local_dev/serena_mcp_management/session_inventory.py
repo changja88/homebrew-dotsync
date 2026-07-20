@@ -68,6 +68,7 @@ class AgentInventory:
     client: str
     sessions: CountStats
     criteria: str
+    records: CountStats | None = None
     codex_targets: tuple[CodexCleanupTarget, ...] = ()
     scanned_paths: tuple[Path, ...] = ()
     session_dirs: tuple[Path, ...] = ()
@@ -417,6 +418,8 @@ def _scan_codex_inventory(
 
     total = len(groups) + len(invalid) + malformed_count
     delete_count = len(targets)
+    record_total = len(scanned_paths)
+    records_to_delete = sum(len(target.files) for target in targets)
     return AgentInventory(
         client="codex",
         sessions=CountStats(
@@ -425,6 +428,11 @@ def _scan_codex_inventory(
             to_keep=total - delete_count,
         ),
         criteria="sessions: all known homes + inactive longer than 5d",
+        records=CountStats(
+            total=record_total,
+            to_delete=records_to_delete,
+            to_keep=record_total - records_to_delete,
+        ),
         codex_targets=tuple(targets),
         scanned_paths=scanned_paths,
         session_dirs=session_dirs,
@@ -450,14 +458,16 @@ def _scan_claude_inventory(
     cutoff_ns = int((now - RETENTION_SECONDS) * 1_000_000_000)
     delete_count = sum(path.stat().st_mtime_ns < cutoff_ns for path in paths)
     total = len(paths)
+    stats = CountStats(
+        total=total,
+        to_delete=delete_count,
+        to_keep=total - delete_count,
+    )
     return AgentInventory(
         client="claude",
-        sessions=CountStats(
-            total=total,
-            to_delete=delete_count,
-            to_keep=total - delete_count,
-        ),
+        sessions=stats,
         criteria="sessions: all projects + native retention 5d",
+        records=stats,
         scanned_paths=paths,
         session_dirs=(config_dir / "projects",),
     )

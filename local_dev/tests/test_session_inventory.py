@@ -72,6 +72,7 @@ def test_scan_claude_counts_all_projects_without_memory_or_subagents(tmp_path):
     )
 
     assert inventory.sessions == CountStats(total=2, to_delete=1, to_keep=1)
+    assert inventory.records == CountStats(total=2, to_delete=1, to_keep=1)
     assert inventory.criteria == "sessions: all projects + native retention 5d"
     assert not hasattr(inventory, "memory")
     assert inventory.codex_targets == ()
@@ -158,6 +159,7 @@ def test_scan_codex_groups_all_homes_and_uses_descendant_activity(tmp_path):
     )
 
     assert inventory.sessions == CountStats(total=1, to_delete=0, to_keep=1)
+    assert inventory.records == CountStats(total=3, to_delete=0, to_keep=3)
     assert inventory.criteria == (
         "sessions: all known homes + inactive longer than 5d"
     )
@@ -188,6 +190,7 @@ def test_scan_codex_builds_source_before_orca_delete_plan(tmp_path):
     )
 
     assert inventory.sessions == CountStats(total=1, to_delete=1, to_keep=0)
+    assert inventory.records == CountStats(total=3, to_delete=3, to_keep=0)
     target = inventory.codex_targets[0]
     assert target.root_id == ROOT_A
     assert [(owner.codex_home, owner.local_root_ids, owner.is_orca) for owner in target.owners] == [
