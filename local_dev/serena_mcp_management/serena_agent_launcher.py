@@ -30,6 +30,7 @@ from local_dev.serena_mcp_management.external_cli import (
     serena_server_command,
 )
 from local_dev.serena_mcp_management.memory_management import (
+    MemoryDeleteResult,
     MemoryInventory,
     delete_all_memory,
     scan_memory_inventory,
@@ -467,9 +468,24 @@ def _main_v2(args: list[str]) -> int:
     if memory_choice == "cancel":
         return 130
     if memory_choice == "delete":
-        delete_result = delete_all_memory(**_memory_scan_kwargs(client_type))
+        try:
+            scan_kwargs = _memory_scan_kwargs(client_type)
+        except (OSError, RuntimeError, ValueError) as exc:
+            detail = str(exc) or exc.__class__.__name__
+            delete_result = MemoryDeleteResult(error=detail)
+        else:
+            try:
+                delete_result = delete_all_memory(**scan_kwargs)
+            except (OSError, ValueError) as exc:
+                detail = str(exc) or exc.__class__.__name__
+                delete_result = MemoryDeleteResult(error=detail)
         if not delete_result.succeeded:
-            out.write(f"  ! memory      delete failed · {delete_result.error}\n")
+            out.write(
+                f"  ! memory      delete failed · "
+                f"{delete_result.deleted_stores} stores · "
+                f"{delete_result.deleted_files} files deleted · "
+                f"{delete_result.error}\n"
+            )
             out.flush()
             return 1
         out.write(

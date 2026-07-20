@@ -1501,6 +1501,11 @@ def _run_main_for_memory_choice(
     *,
     choice,
     deletion_succeeds=True,
+    deletion_error="unsafe memory store",
+    deleted_stores=0,
+    deleted_files=0,
+    delete_exception=None,
+    codex_home=None,
 ):
     from local_dev.serena_mcp_management.memory_management import MemoryDeleteResult
 
@@ -1508,7 +1513,8 @@ def _run_main_for_memory_choice(
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    configured_codex_home = codex_home or tmp_path / "codex-home"
+    monkeypatch.setenv("CODEX_HOME", str(configured_codex_home))
     _set_graphify_env(monkeypatch)
 
     call_log: list[str] = []
@@ -1534,10 +1540,16 @@ def _run_main_for_memory_choice(
 
     def fake_delete_all_memory(**kwargs):
         delete_calls.append(kwargs)
+        if delete_exception is not None:
+            raise delete_exception
         if deletion_succeeds:
             return MemoryDeleteResult(deleted_stores=2, deleted_files=17)
         call_log.append("memory-delete-failed")
-        return MemoryDeleteResult(error="unsafe memory store")
+        return MemoryDeleteResult(
+            deleted_stores=deleted_stores,
+            deleted_files=deleted_files,
+            error=deletion_error,
+        )
 
     monkeypatch.setattr(launcher, "_render_preflight_overview_v2", fake_overview)
     monkeypatch.setattr(launcher, "_run_serena_cli_install_v2", lambda **kwargs: None)
@@ -1548,7 +1560,12 @@ def _run_main_for_memory_choice(
     monkeypatch.setattr(launcher, "delete_all_memory", fake_delete_all_memory,
                         raising=False)
 
-    stopped = choice == "cancel" or (choice == "delete" and not deletion_succeeds)
+    stopped = (
+        choice == "cancel"
+        or (choice == "delete" and not deletion_succeeds)
+        or delete_exception is not None
+        or not Path(configured_codex_home).is_absolute()
+    )
 
     def forbidden(*args, **kwargs):
         pytest.fail("stopped memory choices must not prepare or launch an agent")
@@ -1625,12 +1642,17 @@ def test_v2_main_cancel_stops_before_cleanup_or_launch(monkeypatch, tmp_path):
     assert delete_calls == []
 
 
-def test_v2_main_delete_failure_stops_before_cleanup_or_launch(monkeypatch, tmp_path):
+def test_v2_main_partial_delete_failure_reports_counts_and_stops(
+    monkeypatch, tmp_path, capsys
+):
     rc, call_log, delete_calls = _run_main_for_memory_choice(
         monkeypatch,
         tmp_path,
         choice="delete",
         deletion_succeeds=False,
+        deletion_error="disk busy",
+        deleted_stores=1,
+        deleted_files=4,
     )
 
     assert rc == 1
@@ -1638,6 +1660,50 @@ def test_v2_main_delete_failure_stops_before_cleanup_or_launch(monkeypatch, tmp_
         "overview", "serena-init", "setup", "memory-delete-failed"
     ]
     assert len(delete_calls) == 1
+    assert (
+        "memory      delete failed · 1 stores · 4 files deleted · disk busy"
+        in _strip_ansi(capsys.readouterr().out)
+    )
+
+
+def test_v2_main_invalid_memory_scan_config_returns_one_before_launch(
+    monkeypatch, tmp_path, capsys
+):
+    rc, call_log, delete_calls = _run_main_for_memory_choice(
+        monkeypatch,
+        tmp_path,
+        choice="delete",
+        codex_home=Path("relative-codex-home"),
+    )
+
+    assert rc == 1
+    assert call_log == ["overview", "serena-init", "setup", "memory-delete"]
+    assert delete_calls == []
+    assert (
+        "memory      delete failed · 0 stores · 0 files deleted · "
+        "codex_home must be absolute"
+        in _strip_ansi(capsys.readouterr().out)
+    )
+
+
+def test_v2_main_authoritative_memory_rescan_failure_returns_one_before_launch(
+    monkeypatch, tmp_path, capsys
+):
+    rc, call_log, delete_calls = _run_main_for_memory_choice(
+        monkeypatch,
+        tmp_path,
+        choice="delete",
+        delete_exception=OSError("rescan unavailable"),
+    )
+
+    assert rc == 1
+    assert call_log == ["overview", "serena-init", "setup", "memory-delete"]
+    assert len(delete_calls) == 1
+    assert (
+        "memory      delete failed · 0 stores · 0 files deleted · "
+        "rescan unavailable"
+        in _strip_ansi(capsys.readouterr().out)
+    )
 
 
 def test_v2_preflight_groups_memory_inventory_in_one_row(monkeypatch):
