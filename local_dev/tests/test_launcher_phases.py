@@ -1502,8 +1502,8 @@ def _run_main_for_memory_choice(
     choice,
     deletion_succeeds=True,
     deletion_error="unsafe memory store",
-    deleted_stores=0,
-    deleted_files=0,
+    deleted_stores=2,
+    deleted_files=17,
     delete_exception=None,
     codex_home=None,
 ):
@@ -1543,7 +1543,10 @@ def _run_main_for_memory_choice(
         if delete_exception is not None:
             raise delete_exception
         if deletion_succeeds:
-            return MemoryDeleteResult(deleted_stores=2, deleted_files=17)
+            return MemoryDeleteResult(
+                deleted_stores=deleted_stores,
+                deleted_files=deleted_files,
+            )
         call_log.append("memory-delete-failed")
         return MemoryDeleteResult(
             deleted_stores=deleted_stores,
@@ -1628,6 +1631,28 @@ def test_v2_main_deletes_memory_then_cleans_sessions_and_launches(
     assert len(delete_calls) == 1
     assert delete_calls[0]["client"] == "codex"
     assert delete_calls[0]["codex_home"] == tmp_path / "codex-home"
+
+
+def test_v2_main_zero_store_delete_then_cleans_sessions_and_launches(
+    monkeypatch, tmp_path, capsys
+):
+    rc, call_log, delete_calls = _run_main_for_memory_choice(
+        monkeypatch,
+        tmp_path,
+        choice="delete",
+        deleted_stores=0,
+        deleted_files=0,
+    )
+
+    assert rc == 0
+    assert call_log == [
+        "overview", "serena-init", "setup", "memory-delete", "session-cleanup", "launch"
+    ]
+    assert len(delete_calls) == 1
+    assert (
+        "memory      0 stores · 0 files deleted"
+        in _strip_ansi(capsys.readouterr().out)
+    )
 
 
 def test_v2_main_cancel_prints_clean_row_and_stops_before_cleanup_or_launch(

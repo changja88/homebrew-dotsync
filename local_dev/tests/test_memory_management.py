@@ -959,7 +959,49 @@ def test_delete_all_memory_refuses_running_same_product(tmp_path):
     assert not result.succeeded
     assert result.error is not None
     assert "1 running Codex process" in result.error
+    assert "PID 40" in result.error
+    assert "codex" in result.error
     assert (active / "memories/MEMORY.md").exists()
+
+
+def test_delete_empty_inventory_succeeds_without_process_scan(tmp_path):
+    def forbidden_ps(*args, **kwargs):
+        pytest.fail("empty memory inventory must not inspect processes")
+
+    result = delete_all_memory(
+        client="codex",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        run_command=forbidden_ps,
+    )
+
+    assert result.succeeded
+    assert result.deleted_stores == 0
+    assert result.deleted_files == 0
+
+
+def test_delete_process_conflict_details_are_bounded(tmp_path):
+    home, active, orca = build_codex_memory_fixture(tmp_path)
+    ps = "".join(
+        f"{pid} 1 codex codex\n"
+        for pid in (40, 41, 42, 43)
+    )
+
+    result = delete_all_memory(
+        client="codex",
+        home=home,
+        codex_home=active,
+        orca_codex_home=orca,
+        run_command=fake_ps(ps),
+    )
+
+    assert not result.succeeded
+    assert result.error is not None
+    assert "PID 40 codex" in result.error
+    assert "PID 41 codex" in result.error
+    assert "PID 42 codex" in result.error
+    assert "PID 43" not in result.error
+    assert "+1 more" in result.error
 
 
 def test_delete_all_memory_ignores_other_product_process(tmp_path):

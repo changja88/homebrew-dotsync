@@ -22,6 +22,8 @@ CODEX_SCOPE = "all known Codex homes"
 CLAUDE_SCOPE = "all Claude auto-memory stores"
 PS_IDENTITY_COMMAND = ["/bin/ps", "-axo", "pid=,ppid=,comm="]
 PS_ARGUMENT_COMMAND = ["/bin/ps", "-axo", "pid=,args="]
+PROCESS_CONFLICT_DISPLAY_LIMIT = 3
+PROCESS_NAME_DISPLAY_LIMIT = 40
 
 
 RunCommand = Callable[..., subprocess.CompletedProcess[str]]
@@ -138,6 +140,19 @@ def running_client_processes(
     )
 
 
+def _process_conflict_detail(conflicts: tuple[ClientProcess, ...]) -> str:
+    details = []
+    for process in conflicts[:PROCESS_CONFLICT_DISPLAY_LIMIT]:
+        name = Path(process.executable).name or "unknown"
+        if len(name) > PROCESS_NAME_DISPLAY_LIMIT:
+            name = name[: PROCESS_NAME_DISPLAY_LIMIT - 1] + "…"
+        details.append(f"PID {process.pid} {name}")
+    remaining = len(conflicts) - PROCESS_CONFLICT_DISPLAY_LIMIT
+    if remaining > 0:
+        details.append(f"+{remaining} more")
+    return ", ".join(details)
+
+
 def delete_all_memory(
     *,
     client: str,
@@ -159,6 +174,8 @@ def delete_all_memory(
         return MemoryDeleteResult(
             error="memory scan unsafe: " + "; ".join(inventory.warnings)
         )
+    if not inventory.stores:
+        return MemoryDeleteResult()
 
     try:
         conflicts = running_client_processes(
@@ -170,7 +187,10 @@ def delete_all_memory(
         return MemoryDeleteResult(error=f"process scan failed: {exc}")
     if conflicts:
         return MemoryDeleteResult(
-            error=f"{len(conflicts)} running {client.title()} process(es)"
+            error=(
+                f"{len(conflicts)} running {client.title()} process(es): "
+                f"{_process_conflict_detail(conflicts)}"
+            )
         )
 
     for store in inventory.stores:
