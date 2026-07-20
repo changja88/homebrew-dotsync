@@ -41,6 +41,45 @@ def test_codex_inventory_scans_only_memories_under_all_known_homes(tmp_path):
     )
 
 
+def test_codex_inventory_rejects_symlinked_active_home(tmp_path):
+    home = tmp_path / "home"
+    active_target = tmp_path / "active-target"
+    store = active_target / "memories"
+    store.mkdir(parents=True)
+    (store / "MEMORY.md").write_text("memory")
+    active_link = tmp_path / "active-link"
+    active_link.symlink_to(active_target, target_is_directory=True)
+
+    inventory = scan_memory_inventory(
+        client="codex",
+        home=home,
+        codex_home=active_link,
+        orca_codex_home=tmp_path / "orca",
+    )
+
+    assert inventory.stores == ()
+    assert any("symlink" in warning for warning in inventory.warnings)
+
+
+def test_codex_inventory_detects_symlink_component_before_parent_traversal(
+    tmp_path,
+):
+    linked_target = tmp_path / "linked-target/nested"
+    linked_target.mkdir(parents=True)
+    active_link = tmp_path / "active-link"
+    active_link.symlink_to(linked_target, target_is_directory=True)
+
+    inventory = scan_memory_inventory(
+        client="codex",
+        home=tmp_path / "home",
+        codex_home=active_link / ".." / "active",
+        orca_codex_home=tmp_path / "orca",
+    )
+
+    assert inventory.stores == ()
+    assert any("symlink" in warning for warning in inventory.warnings)
+
+
 def test_claude_inventory_finds_all_project_memory_and_custom_store(tmp_path):
     config = tmp_path / ".claude"
     first = config / "projects/repo-a/memory"
@@ -73,6 +112,83 @@ def test_claude_inventory_finds_all_project_memory_and_custom_store(tmp_path):
     }
     assert inventory.file_count == 3
     assert inventory.scope == "all Claude auto-memory stores"
+
+
+def test_claude_inventory_rejects_symlinked_config_root(tmp_path):
+    config_target = tmp_path / "config-target"
+    store = config_target / "projects/repo/memory"
+    store.mkdir(parents=True)
+    (store / "MEMORY.md").write_text("memory")
+    config_link = tmp_path / "config-link"
+    config_link.symlink_to(config_target, target_is_directory=True)
+
+    inventory = scan_memory_inventory(
+        client="claude",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        claude_config_dir=config_link,
+    )
+
+    assert inventory.stores == ()
+    assert any("symlink" in warning for warning in inventory.warnings)
+
+
+def test_claude_inventory_rejects_nonempty_custom_store_without_marker(tmp_path):
+    config = tmp_path / ".claude"
+    config.mkdir()
+    custom = tmp_path / "custom-memory"
+    custom.mkdir()
+    (custom / "notes.txt").write_text("not auto-memory")
+    (config / "settings.json").write_text(
+        json.dumps({"autoMemoryDirectory": str(custom)})
+    )
+
+    inventory = scan_memory_inventory(
+        client="claude",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        claude_config_dir=config,
+    )
+
+    assert inventory.stores == ()
+    assert any("MEMORY.md" in warning for warning in inventory.warnings)
+
+
+def test_claude_inventory_accepts_empty_custom_store(tmp_path):
+    config = tmp_path / ".claude"
+    config.mkdir()
+    custom = tmp_path / "custom-memory"
+    custom.mkdir()
+    (config / "settings.json").write_text(
+        json.dumps({"autoMemoryDirectory": str(custom)})
+    )
+
+    inventory = scan_memory_inventory(
+        client="claude",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        claude_config_dir=config,
+    )
+
+    assert tuple(store.path for store in inventory.stores) == (custom,)
+    assert inventory.file_count == 0
+
+
+def test_claude_inventory_does_not_require_marker_for_project_store(tmp_path):
+    config = tmp_path / ".claude"
+    store = config / "projects/repo/memory"
+    store.mkdir(parents=True)
+    (store / "notes.txt").write_text("project memory")
+
+    inventory = scan_memory_inventory(
+        client="claude",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        claude_config_dir=config,
+    )
+
+    assert tuple(item.path for item in inventory.stores) == (store,)
+    assert inventory.file_count == 1
 
 
 @pytest.mark.parametrize(

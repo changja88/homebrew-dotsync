@@ -7,7 +7,7 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
-from .agent_paths import canonical_codex_homes, effective_claude_config_dir
+from .agent_paths import lexical_claude_config_dir, lexical_codex_homes
 
 
 CODEX_SCOPE = "all known Codex homes"
@@ -58,14 +58,21 @@ def _scan_codex_memory(
     codex_home: Path,
     orca_codex_home: Path | None,
 ) -> MemoryInventory:
-    homes, _, _ = canonical_codex_homes(
+    homes, _, _ = lexical_codex_homes(
         home=home,
         codex_home=codex_home,
         orca_codex_home=orca_codex_home,
     )
     warnings: list[str] = []
     discovered_stores: list[MemoryStore] = []
+    seen_homes: set[Path] = set()
     for candidate_home in homes:
+        if _has_symlink_component(candidate_home, warnings):
+            continue
+        candidate_home = candidate_home.resolve(strict=False)
+        if candidate_home in seen_homes:
+            continue
+        seen_homes.add(candidate_home)
         store = _inspect_store(
             candidate_home / "memories",
             source="codex-home",
@@ -88,11 +95,20 @@ def _scan_claude_memory(
     home: Path,
     claude_config_dir: Path | None,
 ) -> MemoryInventory:
-    config_dir = effective_claude_config_dir(
+    config_dir = lexical_claude_config_dir(
         home=home,
         claude_config_dir=claude_config_dir,
     )
     warnings: list[str] = []
+    if _has_symlink_component(config_dir, warnings):
+        return MemoryInventory(
+            client="claude",
+            stores=(),
+            file_count=0,
+            scope=CLAUDE_SCOPE,
+            warnings=tuple(warnings),
+        )
+    config_dir = config_dir.resolve(strict=False)
     stores_by_path: dict[Path, MemoryStore] = {}
 
     for memory_path in _project_memory_paths(config_dir, warnings):
@@ -248,8 +264,36 @@ def _inspect_store(
     if kind != "directory":
         return None
 
+    if source == "claude-settings" and not _valid_configured_store(
+        path,
+        warnings,
+    ):
+        return None
     file_count = _count_regular_files(path, warnings)
     return MemoryStore(path=path, source=source, file_count=file_count)
+
+
+def _valid_configured_store(path: Path, warnings: list[str]) -> bool:
+    try:
+        with os.scandir(path) as entries:
+            is_empty = next(entries, None) is None
+    except OSError as exc:
+        warnings.append(f"cannot read configured memory store {path}: {exc}")
+        return False
+    if is_empty:
+        return True
+
+    marker = path / "MEMORY.md"
+    try:
+        mode = marker.lstat().st_mode
+    except OSError:
+        mode = 0
+    if stat.S_ISREG(mode):
+        return True
+    warnings.append(
+        f"non-empty configured memory store requires MEMORY.md: {path}"
+    )
+    return False
 
 
 def _has_symlink_component(path: Path, warnings: list[str]) -> bool:
