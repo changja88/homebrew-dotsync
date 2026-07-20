@@ -1,19 +1,23 @@
-"""Session and memory inventory for the local agent launcher."""
+"""Fast, non-destructive session inventory for the local agent launcher."""
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import subprocess
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 
-@dataclass(frozen=True)
-class AgentStatePaths:
-    client: str
-    sessions_dir: Path
-    memory_dir: Path
-    criteria: str
+RETENTION_DAYS = 5
+RETENTION_SECONDS = RETENTION_DAYS * 86400
+
+
+class ActiveSessionScanError(RuntimeError):
+    """Raised when open Codex rollout files cannot be identified safely."""
 
 
 @dataclass(frozen=True)
@@ -21,190 +25,472 @@ class CountStats:
     total: int
     to_delete: int = 0
     to_keep: int = 0
-    to_reset: int = 0
+
+
+@dataclass(frozen=True)
+class FileIdentity:
+    device: int
+    inode: int
+
+
+@dataclass(frozen=True)
+class FileFingerprint:
+    identity: FileIdentity
+    size: int
+    mtime_ns: int
+
+
+@dataclass(frozen=True)
+class CodexSessionFile:
+    session_id: str
+    parent_id: str | None
+    path: Path
+    codex_home: Path
+    fingerprint: FileFingerprint
+
+
+@dataclass(frozen=True)
+class OwnerDeletePlan:
+    codex_home: Path
+    local_root_ids: tuple[str, ...]
+    is_orca: bool
+
+
+@dataclass(frozen=True)
+class CodexCleanupTarget:
+    root_id: str
+    files: tuple[CodexSessionFile, ...]
+    owners: tuple[OwnerDeletePlan, ...]
 
 
 @dataclass(frozen=True)
 class AgentInventory:
     client: str
     sessions: CountStats
-    memory: CountStats
     criteria: str
-    sessions_dir: Path
-    memory_dir: Path
-    session_delete_paths: list[Path]
-    memory_reset: bool
+    codex_targets: tuple[CodexCleanupTarget, ...] = ()
+    scanned_paths: tuple[Path, ...] = ()
+    session_dirs: tuple[Path, ...] = ()
+    warnings: tuple[str, ...] = ()
 
 
-def encode_claude_project_path(path: str) -> str:
-    return path.replace("/", "-")
+RunCommand = Callable[..., subprocess.CompletedProcess[str]]
 
 
-def agent_paths(
+def snapshot_open_rollouts(
+    session_dirs: tuple[Path, ...],
     *,
-    client: str,
-    cwd: str,
-    project_root: str,
+    runner: RunCommand = subprocess.run,
+) -> frozenset[FileIdentity]:
+    """Return identities of open rollout files below the supplied directories."""
+    existing_dirs = tuple(path for path in session_dirs if path.is_dir())
+    if not existing_dirs:
+        return frozenset()
+
+    lsof = shutil.which("lsof")
+    if lsof is None:
+        fallback = Path("/usr/sbin/lsof")
+        if fallback.is_file() and os.access(fallback, os.X_OK):
+            lsof = str(fallback)
+    if lsof is None:
+        raise ActiveSessionScanError("lsof is unavailable")
+
+    command = [lsof, "-n", "-F", "n"]
+    for session_dir in existing_dirs:
+        command.extend(("+D", str(session_dir)))
+    try:
+        result = runner(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise ActiveSessionScanError(str(exc)) from exc
+
+    stderr = result.stderr.strip()
+    if result.returncode not in {0, 1} or (result.returncode == 1 and stderr):
+        detail = stderr or f"lsof exited with {result.returncode}"
+        raise ActiveSessionScanError(detail)
+
+    identities: set[FileIdentity] = set()
+    for line in result.stdout.splitlines():
+        if not line.startswith("n"):
+            continue
+        path = Path(line[1:])
+        if path.suffix != ".jsonl":
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        identities.add(FileIdentity(device=stat.st_dev, inode=stat.st_ino))
+    return frozenset(identities)
+
+
+def _canonical_codex_homes(
+    *,
     home: Path,
     codex_home: Path,
-) -> AgentStatePaths:
-    if client == "claude":
-        session_key = encode_claude_project_path(cwd)
-        memory_key = encode_claude_project_path(project_root or cwd)
-        return AgentStatePaths(
-            client=client,
-            sessions_dir=home / ".claude" / "projects" / session_key,
-            memory_dir=home / ".claude" / "projects" / memory_key / "memory",
-            criteria="sessions: this project + older than 3d . memory: reset all",
-        )
-    if client != "codex":
-        raise ValueError(f"unsupported client: {client}")
-    if not codex_home.is_absolute():
+    orca_codex_home: Path | None,
+) -> tuple[tuple[Path, ...], Path, Path]:
+    active_home = codex_home.expanduser()
+    if not active_home.is_absolute():
         raise ValueError("codex_home must be absolute")
-    return AgentStatePaths(
-        client="codex",
-        sessions_dir=codex_home / "sessions",
-        memory_dir=codex_home / "memories",
-        criteria="sessions: same cwd + older than 3d . memory: reset all",
-    )
+    default_home = (home / ".codex").resolve(strict=False)
+    active_home = active_home.resolve(strict=False)
+    orca_home = (
+        orca_codex_home
+        or home / "Library/Application Support/orca/codex-runtime-home/home"
+    ).expanduser()
+    if not orca_home.is_absolute():
+        raise ValueError("orca_codex_home must be absolute")
+    orca_home = orca_home.resolve(strict=False)
 
-
-def _is_old(path: Path, now: float, days: int = 3) -> bool:
-    try:
-        return path.stat().st_mtime < now - days * 86400
-    except OSError:
-        return False
-
-
-def _count_files(path: Path) -> int:
-    if not path.is_dir():
-        return 0
-    return sum(1 for item in path.rglob("*") if item.is_file())
-
-
-def _codex_session_matches_cwd(path: Path, cwd: str) -> bool:
-    try:
-        with path.open(encoding="utf-8") as session_file:
-            for line in session_file:
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if row.get("type") != "session_meta":
-                    continue
-                payload = row.get("payload")
-                if isinstance(payload, dict) and payload.get("cwd") == cwd:
-                    return True
-    except (OSError, UnicodeDecodeError):
-        return False
-    return False
-
-
-def _scan_codex_sessions(
-    sessions_dir: Path,
-    cwd: str,
-    now: float,
-) -> tuple[CountStats, list[Path]]:
-    total = 0
-    delete_paths: list[Path] = []
-
-    for path in sorted(sessions_dir.rglob("*.jsonl")):
-        if not path.is_file() or not _codex_session_matches_cwd(path, cwd):
+    homes: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in (default_home, active_home, orca_home):
+        if candidate in seen:
             continue
-        total += 1
-        if _is_old(path, now):
-            delete_paths.append(path)
+        seen.add(candidate)
+        homes.append(candidate)
+    return tuple(homes), default_home, orca_home
 
-    return (
-        CountStats(
-            total=total,
-            to_delete=len(delete_paths),
-            to_keep=total - len(delete_paths),
-        ),
-        delete_paths,
+
+def _fingerprint(path: Path) -> FileFingerprint:
+    stat = path.stat()
+    return FileFingerprint(
+        identity=FileIdentity(device=stat.st_dev, inode=stat.st_ino),
+        size=stat.st_size,
+        mtime_ns=stat.st_mtime_ns,
     )
 
 
-def _scan_claude_sessions(
-    sessions_dir: Path,
+def _normalized_uuid(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return str(uuid.UUID(value))
+    except ValueError:
+        return None
+
+
+def _find_parent_thread_id(value: object) -> str | None:
+    if isinstance(value, dict):
+        parent = _normalized_uuid(value.get("parent_thread_id"))
+        if parent is not None:
+            return parent
+        for child in value.values():
+            parent = _find_parent_thread_id(child)
+            if parent is not None:
+                return parent
+    elif isinstance(value, list):
+        for child in value:
+            parent = _find_parent_thread_id(child)
+            if parent is not None:
+                return parent
+    return None
+
+
+def _read_codex_session_files(
+    homes: tuple[Path, ...],
+) -> tuple[list[CodexSessionFile], tuple[Path, ...], list[str], int]:
+    files: list[CodexSessionFile] = []
+    scanned_paths: list[Path] = []
+    warnings: list[str] = []
+    malformed_count = 0
+
+    for codex_home in homes:
+        sessions_dir = codex_home / "sessions"
+        if not sessions_dir.is_dir():
+            continue
+        for path in sorted(sessions_dir.rglob("*.jsonl")):
+            if not path.is_file():
+                continue
+            scanned_paths.append(path)
+            try:
+                with path.open(encoding="utf-8") as session_file:
+                    first_line = session_file.readline()
+                row = json.loads(first_line)
+                payload = row.get("payload")
+                if row.get("type") != "session_meta" or not isinstance(payload, dict):
+                    raise ValueError("first row is not session_meta")
+                session_id = _normalized_uuid(payload.get("id"))
+                if session_id is None:
+                    raise ValueError("session UUID is missing or invalid")
+                files.append(
+                    CodexSessionFile(
+                        session_id=session_id,
+                        parent_id=_find_parent_thread_id(payload),
+                        path=path,
+                        codex_home=codex_home,
+                        fingerprint=_fingerprint(path),
+                    )
+                )
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+                malformed_count += 1
+                warnings.append(f"malformed session metadata: {path.name}: {exc}")
+
+    return files, tuple(scanned_paths), warnings, malformed_count
+
+
+def _group_codex_files(
+    files: list[CodexSessionFile],
+    warnings: list[str],
+) -> tuple[dict[str, list[str]], dict[str, str | None], set[str]]:
+    files_by_id: dict[str, list[CodexSessionFile]] = {}
+    ids_by_identity: dict[FileIdentity, set[str]] = {}
+    for session_file in files:
+        files_by_id.setdefault(session_file.session_id, []).append(session_file)
+        ids_by_identity.setdefault(session_file.fingerprint.identity, set()).add(
+            session_file.session_id
+        )
+
+    invalid: set[str] = set()
+    parents: dict[str, str | None] = {}
+    for session_id, copies in files_by_id.items():
+        copy_parents = {copy.parent_id for copy in copies}
+        if len(copy_parents) != 1:
+            invalid.add(session_id)
+            warnings.append(f"conflicting parent for session {session_id}")
+            continue
+        parents[session_id] = next(iter(copy_parents))
+
+    for identity_ids in ids_by_identity.values():
+        if len(identity_ids) <= 1:
+            continue
+        invalid.update(identity_ids)
+        warnings.append(
+            "conflicting session UUIDs share one file identity: "
+            + ", ".join(sorted(identity_ids))
+        )
+
+    roots: dict[str, str] = {}
+
+    def resolve_root(session_id: str) -> str | None:
+        trail: list[str] = []
+        positions: dict[str, int] = {}
+        current = session_id
+        while True:
+            if current in roots:
+                root = roots[current]
+                for item in trail:
+                    roots[item] = root
+                return root
+            if current in invalid:
+                invalid.update(trail)
+                return None
+            if current in positions:
+                cycle = trail[positions[current] :]
+                invalid.update(trail)
+                warnings.append("parent cycle: " + " -> ".join(cycle + [current]))
+                return None
+            positions[current] = len(trail)
+            trail.append(current)
+            parent = parents.get(current)
+            if parent is None:
+                for item in trail:
+                    roots[item] = current
+                return current
+            if parent not in files_by_id:
+                invalid.update(trail)
+                warnings.append(f"missing parent {parent} for session {current}")
+                return None
+            current = parent
+
+    for session_id in sorted(files_by_id):
+        resolve_root(session_id)
+
+    groups: dict[str, list[str]] = {}
+    for session_id, root_id in roots.items():
+        if session_id in invalid:
+            continue
+        groups.setdefault(root_id, []).append(session_id)
+    for members in groups.values():
+        members.sort()
+    return groups, parents, invalid
+
+
+def _owner_delete_plans(
+    *,
+    group_ids: list[str],
+    files_by_id: dict[str, list[CodexSessionFile]],
+    parents: dict[str, str | None],
+    homes: tuple[Path, ...],
+    default_home: Path,
+    orca_home: Path,
+) -> tuple[OwnerDeletePlan, ...]:
+    plans: list[OwnerDeletePlan] = []
+    for codex_home in homes:
+        local_ids = {
+            session_id
+            for session_id in group_ids
+            if any(
+                session_file.codex_home == codex_home
+                for session_file in files_by_id[session_id]
+            )
+        }
+        if not local_ids:
+            continue
+        local_roots = tuple(
+            sorted(
+                session_id
+                for session_id in local_ids
+                if parents.get(session_id) not in local_ids
+            )
+        )
+        plans.append(
+            OwnerDeletePlan(
+                codex_home=codex_home,
+                local_root_ids=local_roots,
+                is_orca=codex_home == orca_home and codex_home != default_home,
+            )
+        )
+    return tuple(plans)
+
+
+def _scan_codex_inventory(
+    *,
+    home: Path,
+    codex_home: Path,
+    orca_codex_home: Path | None,
     now: float,
-) -> tuple[CountStats, list[Path]]:
-    paths = [path for path in sorted(sessions_dir.glob("*.jsonl")) if path.is_file()]
-    delete_paths = [path for path in paths if _is_old(path, now)]
-    return (
-        CountStats(
-            total=len(paths),
-            to_delete=len(delete_paths),
-            to_keep=len(paths) - len(delete_paths),
+    open_file_identities: frozenset[FileIdentity] | None,
+) -> AgentInventory:
+    homes, default_home, orca_home = _canonical_codex_homes(
+        home=home,
+        codex_home=codex_home,
+        orca_codex_home=orca_codex_home,
+    )
+    session_dirs = tuple(
+        codex_home / "sessions"
+        for codex_home in homes
+        if (codex_home / "sessions").is_dir()
+    )
+    files, scanned_paths, warnings, malformed_count = _read_codex_session_files(
+        homes
+    )
+
+    if open_file_identities is None:
+        try:
+            open_ids = snapshot_open_rollouts(session_dirs)
+        except ActiveSessionScanError as exc:
+            warnings.append(f"active session scan unavailable: {exc}")
+            open_ids = frozenset(
+                session_file.fingerprint.identity for session_file in files
+            )
+    else:
+        open_ids = open_file_identities
+
+    files_by_id: dict[str, list[CodexSessionFile]] = {}
+    for session_file in files:
+        files_by_id.setdefault(session_file.session_id, []).append(session_file)
+    groups, parents, invalid = _group_codex_files(files, warnings)
+    cutoff_ns = int((now - RETENTION_SECONDS) * 1_000_000_000)
+    targets: list[CodexCleanupTarget] = []
+
+    for root_id, group_ids in sorted(groups.items()):
+        group_files = tuple(
+            sorted(
+                (
+                    session_file
+                    for session_id in group_ids
+                    for session_file in files_by_id[session_id]
+                ),
+                key=lambda session_file: str(session_file.path),
+            )
+        )
+        if max(item.fingerprint.mtime_ns for item in group_files) >= cutoff_ns:
+            continue
+        if any(item.fingerprint.identity in open_ids for item in group_files):
+            continue
+        targets.append(
+            CodexCleanupTarget(
+                root_id=root_id,
+                files=group_files,
+                owners=_owner_delete_plans(
+                    group_ids=group_ids,
+                    files_by_id=files_by_id,
+                    parents=parents,
+                    homes=homes,
+                    default_home=default_home,
+                    orca_home=orca_home,
+                ),
+            )
+        )
+
+    total = len(groups) + len(invalid) + malformed_count
+    delete_count = len(targets)
+    return AgentInventory(
+        client="codex",
+        sessions=CountStats(
+            total=total,
+            to_delete=delete_count,
+            to_keep=total - delete_count,
         ),
-        delete_paths,
+        criteria="sessions: all known homes + inactive longer than 5d",
+        codex_targets=tuple(targets),
+        scanned_paths=scanned_paths,
+        session_dirs=session_dirs,
+        warnings=tuple(warnings),
+    )
+
+
+def _scan_claude_inventory(
+    *,
+    home: Path,
+    claude_config_dir: Path | None,
+    now: float,
+) -> AgentInventory:
+    config_dir = claude_config_dir or home / ".claude"
+    if not config_dir.is_absolute():
+        raise ValueError("claude_config_dir must be absolute")
+
+    paths = tuple(
+        path
+        for path in sorted((config_dir / "projects").glob("*/*.jsonl"))
+        if path.is_file()
+    )
+    cutoff_ns = int((now - RETENTION_SECONDS) * 1_000_000_000)
+    delete_count = sum(path.stat().st_mtime_ns < cutoff_ns for path in paths)
+    total = len(paths)
+    return AgentInventory(
+        client="claude",
+        sessions=CountStats(
+            total=total,
+            to_delete=delete_count,
+            to_keep=total - delete_count,
+        ),
+        criteria="sessions: all projects + native retention 5d",
+        scanned_paths=paths,
+        session_dirs=(config_dir / "projects",),
     )
 
 
 def scan_inventory(
     *,
     client: str,
-    cwd: str,
-    project_root: str,
     home: Path,
     codex_home: Path,
+    claude_config_dir: Path | None = None,
+    orca_codex_home: Path | None = None,
     now: float | None = None,
+    open_file_identities: frozenset[FileIdentity] | None = None,
 ) -> AgentInventory:
+    """Build one immutable inventory snapshot for preflight and cleanup."""
     scan_time = time.time() if now is None else now
-    paths = agent_paths(
-        client=client,
-        cwd=cwd,
-        project_root=project_root,
-        home=home,
-        codex_home=codex_home,
-    )
-
-    if paths.client == "claude":
-        sessions, session_delete_paths = _scan_claude_sessions(paths.sessions_dir, scan_time)
-    else:
-        sessions, session_delete_paths = _scan_codex_sessions(paths.sessions_dir, cwd, scan_time)
-
-    memory_total = _count_files(paths.memory_dir)
-    memory = CountStats(total=memory_total, to_reset=memory_total, to_keep=0)
-
-    return AgentInventory(
-        client=paths.client,
-        sessions=sessions,
-        memory=memory,
-        criteria=paths.criteria,
-        sessions_dir=paths.sessions_dir,
-        memory_dir=paths.memory_dir,
-        session_delete_paths=session_delete_paths,
-        memory_reset=paths.memory_dir.is_dir(),
-    )
-
-
-def cleanup_inventory(
-    *,
-    client: str,
-    cwd: str,
-    project_root: str,
-    home: Path,
-    codex_home: Path,
-    now: float | None = None,
-) -> AgentInventory:
-    inventory = scan_inventory(
-        client=client,
-        cwd=cwd,
-        project_root=project_root,
-        home=home,
-        codex_home=codex_home,
-        now=now,
-    )
-
-    for path in inventory.session_delete_paths:
-        path.unlink(missing_ok=True)
-        if inventory.client == "claude":
-            uuid_dir = path.with_suffix("")
-            if uuid_dir.is_dir():
-                shutil.rmtree(uuid_dir)
-
-    if inventory.memory_reset:
-        shutil.rmtree(inventory.memory_dir)
-
-    return inventory
+    if client == "claude":
+        return _scan_claude_inventory(
+            home=home,
+            claude_config_dir=claude_config_dir,
+            now=scan_time,
+        )
+    if client == "codex":
+        return _scan_codex_inventory(
+            home=home,
+            codex_home=codex_home,
+            orca_codex_home=orca_codex_home,
+            now=scan_time,
+            open_file_identities=open_file_identities,
+        )
+    raise ValueError(f"unsupported client: {client}")

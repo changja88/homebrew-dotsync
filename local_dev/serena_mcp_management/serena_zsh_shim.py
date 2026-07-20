@@ -81,9 +81,24 @@ _dotsync_agent_project_root() {
 
 _dotsync_agent_should_manage_launch() {
   local interactive="$1"
-  local arg_count="$2"
+  local client="$2"
+  shift 2
 
-  [[ "$interactive" == "1" && "$arg_count" == "0" ]]
+  [[ "$interactive" == "1" ]] || return 1
+
+  local arg=""
+  if [[ "$client" == "claude" ]]; then
+    for arg in "$@"; do
+      [[ "$arg" == "--settings" || "$arg" == --settings=* ]] && return 1
+    done
+  fi
+
+  (( $# == 0 )) && return 0
+  case "$client:$1" in
+    codex:resume|codex:fork) return 0 ;;
+    claude:-c|claude:--continue|claude:-r|claude:--resume) return 0 ;;
+  esac
+  return 1
 }
 
 _dotsync_agent_serena_project_available() {
@@ -170,7 +185,7 @@ claude() {
   [[ -t 0 && -t 1 ]] && interactive=1
   local real_binary="__CLAUDE_BINARY__"
 
-  if ! _dotsync_agent_should_manage_launch "$interactive" "$#"; then
+  if ! _dotsync_agent_should_manage_launch "$interactive" claude "$@"; then
     "$real_binary" "$@"
     return $?
   fi
@@ -206,7 +221,7 @@ codex() {
   [[ -t 0 && -t 1 ]] && interactive=1
   local real_binary="__CODEX_BINARY__"
 
-  if ! _dotsync_agent_should_manage_launch "$interactive" "$#"; then
+  if ! _dotsync_agent_should_manage_launch "$interactive" codex "$@"; then
     "$real_binary" "$@"
     return $?
   fi

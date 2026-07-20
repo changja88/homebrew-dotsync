@@ -6,11 +6,13 @@ import time
 import pytest
 
 from local_dev.serena_mcp_management.serena_agent_launcher import (
+    _launch_bare_child,
     _touch_lease_if_record_exists,
     build_child_command,
     find_real_binary,
     infer_client_type,
 )
+from local_dev.serena_mcp_management.session_cleanup import CLAUDE_RETENTION_JSON
 from local_dev.serena_mcp_management.serena_mcp.paths import Scope
 from local_dev.serena_mcp_management.serena_mcp.registry import Lease, ServerRecord, locked_registry
 from local_dev.serena_mcp_management.serena_mcp.watchdog import ShutdownStats
@@ -79,7 +81,7 @@ def test_build_claude_command_uses_temp_mcp_config():
     assert cmd[1].startswith("--mcp-config=")
     config_path = cmd[1].split("=", 1)[1]
     assert os.path.exists(config_path)
-    assert cmd[2:] == ["--help"]
+    assert cmd[2:] == ["--settings", CLAUDE_RETENTION_JSON, "--help"]
     cleanup()
     assert not os.path.exists(config_path)
 
@@ -93,8 +95,32 @@ def test_build_claude_command_does_not_swallow_positional_args():
     )
 
     assert cmd[1].startswith("--mcp-config=")
-    assert cmd[2:] == ["mcp", "list"]
+    assert cmd[2:] == [
+        "--settings",
+        CLAUDE_RETENTION_JSON,
+        "mcp",
+        "list",
+    ]
     cleanup()
+
+
+def test_bare_claude_launch_arms_native_retention(monkeypatch):
+    calls = []
+
+    class Result:
+        returncode = 0
+
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_agent_launcher.subprocess.run",
+        lambda cmd: calls.append(cmd) or Result(),
+    )
+
+    assert _launch_bare_child(
+        ["-c"], client_type="claude", real_binary="/fake/claude"
+    ) == 0
+    assert calls == [
+        ["/fake/claude", "--settings", CLAUDE_RETENTION_JSON, "-c"]
+    ]
 
 
 def test_touch_lease_if_record_exists_reattaches_missing_lease(monkeypatch, tmp_path):
@@ -252,7 +278,7 @@ def test_launcher_prints_mcp_progress_and_clears_before_child(monkeypatch, tmp_p
                         lambda **kw: True, raising=False)
     from local_dev.serena_mcp_management.serena_agent_launcher import LaunchPrepSummary
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_launch_prep_v2",
-                        lambda **kw: LaunchPrepSummary(cleanup_deleted=0, cleanup_memory_files_reset=0),
+                        lambda **kw: LaunchPrepSummary(cleanup_deleted=0, native_eligible=0),
                         raising=False)
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.ensure_server", fake_ensure_server)
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")
@@ -337,7 +363,7 @@ def test_launcher_opens_dashboard_for_interactive_agent(monkeypatch, tmp_path):
                         lambda **kw: True, raising=False)
     from local_dev.serena_mcp_management.serena_agent_launcher import LaunchPrepSummary
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_launch_prep_v2",
-                        lambda **kw: LaunchPrepSummary(cleanup_deleted=0, cleanup_memory_files_reset=0),
+                        lambda **kw: LaunchPrepSummary(cleanup_deleted=0, native_eligible=0),
                         raising=False)
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.ensure_server", lambda scope, lease: Record())
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")
@@ -394,7 +420,7 @@ def test_launcher_prints_shutdown_stats_for_interactive_agent(monkeypatch, tmp_p
                         lambda **kw: True, raising=False)
     from local_dev.serena_mcp_management.serena_agent_launcher import LaunchPrepSummary
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_launch_prep_v2",
-                        lambda **kw: LaunchPrepSummary(cleanup_deleted=0, cleanup_memory_files_reset=0),
+                        lambda **kw: LaunchPrepSummary(cleanup_deleted=0, native_eligible=0),
                         raising=False)
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.ensure_server", lambda scope, lease: Record())
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")

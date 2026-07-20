@@ -45,9 +45,12 @@ from local_dev.serena_mcp_management.serena_mcp.watchdog import (
     make_launcher_lease,
     release_lease_and_shutdown_if_empty,
 )
+from local_dev.serena_mcp_management.session_cleanup import (
+    claude_retention_args,
+    cleanup_codex_inventory,
+)
 from local_dev.serena_mcp_management.session_inventory import (
     AgentInventory,
-    cleanup_inventory,
     scan_inventory,
 )
 from local_dev.serena_mcp_management.ui import (
@@ -68,20 +71,21 @@ from local_dev.serena_mcp_management.ui import (
 )
 
 
-@dataclass
-class CleanupResult:
-    """Result of a cleanup operation."""
-
-    deleted: int
-    memory_files_reset: int
-
-
-@dataclass
+@dataclass(frozen=True)
 class LaunchPrepSummary:
     """Summary of the v2 launch-prep phase."""
 
-    cleanup_deleted: int
-    cleanup_memory_files_reset: int
+    cleanup_deleted: int = 0
+    native_eligible: int = 0
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class InventorySnapshot:
+    """One inventory result shared by preflight display and launch cleanup."""
+
+    inventory: AgentInventory | None
+    error: str | None = None
 
 
 def _codex_home_from_env() -> Path:
@@ -94,71 +98,29 @@ def _codex_home_from_env() -> Path:
 
 
 def _inventory_for_preflight(client: str, project_root: str) -> AgentInventory:
-    cwd = os.getcwd()
     codex_home = Path.home() / ".codex" if client == "claude" else _codex_home_from_env()
+    claude_config_value = os.environ.get("CLAUDE_CONFIG_DIR")
+    claude_config_dir = (
+        Path(claude_config_value).expanduser() if claude_config_value else None
+    )
     return scan_inventory(
         client=client,
-        cwd=cwd,
-        project_root=project_root or cwd,
         home=Path.home(),
         codex_home=codex_home,
+        claude_config_dir=claude_config_dir,
     )
 
 
 def _sessions_value(inventory: AgentInventory) -> str:
     sessions = inventory.sessions
+    action = (
+        f"{sessions.to_delete} native cleanup"
+        if inventory.client == "claude"
+        else f"{sessions.to_delete} to delete"
+    )
     return style_inventory_counts(
         f"{inventory.client} {sessions.total} total . "
-        f"{sessions.to_delete} to delete . {sessions.to_keep} to keep"
-    )
-
-
-def _memory_value(inventory: AgentInventory) -> str:
-    memory = inventory.memory
-    return style_inventory_counts(
-        f"{inventory.client} {memory.total} total . "
-        f"{memory.to_reset} to reset . {memory.to_keep} to keep"
-    )
-
-
-def _run_cleanup_claude() -> CleanupResult:
-    """Clean up old Claude sessions and memory files.
-
-    Returns:
-        CleanupResult with deleted count and memory files reset count.
-    """
-    cwd = os.getcwd()
-    inventory = cleanup_inventory(
-        client="claude",
-        cwd=cwd,
-        project_root=os.environ.get("SERENA_AGENT_PROJECT_ROOT", cwd),
-        home=Path.home(),
-        codex_home=Path.home() / ".codex",
-    )
-
-    return CleanupResult(
-        deleted=inventory.sessions.to_delete,
-        memory_files_reset=inventory.memory.to_reset,
-    )
-
-
-def _run_cleanup_codex(codex_home: Path, cwd: str) -> CleanupResult:
-    """Clean up old Codex sessions and memory files.
-
-    Returns:
-        CleanupResult with deleted count and memory files reset count.
-    """
-    inventory = cleanup_inventory(
-        client="codex",
-        cwd=cwd,
-        project_root=os.environ.get("SERENA_AGENT_PROJECT_ROOT", cwd),
-        home=Path.home(),
-        codex_home=codex_home,
-    )
-
-    return CleanupResult(
-        deleted=inventory.sessions.to_delete,
-        memory_files_reset=inventory.memory.to_reset,
+        f"{action} . {sessions.to_keep} to keep"
     )
 
 
@@ -232,7 +194,8 @@ def build_child_command(
             except FileNotFoundError:
                 pass
 
-        return [real_binary, f"--mcp-config={path}", *child_args], cleanup
+        retained_args = claude_retention_args(child_args)
+        return [real_binary, f"--mcp-config={path}", *retained_args], cleanup
     raise RuntimeError(f"unsupported client type: {client_type}")
 
 
@@ -243,14 +206,24 @@ def clear_terminal_before_child() -> None:
     print("\x1b[3J\x1b[H\x1b[2J", end="", flush=True)
 
 
-def _launch_bare_child(args: list[str]) -> int:
+def _launch_bare_child(
+    args: list[str],
+    *,
+    client_type: str | None = None,
+    real_binary: str | None = None,
+) -> int:
     """Run the real agent binary without the scoped Serena MCP server."""
 
-    client_type = infer_client_type(os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0]))
-    real_binary = find_real_binary(client_type)
+    resolved_client = client_type or infer_client_type(
+        os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0])
+    )
+    resolved_binary = real_binary or find_real_binary(resolved_client)
+    child_args = (
+        claude_retention_args(args) if resolved_client == "claude" else list(args)
+    )
     if os.environ.get("SERENA_AGENT_CLEAR_BEFORE_CHILD") == "1":
         clear_terminal_before_child()
-    return int(subprocess.run([real_binary, *args]).returncode)
+    return int(subprocess.run([resolved_binary, *child_args]).returncode)
 
 
 def open_dashboard_if_requested(dashboard_url: str) -> None:
@@ -275,38 +248,54 @@ def main(argv: list[str] | None = None) -> int:
 
 def _run_launch_prep_v2(
     *,
+    snapshot: InventorySnapshot | None,
+    real_binary: str,
     stream: TextIO | None = None,
 ) -> LaunchPrepSummary:
-    """Run the v2 launch-prep phase with cleanup execution.
+    """Apply the preflight inventory without scanning the session tree again."""
 
-    This phase:
-    1. Detects the client type and runs cleanup (claude or codex)
-    2. Outputs the cleanup results in a formatted row
-    3. Returns a summary of what was cleaned
-
-    Returns:
-        LaunchPrepSummary with cleanup counts.
-    """
     out = stream if stream is not None else sys.stdout
     client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
-
-    if client == "claude":
-        result = _run_cleanup_claude()
-    elif client == "codex":
-        codex_home = _codex_home_from_env()
-        result = _run_cleanup_codex(codex_home, os.getcwd())
-    else:
+    if client not in {"codex", "claude"}:
         raise RuntimeError(f"unsupported launcher name: {client}")
 
-    out.write(
-        f"  ✓ cleanup     {result.deleted} sessions deleted . "
-        f"{result.memory_files_reset} memory files reset\n"
-    )
-    out.flush()
+    if snapshot is None or snapshot.inventory is None:
+        detail = (
+            snapshot.error if snapshot is not None else None
+        ) or "inventory unavailable"
+        out.write(f"  ! cleanup     skipped . {detail}\n")
+        out.flush()
+        return LaunchPrepSummary(warnings=(detail,))
 
+    inventory = snapshot.inventory
+    if inventory.client != client:
+        detail = (
+            f"inventory client mismatch: expected {client}, got {inventory.client}"
+        )
+        out.write(f"  ! cleanup     skipped . {detail}\n")
+        out.flush()
+        return LaunchPrepSummary(warnings=(detail,))
+
+    if client == "claude":
+        eligible = inventory.sessions.to_delete
+        out.write(
+            f"  ✓ cleanup     native retention 5d . {eligible} eligible\n"
+        )
+        out.flush()
+        return LaunchPrepSummary(
+            native_eligible=eligible,
+            warnings=inventory.warnings,
+        )
+
+    result = cleanup_codex_inventory(
+        inventory,
+        codex_binary=real_binary,
+    )
+    out.write(f"  ✓ cleanup     {result.deleted} sessions deleted\n")
+    out.flush()
     return LaunchPrepSummary(
         cleanup_deleted=result.deleted,
-        cleanup_memory_files_reset=result.memory_files_reset,
+        warnings=result.warnings,
     )
 
 
@@ -372,24 +361,44 @@ def _render_summary_v2(
     client: str,
     duration_seconds: float,
     cleanup_deleted: int,
-    cleanup_memory_files_reset: int,
+    native_eligible: int,
     mcp_lifecycle: str,
     warnings: list[str],
 ) -> None:
+    cleanup_value = (
+        f"native retention 5d . {native_eligible} eligible"
+        if client == "claude"
+        else f"{cleanup_deleted} sessions deleted"
+    )
     items = [
-        Item(id="duration", label="duration",
-             value=_format_duration(duration_seconds), status="done"),
-        Item(id="cleanup", label="cleanup",
-             value=style_count(
-                 f"{cleanup_deleted} sessions deleted . "
-                 f"{cleanup_memory_files_reset} memory files reset"
-             ),
-             status="done"),
-        Item(id="mcp", label="serena", value=f"server {mcp_lifecycle}", status="done"),
+        Item(
+            id="duration",
+            label="duration",
+            value=_format_duration(duration_seconds),
+            status="done",
+        ),
+        Item(
+            id="cleanup",
+            label="cleanup",
+            value=style_count(cleanup_value),
+            status="done",
+        ),
+        Item(
+            id="mcp",
+            label="serena",
+            value=f"server {mcp_lifecycle}",
+            status="done",
+        ),
     ]
     for index, message in enumerate(warnings):
-        items.append(Item(id=f"warn-{index}", label="warning",
-                          value=message, status="warn"))
+        items.append(
+            Item(
+                id=f"warn-{index}",
+                label="warning",
+                value=message,
+                status="warn",
+            )
+        )
     model = BoxModel(phase="summary", title=client, items=items)
     BoxRenderer(stream=stream).draw(model)
 
@@ -400,9 +409,10 @@ def _main_v2(args: list[str]) -> int:
     warnings: list[str] = []
     interactive = os.environ.get("SERENA_AGENT_INTERACTIVE") == "1"
     out = sys.stdout
+    inventory_snapshot: InventorySnapshot | None = None
 
     if interactive:
-        _render_preflight_overview_v2()
+        inventory_snapshot = _render_preflight_overview_v2()
         _run_serena_cli_install_v2()
 
     serena_state = _run_serena_init_v2() if interactive else "managed"
@@ -415,9 +425,28 @@ def _main_v2(args: list[str]) -> int:
     if interactive and not _run_final_confirm_v2():
         return 130
 
+    client_type = infer_client_type(
+        os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0])
+    )
+    real_binary = find_real_binary(client_type)
+    summary_state = (
+        _run_launch_prep_v2(
+            snapshot=inventory_snapshot,
+            real_binary=real_binary,
+        )
+        if interactive
+        else None
+    )
+    if summary_state is not None:
+        warnings.extend(summary_state.warnings)
+
     if serena_state in {"skipped", "failed"}:
         warnings.append(f"serena project create {serena_state}")
-        return _launch_bare_child(args)
+        return _launch_bare_child(
+            args,
+            client_type=client_type,
+            real_binary=real_binary,
+        )
 
     if serena_server_command() is None:
         out.write(
@@ -425,29 +454,34 @@ def _main_v2(args: list[str]) -> int:
             " launching without scoped server\n"
         )
         out.flush()
-        return _launch_bare_child(args)
+        return _launch_bare_child(
+            args,
+            client_type=client_type,
+            real_binary=real_binary,
+        )
 
-    summary_state = _run_launch_prep_v2() if interactive else None
-
-    client_type = infer_client_type(os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0]))
     project_root = _project_root_from_environment() or find_project_root(Path.cwd())
     scope = Scope(project_root, client_type)
     lease_id = str(uuid.uuid4())
     lease = make_launcher_lease(lease_id)
 
-    record = _start_mcp_with_spinner(scope=scope, lease=lease) if interactive \
+    record = (
+        _start_mcp_with_spinner(scope=scope, lease=lease)
+        if interactive
         else ensure_server(scope, lease)
+    )
 
     stop = threading.Event()
     cleanup: Callable[[], None] = lambda: None
     child: subprocess.Popen | None = None
     heartbeat = threading.Thread(
-        target=_heartbeat_loop, args=(scope, lease_id, stop), daemon=True,
+        target=_heartbeat_loop,
+        args=(scope, lease_id, stop),
+        daemon=True,
     )
     heartbeat.start()
 
     try:
-        real_binary = find_real_binary(client_type)
         cmd, cleanup = build_child_command(
             client_type=client_type,
             real_binary=real_binary,
@@ -488,13 +522,13 @@ def _main_v2(args: list[str]) -> int:
         else:
             mcp_lifecycle = "none"
         cleanup_deleted = summary_state.cleanup_deleted if summary_state else 0
-        cleanup_memory = summary_state.cleanup_memory_files_reset if summary_state else 0
+        native_eligible = summary_state.native_eligible if summary_state else 0
         _render_summary_v2(
             stream=out,
             client=client_type,
             duration_seconds=time.time() - started_at,
             cleanup_deleted=cleanup_deleted,
-            cleanup_memory_files_reset=cleanup_memory,
+            native_eligible=native_eligible,
             mcp_lifecycle=mcp_lifecycle,
             warnings=warnings,
         )
@@ -562,7 +596,20 @@ def _serena_mcp_status(snapshot) -> str:
     return "done"
 
 
-def _preflight_box() -> BoxModel:
+def _capture_inventory_snapshot(
+    client: str,
+    project_root: str,
+) -> InventorySnapshot:
+    try:
+        return InventorySnapshot(
+            inventory=_inventory_for_preflight(client, project_root)
+        )
+    except Exception as exc:
+        detail = str(exc) or exc.__class__.__name__
+        return InventorySnapshot(inventory=None, error=detail)
+
+
+def _preflight_box(snapshot: InventorySnapshot | None = None) -> BoxModel:
     """Build a BoxModel for the v2 preflight phase."""
     client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
     project_root = os.environ.get("SERENA_AGENT_PROJECT_ROOT", "")
@@ -614,17 +661,16 @@ def _preflight_box() -> BoxModel:
         client, integration_status
     )
     hook_value, hook_item_status = _graphify_hook_value(hook_status)
-    try:
-        inventory = _inventory_for_preflight(client, project_root)
+    inventory_snapshot = snapshot or _capture_inventory_snapshot(client, project_root)
+    if inventory_snapshot.inventory is not None:
+        inventory = inventory_snapshot.inventory
         sessions_value = _sessions_value(inventory)
         sessions_item_status = "info"
-        memory_value = _memory_value(inventory)
         criteria_value = style_criteria(inventory.criteria)
-    except Exception as exc:
-        detail = str(exc) or exc.__class__.__name__
+    else:
+        detail = inventory_snapshot.error or "inventory unavailable"
         sessions_value = f"scan unavailable: {detail}"
         sessions_item_status = "warn"
-        memory_value = style_inventory_counts(f"{client} 0 total . 0 to reset . 0 to keep")
         criteria_value = style_criteria("scan unavailable")
 
     items = [
@@ -677,7 +723,6 @@ def _preflight_box() -> BoxModel:
             value=sessions_value,
             status=sessions_item_status,
         ),
-        Item(id="memory", label="memory", value=memory_value, status="info"),
         Item(id="criteria", label="criteria", value=criteria_value, status="info"),
     ]
     return BoxModel(phase="preflight", title=client, items=items)
@@ -1240,21 +1285,20 @@ def _run_preflight_v2(
     return 0
 
 
-def _render_preflight_overview_v2(*, stream: TextIO | None = None) -> None:
-    """Draw the preflight box once as the workspace overview, before any prompts.
+def _render_preflight_overview_v2(
+    *,
+    stream: TextIO | None = None,
+) -> InventorySnapshot | None:
+    """Draw the workspace overview and return its single inventory snapshot."""
 
-    The box is drawn exactly once. Subsequent steps (serena init, graphify
-    prompts, install results) print as plain lines below the box — never as
-    a redrawn box. Redrawing would push the original overview out of view
-    and flash the banner art again right before the final 'Run <client>?'
-    prompt; instead, post-install state changes inside `_run_preflight_v2`
-    are surfaced with `render_inline_row` so the chronological flow stays
-    intact and the visual style still matches the box's row format.
-    """
     if os.environ.get("SERENA_AGENT_INTERACTIVE") != "1":
-        return
+        return None
+    client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
+    project_root = os.environ.get("SERENA_AGENT_PROJECT_ROOT", "")
+    snapshot = _capture_inventory_snapshot(client, project_root)
     out = stream if stream is not None else sys.stdout
-    BoxRenderer(stream=out).draw(_preflight_box())
+    BoxRenderer(stream=out).draw(_preflight_box(snapshot))
+    return snapshot
 
 
 def _run_final_confirm_v2(

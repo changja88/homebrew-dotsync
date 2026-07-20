@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import re
 import shutil
@@ -92,13 +93,8 @@ def _stub_preflight_inventory(
     sessions_total=174,
     sessions_to_delete=92,
     sessions_to_keep=82,
-    memory_total=3,
-    memory_to_reset=3,
-    memory_to_keep=0,
-    criteria="sessions: same cwd + older than 3d . memory: reset all",
+    criteria="sessions: all known homes + inactive longer than 5d",
 ):
-    from pathlib import Path
-
     from local_dev.serena_mcp_management.session_inventory import (
         AgentInventory,
         CountStats,
@@ -114,16 +110,7 @@ def _stub_preflight_inventory(
                 to_delete=sessions_to_delete,
                 to_keep=sessions_to_keep,
             ),
-            memory=CountStats(
-                total=memory_total,
-                to_reset=memory_to_reset,
-                to_keep=memory_to_keep,
-            ),
             criteria=criteria,
-            sessions_dir=Path(f"/tmp/{client}/sessions"),
-            memory_dir=Path(f"/tmp/{client}/memories"),
-            session_delete_paths=[],
-            memory_reset=memory_to_reset > 0,
         ),
         raising=False,
     )
@@ -182,8 +169,6 @@ def test_v2_preflight_renders_box_with_sessions_and_serena(monkeypatch):
         sessions_total=103,
         sessions_to_delete=0,
         sessions_to_keep=103,
-        memory_total=0,
-        memory_to_reset=0,
     )
 
     out = io.StringIO()
@@ -197,7 +182,7 @@ def test_v2_preflight_renders_box_with_sessions_and_serena(monkeypatch):
     text = out.getvalue()
     plain = _strip_ansi(text)
     assert "codex 103 total . 0 to delete . 103 to keep" in plain
-    assert "codex 0 total . 0 to reset . 0 to keep" in plain
+    assert "memory" not in plain
     assert "preflight" in text
     assert "codex" in text
     # All four graphify rows render with their distinct labels.
@@ -211,7 +196,7 @@ def test_v2_preflight_renders_box_with_sessions_and_serena(monkeypatch):
     assert rc == 0  # preflight no longer aborts; final 'Run codex?' moved out
 
 
-def test_v2_preflight_renders_box_with_sessions_memory_and_criteria(monkeypatch):
+def test_v2_preflight_renders_box_with_sessions_and_five_day_criteria(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
@@ -225,14 +210,37 @@ def test_v2_preflight_renders_box_with_sessions_memory_and_criteria(monkeypatch)
 
     assert "sessions" in plain
     assert "codex 174 total . 92 to delete . 82 to keep" in plain
-    assert "memory" in plain
-    assert "codex 3 total . 3 to reset . 0 to keep" in plain
+    assert "memory" not in plain
     assert "criteria" in plain
-    assert "sessions: same cwd + older than 3d . memory: reset all" in plain
+    assert "sessions: all known homes + inactive longer than 5d" in plain
     assert "cleanup" not in plain
 
 
-def test_v2_preflight_uses_real_codex_inventory_for_current_context(
+def test_v2_preflight_labels_claude_candidates_as_native_cleanup(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch)
+    _stub_preflight_inventory(
+        monkeypatch,
+        client="claude",
+        sessions_total=108,
+        sessions_to_delete=74,
+        sessions_to_keep=34,
+        criteria="sessions: all projects + native retention 5d",
+    )
+
+    out = io.StringIO()
+    launcher._render_preflight_overview_v2(stream=out)
+    plain = _strip_ansi(out.getvalue())
+
+    assert "claude 108 total . 74 native cleanup . 34 to keep" in plain
+    assert "sessions: all projects + native retention 5d" in plain
+    assert "memory" not in plain
+
+
+def test_v2_preflight_uses_real_global_codex_logical_inventory(
     tmp_path, monkeypatch
 ):
     home = tmp_path / "home"
@@ -240,21 +248,47 @@ def test_v2_preflight_uses_real_codex_inventory_for_current_context(
     codex_home = tmp_path / "codex-home"
     home.mkdir()
     repo.mkdir()
-    old = codex_home / "sessions" / "2026" / "05" / "01" / "old.jsonl"
-    new = codex_home / "sessions" / "2026" / "05" / "10" / "new.jsonl"
-    other = codex_home / "sessions" / "2026" / "05" / "10" / "other.jsonl"
-    old.parent.mkdir(parents=True)
-    new.parent.mkdir(parents=True, exist_ok=True)
-    old.write_text(f'{{"type":"session_meta","payload":{{"cwd":"{repo}"}}}}\n')
-    new.write_text(f'{{"type":"session_meta","payload":{{"cwd":"{repo}"}}}}\n')
-    other.write_text('{"type":"session_meta","payload":{"cwd":"/other"}}\n')
-    old_time = time.time() - 4 * 86400
-    os.utime(old, (old_time, old_time))
-    os.utime(other, (old_time, old_time))
+    root_id = "00000000-0000-4000-8000-000000000001"
+    child_id = "00000000-0000-4000-8000-000000000002"
+    fresh_id = "00000000-0000-4000-8000-000000000003"
+    root = codex_home / "sessions" / "2026" / "05" / "01" / "root.jsonl"
+    child = codex_home / "sessions" / "2026" / "05" / "01" / "child.jsonl"
+    fresh = codex_home / "sessions" / "2026" / "05" / "10" / "fresh.jsonl"
+    root.parent.mkdir(parents=True)
+    fresh.parent.mkdir(parents=True, exist_ok=True)
+    root.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": root_id}}) + "\n"
+    )
+    child.write_text(
+        json.dumps(
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": child_id,
+                    "source": {"parent_thread_id": root_id},
+                },
+            }
+        )
+        + "\n"
+    )
+    fresh.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": fresh_id}}) + "\n"
+    )
+    old_time = time.time() - 6 * 86400
+    os.utime(root, (old_time, old_time))
+    os.utime(child, (old_time, old_time))
     memory_dir = codex_home / "memories"
     memory_dir.mkdir()
     (memory_dir / "a.md").write_text("a")
     (memory_dir / "b.md").write_text("b")
+
+    from local_dev.serena_mcp_management import session_inventory
+
+    monkeypatch.setattr(
+        session_inventory,
+        "snapshot_open_rollouts",
+        lambda session_dirs: frozenset(),
+    )
 
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
@@ -270,8 +304,9 @@ def test_v2_preflight_uses_real_codex_inventory_for_current_context(
     plain = _strip_ansi(out.getvalue())
 
     assert "codex 2 total . 1 to delete . 1 to keep" in plain
-    assert "codex 2 total . 2 to reset . 0 to keep" in plain
-    assert "sessions: same cwd + older than 3d . memory: reset all" in plain
+    assert "memory" not in plain
+    assert "sessions: all known homes + inactive longer than 5d" in plain
+    assert (memory_dir / "a.md").exists()
 
 
 def test_v2_preflight_inventory_scan_failure_renders_warning_row(monkeypatch):
@@ -290,9 +325,7 @@ def test_v2_preflight_inventory_scan_failure_renders_warning_row(monkeypatch):
 
     assert rows["sessions"].status == "warn"
     assert "scan unavailable: inventory unavailable" in rows["sessions"].value
-    assert "codex 0 total . 0 to reset . 0 to keep" in _strip_ansi(
-        rows["memory"].value
-    )
+    assert "memory" not in rows
     assert _strip_ansi(rows["criteria"].value) == "scan unavailable"
 
 
@@ -967,166 +1000,96 @@ def test_v2_serena_init_create_failure_returns_failed(monkeypatch, tmp_path):
     assert result == "failed"
 
 
-def _make_old_file(path):
-    """Write a file and set its mtime to 4 days ago."""
-    if not path.exists():
-        path.write_text("x")
-    old = time.time() - 4 * 86400
-    os.utime(path, (old, old))
+def _inventory_snapshot(
+    *, client="codex", total=10, to_delete=3, to_keep=7, error=None
+):
+    from local_dev.serena_mcp_management.session_inventory import (
+        AgentInventory,
+        CountStats,
+    )
+
+    if error is not None:
+        return launcher.InventorySnapshot(inventory=None, error=error)
+    criteria = (
+        "sessions: all projects + native retention 5d"
+        if client == "claude"
+        else "sessions: all known homes + inactive longer than 5d"
+    )
+    return launcher.InventorySnapshot(
+        inventory=AgentInventory(
+            client=client,
+            sessions=CountStats(total=total, to_delete=to_delete, to_keep=to_keep),
+            criteria=criteria,
+        )
+    )
 
 
-def test_v2_run_cleanup_claude_deletes_old_jsonl(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
-    monkeypatch.setattr(launcher.os, "getcwd", lambda: "/repo")
-    proj_dir = tmp_path / ".claude" / "projects" / "-repo"
-    proj_dir.mkdir(parents=True)
-    old = proj_dir / "abc.jsonl"
-    _make_old_file(old)
-    fresh = proj_dir / "fresh.jsonl"
-    fresh.write_text("x")
-    mem = proj_dir / "memory"
-    mem.mkdir()
-    (mem / "m1.txt").write_text("x")
-
-    result = launcher._run_cleanup_claude()
-    assert result.deleted == 1
-    assert result.memory_files_reset == 1
-    assert not old.exists()
-    assert fresh.exists()
-    assert not mem.exists()
-
-
-def test_v2_run_cleanup_codex_does_not_require_jq(tmp_path):
-    codex_home = tmp_path / ".codex"
-    old = codex_home / "sessions" / "2026" / "05" / "01" / "rollout-old.jsonl"
-    old.parent.mkdir(parents=True)
-    old.write_text('{"type":"session_meta","payload":{"cwd":"/repo"}}\n')
-    _make_old_file(old)
-    mem = codex_home / "memories"
-    mem.mkdir()
-    (mem / "m.txt").write_text("x")
-
-    result = launcher._run_cleanup_codex(codex_home, "/repo")
-    assert result.deleted == 1
-    assert result.memory_files_reset == 1
-    assert not old.exists()
-    assert not mem.exists()
-
-
-def test_v2_run_cleanup_codex_uses_default_home_when_codex_home_empty(tmp_path, monkeypatch):
-    # 이 스위트는 shim launcher가 띄운 agent 세션 안에서도 돈다 — 거기서는
-    # SERENA_AGENT_CLIENT=claude가 누출되므로 codex 분기를 명시적으로 고정한다.
-    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("CODEX_HOME", "")
-    monkeypatch.setattr(launcher.os, "getcwd", lambda: "/repo")
-    default_home = tmp_path / ".codex"
-    old = default_home / "sessions" / "2026" / "05" / "01" / "rollout-old.jsonl"
-    old.parent.mkdir(parents=True)
-    old.write_text('{"type":"session_meta","payload":{"cwd":"/repo"}}\n')
-    _make_old_file(old)
-    mem = default_home / "memories"
-    mem.mkdir()
-    (mem / "m.txt").write_text("x")
-
-    out = io.StringIO()
-    summary = launcher._run_launch_prep_v2(stream=out)
-
-    assert summary.cleanup_deleted == 1
-    assert summary.cleanup_memory_files_reset == 1
-    assert not old.exists()
-    assert not mem.exists()
-
-
-def test_v2_run_cleanup_codex_expands_tilde_codex_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("CODEX_HOME", "~/.codex")
-    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
-    monkeypatch.setattr(launcher.os, "getcwd", lambda: "/repo")
-    codex_home = tmp_path / ".codex"
-    old = codex_home / "sessions" / "2026" / "05" / "01" / "rollout-old.jsonl"
-    old.parent.mkdir(parents=True)
-    old.write_text('{"type":"session_meta","payload":{"cwd":"/repo"}}\n')
-    _make_old_file(old)
-    mem = codex_home / "memories"
-    mem.mkdir()
-    (mem / "m.txt").write_text("x")
-
-    summary = launcher._run_launch_prep_v2(stream=io.StringIO())
-
-    assert summary.cleanup_deleted == 1
-    assert summary.cleanup_memory_files_reset == 1
-    assert not old.exists()
-    assert not mem.exists()
-
-
-def test_v2_launch_prep_claude_ignores_relative_codex_home(tmp_path, monkeypatch):
+def test_v2_launch_prep_claude_arms_native_cleanup_without_deleting_memory(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("CODEX_HOME", "relative-codex")
-    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
-    monkeypatch.setattr(launcher.os, "getcwd", lambda: "/repo")
-    session_dir = tmp_path / ".claude" / "projects" / "-repo"
-    session_dir.mkdir(parents=True)
-    old = session_dir / "abc.jsonl"
-    _make_old_file(old)
-    mem = session_dir / "memory"
-    mem.mkdir()
-    (mem / "m.txt").write_text("x")
-
-    summary = launcher._run_launch_prep_v2(stream=io.StringIO())
-
-    assert summary.cleanup_deleted == 1
-    assert summary.cleanup_memory_files_reset == 1
-    assert not old.exists()
-    assert not mem.exists()
-
-
-def test_v2_launch_prep_rejects_relative_codex_home_before_cleanup(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
-    monkeypatch.setenv("CODEX_HOME", "relative-codex")
-    mem = tmp_path / "relative-codex" / "memories"
-    mem.mkdir(parents=True)
-    (mem / "m.txt").write_text("x")
-
-    with pytest.raises(ValueError, match="codex_home must be absolute"):
-        launcher._run_launch_prep_v2(stream=io.StringIO())
-
-    assert mem.exists()
-
-
-def test_v2_launch_prep_rejects_unknown_client_before_cleanup(tmp_path, monkeypatch):
-    monkeypatch.setenv("SERENA_AGENT_CLIENT", "bad-client")
-    monkeypatch.setenv("HOME", str(tmp_path))
-    codex_home = tmp_path / ".codex"
-    mem = codex_home / "memories"
-    mem.mkdir(parents=True)
-    (mem / "m.txt").write_text("x")
-
-    with pytest.raises(RuntimeError, match="unsupported launcher name"):
-        launcher._run_launch_prep_v2(stream=io.StringIO())
-
-    assert mem.exists()
-
-
-def test_v2_launch_prep_runs_cleanup_and_renders_done_row(tmp_path, monkeypatch):
-    monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setattr(launcher.os, "getcwd", lambda: "/x")
-    proj_dir = tmp_path / ".claude" / "projects" / "-x"
-    proj_dir.mkdir(parents=True)
-
+    memory = tmp_path / ".claude/projects/-repo/memory/MEMORY.md"
+    memory.parent.mkdir(parents=True)
+    memory.write_text("keep")
     out = io.StringIO()
-    summary = launcher._run_launch_prep_v2(stream=out)
-    text = out.getvalue()
-    assert "cleanup" in text
-    assert "0 sessions deleted . 0 memory files reset" in text
+
+    summary = launcher._run_launch_prep_v2(
+        snapshot=_inventory_snapshot(
+            client="claude", total=8, to_delete=5, to_keep=3
+        ),
+        real_binary="/fake/claude",
+        stream=out,
+    )
+
     assert summary.cleanup_deleted == 0
-    assert summary.cleanup_memory_files_reset == 0
+    assert summary.native_eligible == 5
+    assert "native retention 5d . 5 eligible" in out.getvalue()
+    assert memory.read_text() == "keep"
+
+
+def test_v2_launch_prep_codex_uses_snapshot_and_official_cleanup(monkeypatch):
+    from local_dev.serena_mcp_management.session_cleanup import CleanupResult
+
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    snapshot = _inventory_snapshot()
+    seen = []
+    monkeypatch.setattr(
+        launcher,
+        "cleanup_codex_inventory",
+        lambda inventory, **kwargs: seen.append((inventory, kwargs["codex_binary"]))
+        or CleanupResult(deleted=3, warnings=("one warning",)),
+    )
+    out = io.StringIO()
+
+    summary = launcher._run_launch_prep_v2(
+        snapshot=snapshot,
+        real_binary="/fake/codex",
+        stream=out,
+    )
+
+    assert seen == [(snapshot.inventory, "/fake/codex")]
+    assert summary.cleanup_deleted == 3
+    assert summary.warnings == ("one warning",)
+    assert "3 sessions deleted" in out.getvalue()
+    assert "memory" not in out.getvalue()
+
+
+def test_v2_launch_prep_scan_failure_skips_cleanup(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setattr(
+        launcher,
+        "cleanup_codex_inventory",
+        lambda *args, **kwargs: pytest.fail("cleanup must not run"),
+    )
+
+    summary = launcher._run_launch_prep_v2(
+        snapshot=_inventory_snapshot(error="inventory unavailable"),
+        real_binary="/fake/codex",
+        stream=io.StringIO(),
+    )
+
+    assert summary.cleanup_deleted == 0
+    assert summary.warnings == ("inventory unavailable",)
 
 
 def test_v2_start_mcp_with_spinner_returns_record_on_success(monkeypatch, tmp_path):
@@ -1170,7 +1133,7 @@ def test_v2_render_summary_box_includes_duration_and_cleanup():
         client="codex",
         duration_seconds=125.0,
         cleanup_deleted=2,
-        cleanup_memory_files_reset=10,
+        native_eligible=0,
         mcp_lifecycle="stopped",
         warnings=[],
     )
@@ -1179,7 +1142,7 @@ def test_v2_render_summary_box_includes_duration_and_cleanup():
     assert "summary" in text
     assert "2m 5s" in _strip_ansi(text) or "125" in _strip_ansi(text)
     assert "2 sessions deleted" in _strip_ansi(text)
-    assert "10 memory files reset" in _strip_ansi(text)
+    assert "memory" not in _strip_ansi(text)
     assert "stopped" in text
 
 
@@ -1190,11 +1153,12 @@ def test_v2_render_summary_includes_warnings():
         client="claude",
         duration_seconds=10.0,
         cleanup_deleted=0,
-        cleanup_memory_files_reset=0,
+        native_eligible=4,
         mcp_lifecycle="kept",
         warnings=["serena project create skipped"],
     )
     assert "serena project create skipped" in out.getvalue()
+    assert "native retention 5d . 4 eligible" in _strip_ansi(out.getvalue())
 
 
 def test_v2_shutdown_with_spinner_outputs_progress_then_done(monkeypatch):
@@ -1463,9 +1427,9 @@ def test_v2_main_orders_overview_then_serena_then_setup_then_final_confirm(
     assert call_log == ["render_overview", "serena_init", "preflight", "final_confirm"]
 
 
-def test_v2_render_preflight_overview_draws_box_with_all_rows(monkeypatch):
+def test_v2_render_preflight_overview_draws_box_without_memory_row(monkeypatch):
     """preflight overview는 box 렌더만 담당한다 — 어떤 prompt도 띄우지 않고
-    sessions/memory/criteria/serena/graphify/context 행을 모두 한 번 그린다.
+    sessions/criteria/serena/graphify/context 행을 모두 한 번 그린다.
     """
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
@@ -1477,8 +1441,6 @@ def test_v2_render_preflight_overview_draws_box_with_all_rows(monkeypatch):
         sessions_total=103,
         sessions_to_delete=0,
         sessions_to_keep=103,
-        memory_total=0,
-        memory_to_reset=0,
     )
 
     out = io.StringIO()
@@ -1486,14 +1448,31 @@ def test_v2_render_preflight_overview_draws_box_with_all_rows(monkeypatch):
     text = out.getvalue()
     plain = _strip_ansi(text)
     assert "codex 103 total . 0 to delete . 103 to keep" in plain
-    assert "codex 0 total . 0 to reset . 0 to keep" in plain
-    assert "sessions: same cwd + older than 3d . memory: reset all" in plain
+    assert "memory" not in plain
+    assert "sessions: all known homes + inactive longer than 5d" in plain
     assert "preflight" in text
     assert "codex" in text
     assert "graphify global" in plain
     assert "graphify graph" in plain
     assert "graphify integration" in plain
     assert "graphify hook" in plain
+
+
+def test_v2_render_preflight_overview_scans_inventory_once(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch)
+    inventory = _inventory_snapshot().inventory
+    scan = mock.Mock(return_value=inventory)
+    monkeypatch.setattr(launcher, "_inventory_for_preflight", scan)
+
+    snapshot = launcher._render_preflight_overview_v2(stream=io.StringIO())
+
+    assert snapshot.inventory is inventory
+    assert snapshot.error is None
+    scan.assert_called_once_with("codex", "/repo")
 
 
 def test_preflight_box_includes_global_serena_mcp_inventory(monkeypatch):
@@ -2026,12 +2005,12 @@ def test_graphify_install_actions_return_2_when_cli_unresolvable(monkeypatch, tm
     assert launcher._graphify_hook_install(tmp_path) == 2
 
 
-def test_v2_main_degrades_to_bare_launch_when_serena_cli_missing(
+def test_v2_main_runs_cleanup_before_bare_launch_when_serena_cli_missing(
     monkeypatch, tmp_path, capsys
 ):
     """project.yml이 있어도(managed) serena CLI 자체를 못 찾으면 scoped server를
     띄울 수 없다 — traceback 대신 경고 한 줄을 남기고 bare child로 강등한다.
-    skipped/failed 경로와 동일하게 cleanup(launch prep)도 건너뛴다."""
+    session cleanup은 Serena와 독립이므로 bare launch 전에도 실행한다."""
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
@@ -2039,8 +2018,9 @@ def test_v2_main_degrades_to_bare_launch_when_serena_cli_missing(
     monkeypatch.delenv("SERENA_AGENT_CLEAR_BEFORE_CHILD", raising=False)
     _set_graphify_env(monkeypatch)
 
+    snapshot = _inventory_snapshot(total=1, to_delete=0, to_keep=1)
     monkeypatch.setattr(launcher, "_render_preflight_overview_v2",
-                        lambda *, stream=None: None, raising=False)
+                        lambda *, stream=None: snapshot, raising=False)
     monkeypatch.setattr(launcher, "_run_serena_cli_install_v2",
                         lambda **kw: "declined", raising=False)
     monkeypatch.setattr(launcher, "_run_preflight_v2",
@@ -2051,9 +2031,13 @@ def test_v2_main_degrades_to_bare_launch_when_serena_cli_missing(
                         lambda: None, raising=False)
     monkeypatch.setattr(launcher, "find_real_binary",
                         lambda client: "/usr/bin/true", raising=False)
-    monkeypatch.setattr(launcher, "_run_launch_prep_v2",
-                        lambda **kw: pytest.fail("cleanup must not run when degrading"),
-                        raising=False)
+    prep_calls = []
+    monkeypatch.setattr(
+        launcher,
+        "_run_launch_prep_v2",
+        lambda **kwargs: prep_calls.append(kwargs) or launcher.LaunchPrepSummary(),
+        raising=False,
+    )
     monkeypatch.setattr(launcher, "_start_mcp_with_spinner",
                         lambda **kw: pytest.fail("scoped server must not start"),
                         raising=False)
@@ -2074,6 +2058,9 @@ def test_v2_main_degrades_to_bare_launch_when_serena_cli_missing(
 
     rc = launcher._main_v2([])
     assert rc == 0
+    assert prep_calls == [
+        {"snapshot": snapshot, "real_binary": "/usr/bin/true"}
+    ]
     assert run_calls == [["/usr/bin/true"]]
     out = _strip_ansi(capsys.readouterr().out)
     assert "serena CLI" in out

@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import shlex
 import subprocess
 import pytest
 
@@ -484,7 +485,7 @@ def test_zsh_shim_passes_project_root_to_launcher(tmp_path):
 
 
 @pytest.mark.no_subprocess_block
-def test_zsh_shim_should_manage_only_tty_no_arg_agent_starts(tmp_path):
+def test_zsh_shim_should_manage_tty_session_commands_only(tmp_path):
     shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
     result = subprocess.run(
         [
@@ -492,9 +493,9 @@ def test_zsh_shim_should_manage_only_tty_no_arg_agent_starts(tmp_path):
             "-fc",
             (
                 f"source {shim_path}; "
-                "_dotsync_agent_should_manage_launch 1 0; print managed_empty=$?; "
-                "_dotsync_agent_should_manage_launch 1 1; print managed_args=$?; "
-                "_dotsync_agent_should_manage_launch 0 0; print managed_notty=$?"
+                "_dotsync_agent_should_manage_launch 1 codex; print managed_empty=$?; "
+                "_dotsync_agent_should_manage_launch 1 codex exec; print managed_args=$?; "
+                "_dotsync_agent_should_manage_launch 0 codex; print managed_notty=$?"
             ),
         ],
         env={**os.environ, "HOME": str(tmp_path)},
@@ -683,6 +684,69 @@ def _write_zsh_fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     shim_path = tmp_path / "shim.zsh"
     shim_path.write_text(shim)
     return shim_path, real_codex, real_claude, launcher
+
+
+@pytest.mark.no_subprocess_block
+@pytest.mark.parametrize(
+    "client,args",
+    [
+        ("codex", ""),
+        ("codex", "resume"),
+        ("codex", "fork"),
+        ("claude", ""),
+        ("claude", "-c"),
+        ("claude", "--continue"),
+        ("claude", "-r session-id"),
+        ("claude", "--resume session-id"),
+    ],
+)
+def test_zsh_matcher_accepts_session_managing_interactive_commands(
+    tmp_path, client, args
+):
+    shim_path, *_ = _write_zsh_fixture(tmp_path)
+    result = subprocess.run(
+        [
+            "zsh",
+            "-fc",
+            f"source {shlex.quote(str(shim_path))}; "
+            f"_dotsync_agent_should_manage_launch 1 {client} {args}",
+        ],
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0
+
+
+@pytest.mark.no_subprocess_block
+@pytest.mark.parametrize(
+    "interactive,client,args",
+    [
+        ("0", "codex", ""),
+        ("1", "codex", "exec"),
+        ("1", "codex", "--version"),
+        ("1", "claude", "-p prompt"),
+        ("1", "claude", "--help"),
+        ("1", "claude", "-r session-id --settings /tmp/custom.json"),
+        ("1", "claude", "--resume session-id --settings={}"),
+    ],
+)
+def test_zsh_matcher_bypasses_non_session_or_user_settings_commands(
+    tmp_path, interactive, client, args
+):
+    shim_path, *_ = _write_zsh_fixture(tmp_path)
+    result = subprocess.run(
+        [
+            "zsh",
+            "-fc",
+            f"source {shlex.quote(str(shim_path))}; "
+            f"_dotsync_agent_should_manage_launch {interactive} {client} {args}",
+        ],
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode != 0
 
 
 def test_render_zsh_shim_puts_uv_tool_bin_on_path():
