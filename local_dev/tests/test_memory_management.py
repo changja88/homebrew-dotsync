@@ -61,7 +61,7 @@ def test_codex_inventory_rejects_symlinked_active_home(tmp_path):
     assert any("symlink" in warning for warning in inventory.warnings)
 
 
-def test_codex_inventory_detects_symlink_component_before_parent_traversal(
+def test_codex_inventory_rejects_parent_traversal_before_symlink_inspection(
     tmp_path,
 ):
     linked_target = tmp_path / "linked-target/nested"
@@ -77,7 +77,28 @@ def test_codex_inventory_detects_symlink_component_before_parent_traversal(
     )
 
     assert inventory.stores == ()
-    assert any("symlink" in warning for warning in inventory.warnings)
+    assert any("parent traversal" in warning for warning in inventory.warnings)
+
+
+def test_codex_inventory_rejects_parent_traversal_after_missing_component(
+    tmp_path,
+):
+    target = tmp_path / "target"
+    store = target / "memories"
+    store.mkdir(parents=True)
+    (store / "MEMORY.md").write_text("memory")
+    active_link = tmp_path / "active-link"
+    active_link.symlink_to(target, target_is_directory=True)
+
+    inventory = scan_memory_inventory(
+        client="codex",
+        home=tmp_path / "home",
+        codex_home=tmp_path / "missing" / ".." / active_link.name,
+        orca_codex_home=tmp_path / "orca",
+    )
+
+    assert inventory.stores == ()
+    assert any("parent traversal" in warning for warning in inventory.warnings)
 
 
 def test_claude_inventory_finds_all_project_memory_and_custom_store(tmp_path):
@@ -152,6 +173,32 @@ def test_claude_inventory_rejects_nonempty_custom_store_without_marker(tmp_path)
 
     assert inventory.stores == ()
     assert any("MEMORY.md" in warning for warning in inventory.warnings)
+
+
+def test_claude_inventory_rejects_custom_store_with_parent_traversal(tmp_path):
+    config = tmp_path / ".claude"
+    config.mkdir()
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "MEMORY.md").write_text("memory")
+    linked_target = tmp_path / "linked-target/nested"
+    linked_target.mkdir(parents=True)
+    memory_link = tmp_path / "memory-link"
+    memory_link.symlink_to(linked_target, target_is_directory=True)
+    configured_path = memory_link / ".." / victim.name
+    (config / "settings.json").write_text(
+        json.dumps({"autoMemoryDirectory": str(configured_path)})
+    )
+
+    inventory = scan_memory_inventory(
+        client="claude",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        claude_config_dir=config,
+    )
+
+    assert inventory.stores == ()
+    assert any("parent traversal" in warning for warning in inventory.warnings)
 
 
 def test_claude_inventory_accepts_empty_custom_store(tmp_path):

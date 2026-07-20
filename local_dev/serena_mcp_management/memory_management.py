@@ -221,7 +221,8 @@ def _configured_memory_path(
         warnings.append("Claude autoMemoryDirectory must be absolute or start with ~/")
         return None
 
-    candidate = Path(os.path.normpath(candidate))
+    if _has_parent_traversal(candidate, warnings):
+        return None
     if _is_unsafe_broad_path(
         candidate,
         home=home.resolve(strict=False),
@@ -297,6 +298,8 @@ def _valid_configured_store(path: Path, warnings: list[str]) -> bool:
 
 
 def _has_symlink_component(path: Path, warnings: list[str]) -> bool:
+    if _has_parent_traversal(path, warnings):
+        return True
     current = Path(path.anchor)
     for part in path.parts[1:]:
         current /= part
@@ -311,6 +314,13 @@ def _has_symlink_component(path: Path, warnings: list[str]) -> bool:
             warnings.append(f"memory path contains a symlink: {current}")
             return True
     return False
+
+
+def _has_parent_traversal(path: Path, warnings: list[str]) -> bool:
+    if ".." not in path.parts:
+        return False
+    warnings.append(f"memory path contains unsafe parent traversal: {path}")
+    return True
 
 
 def _path_kind(
