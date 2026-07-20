@@ -1,5 +1,8 @@
 import io
 
+import pytest
+
+from local_dev.serena_mcp_management import ui
 from local_dev.serena_mcp_management.ui import confirm
 
 
@@ -53,3 +56,33 @@ def test_confirm_falls_back_to_line_mode_when_input_fn_supplied():
     assert "[Y/n]" in stream.getvalue()
     # No huh-style ▶ marker should appear when not in arrow-select mode.
     assert "▶" not in stream.getvalue()
+
+
+def test_arrow_prompt_ctrl_c_erases_block_and_restores_terminal(monkeypatch):
+    stream = io.StringIO()
+    old_attrs = ["old-terminal-state"]
+    restored: list[tuple[object, ...]] = []
+
+    monkeypatch.setattr(ui.termios, "tcgetattr", lambda fd: old_attrs)
+    monkeypatch.setattr(ui.tty, "setcbreak", lambda fd: None)
+
+    def interrupt_read(fd, size):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(ui.os, "read", interrupt_read)
+    monkeypatch.setattr(
+        ui.termios,
+        "tcsetattr",
+        lambda *args: restored.append(args),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        ui._read_yes_no_arrow(
+            "Run codex?",
+            default=True,
+            stream=stream,
+            fd=7,
+        )
+
+    assert stream.getvalue().endswith("\x1b[3A\x1b[J")
+    assert restored == [(7, ui.termios.TCSADRAIN, old_attrs)]

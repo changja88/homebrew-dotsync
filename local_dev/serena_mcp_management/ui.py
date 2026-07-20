@@ -446,6 +446,10 @@ def _read_yes_no_arrow(
                 break
             elif ch == "\x03":  # Ctrl+C
                 raise KeyboardInterrupt
+    except KeyboardInterrupt:
+        stream.write("\x1b[3A\x1b[J")
+        stream.flush()
+        raise
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
 
