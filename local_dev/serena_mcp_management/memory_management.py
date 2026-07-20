@@ -405,7 +405,10 @@ def _scan_claude_memory(
         config_dir=config_dir,
         warnings=warnings,
     )
-    if custom_path is not None:
+    if custom_path is not None and not any(
+        paths_refer_to_same_file(custom_path, seen.path)
+        for seen in stores
+    ):
         store = _inspect_store(
             custom_path,
             source="claude-settings",

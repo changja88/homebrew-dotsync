@@ -227,6 +227,80 @@ def test_claude_inventory_deduplicates_project_and_custom_case_aliases(
     assert inventory.file_count == 1
 
 
+def test_claude_markerless_project_exact_custom_duplicate_skips_marker_check(
+    tmp_path,
+):
+    home = tmp_path / "home"
+    config = home / ".claude"
+    project = config / "projects/repo/memory"
+    project.mkdir(parents=True)
+    (project / "notes.md").write_text("project memory")
+    (config / "settings.json").write_text(
+        json.dumps({"autoMemoryDirectory": str(project)})
+    )
+
+    inventory = scan_memory_inventory(
+        client="claude",
+        home=home,
+        codex_home=home / ".codex",
+        claude_config_dir=config,
+    )
+
+    assert tuple(store.path for store in inventory.stores) == (project,)
+    assert inventory.file_count == 1
+    assert not any(
+        "requires MEMORY.md" in warning for warning in inventory.warnings
+    )
+
+
+def test_claude_markerless_project_alias_skips_custom_marker_validation(
+    tmp_path,
+):
+    home = tmp_path / "home"
+    config = home / ".claude"
+    project = config / "projects/Repo/memory"
+    project.mkdir(parents=True)
+    (project / "notes.md").write_text("project memory")
+    alias = case_insensitive_alias(project.parent) / "memory"
+    assert alias.samefile(project)
+    (config / "settings.json").write_text(
+        json.dumps({"autoMemoryDirectory": str(alias)})
+    )
+
+    inventory = scan_memory_inventory(
+        client="claude",
+        home=home,
+        codex_home=home / ".codex",
+        claude_config_dir=config,
+    )
+    remove_calls = []
+
+    def fake_remove_tree(path):
+        assert path == project
+        remove_calls.append(path)
+        shutil.rmtree(path)
+
+    result = delete_all_memory(
+        client="claude",
+        home=home,
+        codex_home=home / ".codex",
+        claude_config_dir=config,
+        run_command=fake_ps(""),
+        remove_tree=fake_remove_tree,
+    )
+
+    assert tuple(store.path for store in inventory.stores) == (project,)
+    assert inventory.file_count == 1
+    assert not any(
+        "requires MEMORY.md" in warning for warning in inventory.warnings
+    )
+    assert result.succeeded
+    assert result.deleted_stores == 1
+    assert result.deleted_files == 1
+    assert remove_calls == [project]
+    assert not project.exists()
+
+
 def test_claude_inventory_and_delete_refuse_case_alias_of_home(tmp_path):
     home = tmp_path / "UserHome"
     home.mkdir()
