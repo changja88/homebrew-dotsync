@@ -466,6 +466,8 @@ def _main_v2(args: list[str]) -> int:
     )
     memory_choice = _run_memory_choice_v2()
     if memory_choice == "cancel":
+        out.write("  ! cancelled\n")
+        out.flush()
         return 130
     if memory_choice == "delete":
         try:

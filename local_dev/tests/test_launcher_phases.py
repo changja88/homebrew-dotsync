@@ -1630,7 +1630,9 @@ def test_v2_main_deletes_memory_then_cleans_sessions_and_launches(
     assert delete_calls[0]["codex_home"] == tmp_path / "codex-home"
 
 
-def test_v2_main_cancel_stops_before_cleanup_or_launch(monkeypatch, tmp_path):
+def test_v2_main_cancel_prints_clean_row_and_stops_before_cleanup_or_launch(
+    monkeypatch, tmp_path, capsys
+):
     rc, call_log, delete_calls = _run_main_for_memory_choice(
         monkeypatch,
         tmp_path,
@@ -1640,6 +1642,12 @@ def test_v2_main_cancel_stops_before_cleanup_or_launch(monkeypatch, tmp_path):
     assert rc == 130
     assert call_log == ["overview", "serena-init", "setup", "memory-cancel"]
     assert delete_calls == []
+    visible = (
+        _strip_ansi(capsys.readouterr().out)
+        .replace("\r", "")
+        .replace("\x1b[J", "")
+    )
+    assert visible == "  ! cancelled\n"
 
 
 def test_v2_main_partial_delete_failure_reports_counts_and_stops(
