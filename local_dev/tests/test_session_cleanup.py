@@ -167,6 +167,38 @@ def test_cleanup_skips_all_when_path_set_changes_after_scan(tmp_path):
     assert any("changed after inventory" in warning for warning in result.warnings)
 
 
+def test_cleanup_skips_when_known_home_session_dir_appears_after_scan(tmp_path):
+    default_home = tmp_path / ".codex"
+    orca_home = (
+        tmp_path / "Library/Application Support/orca/codex-runtime-home/home"
+    )
+    source = default_home / "sessions/2026/07/01/root.jsonl"
+    _write_old_session(source, ROOT_A)
+    inventory = scan_inventory(
+        client="codex",
+        home=tmp_path,
+        codex_home=default_home,
+        orca_codex_home=orca_home,
+        now=NOW,
+        open_file_identities=frozenset(),
+    )
+    bridged = orca_home / "sessions/2026/07/01/root.jsonl"
+    bridged.parent.mkdir(parents=True)
+    os.link(source, bridged)
+    calls = []
+
+    result = cleanup_codex_inventory(
+        inventory,
+        codex_binary="/fake/codex",
+        runner=lambda *args, **kwargs: calls.append(args),
+        open_file_snapshot=lambda _: frozenset(),
+    )
+
+    assert calls == []
+    assert result.deleted == 0
+    assert any("changed after inventory" in warning for warning in result.warnings)
+
+
 def test_cleanup_skips_group_when_fingerprint_changes(tmp_path):
     inventory, _default_home, _orca_home, source = _bridged_inventory(tmp_path)
     source.write_text(source.read_text() + "changed\n")

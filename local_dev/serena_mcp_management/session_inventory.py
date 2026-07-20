@@ -362,11 +362,7 @@ def _scan_codex_inventory(
         codex_home=codex_home,
         orca_codex_home=orca_codex_home,
     )
-    session_dirs = tuple(
-        codex_home / "sessions"
-        for codex_home in homes
-        if (codex_home / "sessions").is_dir()
-    )
+    session_dirs = tuple(codex_home / "sessions" for codex_home in homes)
     files, scanned_paths, warnings, malformed_count = _read_codex_session_files(
         homes
     )
