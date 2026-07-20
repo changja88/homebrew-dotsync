@@ -197,11 +197,9 @@ def test_v2_preflight_renders_box_with_sessions_and_serena(monkeypatch):
     rc = launcher._run_preflight_v2(stream=out, input_fn=lambda: next(answers))
     text = out.getvalue()
     plain = _strip_ansi(text)
-    assert "codex 103 groups · 103 records" in plain
-    assert (
-        "inactive longer than 5 days · "
-        "delete 0 groups / 0 records · keep 103 groups / 103 records"
-    ) in plain
+    assert "├─ groups   103 total · 0 to delete · 103 to keep" in plain
+    assert "├─ records  103 total · 0 to delete · 103 to keep" in plain
+    assert "└─ cleanup  inactive longer than 5 days" in plain
     assert "memory" not in plain
     assert "preflight" in text
     assert "codex" in text
@@ -237,15 +235,15 @@ def test_v2_preflight_renders_box_with_session_records_and_cleanup(monkeypatch):
     plain = _strip_ansi(out.getvalue())
 
     assert "sessions" in plain
-    assert "codex 58 groups · 855 records" in plain
-    assert (
-        "inactive longer than 5 days · "
-        "delete 35 groups / 358 records · keep 23 groups / 497 records"
-    ) in plain
+    assert "├─ groups   58 total · 35 to delete · 23 to keep" in plain
+    assert "├─ records  855 total · 358 to delete · 497 to keep" in plain
+    assert "└─ cleanup  inactive longer than 5 days" in plain
     assert "memory" not in plain
     assert "criteria" not in plain
     assert "retention" not in plain
     assert "cleanup" in plain
+    box = launcher._preflight_box()
+    assert "cleanup" not in {item.id for item in box.items}
 
 
 def test_v2_preflight_labels_claude_candidates_as_native_cleanup(monkeypatch):
@@ -267,10 +265,9 @@ def test_v2_preflight_labels_claude_candidates_as_native_cleanup(monkeypatch):
     launcher._render_preflight_overview_v2(stream=out)
     plain = _strip_ansi(out.getvalue())
 
-    assert "claude 108 records" in plain
+    assert "├─ records  108 total · 74 to delete · 34 to keep" in plain
     assert (
-        "inactive longer than 5 days · "
-        "native delete 74 records · keep 34 records"
+        "└─ cleanup  inactive longer than 5 days · native Claude cleanup"
     ) in plain
     assert "criteria" not in plain
     assert "retention" not in plain
@@ -340,11 +337,9 @@ def test_v2_preflight_uses_real_global_codex_logical_inventory(
     launcher._render_preflight_overview_v2(stream=out)
     plain = _strip_ansi(out.getvalue())
 
-    assert "codex 2 groups · 3 records" in plain
-    assert (
-        "inactive longer than 5 days · "
-        "delete 1 group / 2 records · keep 1 group / 1 record"
-    ) in plain
+    assert "├─ groups   2 total · 1 to delete · 1 to keep" in plain
+    assert "├─ records  3 total · 2 to delete · 1 to keep" in plain
+    assert "└─ cleanup  inactive longer than 5 days" in plain
     assert "memory" not in plain
     assert "criteria" not in plain
     assert (memory_dir / "a.md").exists()
@@ -367,7 +362,7 @@ def test_v2_preflight_inventory_scan_failure_renders_warning_row(monkeypatch):
     assert rows["sessions"].status == "warn"
     assert "scan unavailable: inventory unavailable" in rows["sessions"].value
     assert "memory" not in rows
-    assert _strip_ansi(rows["cleanup"].value) == "scan unavailable"
+    assert "cleanup" not in rows
 
 
 def test_v2_preflight_returns_zero_on_run_confirm(monkeypatch):
@@ -1470,7 +1465,7 @@ def test_v2_main_orders_overview_then_serena_then_setup_then_final_confirm(
 
 def test_v2_render_preflight_overview_draws_box_without_memory_row(monkeypatch):
     """preflight overview는 box 렌더만 담당한다 — 어떤 prompt도 띄우지 않고
-    sessions/cleanup/serena/graphify/context 행을 모두 한 번 그린다.
+    sessions/serena/graphify/context 행을 모두 한 번 그린다.
     """
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
@@ -1488,11 +1483,9 @@ def test_v2_render_preflight_overview_draws_box_without_memory_row(monkeypatch):
     launcher._render_preflight_overview_v2(stream=out)
     text = out.getvalue()
     plain = _strip_ansi(text)
-    assert "codex 103 groups · 103 records" in plain
-    assert (
-        "inactive longer than 5 days · "
-        "delete 0 groups / 0 records · keep 103 groups / 103 records"
-    ) in plain
+    assert "├─ groups   103 total · 0 to delete · 103 to keep" in plain
+    assert "├─ records  103 total · 0 to delete · 103 to keep" in plain
+    assert "└─ cleanup  inactive longer than 5 days" in plain
     assert "memory" not in plain
     assert "criteria" not in plain
     assert "preflight" in text
@@ -1546,8 +1539,8 @@ def test_preflight_box_includes_global_serena_mcp_inventory(monkeypatch):
     assert item.label == "serena mcp"
     assert item.status == "warn"
     assert _strip_ansi(item.value) == (
-        "ps[3 servers] -> managed[2 servers] . "
-        "orphan[1] . leases[3] . stale[1]"
+        "server processes[3] → managed servers[2] · "
+        "orphaned servers[1] · leases[3] · stale leases[1]"
     )
 
 
@@ -1573,8 +1566,8 @@ def test_preflight_box_marks_global_serena_mcp_idle_as_info(monkeypatch):
 
     assert item.status == "info"
     assert _strip_ansi(item.value) == (
-        "ps[0 servers] -> managed[0 servers] . "
-        "orphan[0] . leases[0] . stale[0]"
+        "server processes[0] → managed servers[0] · "
+        "orphaned servers[0] · leases[0] · stale leases[0]"
     )
 
 

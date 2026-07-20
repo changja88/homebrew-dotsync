@@ -1,12 +1,19 @@
+import re
+
 from local_dev.serena_mcp_management.ui import (
     MINT,
     PINK,
     PURPLE,
-    style_cleanup_segments,
     style_count,
-    style_criteria,
-    style_session_counts,
+    style_session_tree,
 )
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_ESCAPE_RE.sub("", text)
 
 
 def test_palette_uses_huh_truecolor_hexes():
@@ -33,26 +40,23 @@ def test_style_count_passes_through_unmatched():
     assert style_count("") == ""
 
 
-def test_style_session_counts_colors_complete_totals_pink():
-    result = style_session_counts("codex 58 groups · 855 records")
-
-    assert f"\x1b[{PINK}m58 groups\x1b[0m" in result
-    assert f"\x1b[{PINK}m855 records\x1b[0m" in result
-
-
-def test_style_cleanup_segments_colors_each_meaning():
-    result = style_cleanup_segments(
-        "inactive longer than 5 days",
-        "delete 35 groups / 358 records",
-        "keep 23 groups / 497 records",
+def test_style_session_tree_colors_counts_and_policy_by_meaning():
+    result = style_session_tree(
+        client="codex",
+        groups=(58, 35, 23),
+        records=(855, 358, 497),
+        condition="inactive longer than 5 days",
     )
 
+    assert _strip_ansi(result) == (
+        "codex\n"
+        "├─ groups   58 total · 35 to delete · 23 to keep\n"
+        "├─ records  855 total · 358 to delete · 497 to keep\n"
+        "└─ cleanup  inactive longer than 5 days"
+    )
+    assert f"\x1b[{PINK}m58 total\x1b[0m" in result
+    assert "\x1b[33m35 to delete\x1b[0m" in result
+    assert f"\x1b[{MINT}m23 to keep\x1b[0m" in result
     assert f"\x1b[{PURPLE}minactive longer than 5 days\x1b[0m" in result
-    assert "\x1b[33mdelete 35 groups / 358 records\x1b[0m" in result
-    assert f"\x1b[{MINT}mkeep 23 groups / 497 records\x1b[0m" in result
-
-
-def test_style_criteria_dims_policy_text():
-    assert style_criteria("sessions: same cwd + older than 3d") == (
-        "\x1b[90msessions: same cwd + older than 3d\x1b[0m"
-    )
+    assert "\x1b[90m├─\x1b[0m" in result
+    assert f"\x1b[{MINT}mgroups   \x1b[0m" in result

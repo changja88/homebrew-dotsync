@@ -132,28 +132,39 @@ def style_count(phrase: str) -> str:
     return result
 
 
-def style_session_counts(phrase: str) -> str:
-    if not phrase:
-        return phrase
-    return re.sub(
-        r"\d+ (?:groups?|records?)",
-        lambda match: _ansi(PINK, match.group(0)),
-        phrase,
-    )
-
-
-def style_cleanup_segments(condition: str, delete: str, keep: str) -> str:
-    return " · ".join(
-        (
-            _ansi(PURPLE, condition),
-            _ansi("33", delete),
-            _ansi(MINT, keep),
+def style_session_tree(
+    *,
+    client: str,
+    groups: tuple[int, int, int] | None,
+    records: tuple[int, int, int],
+    condition: str,
+    cleanup_note: str = "",
+) -> str:
+    def stats_line(
+        branch: str,
+        label: str,
+        stats: tuple[int, int, int],
+    ) -> str:
+        total, delete, keep = stats
+        label_text = f"{label:<9}"
+        return (
+            f"{_ansi('90', branch)} {_ansi(MINT, label_text)}"
+            f"{_ansi(PINK, f'{total} total')} · "
+            f"{_ansi('33', f'{delete} to delete')} · "
+            f"{_ansi(MINT, f'{keep} to keep')}"
         )
+
+    lines = [client]
+    if groups is not None:
+        lines.append(stats_line("├─", "groups", groups))
+    lines.append(stats_line("├─", "records", records))
+    cleanup = condition if not cleanup_note else f"{condition} · {cleanup_note}"
+    cleanup_label = f"{'cleanup':<9}"
+    lines.append(
+        f"{_ansi('90', '└─')} {_ansi(MINT, cleanup_label)}"
+        f"{_ansi(PURPLE, cleanup)}"
     )
-
-
-def style_criteria(phrase: str) -> str:
-    return _ansi("90", phrase) if phrase else phrase
+    return "\n".join(lines)
 
 
 def style_mcp_inventory(
