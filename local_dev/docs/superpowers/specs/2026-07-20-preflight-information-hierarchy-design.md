@@ -105,9 +105,9 @@ snapshot.
 
 ## Documentation
 
-Update only `local_dev/README.md`, preserving its English and Korean parity.
-Do not mention the internal launcher in the public root README or root
-Makefile.
+Update only the existing English documentation in `local_dev/README.md`. The
+file currently has no Korean section to mirror. Do not mention the internal
+launcher in the public root README or root Makefile.
 
 ## Verification
 
