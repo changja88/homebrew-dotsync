@@ -38,6 +38,12 @@ class Item:
     status: ItemStatus = "pending"
 
 
+@dataclass(frozen=True)
+class SelectOption:
+    value: str
+    label: str
+
+
 @dataclass
 class BoxModel:
     phase: PhaseKind
@@ -165,6 +171,24 @@ def style_session_tree(
         f"{_ansi(PURPLE, cleanup)}"
     )
     return "\n".join(lines)
+
+
+def style_memory_tree(*, client: str, stores: int, files: int, scope: str) -> str:
+    """Render memory inventory with distinct label, count, and scope roles."""
+
+    def inventory_line(branch: str, label: str, value: str, color: str) -> str:
+        return (
+            f"{_ansi('90', branch)} {_ansi(MINT, f'{label:<9}')}{_ansi(color, value)}"
+        )
+
+    return "\n".join(
+        [
+            client,
+            inventory_line("├─", "stores", f"{stores} found", PINK),
+            inventory_line("├─", "files", str(files), PINK),
+            inventory_line("└─", "scope", scope, PURPLE),
+        ]
+    )
 
 
 def style_mcp_inventory(
@@ -387,33 +411,47 @@ class SpinnerTicker:
 # Prompt implementation
 
 
-def _read_yes_no_arrow(
+def _tty_fd() -> int | None:
+    if not _RAW_TTY_AVAILABLE:
+        return None
+    try:
+        fd = sys.stdin.fileno()
+    except (AttributeError, ValueError, OSError):
+        return None
+    if fd < 0 or not os.isatty(fd):
+        return None
+    return fd
+
+
+def _read_select_arrow(
     question: str,
     *,
-    default: bool,
+    options: tuple[SelectOption, ...],
+    cursor: int,
     stream: TextIO,
     fd: int,
-) -> bool:
-    """huh-inspired arrow-key yes/no select.
+    shortcuts: dict[str, int] | None = None,
+) -> str:
+    """Read one option with a huh-inspired raw-terminal arrow selector.
 
-    Renders two option lines, lets the user move the cursor with up/down
-    arrows (or k/j), and confirms with Enter. Returns True for Yes.
+    Renders one line per option, lets the user move with up/down arrows (or
+    k/j), and confirms with Enter. The selected option value is returned.
     """
-    options = ("Yes", "No")
-    cursor = 0 if default else 1
+    block_line_count = len(options) + 1
 
     def render(initial: bool) -> None:
         if not initial:
             # Move cursor back to the start of the prompt block and erase.
-            stream.write("\x1b[3A\x1b[J")
+            stream.write(f"\x1b[{block_line_count}A\x1b[J")
         stream.write(f"  \x1b[{PURPLE}m?\x1b[0m {question}\n")
-        for index, label in enumerate(options):
+        for index, option in enumerate(options):
             if index == cursor:
                 stream.write(
-                    f"    \x1b[{PURPLE}m▶\x1b[0m \x1b[{PURPLE}m{label}\x1b[0m\n"
+                    f"    \x1b[{PURPLE}m▶\x1b[0m "
+                    f"\x1b[{PURPLE}m{option.label}\x1b[0m\n"
                 )
             else:
-                stream.write(f"      \x1b[90m{label}\x1b[0m\n")
+                stream.write(f"      \x1b[90m{option.label}\x1b[0m\n")
         stream.flush()
 
     render(initial=True)
@@ -438,29 +476,112 @@ def _read_yes_no_arrow(
                 render(initial=False)
             elif ch in ("\r", "\n"):
                 break
-            elif ch in ("y", "Y"):
-                cursor = 0
-                break
-            elif ch in ("n", "N"):
-                cursor = 1
+            elif shortcuts is not None and ch.lower() in shortcuts:
+                cursor = shortcuts[ch.lower()]
                 break
             elif ch == "\x03":  # Ctrl+C
                 raise KeyboardInterrupt
     except KeyboardInterrupt:
-        stream.write("\x1b[3A\x1b[J")
+        stream.write(f"\x1b[{block_line_count}A\x1b[J")
         stream.flush()
         raise
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)
 
     # Collapse the prompt block to a single confirmation line.
-    stream.write("\x1b[3A\x1b[J")
+    stream.write(f"\x1b[{block_line_count}A\x1b[J")
     chosen = options[cursor]
     stream.write(
-        f"  \x1b[{PURPLE}m?\x1b[0m {question} \x1b[{PURPLE}m{chosen}\x1b[0m\n"
+        f"  \x1b[{PURPLE}m?\x1b[0m {question} "
+        f"\x1b[{PURPLE}m{chosen.label}\x1b[0m\n"
     )
     stream.flush()
-    return cursor == 0
+    return chosen.value
+
+
+def _read_yes_no_arrow(
+    question: str,
+    *,
+    default: bool,
+    stream: TextIO,
+    fd: int,
+) -> bool:
+    """Read a yes/no choice while preserving the existing y/n shortcuts."""
+    options = (
+        SelectOption("yes", "Yes"),
+        SelectOption("no", "No"),
+    )
+    selected = _read_select_arrow(
+        question,
+        options=options,
+        cursor=0 if default else 1,
+        stream=stream,
+        fd=fd,
+        shortcuts={"y": 0, "n": 1},
+    )
+    return selected == "yes"
+
+
+def _read_select_line(
+    question: str,
+    *,
+    options: tuple[SelectOption, ...],
+    default_index: int,
+    stream: TextIO,
+    input_fn: Callable[[], str],
+) -> str:
+    stream.write(f"  > {question}\n")
+    for index, option in enumerate(options, start=1):
+        stream.write(f"    {index}. {option.label}\n")
+
+    numbered_values = {
+        str(index): option.value for index, option in enumerate(options, start=1)
+    }
+    while True:
+        stream.write(
+            f"  > Select [1-{len(options)}] (default {default_index + 1}): "
+        )
+        stream.flush()
+        reply = input_fn().strip()
+        if not reply:
+            return options[default_index].value
+        selected = numbered_values.get(reply)
+        if selected is not None:
+            return selected
+        stream.write(f"  ! Enter a number from 1 to {len(options)}.\n")
+
+
+def select_option(
+    question: str,
+    *,
+    options: tuple[SelectOption, ...],
+    default_index: int = 0,
+    stream: TextIO | None = None,
+    input_fn: Callable[[], str] | None = None,
+) -> str:
+    """Prompt for one reusable labeled option and return its stable value."""
+    if not options:
+        raise ValueError("options must not be empty")
+    if not 0 <= default_index < len(options):
+        raise ValueError("default_index out of range")
+
+    out = stream if stream is not None else sys.stdout
+    fd = _tty_fd() if input_fn is None else None
+    if fd is not None:
+        return _read_select_arrow(
+            question,
+            options=options,
+            cursor=default_index,
+            stream=out,
+            fd=fd,
+        )
+    return _read_select_line(
+        question,
+        options=options,
+        default_index=default_index,
+        stream=out,
+        input_fn=input_fn or input,
+    )
 
 
 def confirm(
@@ -489,13 +610,9 @@ def confirm(
     """
     out = stream if stream is not None else sys.stdout
 
-    if input_fn is None and _RAW_TTY_AVAILABLE:
-        try:
-            fd = sys.stdin.fileno()
-        except (AttributeError, ValueError, OSError):
-            fd = -1
-        if fd >= 0 and os.isatty(fd):
-            return _read_yes_no_arrow(question, default=default, stream=out, fd=fd)
+    fd = _tty_fd() if input_fn is None else None
+    if fd is not None:
+        return _read_yes_no_arrow(question, default=default, stream=out, fd=fd)
 
     reader = input_fn if input_fn is not None else input
     suffix = "[Y/n]" if default else "[y/N]"

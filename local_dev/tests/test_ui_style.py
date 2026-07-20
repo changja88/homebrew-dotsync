@@ -5,6 +5,7 @@ from local_dev.serena_mcp_management.ui import (
     PINK,
     PURPLE,
     style_count,
+    style_memory_tree,
     style_session_tree,
 )
 
@@ -60,3 +61,19 @@ def test_style_session_tree_colors_counts_and_policy_by_meaning():
     assert f"\x1b[{PURPLE}minactive longer than 5 days\x1b[0m" in result
     assert "\x1b[90m├─\x1b[0m" in result
     assert f"\x1b[{MINT}mgroups   \x1b[0m" in result
+
+
+def test_style_memory_tree_assigns_distinct_color_roles():
+    value = style_memory_tree(
+        client="codex", stores=2, files=17, scope="all known Codex homes"
+    )
+
+    assert _strip_ansi(value).splitlines() == [
+        "codex",
+        "├─ stores   2 found",
+        "├─ files    17",
+        "└─ scope    all known Codex homes",
+    ]
+    assert f"\x1b[{PINK}m2 found\x1b[0m" in value
+    assert f"\x1b[{MINT}mstores   \x1b[0m" in value
+    assert f"\x1b[{PURPLE}mall known Codex homes\x1b[0m" in value

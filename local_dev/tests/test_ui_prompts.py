@@ -1,9 +1,17 @@
 import io
+from dataclasses import FrozenInstanceError
 
 import pytest
 
 from local_dev.serena_mcp_management import ui
-from local_dev.serena_mcp_management.ui import confirm
+from local_dev.serena_mcp_management.ui import SelectOption, confirm, select_option
+
+
+MEMORY_OPTIONS = (
+    SelectOption("keep", "Run with existing memory"),
+    SelectOption("delete", "Delete all Codex auto-memory and run"),
+    SelectOption("cancel", "Cancel"),
+)
 
 
 def test_confirm_returns_true_for_yes_input():
@@ -58,6 +66,60 @@ def test_confirm_falls_back_to_line_mode_when_input_fn_supplied():
     assert "▶" not in stream.getvalue()
 
 
+def test_select_option_line_mode_accepts_number_and_defaults_to_first():
+    assert select_option(
+        "Memory for codex?", options=MEMORY_OPTIONS, input_fn=lambda: "2"
+    ) == "delete"
+    assert select_option(
+        "Memory for codex?", options=MEMORY_OPTIONS, input_fn=lambda: ""
+    ) == "keep"
+
+
+def test_select_option_line_mode_lists_options_and_retries_invalid_input():
+    stream = io.StringIO()
+    answers = iter(["delete", "4", "3"])
+
+    result = select_option(
+        "Memory for codex?",
+        options=MEMORY_OPTIONS,
+        stream=stream,
+        input_fn=lambda: next(answers),
+    )
+
+    assert result == "cancel"
+    assert stream.getvalue().splitlines()[:4] == [
+        "  > Memory for codex?",
+        "    1. Run with existing memory",
+        "    2. Delete all Codex auto-memory and run",
+        "    3. Cancel",
+    ]
+
+
+def test_select_option_honors_nonzero_default_index():
+    assert select_option(
+        "Memory for codex?",
+        options=MEMORY_OPTIONS,
+        default_index=2,
+        input_fn=lambda: "",
+    ) == "cancel"
+
+
+def test_select_option_validates_options_and_default_index():
+    with pytest.raises(ValueError, match="options must not be empty"):
+        select_option("Memory?", options=(), input_fn=lambda: "")
+    with pytest.raises(ValueError, match="default_index out of range"):
+        select_option(
+            "Memory?", options=MEMORY_OPTIONS, default_index=3, input_fn=lambda: ""
+        )
+
+
+def test_select_option_is_immutable():
+    option = SelectOption("keep", "Run with existing memory")
+
+    with pytest.raises(FrozenInstanceError):
+        option.value = "delete"
+
+
 def test_arrow_prompt_ctrl_c_erases_block_and_restores_terminal(monkeypatch):
     stream = io.StringIO()
     old_attrs = ["old-terminal-state"]
@@ -85,4 +147,26 @@ def test_arrow_prompt_ctrl_c_erases_block_and_restores_terminal(monkeypatch):
         )
 
     assert stream.getvalue().endswith("\x1b[3A\x1b[J")
+    assert restored == [(7, ui.termios.TCSADRAIN, old_attrs)]
+
+
+def test_select_option_ctrl_c_erases_four_line_block(monkeypatch):
+    stream = io.StringIO()
+    old_attrs = ["old-terminal-state"]
+    restored = []
+    monkeypatch.setattr(ui.termios, "tcgetattr", lambda fd: old_attrs)
+    monkeypatch.setattr(ui.tty, "setcbreak", lambda fd: None)
+    monkeypatch.setattr(
+        ui.os, "read", lambda fd, size: (_ for _ in ()).throw(KeyboardInterrupt)
+    )
+    monkeypatch.setattr(
+        ui.termios, "tcsetattr", lambda *args: restored.append(args)
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        ui._read_select_arrow(
+            "Memory for codex?", options=MEMORY_OPTIONS, cursor=0, stream=stream, fd=7
+        )
+
+    assert stream.getvalue().endswith("\x1b[4A\x1b[J")
     assert restored == [(7, ui.termios.TCSADRAIN, old_attrs)]
