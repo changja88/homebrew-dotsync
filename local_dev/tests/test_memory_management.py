@@ -201,6 +201,78 @@ def test_claude_inventory_rejects_custom_store_with_parent_traversal(tmp_path):
     assert any("parent traversal" in warning for warning in inventory.warnings)
 
 
+def test_claude_inventory_rejects_absolute_remainder_after_tilde(tmp_path):
+    home = tmp_path / "home"
+    config = tmp_path / ".claude"
+    config.mkdir()
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "MEMORY.md").write_text("memory")
+    configured_path = f"~/{victim}"
+    assert configured_path.startswith("~//")
+    (config / "settings.json").write_text(
+        json.dumps({"autoMemoryDirectory": configured_path})
+    )
+
+    inventory = scan_memory_inventory(
+        client="claude",
+        home=home,
+        codex_home=tmp_path / ".codex",
+        claude_config_dir=config,
+    )
+
+    assert inventory.stores == ()
+    assert any("after ~/" in warning for warning in inventory.warnings)
+
+
+def test_claude_inventory_rejects_empty_remainder_after_tilde(tmp_path):
+    config = tmp_path / ".claude"
+    config.mkdir()
+    (config / "settings.json").write_text(
+        json.dumps({"autoMemoryDirectory": "~/"})
+    )
+
+    inventory = scan_memory_inventory(
+        client="claude",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        claude_config_dir=config,
+    )
+
+    assert inventory.stores == ()
+    assert any("after ~/" in warning for warning in inventory.warnings)
+
+
+@pytest.mark.parametrize(
+    "malformed_name",
+    ["nul\0path", "surrogate\ud800path"],
+    ids=["embedded-nul", "lone-surrogate"],
+)
+def test_claude_inventory_warns_for_malformed_filesystem_path(
+    tmp_path,
+    malformed_name,
+):
+    config = tmp_path / ".claude"
+    config.mkdir()
+    configured_path = str(tmp_path / malformed_name)
+    (config / "settings.json").write_text(
+        json.dumps({"autoMemoryDirectory": configured_path})
+    )
+
+    inventory = scan_memory_inventory(
+        client="claude",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        claude_config_dir=config,
+    )
+
+    assert inventory.stores == ()
+    assert any(
+        "cannot inspect memory path" in warning
+        for warning in inventory.warnings
+    )
+
+
 def test_claude_inventory_accepts_empty_custom_store(tmp_path):
     config = tmp_path / ".claude"
     config.mkdir()

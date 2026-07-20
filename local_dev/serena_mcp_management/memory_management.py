@@ -214,7 +214,14 @@ def _configured_memory_path(
         warnings.append("Claude autoMemoryDirectory must be absolute or start with ~/")
         return None
     if raw_path.startswith("~/"):
-        candidate = home.resolve(strict=False) / raw_path[2:]
+        remainder = raw_path[2:]
+        relative_path = Path(remainder)
+        if not remainder or relative_path.is_absolute():
+            warnings.append(
+                "Claude autoMemoryDirectory after ~/ must be a relative path"
+            )
+            return None
+        candidate = home.resolve(strict=False) / relative_path
     else:
         candidate = Path(raw_path)
     if not candidate.is_absolute():
@@ -287,7 +294,7 @@ def _valid_configured_store(path: Path, warnings: list[str]) -> bool:
     marker = path / "MEMORY.md"
     try:
         mode = marker.lstat().st_mode
-    except OSError:
+    except (OSError, ValueError):
         mode = 0
     if stat.S_ISREG(mode):
         return True
@@ -307,8 +314,8 @@ def _has_symlink_component(path: Path, warnings: list[str]) -> bool:
             mode = current.lstat().st_mode
         except FileNotFoundError:
             return False
-        except OSError as exc:
-            warnings.append(f"cannot inspect memory path {current}: {exc}")
+        except (OSError, ValueError) as exc:
+            warnings.append(f"cannot inspect memory path {current!r}: {exc}")
             return True
         if stat.S_ISLNK(mode):
             warnings.append(f"memory path contains a symlink: {current}")
@@ -333,8 +340,8 @@ def _path_kind(
         mode = path.lstat().st_mode
     except FileNotFoundError:
         return "missing"
-    except OSError as exc:
-        warnings.append(f"cannot inspect {label} {path}: {exc}")
+    except (OSError, ValueError) as exc:
+        warnings.append(f"cannot inspect {label} {path!r}: {exc}")
         return "error"
 
     if stat.S_ISLNK(mode):
@@ -380,8 +387,10 @@ def _count_regular_files(path: Path, warnings: list[str]) -> int:
             file_path = Path(root) / filename
             try:
                 mode = file_path.lstat().st_mode
-            except OSError as exc:
-                warnings.append(f"cannot inspect memory entry {file_path}: {exc}")
+            except (OSError, ValueError) as exc:
+                warnings.append(
+                    f"cannot inspect memory entry {file_path!r}: {exc}"
+                )
                 continue
             if stat.S_ISLNK(mode):
                 warnings.append(f"memory entry is a symlink: {file_path}")
