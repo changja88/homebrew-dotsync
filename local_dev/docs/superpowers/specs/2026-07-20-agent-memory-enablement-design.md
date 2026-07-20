@@ -127,8 +127,10 @@ Verification must prove:
   `use_memories = true`;
 - `~/.claude/settings.json` resolves `autoMemoryEnabled` to `true`;
 - `autoMemoryDirectory` remains unset;
-- existing Claude memory directories and file counts are unchanged;
-- no Codex or Claude session file is changed;
+- existing Claude memory file paths and SHA-256 content hashes are unchanged;
+- the configuration procedure does not directly write Codex or Claude session
+  files; concurrent active-agent changes are retained as audit deltas rather
+  than treated as configuration mutations;
 - unrelated configuration content remains unchanged;
 - no file under the public `dotsync` implementation or documentation changes.
 
