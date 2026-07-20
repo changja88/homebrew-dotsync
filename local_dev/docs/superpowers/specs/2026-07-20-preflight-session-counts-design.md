@@ -15,34 +15,46 @@ Claude native cleanup, memory handling, or public `dotsync` behavior.
 
 ## Considered Layouts
 
-1. Put group counts, record counts, cleanup counts, and retention policy on one
-   row. This is compact vertically but exceeds the normal preflight width.
-2. Use `sessions` and `cleanup` rows, with the compact retention condition at
-   the start of `cleanup`. This keeps each value scannable and fits the
-   existing box. This is the selected layout.
-3. Give groups and records separate sections. This is explicit but adds more
-   vertical noise than the small inventory needs.
+1. Keep one fully spelled-out `cleanup` row. This makes the box wider, but
+   preserves the compact two-row layout and requires no legend. This is the
+   user-selected layout.
+2. Split condition, deletion, and preservation into separate rows. This fits a
+   narrow box but adds vertical noise.
+3. Keep one compact row with `g` and `r` abbreviations. This fits the existing
+   width but is not understandable at a glance, so it is rejected.
 
 ## Output Contract
 
 Codex displays logical groups and physical JSONL records:
 
 ```text
-· sessions    codex 58 groups / 855 records
-· cleanup     inactive >5d . delete 35g / 358r . keep 23g / 497r
+· sessions    codex 58 groups · 855 records
+· cleanup     inactive longer than 5 days · delete 35 groups / 358 records · keep 23 groups / 497 records
 ```
-
-The `g` and `r` abbreviations mean `groups` and `records`, established by the
-`sessions` row immediately above. They keep the cleanup row within the normal
-TUI width.
 
 Claude displays top-level session records because Claude owns parent and
 subagent cleanup natively:
 
 ```text
 · sessions    claude 108 records
-· cleanup     inactive >5d . native delete 75 records . keep 33 records
+· cleanup     inactive longer than 5 days · native delete 75 records · keep 33 records
 ```
+
+The renderer may widen the preflight box to fit the cleanup row. It must not
+abbreviate `groups`, `records`, or the five-day condition.
+
+## Color Contract
+
+Color communicates meaning in addition to the words; it never replaces them:
+
+- session totals: pink (`PINK`);
+- `inactive longer than 5 days`: purple (`PURPLE`);
+- the complete delete segment, including counts and units: yellow (ANSI 33);
+- the complete keep segment, including counts and units: mint (`MINT`);
+- separators: neutral terminal text.
+
+Claude's `native delete` segment follows the same yellow delete treatment.
+`NO_COLOR=1` removes ANSI styling while preserving the exact readable text.
 
 When inventory scanning fails, the existing fail-closed behavior remains. The
 `sessions` and `cleanup` rows show that the scan is unavailable without
@@ -64,11 +76,11 @@ authority for what is actually removed.
 
 ## Boundary Semantics
 
-The cleanup text starts with `inactive >5d`, matching the strict cutoff: a
-session exactly five days old is kept, while a session older than five full
-24-hour periods is eligible. Codex applies the cutoff to the newest record in
-a logical group. Claude receives `cleanupPeriodDays: 5` and performs native
-cleanup. No separate retention row is rendered.
+The cleanup text starts with `inactive longer than 5 days`, matching the strict
+cutoff: a session exactly five days old is kept, while a session older than
+five full 24-hour periods is eligible. Codex applies the cutoff to the newest
+record in a logical group. Claude receives `cleanupPeriodDays: 5` and performs
+native cleanup. No separate retention row is rendered.
 
 ## Verification
 
@@ -76,9 +88,11 @@ Tests will prove:
 
 - Codex inventory reports logical-group and physical-record totals separately;
 - eligible Codex groups expose matching physical delete/keep record counts;
-- Codex preflight renders both rows with the five-day condition first in
-  `cleanup`;
+- Codex preflight renders both rows with full units and the five-day condition
+  first in `cleanup`;
 - Claude preflight uses the `records` unit and the same explicit policy;
+- policy, delete, keep, and total segments use their specified distinct colors;
+- `NO_COLOR=1` keeps the full plain-text output;
 - neither client renders a separate `retention` row;
 - scan-unavailable rendering stays fail-closed;
 - existing session cleanup behavior and full `local_dev` tests remain green.
