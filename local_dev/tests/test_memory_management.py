@@ -1,10 +1,47 @@
 import json
+import shutil
+import subprocess
 
 import pytest
 
 from local_dev.serena_mcp_management.memory_management import (
+    delete_all_memory,
+    running_client_processes,
     scan_memory_inventory,
 )
+
+
+def fake_ps(output, *, returncode=0):
+    def run_command(command, **kwargs):
+        assert command == [
+            "/bin/ps",
+            "-axo",
+            "pid=,ppid=,comm=,args=",
+        ]
+        assert kwargs == {
+            "capture_output": True,
+            "text": True,
+            "check": False,
+        }
+        return subprocess.CompletedProcess(
+            command,
+            returncode,
+            stdout=output,
+            stderr="",
+        )
+
+    return run_command
+
+
+def build_codex_memory_fixture(tmp_path):
+    home = tmp_path / "home"
+    active = tmp_path / "active-codex"
+    orca = tmp_path / "orca-codex"
+    for root in (home / ".codex", active, orca):
+        store = root / "memories"
+        store.mkdir(parents=True)
+        (store / "MEMORY.md").write_text("memory")
+    return home, active, orca
 
 
 def test_codex_inventory_scans_only_memories_under_all_known_homes(tmp_path):
@@ -457,3 +494,263 @@ def test_inventory_reports_settings_with_wrong_file_type(tmp_path):
 
     assert inventory.stores == ()
     assert any("not a regular file" in item for item in inventory.warnings)
+
+
+def test_running_client_processes_excludes_launcher_ancestors():
+    ps = (
+        "10 1 zsh zsh\n"
+        "20 10 python3 python3 serena_agent_launcher.py\n"
+        "30 1 codex codex\n"
+    )
+
+    result = running_client_processes(
+        "codex",
+        run_command=fake_ps(ps),
+        current_pid=20,
+    )
+
+    assert [process.pid for process in result] == [30]
+
+
+def test_process_scan_ignores_claude_desktop_but_finds_claude_code():
+    ps = (
+        "50 1 /Applications/Claude.app/Contents/MacOS/Claude "
+        "/Applications/Claude.app/Contents/MacOS/Claude\n"
+        "60 1 claude /Users/me/.local/bin/claude\n"
+    )
+
+    result = running_client_processes(
+        "claude",
+        run_command=fake_ps(ps),
+        current_pid=20,
+    )
+
+    assert [process.pid for process in result] == [60]
+
+
+@pytest.mark.parametrize("client", ["codex", "claude"])
+def test_process_scan_ignores_test_commands_that_mention_clients(client):
+    ps = (
+        "70 1 python3 python3 -m pytest tests/test_codex_claude.py\n"
+        "80 1 rg rg codex claude\n"
+    )
+
+    result = running_client_processes(
+        client,
+        run_command=fake_ps(ps),
+        current_pid=20,
+    )
+
+    assert result == ()
+
+
+@pytest.mark.parametrize(
+    ("client", "process_line"),
+    [
+        (
+            "codex",
+            "90 1 node /opt/homebrew/bin/node "
+            "/opt/lib/node_modules/@openai/codex/bin/codex.js\n",
+        ),
+        (
+            "claude",
+            "91 1 node /opt/homebrew/bin/node "
+            "/opt/lib/node_modules/@anthropic-ai/claude-code/cli.js\n",
+        ),
+    ],
+)
+def test_process_scan_finds_official_node_client_wrappers(
+    client,
+    process_line,
+):
+    result = running_client_processes(
+        client,
+        run_command=fake_ps(process_line),
+        current_pid=20,
+    )
+
+    assert len(result) == 1
+
+
+def test_delete_all_memory_removes_only_validated_stores(tmp_path):
+    home, active, orca = build_codex_memory_fixture(tmp_path)
+    sibling = active / "sessions/keep.jsonl"
+    sibling.parent.mkdir(parents=True)
+    sibling.write_text("keep")
+
+    result = delete_all_memory(
+        client="codex",
+        home=home,
+        codex_home=active,
+        orca_codex_home=orca,
+        run_command=fake_ps(""),
+    )
+
+    assert result.succeeded
+    assert result.deleted_stores == 3
+    assert result.deleted_files == 3
+    assert sibling.read_text() == "keep"
+    assert not (home / ".codex/memories").exists()
+    assert not (active / "memories").exists()
+    assert not (orca / "memories").exists()
+
+
+def test_delete_all_memory_refuses_running_same_product(tmp_path):
+    home, active, orca = build_codex_memory_fixture(tmp_path)
+
+    result = delete_all_memory(
+        client="codex",
+        home=home,
+        codex_home=active,
+        orca_codex_home=orca,
+        run_command=fake_ps("40 1 codex codex\n"),
+    )
+
+    assert not result.succeeded
+    assert result.error is not None
+    assert "1 running Codex process" in result.error
+    assert (active / "memories/MEMORY.md").exists()
+
+
+def test_delete_all_memory_ignores_other_product_process(tmp_path):
+    home, active, orca = build_codex_memory_fixture(tmp_path)
+
+    result = delete_all_memory(
+        client="codex",
+        home=home,
+        codex_home=active,
+        orca_codex_home=orca,
+        run_command=fake_ps("40 1 claude claude\n"),
+    )
+
+    assert result.succeeded
+    assert result.deleted_stores == 3
+
+
+def test_delete_prevalidates_every_store_before_mutation(tmp_path):
+    home, active, orca = build_codex_memory_fixture(tmp_path)
+    (orca / "memories").rename(orca / "memories-real")
+    (orca / "memories").symlink_to(
+        orca / "memories-real",
+        target_is_directory=True,
+    )
+    calls = []
+
+    result = delete_all_memory(
+        client="codex",
+        home=home,
+        codex_home=active,
+        orca_codex_home=orca,
+        run_command=fake_ps(""),
+        remove_tree=lambda path: calls.append(path),
+    )
+
+    assert not result.succeeded
+    assert calls == []
+
+
+def test_delete_revalidates_every_store_after_process_scan(tmp_path):
+    home, active, orca = build_codex_memory_fixture(tmp_path)
+    calls = []
+
+    def replace_store_with_symlink(command, **kwargs):
+        store = orca / "memories"
+        store.rename(orca / "memories-real")
+        store.symlink_to(orca / "memories-real", target_is_directory=True)
+        return fake_ps("")(command, **kwargs)
+
+    result = delete_all_memory(
+        client="codex",
+        home=home,
+        codex_home=active,
+        orca_codex_home=orca,
+        run_command=replace_store_with_symlink,
+        remove_tree=lambda path: calls.append(path),
+    )
+
+    assert not result.succeeded
+    assert result.error is not None
+    assert "symlink" in result.error
+    assert calls == []
+
+
+def test_delete_revalidates_store_immediately_before_each_removal(tmp_path):
+    home, active, orca = build_codex_memory_fixture(tmp_path)
+    default_store = home / ".codex/memories"
+    active_store = active / "memories"
+    calls = []
+
+    def replace_next_store(path):
+        calls.append(path)
+        shutil.rmtree(path)
+        active_store.rename(active / "memories-real")
+        active_store.symlink_to(
+            active / "memories-real",
+            target_is_directory=True,
+        )
+
+    result = delete_all_memory(
+        client="codex",
+        home=home,
+        codex_home=active,
+        orca_codex_home=orca,
+        run_command=fake_ps(""),
+        remove_tree=replace_next_store,
+    )
+
+    assert not result.succeeded
+    assert result.deleted_stores == 1
+    assert result.deleted_files == 1
+    assert result.error is not None
+    assert "symlink" in result.error
+    assert calls == [default_store]
+    assert (active / "memories-real/MEMORY.md").exists()
+
+
+def test_delete_reports_partial_counts_and_stops(tmp_path):
+    home, active, orca = build_codex_memory_fixture(tmp_path)
+    calls = []
+
+    def fail_second(path):
+        calls.append(path)
+        if len(calls) == 2:
+            raise OSError("disk busy")
+        shutil.rmtree(path)
+
+    result = delete_all_memory(
+        client="codex",
+        home=home,
+        codex_home=active,
+        orca_codex_home=orca,
+        run_command=fake_ps(""),
+        remove_tree=fail_second,
+    )
+
+    assert not result.succeeded
+    assert result.deleted_stores == 1
+    assert result.deleted_files == 1
+    assert result.error is not None
+    assert "disk busy" in result.error
+    assert len(calls) == 2
+
+
+def test_delete_refuses_when_process_scan_fails(tmp_path):
+    home, active, orca = build_codex_memory_fixture(tmp_path)
+    calls = []
+
+    def unavailable_ps(command, **kwargs):
+        raise OSError("process table unavailable")
+
+    result = delete_all_memory(
+        client="codex",
+        home=home,
+        codex_home=active,
+        orca_codex_home=orca,
+        run_command=unavailable_ps,
+        remove_tree=lambda path: calls.append(path),
+    )
+
+    assert not result.succeeded
+    assert result.error is not None
+    assert "process table unavailable" in result.error
+    assert calls == []

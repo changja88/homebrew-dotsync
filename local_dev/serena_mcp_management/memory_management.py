@@ -1,17 +1,25 @@
-"""Read-only discovery of Codex and Claude auto-memory stores."""
+"""Discovery and safe deletion of Codex and Claude auto-memory stores."""
 from __future__ import annotations
 
 import json
 import os
+import shlex
+import shutil
 import stat
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from .agent_paths import lexical_claude_config_dir, lexical_codex_homes
 
 
 CODEX_SCOPE = "all known Codex homes"
 CLAUDE_SCOPE = "all Claude auto-memory stores"
+
+
+RunCommand = Callable[..., subprocess.CompletedProcess[str]]
+RemoveTree = Callable[[Path], None]
 
 
 @dataclass(frozen=True)
@@ -28,6 +36,268 @@ class MemoryInventory:
     file_count: int
     scope: str
     warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ClientProcess:
+    pid: int
+    ppid: int
+    command: str
+
+
+@dataclass(frozen=True)
+class MemoryDeleteResult:
+    deleted_stores: int = 0
+    deleted_files: int = 0
+    error: str | None = None
+
+    @property
+    def succeeded(self) -> bool:
+        return self.error is None
+
+
+def running_client_processes(
+    client: str,
+    *,
+    run_command: RunCommand = subprocess.run,
+    current_pid: int | None = None,
+) -> tuple[ClientProcess, ...]:
+    if client not in {"codex", "claude"}:
+        raise ValueError(f"unsupported client: {client}")
+
+    command = ["/bin/ps", "-axo", "pid=,ppid=,comm=,args="]
+    result = run_command(
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip() or f"exit {result.returncode}"
+        raise RuntimeError(f"cannot inspect running processes: {detail}")
+
+    entries: list[tuple[ClientProcess, str]] = []
+    parents: dict[int, int] = {}
+    for line in result.stdout.splitlines():
+        fields = line.strip().split(maxsplit=3)
+        if len(fields) < 3:
+            continue
+        try:
+            pid = int(fields[0])
+            ppid = int(fields[1])
+        except ValueError:
+            continue
+        executable = fields[2]
+        process_command = fields[3] if len(fields) == 4 else executable
+        process = ClientProcess(
+            pid=pid,
+            ppid=ppid,
+            command=process_command,
+        )
+        entries.append((process, executable))
+        parents[pid] = ppid
+
+    excluded_pids: set[int] = set()
+    ancestor_pid = os.getpid() if current_pid is None else current_pid
+    while ancestor_pid > 0 and ancestor_pid not in excluded_pids:
+        excluded_pids.add(ancestor_pid)
+        ancestor_pid = parents.get(ancestor_pid, 0)
+
+    return tuple(
+        process
+        for process, executable in entries
+        if process.pid not in excluded_pids
+        and _matches_client_process(
+            client,
+            executable=executable,
+            command=process.command,
+        )
+    )
+
+
+def delete_all_memory(
+    *,
+    client: str,
+    home: Path,
+    codex_home: Path,
+    claude_config_dir: Path | None = None,
+    orca_codex_home: Path | None = None,
+    run_command: RunCommand = subprocess.run,
+    remove_tree: RemoveTree = shutil.rmtree,
+) -> MemoryDeleteResult:
+    inventory = scan_memory_inventory(
+        client=client,
+        home=home,
+        codex_home=codex_home,
+        claude_config_dir=claude_config_dir,
+        orca_codex_home=orca_codex_home,
+    )
+    if inventory.warnings:
+        return MemoryDeleteResult(
+            error="memory scan unsafe: " + "; ".join(inventory.warnings)
+        )
+
+    try:
+        conflicts = running_client_processes(
+            client,
+            run_command=run_command,
+            current_pid=os.getpid(),
+        )
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        return MemoryDeleteResult(error=f"process scan failed: {exc}")
+    if conflicts:
+        return MemoryDeleteResult(
+            error=f"{len(conflicts)} running {client.title()} process(es)"
+        )
+
+    for store in inventory.stores:
+        error = _store_validation_error(
+            store=store,
+            client=client,
+            home=home,
+            claude_config_dir=claude_config_dir,
+        )
+        if error is not None:
+            return MemoryDeleteResult(error=error)
+
+    deleted_stores = 0
+    deleted_files = 0
+    for store in inventory.stores:
+        error = _store_validation_error(
+            store=store,
+            client=client,
+            home=home,
+            claude_config_dir=claude_config_dir,
+        )
+        if error is not None:
+            return MemoryDeleteResult(
+                deleted_stores=deleted_stores,
+                deleted_files=deleted_files,
+                error=error,
+            )
+        try:
+            remove_tree(store.path)
+        except OSError as exc:
+            return MemoryDeleteResult(
+                deleted_stores=deleted_stores,
+                deleted_files=deleted_files,
+                error=f"{store.path}: {exc}",
+            )
+        deleted_stores += 1
+        deleted_files += store.file_count
+    return MemoryDeleteResult(deleted_stores, deleted_files)
+
+
+def _matches_client_process(
+    client: str,
+    *,
+    executable: str,
+    command: str,
+) -> bool:
+    tokens = _command_tokens(command)
+    executable_paths = [executable]
+    if tokens:
+        executable_paths.append(tokens[0])
+
+    if client == "claude" and any(
+        "/claude.app/contents/" in path.lower()
+        for path in executable_paths
+    ):
+        return False
+
+    executable_names = {
+        Path(path).name.lower()
+        for path in executable_paths
+        if path
+    }
+    if client == "codex" and any(
+        name == "codex"
+        or (
+            name.startswith("codex-")
+            and name.endswith("-apple-darwin")
+        )
+        for name in executable_names
+    ):
+        return True
+    if client == "claude" and "claude" in executable_names:
+        return True
+
+    if not executable_names.intersection({"node", "nodejs"}):
+        return False
+    scripts = [token.lower() for token in tokens[1:]]
+    if client == "codex":
+        return any(
+            "/@openai/codex/" in script
+            and script.endswith("/codex.js")
+            for script in scripts
+        )
+    return any(
+        "/@anthropic-ai/claude-code/" in script
+        and script.endswith("/cli.js")
+        for script in scripts
+    )
+
+
+def _command_tokens(command: str) -> tuple[str, ...]:
+    try:
+        return tuple(shlex.split(command))
+    except ValueError:
+        return tuple(command.split())
+
+
+def _store_validation_error(
+    *,
+    store: MemoryStore,
+    client: str,
+    home: Path,
+    claude_config_dir: Path | None,
+) -> str | None:
+    warnings: list[str] = []
+    if _has_symlink_component(store.path, warnings):
+        return "memory store unsafe: " + "; ".join(warnings)
+
+    kind = _path_kind(
+        store.path,
+        label="memory store",
+        warnings=warnings,
+    )
+    if kind == "missing":
+        warnings.append(f"memory store is missing: {store.path}")
+    if kind != "directory":
+        return "memory store unsafe: " + "; ".join(warnings)
+
+    if client == "codex":
+        if store.source != "codex-home" or store.path.name != "memories":
+            warnings.append(f"invalid Codex memory store: {store.path}")
+    elif client == "claude":
+        config_dir = lexical_claude_config_dir(
+            home=home,
+            claude_config_dir=claude_config_dir,
+        ).resolve(strict=False)
+        if _is_unsafe_broad_path(
+            store.path,
+            home=home.resolve(strict=False),
+            config_dir=config_dir,
+        ):
+            warnings.append(f"unsafe broad memory store: {store.path}")
+        elif store.source == "claude-project":
+            projects_dir = config_dir / "projects"
+            if (
+                store.path.name != "memory"
+                or store.path.parent.parent != projects_dir
+            ):
+                warnings.append(f"invalid Claude project memory store: {store.path}")
+        elif store.source == "claude-settings":
+            _valid_configured_store(store.path, warnings)
+        else:
+            warnings.append(f"invalid Claude memory store: {store.path}")
+    else:
+        warnings.append(f"unsupported client: {client}")
+
+    _count_regular_files(store.path, warnings)
+    if warnings:
+        return "memory store unsafe: " + "; ".join(warnings)
+    return None
 
 
 def scan_memory_inventory(
