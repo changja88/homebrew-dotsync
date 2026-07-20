@@ -54,7 +54,6 @@ Color communicates meaning in addition to the words; it never replaces them:
 - separators: neutral terminal text.
 
 Claude's `native delete` segment follows the same yellow delete treatment.
-`NO_COLOR=1` removes ANSI styling while preserving the exact readable text.
 
 When inventory scanning fails, the existing fail-closed behavior remains. The
 `sessions` and `cleanup` rows show that the scan is unavailable without
@@ -92,7 +91,6 @@ Tests will prove:
   first in `cleanup`;
 - Claude preflight uses the `records` unit and the same explicit policy;
 - policy, delete, keep, and total segments use their specified distinct colors;
-- `NO_COLOR=1` keeps the full plain-text output;
 - neither client renders a separate `retention` row;
 - scan-unavailable rendering stays fail-closed;
 - existing session cleanup behavior and full `local_dev` tests remain green.

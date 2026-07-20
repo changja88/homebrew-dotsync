@@ -2,9 +2,10 @@ from local_dev.serena_mcp_management.ui import (
     MINT,
     PINK,
     PURPLE,
+    style_cleanup_segments,
     style_count,
     style_criteria,
-    style_inventory_counts,
+    style_session_counts,
 )
 
 
@@ -32,19 +33,23 @@ def test_style_count_passes_through_unmatched():
     assert style_count("") == ""
 
 
-def test_style_inventory_counts_colors_delete_reset_and_keep_by_meaning():
-    result = style_inventory_counts("codex 174 total . 92 to delete . 82 to keep")
+def test_style_session_counts_colors_complete_totals_pink():
+    result = style_session_counts("codex 58 groups · 855 records")
 
-    assert "\x1b[33m92 to delete\x1b[0m" in result
-    assert f"\x1b[{MINT}m82 to keep\x1b[0m" in result
-    assert f"\x1b[{PINK}m174\x1b[0m total" in result
+    assert f"\x1b[{PINK}m58 groups\x1b[0m" in result
+    assert f"\x1b[{PINK}m855 records\x1b[0m" in result
 
 
-def test_style_inventory_counts_colors_reset_by_meaning():
-    result = style_inventory_counts("codex 3 total . 3 to reset . 0 to keep")
+def test_style_cleanup_segments_colors_each_meaning():
+    result = style_cleanup_segments(
+        "inactive longer than 5 days",
+        "delete 35 groups / 358 records",
+        "keep 23 groups / 497 records",
+    )
 
-    assert "\x1b[33m3 to reset\x1b[0m" in result
-    assert f"\x1b[{MINT}m0 to keep\x1b[0m" in result
+    assert f"\x1b[{PURPLE}minactive longer than 5 days\x1b[0m" in result
+    assert "\x1b[33mdelete 35 groups / 358 records\x1b[0m" in result
+    assert f"\x1b[{MINT}mkeep 23 groups / 497 records\x1b[0m" in result
 
 
 def test_style_criteria_dims_policy_text():

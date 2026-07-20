@@ -93,6 +93,9 @@ def _stub_preflight_inventory(
     sessions_total=174,
     sessions_to_delete=92,
     sessions_to_keep=82,
+    records_total=None,
+    records_to_delete=None,
+    records_to_keep=None,
     criteria="sessions: all known homes + inactive longer than 5d",
 ):
     from local_dev.serena_mcp_management.session_inventory import (
@@ -111,6 +114,19 @@ def _stub_preflight_inventory(
                 to_keep=sessions_to_keep,
             ),
             criteria=criteria,
+            records=CountStats(
+                total=sessions_total if records_total is None else records_total,
+                to_delete=(
+                    sessions_to_delete
+                    if records_to_delete is None
+                    else records_to_delete
+                ),
+                to_keep=(
+                    sessions_to_keep
+                    if records_to_keep is None
+                    else records_to_keep
+                ),
+            ),
         ),
         raising=False,
     )
@@ -181,7 +197,11 @@ def test_v2_preflight_renders_box_with_sessions_and_serena(monkeypatch):
     rc = launcher._run_preflight_v2(stream=out, input_fn=lambda: next(answers))
     text = out.getvalue()
     plain = _strip_ansi(text)
-    assert "codex 103 total . 0 to delete . 103 to keep" in plain
+    assert "codex 103 groups · 103 records" in plain
+    assert (
+        "inactive longer than 5 days · "
+        "delete 0 groups / 0 records · keep 103 groups / 103 records"
+    ) in plain
     assert "memory" not in plain
     assert "preflight" in text
     assert "codex" in text
@@ -196,24 +216,36 @@ def test_v2_preflight_renders_box_with_sessions_and_serena(monkeypatch):
     assert rc == 0  # preflight no longer aborts; final 'Run codex?' moved out
 
 
-def test_v2_preflight_renders_box_with_sessions_and_five_day_criteria(monkeypatch):
+def test_v2_preflight_renders_box_with_session_records_and_cleanup(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch)
-    _stub_preflight_inventory(monkeypatch)
+    _stub_preflight_inventory(
+        monkeypatch,
+        sessions_total=58,
+        sessions_to_delete=35,
+        sessions_to_keep=23,
+        records_total=855,
+        records_to_delete=358,
+        records_to_keep=497,
+    )
 
     out = io.StringIO()
     launcher._render_preflight_overview_v2(stream=out)
     plain = _strip_ansi(out.getvalue())
 
     assert "sessions" in plain
-    assert "codex 174 total . 92 to delete . 82 to keep" in plain
+    assert "codex 58 groups · 855 records" in plain
+    assert (
+        "inactive longer than 5 days · "
+        "delete 35 groups / 358 records · keep 23 groups / 497 records"
+    ) in plain
     assert "memory" not in plain
-    assert "criteria" in plain
-    assert "sessions: all known homes + inactive longer than 5d" in plain
-    assert "cleanup" not in plain
+    assert "criteria" not in plain
+    assert "retention" not in plain
+    assert "cleanup" in plain
 
 
 def test_v2_preflight_labels_claude_candidates_as_native_cleanup(monkeypatch):
@@ -235,8 +267,13 @@ def test_v2_preflight_labels_claude_candidates_as_native_cleanup(monkeypatch):
     launcher._render_preflight_overview_v2(stream=out)
     plain = _strip_ansi(out.getvalue())
 
-    assert "claude 108 total . 74 native cleanup . 34 to keep" in plain
-    assert "sessions: all projects + native retention 5d" in plain
+    assert "claude 108 records" in plain
+    assert (
+        "inactive longer than 5 days · "
+        "native delete 74 records · keep 34 records"
+    ) in plain
+    assert "criteria" not in plain
+    assert "retention" not in plain
     assert "memory" not in plain
 
 
@@ -303,9 +340,13 @@ def test_v2_preflight_uses_real_global_codex_logical_inventory(
     launcher._render_preflight_overview_v2(stream=out)
     plain = _strip_ansi(out.getvalue())
 
-    assert "codex 2 total . 1 to delete . 1 to keep" in plain
+    assert "codex 2 groups · 3 records" in plain
+    assert (
+        "inactive longer than 5 days · "
+        "delete 1 group / 2 records · keep 1 group / 1 record"
+    ) in plain
     assert "memory" not in plain
-    assert "sessions: all known homes + inactive longer than 5d" in plain
+    assert "criteria" not in plain
     assert (memory_dir / "a.md").exists()
 
 
@@ -326,7 +367,7 @@ def test_v2_preflight_inventory_scan_failure_renders_warning_row(monkeypatch):
     assert rows["sessions"].status == "warn"
     assert "scan unavailable: inventory unavailable" in rows["sessions"].value
     assert "memory" not in rows
-    assert _strip_ansi(rows["criteria"].value) == "scan unavailable"
+    assert _strip_ansi(rows["cleanup"].value) == "scan unavailable"
 
 
 def test_v2_preflight_returns_zero_on_run_confirm(monkeypatch):
@@ -1429,7 +1470,7 @@ def test_v2_main_orders_overview_then_serena_then_setup_then_final_confirm(
 
 def test_v2_render_preflight_overview_draws_box_without_memory_row(monkeypatch):
     """preflight overview는 box 렌더만 담당한다 — 어떤 prompt도 띄우지 않고
-    sessions/criteria/serena/graphify/context 행을 모두 한 번 그린다.
+    sessions/cleanup/serena/graphify/context 행을 모두 한 번 그린다.
     """
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
@@ -1447,9 +1488,13 @@ def test_v2_render_preflight_overview_draws_box_without_memory_row(monkeypatch):
     launcher._render_preflight_overview_v2(stream=out)
     text = out.getvalue()
     plain = _strip_ansi(text)
-    assert "codex 103 total . 0 to delete . 103 to keep" in plain
+    assert "codex 103 groups · 103 records" in plain
+    assert (
+        "inactive longer than 5 days · "
+        "delete 0 groups / 0 records · keep 103 groups / 103 records"
+    ) in plain
     assert "memory" not in plain
-    assert "sessions: all known homes + inactive longer than 5d" in plain
+    assert "criteria" not in plain
     assert "preflight" in text
     assert "codex" in text
     assert "graphify global" in plain

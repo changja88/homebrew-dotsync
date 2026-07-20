@@ -132,14 +132,24 @@ def style_count(phrase: str) -> str:
     return result
 
 
-def style_inventory_counts(phrase: str) -> str:
+def style_session_counts(phrase: str) -> str:
     if not phrase:
         return phrase
-    result = re.sub(r"\d+ to delete", lambda m: _ansi("33", m.group(0)), phrase)
-    result = re.sub(r"\d+ to reset", lambda m: _ansi("33", m.group(0)), result)
-    result = re.sub(r"\d+ to keep", lambda m: _ansi(MINT, m.group(0)), result)
-    result = re.sub(r"\d+(?= total)", lambda m: _ansi(PINK, m.group(0)), result)
-    return result
+    return re.sub(
+        r"\d+ (?:groups?|records?)",
+        lambda match: _ansi(PINK, match.group(0)),
+        phrase,
+    )
+
+
+def style_cleanup_segments(condition: str, delete: str, keep: str) -> str:
+    return " · ".join(
+        (
+            _ansi(PURPLE, condition),
+            _ansi("33", delete),
+            _ansi(MINT, keep),
+        )
+    )
 
 
 def style_criteria(phrase: str) -> str:

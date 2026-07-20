@@ -51,6 +51,7 @@ from local_dev.serena_mcp_management.session_cleanup import (
 )
 from local_dev.serena_mcp_management.session_inventory import (
     AgentInventory,
+    RETENTION_DAYS,
     scan_inventory,
 )
 from local_dev.serena_mcp_management.ui import (
@@ -63,9 +64,10 @@ from local_dev.serena_mcp_management.ui import (
     SpinnerTicker,
     confirm,
     render_inline_row,
+    style_cleanup_segments,
     style_criteria,
     style_count,
-    style_inventory_counts,
+    style_session_counts,
     style_mcp_inventory,
     style_spinner,
 )
@@ -111,17 +113,39 @@ def _inventory_for_preflight(client: str, project_root: str) -> AgentInventory:
     )
 
 
+def _counted(value: int, singular: str) -> str:
+    unit = singular if value == 1 else f"{singular}s"
+    return f"{value} {unit}"
+
+
 def _sessions_value(inventory: AgentInventory) -> str:
-    sessions = inventory.sessions
-    action = (
-        f"{sessions.to_delete} native cleanup"
-        if inventory.client == "claude"
-        else f"{sessions.to_delete} to delete"
-    )
-    return style_inventory_counts(
-        f"{inventory.client} {sessions.total} total . "
-        f"{action} . {sessions.to_keep} to keep"
-    )
+    records = inventory.records or inventory.sessions
+    if inventory.client == "codex":
+        phrase = (
+            f"codex {_counted(inventory.sessions.total, 'group')} · "
+            f"{_counted(records.total, 'record')}"
+        )
+    else:
+        phrase = f"claude {_counted(records.total, 'record')}"
+    return style_session_counts(phrase)
+
+
+def _cleanup_value(inventory: AgentInventory) -> str:
+    records = inventory.records or inventory.sessions
+    condition = f"inactive longer than {RETENTION_DAYS} days"
+    if inventory.client == "codex":
+        delete = (
+            f"delete {_counted(inventory.sessions.to_delete, 'group')} / "
+            f"{_counted(records.to_delete, 'record')}"
+        )
+        keep = (
+            f"keep {_counted(inventory.sessions.to_keep, 'group')} / "
+            f"{_counted(records.to_keep, 'record')}"
+        )
+    else:
+        delete = f"native delete {_counted(records.to_delete, 'record')}"
+        keep = f"keep {_counted(records.to_keep, 'record')}"
+    return style_cleanup_segments(condition, delete, keep)
 
 
 def infer_client_type(program_name: str) -> str:
@@ -666,12 +690,14 @@ def _preflight_box(snapshot: InventorySnapshot | None = None) -> BoxModel:
         inventory = inventory_snapshot.inventory
         sessions_value = _sessions_value(inventory)
         sessions_item_status = "info"
-        criteria_value = style_criteria(inventory.criteria)
+        cleanup_value = _cleanup_value(inventory)
+        cleanup_item_status = "info"
     else:
         detail = inventory_snapshot.error or "inventory unavailable"
         sessions_value = f"scan unavailable: {detail}"
         sessions_item_status = "warn"
-        criteria_value = style_criteria("scan unavailable")
+        cleanup_value = style_criteria("scan unavailable")
+        cleanup_item_status = "warn"
 
     items = [
         Item(
@@ -723,7 +749,12 @@ def _preflight_box(snapshot: InventorySnapshot | None = None) -> BoxModel:
             value=sessions_value,
             status=sessions_item_status,
         ),
-        Item(id="criteria", label="criteria", value=criteria_value, status="info"),
+        Item(
+            id="cleanup",
+            label="cleanup",
+            value=cleanup_value,
+            status=cleanup_item_status,
+        ),
     ]
     return BoxModel(phase="preflight", title=client, items=items)
 

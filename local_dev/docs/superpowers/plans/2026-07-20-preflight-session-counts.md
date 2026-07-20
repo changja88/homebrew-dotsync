@@ -158,16 +158,6 @@ def test_style_cleanup_segments_colors_each_meaning():
     assert f"\x1b[{MINT}mkeep 23 groups / 497 records\x1b[0m" in result
 ```
 
-Add a `NO_COLOR` test that sets the variable and expects the exact plain text:
-
-```python
-def test_cleanup_segments_respect_no_color(monkeypatch):
-    monkeypatch.setenv("NO_COLOR", "1")
-    assert style_cleanup_segments("policy", "delete", "keep") == (
-        "policy · delete · keep"
-    )
-```
-
 - [ ] **Step 2: Write failing preflight output tests**
 
 Extend `_stub_preflight_inventory` to accept `records_total`, `records_to_delete`, and `records_to_keep`, then populate `AgentInventory.records`. Assert the plain ANSI-stripped Codex output contains:
@@ -206,15 +196,6 @@ Run:
 Expected: FAIL because the new style functions and cleanup row do not exist and the old criteria row is still rendered.
 
 - [ ] **Step 4: Implement semantic style helpers**
-
-Make `_ansi` honor `NO_COLOR` consistently across launcher output:
-
-```python
-def _ansi(code: str, text: str) -> str:
-    if os.environ.get("NO_COLOR") is not None:
-        return text
-    return f"\x1b[{code}m{text}\x1b[0m"
-```
 
 Replace `style_inventory_counts` with:
 
