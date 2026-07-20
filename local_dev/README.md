@@ -78,15 +78,18 @@ The managed zsh flow is:
   -> real codex or claude binary
 ```
 
-Interactive no-argument `codex` / `claude` launches show a single ANSI
-preflight box from the Python launcher: workspace, Serena project status,
+Interactive no-argument `codex` / `claude` launches and session-management
+commands (`codex resume|fork`, `claude -c|--continue|-r|--resume`) show a single
+ANSI preflight box from the Python launcher: workspace, Serena project status,
 machine-wide Serena MCP inventory, Graphify status (4 rows: global / graph /
-integration / hook), context, session inventory, memory inventory, and the
-cleanup criteria. After Run/Abort confirmation (and an optional
+integration / hook), context, global session inventory, and the cleanup
+criteria. After Run/Abort confirmation (and an optional
 Initialize/Skip prompt when `.serena/project.yml` is absent), the launcher
 runs cleanup and starts the scoped Serena MCP server with inline progress rows
 below the preflight box. When the agent TUI exits, a summary box reports
 session duration, cleanup result, MCP lifecycle, and any accumulated warnings.
+Non-interactive commands (`codex exec`, `claude -p`, help/version) and Claude
+calls that explicitly supply their own `--settings` bypass the launcher.
 
 `serena project create` (run on Initialize) is **captured, not streamed**: its
 verbose language detection, the interactive language prompts auto-answered via
@@ -135,16 +138,21 @@ Clients with no node-based plugin/MCP are never prompted. Detection lives in
 > HUD can't be fixed from here regardless — the same hardcode is claude-hud's,
 > not ours. npx-based MCP (the generic need) still works on Intel via PATH.
 
-The session and memory rows are computed in Python from the current launcher
-context, not predicted by the zsh shim:
+The session row is computed in Python from one immutable inventory snapshot and
+reused for cleanup; the zsh shim does not predict counts:
 
-| Context | Sessions | Memory | Cleanup criteria |
-|---|---|---|---|
-| `codex` | `$CODEX_HOME/sessions` (`~/.codex/sessions` by default), recursive `*.jsonl` files whose `session_meta.payload.cwd` matches the current working directory | `$CODEX_HOME/memories` (`~/.codex/memories` by default) | Delete matching sessions older than 3 days; reset all Codex memory files. |
-| `claude` | `~/.claude/projects/<encoded cwd>/*.jsonl` | `~/.claude/projects/<encoded project root>/memory` | Delete project sessions older than 3 days; reset all Claude memory files for the project. |
+| Context | Session scope | 5-day cleanup mechanism |
+|---|---|---|
+| `codex` | Logical top-level sessions across `~/.codex`, the active `$CODEX_HOME`, and Orca's managed Codex home. Root/descendant rollouts and hard-linked bridge copies count once; the newest member controls retention. | Open or concurrently changed groups are kept. Eligible roots are deleted source-home first through the official `codex delete --force <UUID>` command in each owning Codex home. JSONL and SQLite are never edited directly. |
+| `claude` | Top-level session JSONL files for every project under `$CLAUDE_CONFIG_DIR/projects` (or `~/.claude/projects` when unset). Subagent files are counted with their parent. | The child process receives the official execution-only setting `--settings '{"cleanupPeriodDays":5}'`; Claude Code performs its native startup sweep. Launcher code never deletes Claude transcripts directly. |
 
-Preflight displays each row as `client total . to delete/reset . to keep`, and
-the final summary uses `N sessions deleted . M memory files reset`.
+The cutoff is strictly older than `5 * 24h`; a session exactly on the cutoff is
+kept. Codex `archived_sessions`, Codex memory, and Claude auto-memory are not
+scanned or deleted. A normal Codex row reads
+`codex N total . D to delete . K to keep`; Claude reads
+`claude N total . D native cleanup . K to keep`. The final summary reports
+either `N sessions deleted` (Codex) or `native retention 5d . N eligible`
+(Claude).
 
 ## Workflow
 
