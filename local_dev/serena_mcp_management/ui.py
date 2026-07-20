@@ -166,8 +166,8 @@ def style_mcp_inventory(
 ) -> str:
     """Colorize the global Serena MCP preflight inventory."""
 
-    def normal(label: str, value: int, suffix: str = "") -> str:
-        return f"{_ansi(PURPLE, label)}[{_ansi(PINK, str(value))}{suffix}]"
+    def normal(label: str, value: int) -> str:
+        return f"{_ansi(PURPLE, label)}[{_ansi(PINK, str(value))}]"
 
     def risk(label: str, value: int) -> str:
         if value > 0:
@@ -175,12 +175,12 @@ def style_mcp_inventory(
         return f"{_ansi('90', label)}[{_ansi('90', str(value))}]"
 
     return (
-        f"{normal('ps', ps_servers, ' servers')} "
-        f"{_ansi('90', '->')} "
-        f"{_ansi(MINT, 'managed')}[{_ansi(PINK, str(managed_servers))} servers] . "
-        f"{risk('orphan', orphan_servers)} . "
-        f"{normal('leases', leases)} . "
-        f"{risk('stale', stale_leases)}"
+        f"{normal('server processes', ps_servers)} "
+        f"{_ansi('90', '→')} "
+        f"{_ansi(MINT, 'managed servers')}[{_ansi(PINK, str(managed_servers))}] · "
+        f"{risk('orphaned servers', orphan_servers)} · "
+        f"{normal('leases', leases)} · "
+        f"{risk('stale leases', stale_leases)}"
     )
 
 
@@ -267,11 +267,21 @@ def _visible_len(text: str) -> int:
     return len(_ANSI_ESCAPE_RE.sub("", text))
 
 
+def _render_item_lines(item: Item, *, spin_frame: int) -> list[str]:
+    value_lines = item.value.splitlines() or [""]
+    marker = _marker_for(item.status, spin_frame=spin_frame)
+    label = _ansi(MINT, f"{item.label:<10}")
+    lines = [f"  {marker} {label}  {value_lines[0]}"]
+    value_indent = " " * _visible_len(f"  {marker} {item.label:<10}  ")
+    lines.extend(f"{value_indent}{line}" for line in value_lines[1:])
+    return lines
+
+
 def _box_width_for(model: BoxModel) -> int:
     width = _BOX_WIDTH
     for item in model.items:
-        row = f"  o {item.label:<10}  {item.value}"
-        width = max(width, _visible_len(row) - 2)
+        for row in _render_item_lines(item, spin_frame=0):
+            width = max(width, _visible_len(row) - 2)
     return width
 
 
@@ -292,9 +302,7 @@ def render_box(model: BoxModel, *, spin_frame: int = 0) -> str:
         header = f"{model.title}  ·  {model.phase}"
         lines.append("  " + _ansi(f"1;{PINK}", header))
     for item in model.items:
-        marker = _marker_for(item.status, spin_frame=spin_frame)
-        label = _ansi(MINT, f"{item.label:<10}")
-        lines.append(f"  {marker} {label}  {item.value}")
+        lines.extend(_render_item_lines(item, spin_frame=spin_frame))
     lines.append("  " + _ansi(PURPLE, "─" * box_width))
     lines.append("  " + _ansi(PINK, "─" * box_width))
     return "\n".join(lines) + "\n"

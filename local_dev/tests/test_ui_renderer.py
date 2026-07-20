@@ -61,6 +61,59 @@ def test_render_box_includes_each_item_label_and_value():
     assert "0 to delete . 103 to keep" in text
 
 
+def test_render_box_aligns_multiline_values_under_value_column():
+    model = BoxModel(
+        phase="preflight",
+        title="codex",
+        items=[
+            Item(
+                id="sessions",
+                label="sessions",
+                value=(
+                    "codex\n"
+                    "├─ groups   58 total\n"
+                    "└─ cleanup  inactive longer than 5 days"
+                ),
+                status="info",
+            )
+        ],
+    )
+
+    lines = _strip_ansi(render_box(model)).splitlines()
+    parent = next(line for line in lines if "sessions" in line)
+    groups = next(line for line in lines if "├─ groups" in line)
+    cleanup = next(line for line in lines if "└─ cleanup" in line)
+
+    value_column = parent.index("codex")
+    assert groups.index("├─") == value_column
+    assert cleanup.index("└─") == value_column
+
+
+def test_render_box_sizes_border_by_longest_multiline_value():
+    model = BoxModel(
+        phase="preflight",
+        title="codex",
+        items=[
+            Item(
+                id="sessions",
+                label="sessions",
+                value=(
+                    "codex\n"
+                    "└─ records  855 total · 358 to delete · 497 to keep"
+                ),
+            )
+        ],
+    )
+
+    plain_lines = _strip_ansi(render_box(model)).splitlines()
+    border_width = max(
+        len(line.strip()) for line in plain_lines if set(line.strip()) == {"─"}
+    )
+    record_line = next(line for line in plain_lines if "└─ records" in line)
+
+    assert border_width == max(60, len(record_line) - 2)
+
+
 def test_render_box_uses_done_marker_for_done_items():
     model = BoxModel(
         phase="launch-prep",
@@ -92,10 +145,12 @@ def test_style_mcp_inventory_renders_single_line_plain_text():
         stale_leases=1,
     )
 
-    assert _strip_ansi(text) == (
-        "ps[3 servers] -> managed[2 servers] . "
-        "orphan[1] . leases[3] . stale[1]"
+    plain = _strip_ansi(text)
+    assert plain == (
+        "server processes[3] → managed servers[2] · "
+        "orphaned servers[1] · leases[3] · stale leases[1]"
     )
+    assert "ps[" not in plain
 
 
 def test_style_mcp_inventory_highlights_orphan_and_stale_when_nonzero():
@@ -251,4 +306,3 @@ def test_render_box_uses_double_top_and_bottom_border():
     assert "─" in _strip_ansi(lines[1])
     assert f"\x1b[{PINK}m" in lines[0] or f"\x1b[1;{PINK}m" in lines[0]
     assert f"\x1b[{PURPLE}m" in lines[1] or f"\x1b[1;{PURPLE}m" in lines[1]
-
