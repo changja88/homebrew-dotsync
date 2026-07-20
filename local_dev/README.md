@@ -83,7 +83,7 @@ commands (`codex resume|fork`, `claude -c|--continue|-r|--resume`) show a single
 ANSI preflight box from the Python launcher: workspace, Serena project status,
 machine-wide Serena MCP inventory, Graphify status (4 rows: global / graph /
 integration / hook), context, global session inventory, and the cleanup
-criteria. After Run/Abort confirmation (and an optional
+condition/result. After Run/Abort confirmation (and an optional
 Initialize/Skip prompt when `.serena/project.yml` is absent), the launcher
 runs cleanup and starts the scoped Serena MCP server with inline progress rows
 below the preflight box. When the agent TUI exits, a summary box reports
@@ -148,11 +148,22 @@ reused for cleanup; the zsh shim does not predict counts:
 
 The cutoff is strictly older than `5 * 24h`; a session exactly on the cutoff is
 kept. Codex `archived_sessions`, Codex memory, and Claude auto-memory are not
-scanned or deleted. A normal Codex row reads
-`codex N total . D to delete . K to keep`; Claude reads
-`claude N total . D native cleanup . K to keep`. The final summary reports
-either `N sessions deleted` (Codex) or `native retention 5d . N eligible`
-(Claude).
+scanned or deleted. Normal preflight rows read:
+
+```text
+· sessions    codex 58 groups · 855 records
+· cleanup     inactive longer than 5 days · delete 35 groups / 358 records · keep 23 groups / 497 records
+```
+
+```text
+· sessions    claude 108 records
+· cleanup     inactive longer than 5 days · native delete 75 records · keep 33 records
+```
+
+Session totals are pink, the cleanup condition is purple, the complete delete
+segment is yellow, and the complete keep segment is mint. The final summary
+reports either `N sessions deleted` (Codex) or
+`native retention 5d . N eligible` (Claude).
 
 ## Workflow
 
