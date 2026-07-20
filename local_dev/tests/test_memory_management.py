@@ -243,6 +243,30 @@ def test_claude_inventory_rejects_empty_remainder_after_tilde(tmp_path):
     assert any("after ~/" in warning for warning in inventory.warnings)
 
 
+def test_claude_inventory_rejects_tilde_store_below_symlinked_home(tmp_path):
+    real_home = tmp_path / "real-home"
+    custom = real_home / "custom"
+    custom.mkdir(parents=True)
+    (custom / "MEMORY.md").write_text("memory")
+    home_link = tmp_path / "home-link"
+    home_link.symlink_to(real_home, target_is_directory=True)
+    config = tmp_path / "independent-config"
+    config.mkdir()
+    (config / "settings.json").write_text(
+        json.dumps({"autoMemoryDirectory": "~/custom"})
+    )
+
+    inventory = scan_memory_inventory(
+        client="claude",
+        home=home_link,
+        codex_home=tmp_path / ".codex",
+        claude_config_dir=config,
+    )
+
+    assert inventory.stores == ()
+    assert any("symlink" in warning for warning in inventory.warnings)
+
+
 @pytest.mark.parametrize(
     "malformed_name",
     ["nul\0path", "surrogate\ud800path"],

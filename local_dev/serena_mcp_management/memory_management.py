@@ -221,7 +221,7 @@ def _configured_memory_path(
                 "Claude autoMemoryDirectory after ~/ must be a relative path"
             )
             return None
-        candidate = home.resolve(strict=False) / relative_path
+        candidate = home.absolute() / relative_path
     else:
         candidate = Path(raw_path)
     if not candidate.is_absolute():
