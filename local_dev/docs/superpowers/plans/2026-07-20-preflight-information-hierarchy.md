@@ -61,7 +61,7 @@ def test_render_box_aligns_multiline_values_under_value_column():
     assert cleanup.index("└─") == value_column
 
 
-def test_render_box_expands_border_for_long_multiline_value():
+def test_render_box_sizes_border_by_longest_multiline_value():
     model = BoxModel(
         phase="preflight",
         title="codex",
@@ -81,8 +81,8 @@ def test_render_box_expands_border_for_long_multiline_value():
     border_width = max(
         len(line.strip()) for line in plain_lines if set(line.strip()) == {"─"}
     )
-    record_width = len(next(line.strip() for line in plain_lines if "records" in line))
-    assert border_width >= record_width
+    record_line = next(line for line in plain_lines if "└─ records" in line)
+    assert border_width == max(60, len(record_line) - 2)
 ```
 
 Update the MCP plain-text expectation to:
@@ -102,7 +102,7 @@ Run:
 ```bash
 .venv/bin/python3 -m pytest \
   local_dev/tests/test_ui_renderer.py::test_render_box_aligns_multiline_values_under_value_column \
-  local_dev/tests/test_ui_renderer.py::test_render_box_expands_border_for_long_multiline_value \
+  local_dev/tests/test_ui_renderer.py::test_render_box_sizes_border_by_longest_multiline_value \
   local_dev/tests/test_ui_renderer.py::test_style_mcp_inventory_renders_single_line_plain_text -v
 ```
 
@@ -250,7 +250,7 @@ def style_session_tree(
     def stats_line(branch: str, label: str, stats: tuple[int, int, int]) -> str:
         total, delete, keep = stats
         return (
-            f"{_ansi('90', branch)} {_ansi(MINT, f'{label:<8}')}"
+            f"{_ansi('90', branch)} {_ansi(MINT, f'{label:<9}')}"
             f"{_ansi(PINK, f'{total} total')} · "
             f"{_ansi('33', f'{delete} to delete')} · "
             f"{_ansi(MINT, f'{keep} to keep')}"
@@ -261,7 +261,7 @@ def style_session_tree(
         lines.append(stats_line("├─", "groups", groups))
     lines.append(stats_line("├─", "records", records))
     cleanup = condition if not cleanup_note else f"{condition} · {cleanup_note}"
-    cleanup_label = f"{'cleanup':<8}"
+    cleanup_label = f"{'cleanup':<9}"
     lines.append(
         f"{_ansi('90', '└─')} {_ansi(MINT, cleanup_label)}"
         f"{_ansi(PURPLE, cleanup)}"

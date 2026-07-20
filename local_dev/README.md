@@ -82,12 +82,13 @@ Interactive no-argument `codex` / `claude` launches and session-management
 commands (`codex resume|fork`, `claude -c|--continue|-r|--resume`) show a single
 ANSI preflight box from the Python launcher: workspace, Serena project status,
 machine-wide Serena MCP inventory, Graphify status (4 rows: global / graph /
-integration / hook), context, global session inventory, and the cleanup
-condition/result. After Run/Abort confirmation (and an optional
-Initialize/Skip prompt when `.serena/project.yml` is absent), the launcher
-runs cleanup and starts the scoped Serena MCP server with inline progress rows
-below the preflight box. When the agent TUI exits, a summary box reports
-session duration, cleanup result, MCP lifecycle, and any accumulated warnings.
+integration / hook), context, and one grouped global session inventory that
+contains its cleanup condition and candidate counts. After Run/Abort
+confirmation (and an optional Initialize/Skip prompt when
+`.serena/project.yml` is absent), the launcher runs cleanup and starts the
+scoped Serena MCP server with inline progress rows below the preflight box.
+When the agent TUI exits, a summary box reports session duration, cleanup
+result, MCP lifecycle, and any accumulated warnings.
 Non-interactive commands (`codex exec`, `claude -p`, help/version) and Claude
 calls that explicitly supply their own `--settings` bypass the launcher.
 
@@ -141,6 +142,13 @@ Clients with no node-based plugin/MCP are never prompted. Detection lives in
 The session row is computed in Python from one immutable inventory snapshot and
 reused for cleanup; the zsh shim does not predict counts:
 
+The machine-wide Serena MCP row uses full user-facing names rather than process
+table abbreviations:
+
+```text
+✓ serena mcp  server processes[3] → managed servers[3] · orphaned servers[0] · leases[4] · stale leases[0]
+```
+
 | Context | Session scope | 5-day cleanup mechanism |
 |---|---|---|
 | `codex` | Logical top-level sessions across `~/.codex`, the active `$CODEX_HOME`, and Orca's managed Codex home. Root/descendant rollouts and hard-linked bridge copies count once; the newest member controls retention. | Open or concurrently changed groups are kept. Eligible roots are deleted source-home first through the official `codex delete --force <UUID>` command in each owning Codex home. JSONL and SQLite are never edited directly. |
@@ -148,21 +156,25 @@ reused for cleanup; the zsh shim does not predict counts:
 
 The cutoff is strictly older than `5 * 24h`; a session exactly on the cutoff is
 kept. Codex `archived_sessions`, Codex memory, and Claude auto-memory are not
-scanned or deleted. Normal preflight rows read:
+scanned or deleted. Session counts are grouped by data type under one top-level
+row. Normal preflight rows read:
 
 ```text
-· sessions    codex 58 groups · 855 records
-· cleanup     inactive longer than 5 days · delete 35 groups / 358 records · keep 23 groups / 497 records
+· sessions    codex
+              ├─ groups   58 total · 35 to delete · 23 to keep
+              ├─ records  855 total · 358 to delete · 497 to keep
+              └─ cleanup  inactive longer than 5 days
 ```
 
 ```text
-· sessions    claude 108 records
-· cleanup     inactive longer than 5 days · native delete 75 records · keep 33 records
+· sessions    claude
+              ├─ records  108 total · 75 to delete · 33 to keep
+              └─ cleanup  inactive longer than 5 days · native Claude cleanup
 ```
 
-Session totals are pink, the cleanup condition is purple, the complete delete
-segment is yellow, and the complete keep segment is mint. The final summary
-reports either `N sessions deleted` (Codex) or
+Total segments are pink, the cleanup condition is purple, delete segments are
+yellow, keep segments and child labels are mint, and tree glyphs are gray. The
+final summary reports either `N sessions deleted` (Codex) or
 `native retention 5d . N eligible` (Claude).
 
 ## Workflow
