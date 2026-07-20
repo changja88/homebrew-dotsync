@@ -142,7 +142,11 @@ def test_main_turns_keyboard_interrupt_into_clean_cancel(monkeypatch):
     except KeyboardInterrupt:
         rc = None
 
-    visible = _strip_ansi(out.getvalue()).replace("\r", "")
+    visible = (
+        _strip_ansi(out.getvalue())
+        .replace("\r", "")
+        .replace("\x1b[J", "")
+    )
     assert rc == 130
     assert visible == "  ! cancelled\n"
     assert "Traceback" not in visible

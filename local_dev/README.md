@@ -92,6 +92,14 @@ result, MCP lifecycle, and any accumulated warnings.
 Non-interactive commands (`codex exec`, `claude -p`, help/version) and Claude
 calls that explicitly supply their own `--settings` bypass the launcher.
 
+Pressing Ctrl+C at any pre-launch prompt cancels the whole launcher. The active
+prompt is removed, the terminal state is restored, and the launcher prints one
+row before returning exit code `130` without a Python traceback:
+
+```text
+  ! cancelled
+```
+
 `serena project create` (run on Initialize) is **captured, not streamed**: its
 verbose language detection, the interactive language prompts auto-answered via
 `yes ""`, the stale last-project "skipping" notice, and the Pydantic-on-3.14
