@@ -251,7 +251,12 @@ def main(argv: list[str] | None = None) -> int:
     """Run the scoped Serena launcher."""
 
     args = list(sys.argv[1:] if argv is None else argv)
-    return _main_v2(args)
+    try:
+        return _main_v2(args)
+    except KeyboardInterrupt:
+        sys.stdout.write("\r\x1b[J  ! cancelled\n")
+        sys.stdout.flush()
+        return 130
 
 
 def _run_launch_prep_v2(

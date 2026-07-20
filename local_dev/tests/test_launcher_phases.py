@@ -77,6 +77,40 @@ def test_main_dispatches_to_v2_regardless_of_tui_env(monkeypatch):
     assert called["v2"] == []
 
 
+def test_main_turns_keyboard_interrupt_into_clean_cancel(monkeypatch):
+    out = io.StringIO()
+    monkeypatch.setattr(launcher.sys, "stdout", out)
+
+    def interrupt(args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(launcher, "_main_v2", interrupt)
+
+    try:
+        rc = launcher.main([])
+    except KeyboardInterrupt:
+        rc = None
+
+    visible = (
+        _strip_ansi(out.getvalue())
+        .replace("\r", "")
+        .replace("\x1b[J", "")
+    )
+    assert rc == 130
+    assert visible == "  ! cancelled\n"
+    assert "Traceback" not in visible
+
+
+def test_main_does_not_swallow_non_interrupt_exceptions(monkeypatch):
+    def fail(args):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(launcher, "_main_v2", fail)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        launcher.main([])
+
+
 def _set_graphify_env(monkeypatch, *, global_="installed", graph="built",
                        integration="installed", hook="installed"):
     """Helper: set the four graphify preflight env vars in one call."""
