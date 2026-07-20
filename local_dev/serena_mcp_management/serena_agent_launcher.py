@@ -13,7 +13,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
+from typing import Literal, TextIO, TypedDict
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -28,6 +28,11 @@ from local_dev.serena_mcp_management.external_cli import (
     serena_install_command,
     serena_oneshot_command,
     serena_server_command,
+)
+from local_dev.serena_mcp_management.memory_management import (
+    MemoryInventory,
+    delete_all_memory,
+    scan_memory_inventory,
 )
 from local_dev.serena_mcp_management.node_preflight import (
     HOMEBREW_NODE_PATH,
@@ -61,10 +66,13 @@ from local_dev.serena_mcp_management.ui import (
     BoxModel,
     BoxRenderer,
     Item,
+    SelectOption,
     SpinnerTicker,
     confirm,
     render_inline_row,
+    select_option,
     style_count,
+    style_memory_tree,
     style_mcp_inventory,
     style_session_tree,
     style_spinner,
@@ -82,10 +90,19 @@ class LaunchPrepSummary:
 
 @dataclass(frozen=True)
 class InventorySnapshot:
-    """One inventory result shared by preflight display and launch cleanup."""
+    """Session and memory results shared by preflight display and cleanup."""
 
     inventory: AgentInventory | None
     error: str | None = None
+    memory_inventory: MemoryInventory | None = None
+    memory_error: str | None = None
+
+
+class _MemoryScanKwargs(TypedDict):
+    client: str
+    home: Path
+    codex_home: Path
+    claude_config_dir: Path | None
 
 
 def _codex_home_from_env() -> Path:
@@ -97,18 +114,26 @@ def _codex_home_from_env() -> Path:
     return codex_home
 
 
-def _inventory_for_preflight(client: str, project_root: str) -> AgentInventory:
+def _memory_scan_kwargs(client: str) -> _MemoryScanKwargs:
     codex_home = Path.home() / ".codex" if client == "claude" else _codex_home_from_env()
     claude_config_value = os.environ.get("CLAUDE_CONFIG_DIR")
     claude_config_dir = (
         Path(claude_config_value).expanduser() if claude_config_value else None
     )
-    return scan_inventory(
-        client=client,
-        home=Path.home(),
-        codex_home=codex_home,
-        claude_config_dir=claude_config_dir,
-    )
+    return {
+        "client": client,
+        "home": Path.home(),
+        "codex_home": codex_home,
+        "claude_config_dir": claude_config_dir,
+    }
+
+
+def _inventory_for_preflight(client: str, project_root: str) -> AgentInventory:
+    return scan_inventory(**_memory_scan_kwargs(client))
+
+
+def _memory_inventory_for_preflight(client: str) -> MemoryInventory:
+    return scan_memory_inventory(**_memory_scan_kwargs(client))
 
 
 def _sessions_value(inventory: AgentInventory) -> str:
@@ -435,12 +460,24 @@ def _main_v2(args: list[str]) -> int:
         if rc != 0:
             return rc
 
-    if interactive and not _run_final_confirm_v2():
-        return 130
-
     client_type = infer_client_type(
         os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0])
     )
+    memory_choice = _run_memory_choice_v2()
+    if memory_choice == "cancel":
+        return 130
+    if memory_choice == "delete":
+        delete_result = delete_all_memory(**_memory_scan_kwargs(client_type))
+        if not delete_result.succeeded:
+            out.write(f"  ! memory      delete failed · {delete_result.error}\n")
+            out.flush()
+            return 1
+        out.write(
+            f"  ✓ memory      {delete_result.deleted_stores} stores · "
+            f"{delete_result.deleted_files} files deleted\n"
+        )
+        out.flush()
+
     real_binary = find_real_binary(client_type)
     summary_state = (
         _run_launch_prep_v2(
@@ -613,13 +650,26 @@ def _capture_inventory_snapshot(
     client: str,
     project_root: str,
 ) -> InventorySnapshot:
+    inventory = None
+    error = None
     try:
-        return InventorySnapshot(
-            inventory=_inventory_for_preflight(client, project_root)
-        )
+        inventory = _inventory_for_preflight(client, project_root)
     except Exception as exc:
-        detail = str(exc) or exc.__class__.__name__
-        return InventorySnapshot(inventory=None, error=detail)
+        error = str(exc) or exc.__class__.__name__
+
+    memory_inventory = None
+    memory_error = None
+    try:
+        memory_inventory = _memory_inventory_for_preflight(client)
+    except Exception as exc:
+        memory_error = str(exc) or exc.__class__.__name__
+
+    return InventorySnapshot(
+        inventory=inventory,
+        error=error,
+        memory_inventory=memory_inventory,
+        memory_error=memory_error,
+    )
 
 
 def _preflight_box(snapshot: InventorySnapshot | None = None) -> BoxModel:
@@ -684,6 +734,21 @@ def _preflight_box(snapshot: InventorySnapshot | None = None) -> BoxModel:
         sessions_value = f"scan unavailable: {detail}"
         sessions_item_status = "warn"
 
+    memory_item_status: Literal["info", "warn"]
+    if inventory_snapshot.memory_inventory is not None:
+        memory_inventory = inventory_snapshot.memory_inventory
+        memory_value = style_memory_tree(
+            client=memory_inventory.client,
+            stores=len(memory_inventory.stores),
+            files=memory_inventory.file_count,
+            scope=memory_inventory.scope,
+        )
+        memory_item_status = "warn" if memory_inventory.warnings else "info"
+    else:
+        detail = inventory_snapshot.memory_error or "inventory unavailable"
+        memory_value = f"scan unavailable: {detail}"
+        memory_item_status = "warn"
+
     items = [
         Item(
             id="workspace",
@@ -727,6 +792,12 @@ def _preflight_box(snapshot: InventorySnapshot | None = None) -> BoxModel:
             label="context",
             value="claude-code" if client == "claude" else "codex",
             status="info",
+        ),
+        Item(
+            id="memory",
+            label="memory",
+            value=memory_value,
+            status=memory_item_status,
         ),
         Item(
             id="sessions",
@@ -1311,26 +1382,38 @@ def _render_preflight_overview_v2(
     return snapshot
 
 
-def _run_final_confirm_v2(
+def _run_memory_choice_v2(
     *,
     stream: TextIO | None = None,
     input_fn: Callable[[], str] | None = None,
-) -> bool:
-    """Final 'Run <client>?' gate, asked once after every setup question.
-
-    Returns True if interactive mode is off or the user confirms; False if the
-    user declines the launch.
-    """
+) -> Literal["keep", "delete", "cancel"]:
+    """Choose the product-wide auto-memory policy before launch."""
     if os.environ.get("SERENA_AGENT_INTERACTIVE") != "1":
-        return True
+        return "keep"
     out = stream if stream is not None else sys.stdout
     client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
-    return confirm(
-        f"Run {client}?",
-        default=True,
+    product = "Codex" if client == "codex" else "Claude"
+    choice = select_option(
+        f"Memory for {client}?",
+        options=(
+            SelectOption("keep", "Run with existing memory"),
+            SelectOption(
+                "delete",
+                f"Delete all {product} auto-memory and run",
+            ),
+            SelectOption("cancel", "Cancel"),
+        ),
+        default_index=0,
         stream=out,
         input_fn=input_fn,
     )
+    if choice == "keep":
+        return "keep"
+    if choice == "delete":
+        return "delete"
+    if choice == "cancel":
+        return "cancel"
+    raise RuntimeError(f"unsupported memory choice: {choice}")
 
 
 def _serena_project_create(project_root: Path) -> tuple[int, str]:

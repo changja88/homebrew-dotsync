@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import time
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -166,6 +167,47 @@ def _stub_preflight_inventory(
     )
 
 
+def _stub_memory_inventory(
+    monkeypatch,
+    *,
+    client="codex",
+    stores=2,
+    files=17,
+    scope=None,
+    warnings=(),
+):
+    from local_dev.serena_mcp_management.memory_management import (
+        MemoryInventory,
+        MemoryStore,
+    )
+
+    memory_inventory = MemoryInventory(
+        client=client,
+        stores=tuple(
+            MemoryStore(
+                path=Path(f"/tmp/test-{client}-memory-{index}"),
+                source="test",
+                file_count=0,
+            )
+            for index in range(stores)
+        ),
+        file_count=files,
+        scope=scope or (
+            "all known Codex homes"
+            if client == "codex"
+            else "all Claude project memory + custom store"
+        ),
+        warnings=warnings,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "scan_memory_inventory",
+        lambda **kwargs: memory_inventory,
+        raising=False,
+    )
+    return memory_inventory
+
+
 @pytest.fixture(autouse=True)
 def _stub_global_mcp_snapshot(monkeypatch):
     monkeypatch.setattr(
@@ -220,6 +262,7 @@ def test_v2_preflight_renders_box_with_sessions_and_serena(monkeypatch):
         sessions_to_delete=0,
         sessions_to_keep=103,
     )
+    _stub_memory_inventory(monkeypatch, stores=0, files=0)
 
     out = io.StringIO()
     # Everything installed -> no prompts should fire from preflight.
@@ -234,7 +277,7 @@ def test_v2_preflight_renders_box_with_sessions_and_serena(monkeypatch):
     assert "├─ groups   103 total · 0 to delete · 103 to keep" in plain
     assert "├─ records  103 total · 0 to delete · 103 to keep" in plain
     assert "└─ cleanup  inactive longer than 5 days" in plain
-    assert "memory" not in plain
+    assert "· memory      codex" in plain
     assert "preflight" in text
     assert "codex" in text
     # All four graphify rows render with their distinct labels.
@@ -263,6 +306,7 @@ def test_v2_preflight_renders_box_with_session_records_and_cleanup(monkeypatch):
         records_to_delete=358,
         records_to_keep=497,
     )
+    _stub_memory_inventory(monkeypatch, stores=0, files=0)
 
     out = io.StringIO()
     launcher._render_preflight_overview_v2(stream=out)
@@ -272,7 +316,7 @@ def test_v2_preflight_renders_box_with_session_records_and_cleanup(monkeypatch):
     assert "├─ groups   58 total · 35 to delete · 23 to keep" in plain
     assert "├─ records  855 total · 358 to delete · 497 to keep" in plain
     assert "└─ cleanup  inactive longer than 5 days" in plain
-    assert "memory" not in plain
+    assert "· memory      codex" in plain
     assert "criteria" not in plain
     assert "retention" not in plain
     assert "cleanup" in plain
@@ -294,6 +338,7 @@ def test_v2_preflight_labels_claude_candidates_as_native_cleanup(monkeypatch):
         sessions_to_keep=34,
         criteria="sessions: all projects + native retention 5d",
     )
+    _stub_memory_inventory(monkeypatch, client="claude", stores=0, files=0)
 
     out = io.StringIO()
     launcher._render_preflight_overview_v2(stream=out)
@@ -305,7 +350,7 @@ def test_v2_preflight_labels_claude_candidates_as_native_cleanup(monkeypatch):
     ) in plain
     assert "criteria" not in plain
     assert "retention" not in plain
-    assert "memory" not in plain
+    assert "· memory      claude" in plain
 
 
 def test_v2_preflight_uses_real_global_codex_logical_inventory(
@@ -374,7 +419,9 @@ def test_v2_preflight_uses_real_global_codex_logical_inventory(
     assert "├─ groups   2 total · 1 to delete · 1 to keep" in plain
     assert "├─ records  3 total · 2 to delete · 1 to keep" in plain
     assert "└─ cleanup  inactive longer than 5 days" in plain
-    assert "memory" not in plain
+    assert "· memory      codex" in plain
+    assert "├─ stores   1 found" in plain
+    assert "├─ files    2" in plain
     assert "criteria" not in plain
     assert (memory_dir / "a.md").exists()
 
@@ -389,13 +436,20 @@ def test_v2_preflight_inventory_scan_failure_renders_warning_row(monkeypatch):
         raise RuntimeError("inventory unavailable")
 
     monkeypatch.setattr(launcher, "scan_inventory", fail_scan, raising=False)
+    memory_inventory = _stub_memory_inventory(monkeypatch, stores=0, files=0)
 
     box = launcher._preflight_box()
     rows = {item.id: item for item in box.items}
 
     assert rows["sessions"].status == "warn"
     assert "scan unavailable: inventory unavailable" in rows["sessions"].value
-    assert "memory" not in rows
+    assert rows["memory"].status == "info"
+    assert rows["memory"].value == launcher.style_memory_tree(
+        client=memory_inventory.client,
+        stores=0,
+        files=0,
+        scope=memory_inventory.scope,
+    )
     assert "cleanup" not in rows
 
 
@@ -465,7 +519,7 @@ def test_v2_preflight_runs_graphify_hook_install_when_user_confirms(monkeypatch)
     assert "Install graphify hooks" in text
     # After successful install, the hook row flips to the done variant.
     assert "post-commit + post-checkout hooks installed" in text
-    assert rc == 0  # preflight always returns 0; abort moved to _run_final_confirm_v2
+    assert rc == 0  # preflight always returns 0; abort lives in the memory choice
 
 
 def test_v2_preflight_offers_git_init_when_hook_step_in_non_git_repo(monkeypatch):
@@ -1386,8 +1440,8 @@ def test_v2_preflight_asks_hook_after_successful_integration_install(monkeypatch
 
 
 def test_v2_preflight_no_longer_asks_run_codex(monkeypatch):
-    """preflight 단계에서는 더 이상 'Run codex?'를 묻지 않는다 — 그 게이트는
-    setup 질문들 + serena init이 모두 끝난 뒤 final-confirm으로 옮겨졌다.
+    """preflight 단계에서는 더 이상 'Run codex?'를 묻지 않는다 — 실행 게이트는
+    setup 질문들 + serena init이 모두 끝난 뒤 memory choice로 옮겨졌다.
     """
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
@@ -1404,102 +1458,191 @@ def test_v2_preflight_no_longer_asks_run_codex(monkeypatch):
     assert "Run claude?" not in out.getvalue()
 
 
-def test_v2_final_confirm_yes_returns_true(monkeypatch):
-    """_run_final_confirm_v2는 'Run <client>?' 한 줄만 묻고 True/False를 반환한다."""
+def test_memory_choice_offers_keep_delete_cancel(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
 
     out = io.StringIO()
-    answers = iter(["y"])
-    result = launcher._run_final_confirm_v2(stream=out, input_fn=lambda: next(answers))
-    assert result is True
-    assert "Run codex?" in out.getvalue()
+    choice = launcher._run_memory_choice_v2(stream=out, input_fn=lambda: "2")
+
+    assert choice == "delete"
+    assert "Run with existing memory" in out.getvalue()
+    assert "Delete all Codex auto-memory and run" in out.getvalue()
+    assert "Cancel" in out.getvalue()
 
 
-def test_v2_final_confirm_no_returns_false(monkeypatch):
+def test_memory_choice_returns_cancel(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
 
     out = io.StringIO()
-    answers = iter(["n"])
-    result = launcher._run_final_confirm_v2(stream=out, input_fn=lambda: next(answers))
-    assert result is False
-    assert "Run claude?" in out.getvalue()
+    choice = launcher._run_memory_choice_v2(stream=out, input_fn=lambda: "3")
+
+    assert choice == "cancel"
+    assert "Delete all Claude auto-memory and run" in out.getvalue()
 
 
-def test_v2_final_confirm_skips_when_non_interactive(monkeypatch):
+def test_memory_choice_keeps_without_prompt_when_non_interactive(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "0")
 
     out = io.StringIO()
-    # No prompt should be issued when interactive mode is off.
-    result = launcher._run_final_confirm_v2(
+    choice = launcher._run_memory_choice_v2(
         stream=out, input_fn=lambda: pytest.fail("no input should be requested")
     )
-    assert result is True
+
+    assert choice == "keep"
     assert out.getvalue() == ""
 
 
-def test_v2_main_orders_overview_then_serena_then_setup_then_final_confirm(
-    monkeypatch, tmp_path
+def _run_main_for_memory_choice(
+    monkeypatch,
+    tmp_path,
+    *,
+    choice,
+    deletion_succeeds=True,
 ):
-    """전체 흐름의 순서를 검증한다 — 박스 overview가 가장 먼저:
-        0) preflight 박스 렌더 (status overview)
-        1) serena init 질문 (가장 중요한 질문)
-        2) preflight (graphify 질문들)
-        3) final 'Run codex?' 게이트
-    final 게이트에서 No하면 130을 반환하고 child agent는 실행되지 않는다.
-    """
+    from local_dev.serena_mcp_management.memory_management import MemoryDeleteResult
+
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
-    _set_graphify_env(monkeypatch)  # graphify clean -> no graphify prompts
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    _set_graphify_env(monkeypatch)
 
-    call_log: list = []
+    call_log: list[str] = []
+    delete_calls: list[dict] = []
+    snapshot = _inventory_snapshot(total=1, to_delete=0, to_keep=1)
 
     def fake_overview(*, stream=None):
-        call_log.append("render_overview")
+        call_log.append("overview")
+        return snapshot
 
-    def fake_preflight(*, stream=None, input_fn=None,
-                       serena_state="managed",
-                       install_graphify_global=None,
-                       install_graphify_integration=None,
-                       install_graphify_hooks=None):
-        call_log.append("preflight")
+    def fake_preflight(**kwargs):
+        call_log.append("setup")
         return 0
 
-    def fake_serena_init(*, stream=None, input_fn=None):
-        call_log.append("serena_init")
+    def fake_serena_init(**kwargs):
+        call_log.append("serena-init")
         return "skipped"
 
-    def fake_final_confirm(*, stream=None, input_fn=None):
-        call_log.append("final_confirm")
-        return False  # decline -> abort
+    def fake_memory_choice(**kwargs):
+        if choice != "delete" or deletion_succeeds:
+            call_log.append(f"memory-{choice}")
+        return choice
 
-    def boom(*args, **kwargs):
-        pytest.fail("agent must not launch when final confirm is declined")
+    def fake_delete_all_memory(**kwargs):
+        delete_calls.append(kwargs)
+        if deletion_succeeds:
+            return MemoryDeleteResult(deleted_stores=2, deleted_files=17)
+        call_log.append("memory-delete-failed")
+        return MemoryDeleteResult(error="unsafe memory store")
 
-    import subprocess as _subprocess
-    monkeypatch.setattr(launcher, "_render_preflight_overview_v2", fake_overview,
-                        raising=False)
+    monkeypatch.setattr(launcher, "_render_preflight_overview_v2", fake_overview)
+    monkeypatch.setattr(launcher, "_run_serena_cli_install_v2", lambda **kwargs: None)
     monkeypatch.setattr(launcher, "_run_preflight_v2", fake_preflight, raising=False)
     monkeypatch.setattr(launcher, "_run_serena_init_v2", fake_serena_init, raising=False)
-    monkeypatch.setattr(launcher, "_run_final_confirm_v2", fake_final_confirm,
+    monkeypatch.setattr(launcher, "_run_memory_choice_v2", fake_memory_choice,
                         raising=False)
-    monkeypatch.setattr(launcher, "find_real_binary", boom, raising=False)
-    monkeypatch.setattr(launcher, "ensure_server", boom, raising=False)
-    monkeypatch.setattr(_subprocess, "run",
-                        lambda *a, **k: pytest.fail("subprocess.run should not run"))
+    monkeypatch.setattr(launcher, "delete_all_memory", fake_delete_all_memory,
+                        raising=False)
 
-    rc = launcher._main_v2([])
+    stopped = choice == "cancel" or (choice == "delete" and not deletion_succeeds)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("stopped memory choices must not prepare or launch an agent")
+
+    if stopped:
+        monkeypatch.setattr(launcher, "find_real_binary", forbidden)
+        monkeypatch.setattr(launcher, "_run_launch_prep_v2", forbidden)
+        monkeypatch.setattr(launcher, "_start_mcp_with_spinner", forbidden)
+        monkeypatch.setattr(launcher, "ensure_server", forbidden)
+        monkeypatch.setattr(launcher, "_launch_bare_child", forbidden)
+        monkeypatch.setattr(launcher.subprocess, "Popen", forbidden)
+    else:
+        monkeypatch.setattr(
+            launcher,
+            "find_real_binary",
+            lambda client: "/usr/bin/true",
+        )
+        monkeypatch.setattr(
+            launcher,
+            "_run_launch_prep_v2",
+            lambda **kwargs: call_log.append("session-cleanup")
+            or launcher.LaunchPrepSummary(),
+        )
+        monkeypatch.setattr(
+            launcher,
+            "_launch_bare_child",
+            lambda *args, **kwargs: call_log.append("launch") or 0,
+        )
+
+    return launcher._main_v2([]), call_log, delete_calls
+
+
+def test_v2_main_keeps_memory_then_cleans_sessions_and_launches(monkeypatch, tmp_path):
+    rc, call_log, delete_calls = _run_main_for_memory_choice(
+        monkeypatch,
+        tmp_path,
+        choice="keep",
+    )
+
+    assert rc == 0
+    assert call_log == [
+        "overview", "serena-init", "setup", "memory-keep", "session-cleanup", "launch"
+    ]
+    assert delete_calls == []
+
+
+def test_v2_main_deletes_memory_then_cleans_sessions_and_launches(
+    monkeypatch, tmp_path
+):
+    rc, call_log, delete_calls = _run_main_for_memory_choice(
+        monkeypatch,
+        tmp_path,
+        choice="delete",
+    )
+
+    assert rc == 0
+    assert call_log == [
+        "overview", "serena-init", "setup", "memory-delete", "session-cleanup", "launch"
+    ]
+    assert len(delete_calls) == 1
+    assert delete_calls[0]["client"] == "codex"
+    assert delete_calls[0]["codex_home"] == tmp_path / "codex-home"
+
+
+def test_v2_main_cancel_stops_before_cleanup_or_launch(monkeypatch, tmp_path):
+    rc, call_log, delete_calls = _run_main_for_memory_choice(
+        monkeypatch,
+        tmp_path,
+        choice="cancel",
+    )
+
     assert rc == 130
-    assert call_log == ["render_overview", "serena_init", "preflight", "final_confirm"]
+    assert call_log == ["overview", "serena-init", "setup", "memory-cancel"]
+    assert delete_calls == []
 
 
-def test_v2_render_preflight_overview_draws_box_without_memory_row(monkeypatch):
+def test_v2_main_delete_failure_stops_before_cleanup_or_launch(monkeypatch, tmp_path):
+    rc, call_log, delete_calls = _run_main_for_memory_choice(
+        monkeypatch,
+        tmp_path,
+        choice="delete",
+        deletion_succeeds=False,
+    )
+
+    assert rc == 1
+    assert call_log == [
+        "overview", "serena-init", "setup", "memory-delete-failed"
+    ]
+    assert len(delete_calls) == 1
+
+
+def test_v2_preflight_groups_memory_inventory_in_one_row(monkeypatch):
     """preflight overview는 box 렌더만 담당한다 — 어떤 prompt도 띄우지 않고
-    sessions/serena/graphify/context 행을 모두 한 번 그린다.
+    memory/sessions/serena/graphify/context 행을 모두 한 번 그린다.
     """
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
@@ -1512,15 +1655,19 @@ def test_v2_render_preflight_overview_draws_box_without_memory_row(monkeypatch):
         sessions_to_delete=0,
         sessions_to_keep=103,
     )
+    _stub_memory_inventory(monkeypatch, client="codex", stores=2, files=17)
 
     out = io.StringIO()
-    launcher._render_preflight_overview_v2(stream=out)
+    snapshot = launcher._render_preflight_overview_v2(stream=out)
     text = out.getvalue()
     plain = _strip_ansi(text)
+    assert plain.count("· memory      codex") == 1
+    assert "├─ stores   2 found" in plain
+    assert "├─ files    17" in plain
+    assert "└─ scope    all known Codex homes" in plain
     assert "├─ groups   103 total · 0 to delete · 103 to keep" in plain
     assert "├─ records  103 total · 0 to delete · 103 to keep" in plain
     assert "└─ cleanup  inactive longer than 5 days" in plain
-    assert "memory" not in plain
     assert "criteria" not in plain
     assert "preflight" in text
     assert "codex" in text
@@ -1528,6 +1675,74 @@ def test_v2_render_preflight_overview_draws_box_without_memory_row(monkeypatch):
     assert "graphify graph" in plain
     assert "graphify integration" in plain
     assert "graphify hook" in plain
+    ids = [item.id for item in launcher._preflight_box(snapshot).items]
+    assert ids.count("memory") == 1
+    assert ids.index("memory") + 1 == ids.index("sessions")
+
+
+def test_v2_preflight_memory_scan_failure_keeps_session_row(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch)
+    _stub_preflight_inventory(
+        monkeypatch,
+        sessions_total=7,
+        sessions_to_delete=2,
+        sessions_to_keep=5,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "scan_memory_inventory",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("memory unavailable")),
+        raising=False,
+    )
+
+    out = io.StringIO()
+    snapshot = launcher._render_preflight_overview_v2(stream=out)
+    plain = _strip_ansi(out.getvalue())
+
+    assert "! memory      scan unavailable: memory unavailable" in plain
+    assert "sessions" in plain
+    assert "├─ groups   7 total · 2 to delete · 5 to keep" in plain
+    assert snapshot is not None
+    assert snapshot.inventory is not None
+    assert snapshot.error is None
+    assert snapshot.memory_inventory is None
+    assert snapshot.memory_error == "memory unavailable"
+
+
+def test_v2_preflight_session_scan_failure_keeps_memory_row(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+    _set_graphify_env(monkeypatch)
+    memory_inventory = _stub_memory_inventory(
+        monkeypatch,
+        client="codex",
+        stores=1,
+        files=3,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "scan_inventory",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("sessions unavailable")),
+    )
+
+    out = io.StringIO()
+    snapshot = launcher._render_preflight_overview_v2(stream=out)
+    plain = _strip_ansi(out.getvalue())
+
+    assert "· memory      codex" in plain
+    assert "sessions" in plain
+    assert "scan unavailable: sessions unavailable" in plain
+    assert snapshot is not None
+    assert snapshot.inventory is None
+    assert snapshot.error == "sessions unavailable"
+    assert snapshot.memory_inventory is memory_inventory
+    assert snapshot.memory_error is None
 
 
 def test_v2_render_preflight_overview_scans_inventory_once(monkeypatch):
@@ -1537,14 +1752,22 @@ def test_v2_render_preflight_overview_scans_inventory_once(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     _set_graphify_env(monkeypatch)
     inventory = _inventory_snapshot().inventory
-    scan = mock.Mock(return_value=inventory)
-    monkeypatch.setattr(launcher, "_inventory_for_preflight", scan)
+    memory_inventory = _stub_memory_inventory(monkeypatch)
+    session_scan = mock.Mock(return_value=inventory)
+    memory_scan = mock.Mock(return_value=memory_inventory)
+    monkeypatch.setattr(launcher, "_inventory_for_preflight", session_scan)
+    monkeypatch.setattr(launcher, "_memory_inventory_for_preflight", memory_scan,
+                        raising=False)
 
     snapshot = launcher._render_preflight_overview_v2(stream=io.StringIO())
 
+    assert snapshot is not None
     assert snapshot.inventory is inventory
     assert snapshot.error is None
-    scan.assert_called_once_with("codex", "/repo")
+    assert snapshot.memory_inventory is memory_inventory
+    assert snapshot.memory_error is None
+    session_scan.assert_called_once_with("codex", "/repo")
+    memory_scan.assert_called_once_with("codex")
 
 
 def test_preflight_box_includes_global_serena_mcp_inventory(monkeypatch):
@@ -1715,8 +1938,8 @@ def test_v2_main_clears_terminal_before_child_when_serena_skipped(monkeypatch, t
                         lambda **kw: 0, raising=False)
     monkeypatch.setattr(launcher, "_run_serena_init_v2",
                         lambda **kw: "skipped", raising=False)
-    monkeypatch.setattr(launcher, "_run_final_confirm_v2",
-                        lambda **kw: True, raising=False)
+    monkeypatch.setattr(launcher, "_run_memory_choice_v2",
+                        lambda **kw: "keep", raising=False)
     monkeypatch.setattr(launcher, "find_real_binary",
                         lambda client: "/usr/bin/true", raising=False)
 
@@ -1894,14 +2117,17 @@ def test_v2_preflight_graphify_hook_prompt_defaults_to_yes(monkeypatch):
     assert "[Y/n]" in out.getvalue()
 
 
-def test_v2_final_confirm_defaults_to_yes(monkeypatch):
+def test_v2_memory_choice_defaults_to_keep(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
     out = io.StringIO()
     answers = iter([""])  # bare Enter
-    result = launcher._run_final_confirm_v2(stream=out, input_fn=lambda: next(answers))
-    assert result is True
-    assert "[Y/n]" in out.getvalue()
+    result = launcher._run_memory_choice_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+    )
+    assert result == "keep"
+    assert "default 1" in out.getvalue()
 
 
 def test_v2_main_passes_serena_state_to_preflight(monkeypatch, tmp_path):
@@ -1925,11 +2151,11 @@ def test_v2_main_passes_serena_state_to_preflight(monkeypatch, tmp_path):
     monkeypatch.setattr(launcher, "_run_preflight_v2", fake_preflight, raising=False)
     monkeypatch.setattr(launcher, "_run_serena_init_v2",
                         lambda *, stream=None, input_fn=None: "created", raising=False)
-    monkeypatch.setattr(launcher, "_run_final_confirm_v2",
-                        lambda *, stream=None, input_fn=None: False, raising=False)
+    monkeypatch.setattr(launcher, "_run_memory_choice_v2",
+                        lambda *, stream=None, input_fn=None: "cancel", raising=False)
 
     rc = launcher._main_v2([])
-    assert rc == 130  # final confirm declined
+    assert rc == 130  # memory choice cancelled
     assert captured["serena_state"] == "created"
 
 
@@ -2097,8 +2323,8 @@ def test_v2_main_runs_cleanup_before_bare_launch_when_serena_cli_missing(
                         lambda **kw: "declined", raising=False)
     monkeypatch.setattr(launcher, "_run_preflight_v2",
                         lambda **kw: 0, raising=False)
-    monkeypatch.setattr(launcher, "_run_final_confirm_v2",
-                        lambda **kw: True, raising=False)
+    monkeypatch.setattr(launcher, "_run_memory_choice_v2",
+                        lambda **kw: "keep", raising=False)
     monkeypatch.setattr(launcher, "serena_server_command",
                         lambda: None, raising=False)
     monkeypatch.setattr(launcher, "find_real_binary",
@@ -2447,8 +2673,8 @@ def test_v2_main_runs_serena_cli_phase_before_init(monkeypatch, tmp_path):
                         raising=False)
     monkeypatch.setattr(launcher, "_run_preflight_v2",
                         lambda **kw: 0, raising=False)
-    monkeypatch.setattr(launcher, "_run_final_confirm_v2",
-                        lambda **kw: True, raising=False)
+    monkeypatch.setattr(launcher, "_run_memory_choice_v2",
+                        lambda **kw: "keep", raising=False)
     monkeypatch.setattr(launcher, "find_real_binary",
                         lambda client: "/usr/bin/true", raising=False)
 

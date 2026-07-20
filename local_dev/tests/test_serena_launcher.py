@@ -274,8 +274,8 @@ def test_launcher_prints_mcp_progress_and_clears_before_child(monkeypatch, tmp_p
                         lambda **kw: 0, raising=False)
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_serena_init_v2",
                         lambda **kw: "managed", raising=False)
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_final_confirm_v2",
-                        lambda **kw: True, raising=False)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_memory_choice_v2",
+                        lambda **kw: "keep", raising=False)
     from local_dev.serena_mcp_management.serena_agent_launcher import LaunchPrepSummary
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_launch_prep_v2",
                         lambda **kw: LaunchPrepSummary(cleanup_deleted=0, native_eligible=0),
@@ -359,8 +359,8 @@ def test_launcher_opens_dashboard_for_interactive_agent(monkeypatch, tmp_path):
                         lambda **kw: 0, raising=False)
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_serena_init_v2",
                         lambda **kw: "managed", raising=False)
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_final_confirm_v2",
-                        lambda **kw: True, raising=False)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_memory_choice_v2",
+                        lambda **kw: "keep", raising=False)
     from local_dev.serena_mcp_management.serena_agent_launcher import LaunchPrepSummary
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_launch_prep_v2",
                         lambda **kw: LaunchPrepSummary(cleanup_deleted=0, native_eligible=0),
@@ -416,8 +416,8 @@ def test_launcher_prints_shutdown_stats_for_interactive_agent(monkeypatch, tmp_p
                         lambda **kw: 0, raising=False)
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_serena_init_v2",
                         lambda **kw: "managed", raising=False)
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_final_confirm_v2",
-                        lambda **kw: True, raising=False)
+    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_memory_choice_v2",
+                        lambda **kw: "keep", raising=False)
     from local_dev.serena_mcp_management.serena_agent_launcher import LaunchPrepSummary
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_launch_prep_v2",
                         lambda **kw: LaunchPrepSummary(cleanup_deleted=0, native_eligible=0),
