@@ -130,11 +130,17 @@ the launcher never deletes memory by age or without this selection:
   transcripts, instructions, and other Claude state are outside this scope.
 
 Deletion always rescans and validates the complete scope immediately before
-mutation. If another process for the same product is running, or if any scan,
-safety validation, or filesystem deletion fails, the launcher stops: it does
-not run session cleanup, launch the agent, or silently continue with memory the
-user asked to delete. A deletion failure returns exit code `1`; partial
-deletion is reported with its counts and is not automatically backed up.
+mutation. A warning-free inventory with zero stores is a successful no-op: no
+process scan is needed, and the launcher continues to normal session cleanup
+and agent launch with a `0 stores · 0 files deleted` result. For a non-empty
+inventory, another real native or official Node client process blocks deletion;
+ChatGPT/Claude GUI helper processes do not. The failure names up to three
+representative PID/executable pairs and summarizes any remainder. If a process
+conflict, scan, safety validation, or filesystem deletion fails, the launcher
+stops: it does not run session cleanup, launch the agent, or silently continue
+with memory the user asked to delete. A deletion failure returns exit code `1`;
+partial deletion is reported with its counts and is not automatically backed
+up.
 
 `Cancel` and Ctrl+C both leave memory and sessions unchanged, do not launch a
 child, print the existing `! cancelled` row, and return exit code `130` without
