@@ -4,7 +4,7 @@
 
 **Goal:** Explicitly enable native main auto-memory generation and use for both Codex homes and the current Claude user configuration without changing memory paths, memory contents, sessions, or launcher behavior.
 
-**Architecture:** Treat the three user configuration files as one atomic policy update. Validate and back them up first, apply narrow textual patches that preserve unrelated content, verify the effective product settings with the installed CLIs and parsers, and restore all three backups if a configuration, permission, or memory-preservation validation fails. Session trees are audited but are not an atomicity gate because the active Codex/Claude processes executing this plan append to their own sessions concurrently.
+**Architecture:** Treat the three user configuration files as one atomic policy update. Validate and back them up first, apply narrow textual patches that preserve unrelated content, verify the effective product settings with the installed CLIs and parsers, and restore all three backups if a configuration, permission, or memory-preservation validation fails. Memory preservation is proven with SHA-256 content manifests. Session trees are audited but are not an atomicity gate because the active Codex/Claude processes executing this plan append to their own sessions concurrently.
 
 **Tech Stack:** macOS, TOML, JSON, Python 3.12 `tomllib`, `jq`, Codex CLI 0.144.6, Claude Code 2.1.205
 
@@ -25,7 +25,7 @@
 - Modify: `/Users/hyun/.codex/config.toml` — canonical Codex feature and memory policy.
 - Modify: `/Users/hyun/Library/Application Support/orca/codex-runtime-home/home/config.toml` — effective Codex policy in the current Orca terminal.
 - Modify: `/Users/hyun/.claude/settings.json` — explicit Claude auto-memory enablement.
-- Create at execution time: `/private/tmp/agent-memory-enable-a2151a3-retry1/` — permission-preserving rollback copies and before/after file manifests. Keep it after success for recoverability. The first-attempt rollback evidence at `/private/tmp/agent-memory-enable-8a1b944/` remains untouched.
+- Create at execution time: `/private/tmp/agent-memory-enable-6f48b07-retry2/` — permission-preserving rollback copies and before/after file manifests. Keep it after success for recoverability. Earlier evidence at `/private/tmp/agent-memory-enable-8a1b944/` and `/private/tmp/agent-memory-enable-a2151a3-retry1/` remains intact; the latter supplies the verified disabled baseline for retry 2.
 - No repository source or test file changes are required.
 
 ### Task 1: Apply and Verify the Atomic Memory Policy
@@ -34,14 +34,32 @@
 - Modify: `/Users/hyun/.codex/config.toml`
 - Modify: `/Users/hyun/Library/Application Support/orca/codex-runtime-home/home/config.toml`
 - Modify: `/Users/hyun/.claude/settings.json`
-- Create: `/private/tmp/agent-memory-enable-a2151a3-retry1/default-codex.toml`
-- Create: `/private/tmp/agent-memory-enable-a2151a3-retry1/orca-codex.toml`
-- Create: `/private/tmp/agent-memory-enable-a2151a3-retry1/claude-settings.json`
-- Create: `/private/tmp/agent-memory-enable-a2151a3-retry1/*.before`, `*.after`, and `*.delta` verification artifacts
+- Create: `/private/tmp/agent-memory-enable-6f48b07-retry2/default-codex.toml`
+- Create: `/private/tmp/agent-memory-enable-6f48b07-retry2/orca-codex.toml`
+- Create: `/private/tmp/agent-memory-enable-6f48b07-retry2/claude-settings.json`
+- Create: `/private/tmp/agent-memory-enable-6f48b07-retry2/*.before`, `*.after`, and `*.delta` verification artifacts
 
 **Interfaces:**
 - Consumes: the existing valid TOML/JSON configuration and the current default and Orca `CODEX_HOME` paths.
 - Produces: `features.memories = true`, `memories.generate_memories = true`, `memories.use_memories = true`, and `autoMemoryEnabled = true`; no launcher interface changes.
+
+- [ ] **Step 0: Restore the verified disabled baseline for retry 2**
+
+The first successful patch is active, but its stat-only memory manifest cannot prove byte preservation. Validate the retry-1 rollback copies, restore them atomically, and confirm the original disabled baseline before taking new SHA-256 manifests:
+
+```bash
+python3 -c 'import sys,tomllib; tomllib.load(open(sys.argv[1], "rb"))' /private/tmp/agent-memory-enable-a2151a3-retry1/default-codex.toml
+python3 -c 'import sys,tomllib; tomllib.load(open(sys.argv[1], "rb"))' /private/tmp/agent-memory-enable-a2151a3-retry1/orca-codex.toml
+/usr/bin/jq empty /private/tmp/agent-memory-enable-a2151a3-retry1/claude-settings.json
+cp -p /private/tmp/agent-memory-enable-a2151a3-retry1/default-codex.toml /Users/hyun/.codex/config.toml
+cp -p /private/tmp/agent-memory-enable-a2151a3-retry1/orca-codex.toml '/Users/hyun/Library/Application Support/orca/codex-runtime-home/home/config.toml'
+cp -p /private/tmp/agent-memory-enable-a2151a3-retry1/claude-settings.json /Users/hyun/.claude/settings.json
+env CODEX_HOME=/Users/hyun/.codex /opt/homebrew/bin/codex features list | rg '^memories[[:space:]]'
+env CODEX_HOME='/Users/hyun/Library/Application Support/orca/codex-runtime-home/home' /opt/homebrew/bin/codex features list | rg '^memories[[:space:]]'
+/usr/bin/jq '{autoMemoryEnabled, autoMemoryDirectory}' /Users/hyun/.claude/settings.json
+```
+
+Expected: both Codex rows are `false`; Claude returns `null` for both fields. If restore or validation fails, stop before creating the retry-2 backup directory and report the failure.
 
 - [ ] **Step 1: Prove the current files are safe patch targets**
 
@@ -85,20 +103,20 @@ memories                             experimental       false
 Run:
 
 ```bash
-test ! -e /private/tmp/agent-memory-enable-a2151a3-retry1
-mkdir -m 700 /private/tmp/agent-memory-enable-a2151a3-retry1
-cp -p /Users/hyun/.codex/config.toml /private/tmp/agent-memory-enable-a2151a3-retry1/default-codex.toml
-cp -p '/Users/hyun/Library/Application Support/orca/codex-runtime-home/home/config.toml' /private/tmp/agent-memory-enable-a2151a3-retry1/orca-codex.toml
-cp -p /Users/hyun/.claude/settings.json /private/tmp/agent-memory-enable-a2151a3-retry1/claude-settings.json
-find /Users/hyun/.codex/sessions '/Users/hyun/Library/Application Support/orca/codex-runtime-home/home/sessions' -type f -exec stat -f '%N|%z|%m' {} + 2>/dev/null | LC_ALL=C sort > /private/tmp/agent-memory-enable-a2151a3-retry1/codex-sessions.before
-find /Users/hyun/.claude/projects -type f ! -path '*/memory/*' -exec stat -f '%N|%z|%m' {} + 2>/dev/null | LC_ALL=C sort > /private/tmp/agent-memory-enable-a2151a3-retry1/claude-sessions.before
-find /Users/hyun/.claude/projects -type f -path '*/memory/*' -exec stat -f '%N|%z|%m' {} + 2>/dev/null | LC_ALL=C sort > /private/tmp/agent-memory-enable-a2151a3-retry1/claude-memory.before
-stat -f '%OLp' /Users/hyun/.codex/config.toml > /private/tmp/agent-memory-enable-a2151a3-retry1/default-codex.mode.before
-stat -f '%OLp' '/Users/hyun/Library/Application Support/orca/codex-runtime-home/home/config.toml' > /private/tmp/agent-memory-enable-a2151a3-retry1/orca-codex.mode.before
-stat -f '%OLp' /Users/hyun/.claude/settings.json > /private/tmp/agent-memory-enable-a2151a3-retry1/claude-settings.mode.before
+test ! -e /private/tmp/agent-memory-enable-6f48b07-retry2
+mkdir -m 700 /private/tmp/agent-memory-enable-6f48b07-retry2
+cp -p /Users/hyun/.codex/config.toml /private/tmp/agent-memory-enable-6f48b07-retry2/default-codex.toml
+cp -p '/Users/hyun/Library/Application Support/orca/codex-runtime-home/home/config.toml' /private/tmp/agent-memory-enable-6f48b07-retry2/orca-codex.toml
+cp -p /Users/hyun/.claude/settings.json /private/tmp/agent-memory-enable-6f48b07-retry2/claude-settings.json
+find /Users/hyun/.codex/sessions '/Users/hyun/Library/Application Support/orca/codex-runtime-home/home/sessions' -type f -exec stat -f '%N|%z|%m' {} + 2>/dev/null | LC_ALL=C sort > /private/tmp/agent-memory-enable-6f48b07-retry2/codex-sessions.before
+find /Users/hyun/.claude/projects -type f ! -path '*/memory/*' -exec stat -f '%N|%z|%m' {} + 2>/dev/null | LC_ALL=C sort > /private/tmp/agent-memory-enable-6f48b07-retry2/claude-sessions.before
+find /Users/hyun/.claude/projects -type f -path '*/memory/*' -exec shasum -a 256 {} + 2>/dev/null | LC_ALL=C sort > /private/tmp/agent-memory-enable-6f48b07-retry2/claude-memory.sha256.before
+stat -f '%OLp' /Users/hyun/.codex/config.toml > /private/tmp/agent-memory-enable-6f48b07-retry2/default-codex.mode.before
+stat -f '%OLp' '/Users/hyun/Library/Application Support/orca/codex-runtime-home/home/config.toml' > /private/tmp/agent-memory-enable-6f48b07-retry2/orca-codex.mode.before
+stat -f '%OLp' /Users/hyun/.claude/settings.json > /private/tmp/agent-memory-enable-6f48b07-retry2/claude-settings.mode.before
 ```
 
-Expected: exit code `0`. The backup directory contains three configuration copies, three state manifests, and three permission manifests.
+Expected: exit code `0`. The backup directory contains three configuration copies, two session audit manifests, one SHA-256 memory-content manifest, and three permission manifests.
 
 - [ ] **Step 3: Apply the narrow Codex and Claude configuration patches**
 
@@ -182,30 +200,30 @@ memories                             experimental       true
 Build preservation manifests. Treat memory and target permissions as immutable. Record session deltas for audit, but do not fail only because active Codex/Claude processes appended to their own session files while this task ran:
 
 ```bash
-find /Users/hyun/.codex/sessions '/Users/hyun/Library/Application Support/orca/codex-runtime-home/home/sessions' -type f -exec stat -f '%N|%z|%m' {} + 2>/dev/null | LC_ALL=C sort > /private/tmp/agent-memory-enable-a2151a3-retry1/codex-sessions.after
-find /Users/hyun/.claude/projects -type f ! -path '*/memory/*' -exec stat -f '%N|%z|%m' {} + 2>/dev/null | LC_ALL=C sort > /private/tmp/agent-memory-enable-a2151a3-retry1/claude-sessions.after
-find /Users/hyun/.claude/projects -type f -path '*/memory/*' -exec stat -f '%N|%z|%m' {} + 2>/dev/null | LC_ALL=C sort > /private/tmp/agent-memory-enable-a2151a3-retry1/claude-memory.after
-stat -f '%OLp' /Users/hyun/.codex/config.toml > /private/tmp/agent-memory-enable-a2151a3-retry1/default-codex.mode.after
-stat -f '%OLp' '/Users/hyun/Library/Application Support/orca/codex-runtime-home/home/config.toml' > /private/tmp/agent-memory-enable-a2151a3-retry1/orca-codex.mode.after
-stat -f '%OLp' /Users/hyun/.claude/settings.json > /private/tmp/agent-memory-enable-a2151a3-retry1/claude-settings.mode.after
-diff -u /private/tmp/agent-memory-enable-a2151a3-retry1/codex-sessions.before /private/tmp/agent-memory-enable-a2151a3-retry1/codex-sessions.after > /private/tmp/agent-memory-enable-a2151a3-retry1/codex-sessions.delta || test $? -eq 1
-diff -u /private/tmp/agent-memory-enable-a2151a3-retry1/claude-sessions.before /private/tmp/agent-memory-enable-a2151a3-retry1/claude-sessions.after > /private/tmp/agent-memory-enable-a2151a3-retry1/claude-sessions.delta || test $? -eq 1
-cmp /private/tmp/agent-memory-enable-a2151a3-retry1/claude-memory.before /private/tmp/agent-memory-enable-a2151a3-retry1/claude-memory.after
-cmp /private/tmp/agent-memory-enable-a2151a3-retry1/default-codex.mode.before /private/tmp/agent-memory-enable-a2151a3-retry1/default-codex.mode.after
-cmp /private/tmp/agent-memory-enable-a2151a3-retry1/orca-codex.mode.before /private/tmp/agent-memory-enable-a2151a3-retry1/orca-codex.mode.after
-cmp /private/tmp/agent-memory-enable-a2151a3-retry1/claude-settings.mode.before /private/tmp/agent-memory-enable-a2151a3-retry1/claude-settings.mode.after
+find /Users/hyun/.codex/sessions '/Users/hyun/Library/Application Support/orca/codex-runtime-home/home/sessions' -type f -exec stat -f '%N|%z|%m' {} + 2>/dev/null | LC_ALL=C sort > /private/tmp/agent-memory-enable-6f48b07-retry2/codex-sessions.after
+find /Users/hyun/.claude/projects -type f ! -path '*/memory/*' -exec stat -f '%N|%z|%m' {} + 2>/dev/null | LC_ALL=C sort > /private/tmp/agent-memory-enable-6f48b07-retry2/claude-sessions.after
+find /Users/hyun/.claude/projects -type f -path '*/memory/*' -exec shasum -a 256 {} + 2>/dev/null | LC_ALL=C sort > /private/tmp/agent-memory-enable-6f48b07-retry2/claude-memory.sha256.after
+stat -f '%OLp' /Users/hyun/.codex/config.toml > /private/tmp/agent-memory-enable-6f48b07-retry2/default-codex.mode.after
+stat -f '%OLp' '/Users/hyun/Library/Application Support/orca/codex-runtime-home/home/config.toml' > /private/tmp/agent-memory-enable-6f48b07-retry2/orca-codex.mode.after
+stat -f '%OLp' /Users/hyun/.claude/settings.json > /private/tmp/agent-memory-enable-6f48b07-retry2/claude-settings.mode.after
+diff -u /private/tmp/agent-memory-enable-6f48b07-retry2/codex-sessions.before /private/tmp/agent-memory-enable-6f48b07-retry2/codex-sessions.after > /private/tmp/agent-memory-enable-6f48b07-retry2/codex-sessions.delta || test $? -eq 1
+diff -u /private/tmp/agent-memory-enable-6f48b07-retry2/claude-sessions.before /private/tmp/agent-memory-enable-6f48b07-retry2/claude-sessions.after > /private/tmp/agent-memory-enable-6f48b07-retry2/claude-sessions.delta || test $? -eq 1
+cmp /private/tmp/agent-memory-enable-6f48b07-retry2/claude-memory.sha256.before /private/tmp/agent-memory-enable-6f48b07-retry2/claude-memory.sha256.after
+cmp /private/tmp/agent-memory-enable-6f48b07-retry2/default-codex.mode.before /private/tmp/agent-memory-enable-6f48b07-retry2/default-codex.mode.after
+cmp /private/tmp/agent-memory-enable-6f48b07-retry2/orca-codex.mode.before /private/tmp/agent-memory-enable-6f48b07-retry2/orca-codex.mode.after
+cmp /private/tmp/agent-memory-enable-6f48b07-retry2/claude-settings.mode.before /private/tmp/agent-memory-enable-6f48b07-retry2/claude-settings.mode.after
 ```
 
-Expected: the memory and three mode `cmp` commands exit `0` with no output. Both session-delta commands exit successfully whether their delta is empty or contains append/mtime activity from already-running agents; report any non-empty deltas. Keep `/private/tmp/agent-memory-enable-a2151a3-retry1/` after success as a recoverable backup and report its path.
+Expected: the SHA-256 memory-content and three mode `cmp` commands exit `0` with no output. Both session-delta commands exit successfully whether their delta is empty or contains append/mtime activity from already-running agents; report any non-empty deltas. Keep `/private/tmp/agent-memory-enable-6f48b07-retry2/` after success as a recoverable backup and report its path.
 
 - [ ] **Step 5: Roll back all products if any patch or validation fails**
 
 Run only on failure:
 
 ```bash
-cp -p /private/tmp/agent-memory-enable-a2151a3-retry1/default-codex.toml /Users/hyun/.codex/config.toml
-cp -p /private/tmp/agent-memory-enable-a2151a3-retry1/orca-codex.toml '/Users/hyun/Library/Application Support/orca/codex-runtime-home/home/config.toml'
-cp -p /private/tmp/agent-memory-enable-a2151a3-retry1/claude-settings.json /Users/hyun/.claude/settings.json
+cp -p /private/tmp/agent-memory-enable-6f48b07-retry2/default-codex.toml /Users/hyun/.codex/config.toml
+cp -p /private/tmp/agent-memory-enable-6f48b07-retry2/orca-codex.toml '/Users/hyun/Library/Application Support/orca/codex-runtime-home/home/config.toml'
+cp -p /private/tmp/agent-memory-enable-6f48b07-retry2/claude-settings.json /Users/hyun/.claude/settings.json
 env CODEX_HOME=/Users/hyun/.codex /opt/homebrew/bin/codex features list | rg '^memories[[:space:]]'
 env CODEX_HOME='/Users/hyun/Library/Application Support/orca/codex-runtime-home/home' /opt/homebrew/bin/codex features list | rg '^memories[[:space:]]'
 /usr/bin/jq '{autoMemoryEnabled, autoMemoryDirectory}' /Users/hyun/.claude/settings.json
@@ -224,7 +242,7 @@ Claude: auto-memory explicitly enabled; default memory path retained
 Memory contents changed: no
 Session files directly modified by configuration task: no
 Concurrent active-agent session deltas: recorded in *.delta audit artifacts
-Rollback backup: /private/tmp/agent-memory-enable-a2151a3-retry1
+Rollback backup: /private/tmp/agent-memory-enable-6f48b07-retry2
 Launcher behavior changed: no
 ```
 
