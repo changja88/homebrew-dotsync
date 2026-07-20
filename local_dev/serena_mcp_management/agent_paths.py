@@ -9,6 +9,24 @@ ORCA_CODEX_HOME = Path(
 )
 
 
+def paths_refer_to_same_file(first: Path, second: Path) -> bool:
+    """Compare existing paths by identity and missing paths lexically."""
+    try:
+        return first.samefile(second)
+    except FileNotFoundError:
+        return first.resolve(strict=False) == second.resolve(strict=False)
+
+
+def deduplicate_paths_by_identity(paths: tuple[Path, ...]) -> tuple[Path, ...]:
+    """Keep the first spelling of each filesystem object in stable order."""
+    unique: list[Path] = []
+    for path in paths:
+        if any(paths_refer_to_same_file(path, seen) for seen in unique):
+            continue
+        unique.append(path)
+    return tuple(unique)
+
+
 def canonical_codex_homes(
     *,
     home: Path,
@@ -22,8 +40,8 @@ def canonical_codex_homes(
     )
     default_home = default_home.resolve(strict=False)
     orca_home = orca_home.resolve(strict=False)
-    homes = tuple(
-        dict.fromkeys(candidate.resolve(strict=False) for candidate in homes)
+    homes = deduplicate_paths_by_identity(
+        tuple(candidate.resolve(strict=False) for candidate in homes)
     )
     return homes, default_home, orca_home
 

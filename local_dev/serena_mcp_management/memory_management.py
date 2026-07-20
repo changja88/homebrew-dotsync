@@ -11,7 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .agent_paths import lexical_claude_config_dir, lexical_codex_homes
+from .agent_paths import (
+    lexical_claude_config_dir,
+    lexical_codex_homes,
+    paths_refer_to_same_file,
+)
 
 
 CODEX_SCOPE = "all known Codex homes"
@@ -335,14 +339,17 @@ def _scan_codex_memory(
     )
     warnings: list[str] = []
     discovered_stores: list[MemoryStore] = []
-    seen_homes: set[Path] = set()
+    seen_homes: list[Path] = []
     for candidate_home in homes:
         if _has_symlink_component(candidate_home, warnings):
             continue
         candidate_home = candidate_home.resolve(strict=False)
-        if candidate_home in seen_homes:
+        if any(
+            paths_refer_to_same_file(candidate_home, seen)
+            for seen in seen_homes
+        ):
             continue
-        seen_homes.add(candidate_home)
+        seen_homes.append(candidate_home)
         store = _inspect_store(
             candidate_home / "memories",
             source="codex-home",
@@ -379,7 +386,7 @@ def _scan_claude_memory(
             warnings=tuple(warnings),
         )
     config_dir = config_dir.resolve(strict=False)
-    stores_by_path: dict[Path, MemoryStore] = {}
+    stores: list[MemoryStore] = []
 
     for memory_path in _project_memory_paths(config_dir, warnings):
         store = _inspect_store(
@@ -387,28 +394,34 @@ def _scan_claude_memory(
             source="claude-project",
             warnings=warnings,
         )
-        if store is not None:
-            stores_by_path.setdefault(store.path, store)
+        if store is not None and not any(
+            paths_refer_to_same_file(store.path, seen.path)
+            for seen in stores
+        ):
+            stores.append(store)
 
     custom_path = _configured_memory_path(
         home=home,
         config_dir=config_dir,
         warnings=warnings,
     )
-    if custom_path is not None and custom_path not in stores_by_path:
+    if custom_path is not None:
         store = _inspect_store(
             custom_path,
             source="claude-settings",
             warnings=warnings,
         )
-        if store is not None:
-            stores_by_path[store.path] = store
+        if store is not None and not any(
+            paths_refer_to_same_file(store.path, seen.path)
+            for seen in stores
+        ):
+            stores.append(store)
 
-    stores = tuple(stores_by_path.values())
+    memory_stores = tuple(stores)
     return MemoryInventory(
         client="claude",
-        stores=stores,
-        file_count=sum(store.file_count for store in stores),
+        stores=memory_stores,
+        file_count=sum(store.file_count for store in memory_stores),
         scope=CLAUDE_SCOPE,
         warnings=tuple(warnings),
     )
@@ -500,6 +513,8 @@ def _configured_memory_path(
 
     if _has_parent_traversal(candidate, warnings):
         return None
+    if _has_symlink_component(candidate, warnings):
+        return None
     if _is_unsafe_broad_path(
         candidate,
         home=home.resolve(strict=False),
@@ -519,13 +534,28 @@ def _is_unsafe_broad_path(
     config_dir: Path,
 ) -> bool:
     projects_dir = config_dir / "projects"
-    unsafe_paths = {Path("/"), home, config_dir, projects_dir}
-    return (
-        path in unsafe_paths
-        or path in home.parents
-        or path in config_dir.parents
-        or path in projects_dir.parents
+    unsafe_paths = tuple(
+        dict.fromkeys(
+            (
+                Path("/"),
+                home,
+                config_dir,
+                projects_dir,
+                *home.parents,
+                *config_dir.parents,
+                *projects_dir.parents,
+            )
+        )
     )
+    if path in unsafe_paths:
+        return True
+    try:
+        return any(
+            paths_refer_to_same_file(path, unsafe_path)
+            for unsafe_path in unsafe_paths
+        )
+    except (OSError, ValueError, UnicodeError):
+        return True
 
 
 def _inspect_store(
@@ -584,7 +614,7 @@ def _has_symlink_component(path: Path, warnings: list[str]) -> bool:
             mode = current.lstat().st_mode
         except FileNotFoundError:
             return False
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, UnicodeError) as exc:
             warnings.append(f"cannot inspect memory path {current!r}: {exc}")
             return True
         if stat.S_ISLNK(mode):
@@ -610,7 +640,7 @@ def _path_kind(
         mode = path.lstat().st_mode
     except FileNotFoundError:
         return "missing"
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, UnicodeError) as exc:
         warnings.append(f"cannot inspect {label} {path!r}: {exc}")
         return "error"
 

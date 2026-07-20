@@ -170,3 +170,70 @@ def test_select_option_ctrl_c_erases_four_line_block(monkeypatch):
 
     assert stream.getvalue().endswith("\x1b[4A\x1b[J")
     assert restored == [(7, ui.termios.TCSADRAIN, old_attrs)]
+
+
+def test_select_option_raw_navigation_collapses_selected_value(monkeypatch):
+    stream = io.StringIO()
+    old_attrs = ["old-terminal-state"]
+    restored = []
+    reads = iter((b"\x1b", b"[B", b"\r"))
+    monkeypatch.setattr(ui.termios, "tcgetattr", lambda fd: old_attrs)
+    monkeypatch.setattr(ui.tty, "setcbreak", lambda fd: None)
+    monkeypatch.setattr(ui.os, "read", lambda fd, size: next(reads))
+    monkeypatch.setattr(
+        ui.termios, "tcsetattr", lambda *args: restored.append(args)
+    )
+
+    selected = ui._read_select_arrow(
+        "Memory for codex?",
+        options=MEMORY_OPTIONS,
+        cursor=0,
+        stream=stream,
+        fd=7,
+    )
+
+    output = stream.getvalue()
+    assert selected == "delete"
+    assert output.count("\x1b[4A\x1b[J") == 2
+    assert output.endswith(
+        f"  \x1b[{ui.PURPLE}m?\x1b[0m Memory for codex? "
+        f"\x1b[{ui.PURPLE}mDelete all Codex auto-memory and run\x1b[0m\n"
+    )
+    assert restored == [(7, ui.termios.TCSADRAIN, old_attrs)]
+
+
+@pytest.mark.parametrize(
+    ("shortcut", "expected", "label"),
+    [(b"y", True, "Yes"), (b"n", False, "No")],
+)
+def test_legacy_raw_yes_no_shortcuts_collapse_selection(
+    monkeypatch,
+    shortcut,
+    expected,
+    label,
+):
+    stream = io.StringIO()
+    old_attrs = ["old-terminal-state"]
+    restored = []
+    monkeypatch.setattr(ui.termios, "tcgetattr", lambda fd: old_attrs)
+    monkeypatch.setattr(ui.tty, "setcbreak", lambda fd: None)
+    monkeypatch.setattr(ui.os, "read", lambda fd, size: shortcut)
+    monkeypatch.setattr(
+        ui.termios, "tcsetattr", lambda *args: restored.append(args)
+    )
+
+    selected = ui._read_yes_no_arrow(
+        "Run codex?",
+        default=not expected,
+        stream=stream,
+        fd=7,
+    )
+
+    output = stream.getvalue()
+    assert selected is expected
+    assert output.count("\x1b[3A\x1b[J") == 1
+    assert output.endswith(
+        f"  \x1b[{ui.PURPLE}m?\x1b[0m Run codex? "
+        f"\x1b[{ui.PURPLE}m{label}\x1b[0m\n"
+    )
+    assert restored == [(7, ui.termios.TCSADRAIN, old_attrs)]
