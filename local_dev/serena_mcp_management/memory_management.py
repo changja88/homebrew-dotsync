@@ -1,0 +1,340 @@
+"""Read-only discovery of Codex and Claude auto-memory stores."""
+from __future__ import annotations
+
+import json
+import os
+import stat
+from dataclasses import dataclass
+from pathlib import Path
+
+from .agent_paths import canonical_codex_homes, effective_claude_config_dir
+
+
+CODEX_SCOPE = "all known Codex homes"
+CLAUDE_SCOPE = "all Claude auto-memory stores"
+
+
+@dataclass(frozen=True)
+class MemoryStore:
+    path: Path
+    source: str
+    file_count: int
+
+
+@dataclass(frozen=True)
+class MemoryInventory:
+    client: str
+    stores: tuple[MemoryStore, ...]
+    file_count: int
+    scope: str
+    warnings: tuple[str, ...] = ()
+
+
+def scan_memory_inventory(
+    *,
+    client: str,
+    home: Path,
+    codex_home: Path,
+    claude_config_dir: Path | None = None,
+    orca_codex_home: Path | None = None,
+) -> MemoryInventory:
+    if client == "codex":
+        return _scan_codex_memory(
+            home=home,
+            codex_home=codex_home,
+            orca_codex_home=orca_codex_home,
+        )
+    if client == "claude":
+        return _scan_claude_memory(
+            home=home,
+            claude_config_dir=claude_config_dir,
+        )
+    raise ValueError(f"unsupported client: {client}")
+
+
+def _scan_codex_memory(
+    *,
+    home: Path,
+    codex_home: Path,
+    orca_codex_home: Path | None,
+) -> MemoryInventory:
+    homes, _, _ = canonical_codex_homes(
+        home=home,
+        codex_home=codex_home,
+        orca_codex_home=orca_codex_home,
+    )
+    warnings: list[str] = []
+    discovered_stores: list[MemoryStore] = []
+    for candidate_home in homes:
+        store = _inspect_store(
+            candidate_home / "memories",
+            source="codex-home",
+            warnings=warnings,
+        )
+        if store is not None:
+            discovered_stores.append(store)
+    stores = tuple(discovered_stores)
+    return MemoryInventory(
+        client="codex",
+        stores=stores,
+        file_count=sum(store.file_count for store in stores),
+        scope=CODEX_SCOPE,
+        warnings=tuple(warnings),
+    )
+
+
+def _scan_claude_memory(
+    *,
+    home: Path,
+    claude_config_dir: Path | None,
+) -> MemoryInventory:
+    config_dir = effective_claude_config_dir(
+        home=home,
+        claude_config_dir=claude_config_dir,
+    )
+    warnings: list[str] = []
+    stores_by_path: dict[Path, MemoryStore] = {}
+
+    for memory_path in _project_memory_paths(config_dir, warnings):
+        store = _inspect_store(
+            memory_path,
+            source="claude-project",
+            warnings=warnings,
+        )
+        if store is not None:
+            stores_by_path.setdefault(store.path, store)
+
+    custom_path = _configured_memory_path(
+        home=home,
+        config_dir=config_dir,
+        warnings=warnings,
+    )
+    if custom_path is not None and custom_path not in stores_by_path:
+        store = _inspect_store(
+            custom_path,
+            source="claude-settings",
+            warnings=warnings,
+        )
+        if store is not None:
+            stores_by_path[store.path] = store
+
+    stores = tuple(stores_by_path.values())
+    return MemoryInventory(
+        client="claude",
+        stores=stores,
+        file_count=sum(store.file_count for store in stores),
+        scope=CLAUDE_SCOPE,
+        warnings=tuple(warnings),
+    )
+
+
+def _project_memory_paths(
+    config_dir: Path,
+    warnings: list[str],
+) -> tuple[Path, ...]:
+    projects_dir = config_dir / "projects"
+    kind = _path_kind(projects_dir, label="Claude projects", warnings=warnings)
+    if kind == "missing":
+        return ()
+    if kind != "directory":
+        return ()
+
+    try:
+        with os.scandir(projects_dir) as entries:
+            projects = sorted(entries, key=lambda entry: entry.name)
+    except OSError as exc:
+        warnings.append(f"cannot read Claude projects {projects_dir}: {exc}")
+        return ()
+
+    paths: list[Path] = []
+    for project in projects:
+        try:
+            if project.is_symlink():
+                warnings.append(f"Claude project path is a symlink: {project.path}")
+                continue
+            if not project.is_dir(follow_symlinks=False):
+                continue
+        except OSError as exc:
+            warnings.append(f"cannot inspect Claude project {project.path}: {exc}")
+            continue
+        paths.append(Path(project.path) / "memory")
+    return tuple(paths)
+
+
+def _configured_memory_path(
+    *,
+    home: Path,
+    config_dir: Path,
+    warnings: list[str],
+) -> Path | None:
+    settings_path = config_dir / "settings.json"
+    kind = _path_kind(settings_path, label="Claude settings", warnings=warnings)
+    if kind == "missing":
+        return None
+    if kind != "file":
+        if kind == "directory":
+            warnings.append(
+                f"Claude settings is not a regular file: {settings_path}"
+            )
+        return None
+
+    try:
+        with settings_path.open(encoding="utf-8") as settings_file:
+            settings = json.load(settings_file)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        warnings.append(f"invalid Claude settings {settings_path}: {exc}")
+        return None
+
+    if not isinstance(settings, dict):
+        warnings.append(
+            f"invalid Claude settings {settings_path}: expected an object"
+        )
+        return None
+    if "autoMemoryDirectory" not in settings:
+        return None
+
+    raw_path = settings["autoMemoryDirectory"]
+    if not isinstance(raw_path, str) or not raw_path:
+        warnings.append("Claude autoMemoryDirectory must be absolute or start with ~/")
+        return None
+    if raw_path.startswith("~/"):
+        candidate = home.resolve(strict=False) / raw_path[2:]
+    else:
+        candidate = Path(raw_path)
+    if not candidate.is_absolute():
+        warnings.append("Claude autoMemoryDirectory must be absolute or start with ~/")
+        return None
+
+    candidate = Path(os.path.normpath(candidate))
+    if _is_unsafe_broad_path(
+        candidate,
+        home=home.resolve(strict=False),
+        config_dir=config_dir,
+    ):
+        warnings.append(
+            f"Claude autoMemoryDirectory is an unsafe broad path: {candidate}"
+        )
+        return None
+    return candidate
+
+
+def _is_unsafe_broad_path(
+    path: Path,
+    *,
+    home: Path,
+    config_dir: Path,
+) -> bool:
+    projects_dir = config_dir / "projects"
+    unsafe_paths = {Path("/"), home, config_dir, projects_dir}
+    return (
+        path in unsafe_paths
+        or path in home.parents
+        or path in config_dir.parents
+        or path in projects_dir.parents
+    )
+
+
+def _inspect_store(
+    path: Path,
+    *,
+    source: str,
+    warnings: list[str],
+) -> MemoryStore | None:
+    if _has_symlink_component(path, warnings):
+        return None
+    kind = _path_kind(path, label="memory store", warnings=warnings)
+    if kind == "missing":
+        return None
+    if kind != "directory":
+        return None
+
+    file_count = _count_regular_files(path, warnings)
+    return MemoryStore(path=path, source=source, file_count=file_count)
+
+
+def _has_symlink_component(path: Path, warnings: list[str]) -> bool:
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        try:
+            mode = current.lstat().st_mode
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            warnings.append(f"cannot inspect memory path {current}: {exc}")
+            return True
+        if stat.S_ISLNK(mode):
+            warnings.append(f"memory path contains a symlink: {current}")
+            return True
+    return False
+
+
+def _path_kind(
+    path: Path,
+    *,
+    label: str,
+    warnings: list[str],
+) -> str:
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return "missing"
+    except OSError as exc:
+        warnings.append(f"cannot inspect {label} {path}: {exc}")
+        return "error"
+
+    if stat.S_ISLNK(mode):
+        warnings.append(f"{label} is a symlink: {path}")
+        return "symlink"
+    if stat.S_ISDIR(mode):
+        return "directory"
+    if stat.S_ISREG(mode):
+        if label != "Claude settings":
+            warnings.append(f"{label} is not a directory: {path}")
+        return "file"
+    warnings.append(f"{label} has an unsupported file type: {path}")
+    return "other"
+
+
+def _count_regular_files(path: Path, warnings: list[str]) -> int:
+    count = 0
+
+    def record_walk_error(exc: OSError) -> None:
+        warnings.append(f"cannot read memory store {exc.filename or path}: {exc}")
+
+    for root, dirnames, filenames in os.walk(
+        path,
+        topdown=True,
+        onerror=record_walk_error,
+        followlinks=False,
+    ):
+        dirnames.sort()
+        filenames.sort()
+        safe_dirnames: list[str] = []
+        for dirname in dirnames:
+            directory = Path(root) / dirname
+            kind = _path_kind(
+                directory,
+                label="memory entry",
+                warnings=warnings,
+            )
+            if kind == "directory":
+                safe_dirnames.append(dirname)
+        dirnames[:] = safe_dirnames
+
+        for filename in filenames:
+            file_path = Path(root) / filename
+            try:
+                mode = file_path.lstat().st_mode
+            except OSError as exc:
+                warnings.append(f"cannot inspect memory entry {file_path}: {exc}")
+                continue
+            if stat.S_ISLNK(mode):
+                warnings.append(f"memory entry is a symlink: {file_path}")
+            elif stat.S_ISREG(mode):
+                count += 1
+            else:
+                warnings.append(
+                    f"memory entry has an unsupported file type: {file_path}"
+                )
+    return count

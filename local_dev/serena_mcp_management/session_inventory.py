@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from .agent_paths import canonical_codex_homes
+
 
 RETENTION_DAYS = 5
 RETENTION_SECONDS = RETENTION_DAYS * 86400
@@ -127,35 +129,6 @@ def snapshot_open_rollouts(
             continue
         identities.add(FileIdentity(device=stat.st_dev, inode=stat.st_ino))
     return frozenset(identities)
-
-
-def _canonical_codex_homes(
-    *,
-    home: Path,
-    codex_home: Path,
-    orca_codex_home: Path | None,
-) -> tuple[tuple[Path, ...], Path, Path]:
-    active_home = codex_home.expanduser()
-    if not active_home.is_absolute():
-        raise ValueError("codex_home must be absolute")
-    default_home = (home / ".codex").resolve(strict=False)
-    active_home = active_home.resolve(strict=False)
-    orca_home = (
-        orca_codex_home
-        or home / "Library/Application Support/orca/codex-runtime-home/home"
-    ).expanduser()
-    if not orca_home.is_absolute():
-        raise ValueError("orca_codex_home must be absolute")
-    orca_home = orca_home.resolve(strict=False)
-
-    homes: list[Path] = []
-    seen: set[Path] = set()
-    for candidate in (default_home, active_home, orca_home):
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-        homes.append(candidate)
-    return tuple(homes), default_home, orca_home
 
 
 def _fingerprint(path: Path) -> FileFingerprint:
@@ -358,7 +331,7 @@ def _scan_codex_inventory(
     now: float,
     open_file_identities: frozenset[FileIdentity] | None,
 ) -> AgentInventory:
-    homes, default_home, orca_home = _canonical_codex_homes(
+    homes, default_home, orca_home = canonical_codex_homes(
         home=home,
         codex_home=codex_home,
         orca_codex_home=orca_codex_home,
