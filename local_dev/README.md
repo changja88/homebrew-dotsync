@@ -82,11 +82,12 @@ Interactive no-argument `codex` / `claude` launches and session-management
 commands (`codex resume|fork`, `claude -c|--continue|-r|--resume`) show a single
 ANSI preflight box from the Python launcher: workspace, Serena project status,
 machine-wide Serena MCP inventory, Graphify status (4 rows: global / graph /
-integration / hook), context, and one grouped global session inventory that
-contains its cleanup condition and candidate counts. After Run/Abort
-confirmation (and an optional Initialize/Skip prompt when
-`.serena/project.yml` is absent), the launcher runs cleanup and starts the
-scoped Serena MCP server with inline progress rows below the preflight box.
+integration / hook), context, grouped agent memory inventory, and one grouped
+global session inventory that contains its cleanup condition and candidate
+counts. After setup prompts (including an optional Initialize/Skip prompt when
+`.serena/project.yml` is absent), the launcher asks how to handle agent memory,
+then runs session cleanup and starts the scoped Serena MCP server with inline
+progress rows below the preflight box.
 When the agent TUI exits, a summary box reports session duration, cleanup
 result, MCP lifecycle, and any accumulated warnings.
 Non-interactive commands (`codex exec`, `claude -p`, help/version) and Claude
@@ -99,6 +100,46 @@ row before returning exit code `130` without a Python traceback:
 ```text
   ! cancelled
 ```
+
+### Agent memory
+
+Every interactive launch ends its preflight with exactly three choices
+(`<product>` is shown as `Codex` or `Claude`):
+
+```text
+Run with existing memory
+Delete all <product> auto-memory and run
+Cancel
+```
+
+`Run with existing memory` leaves memory unchanged before continuing to the
+normal session cleanup and agent launch. `Delete all ...` explicitly deletes
+the selected product's complete main auto-memory scope before session cleanup;
+the launcher never deletes memory by age or without this selection:
+
+- **Codex:** the exact `memories/` directory under every known Codex home —
+  the default `~/.codex`, the active absolute `$CODEX_HOME`, and Orca's managed
+  runtime home at
+  `~/Library/Application Support/orca/codex-runtime-home/home` — with duplicate
+  homes collapsed. `memories_extensions/`, sessions, and other Codex state are
+  outside this scope.
+- **Claude:** every direct
+  `$CLAUDE_CONFIG_DIR/projects/<project>/memory/` directory (or the equivalent
+  paths below `~/.claude/projects` when unset), plus the exact valid custom
+  directory configured by `autoMemoryDirectory`. Subagent `agent-memory/`,
+  transcripts, instructions, and other Claude state are outside this scope.
+
+Deletion always rescans and validates the complete scope immediately before
+mutation. If another process for the same product is running, or if any scan,
+safety validation, or filesystem deletion fails, the launcher stops: it does
+not run session cleanup, launch the agent, or silently continue with memory the
+user asked to delete. A deletion failure returns exit code `1`; partial
+deletion is reported with its counts and is not automatically backed up.
+
+`Cancel` and Ctrl+C both leave memory and sessions unchanged, do not launch a
+child, print the existing `! cancelled` row, and return exit code `130` without
+a traceback. Non-interactive bypass commands never show this prompt or delete
+memory.
 
 `serena project create` (run on Initialize) is **captured, not streamed**: its
 verbose language detection, the interactive language prompts auto-answered via
@@ -163,9 +204,10 @@ table abbreviations:
 | `claude` | Top-level session JSONL files for every project under `$CLAUDE_CONFIG_DIR/projects` (or `~/.claude/projects` when unset). Subagent files are counted with their parent. | The child process receives the official execution-only setting `--settings '{"cleanupPeriodDays":5}'`; Claude Code performs its native startup sweep. Launcher code never deletes Claude transcripts directly. |
 
 The cutoff is strictly older than `5 * 24h`; a session exactly on the cutoff is
-kept. Codex `archived_sessions`, Codex memory, and Claude auto-memory are not
-scanned or deleted. Session counts are grouped by data type under one top-level
-row. Normal preflight rows read:
+kept. The five-day rule applies only to sessions: it never deletes Codex or
+Claude auto-memory, and Codex `archived_sessions` remain outside session
+cleanup. Session counts are grouped by data type under one top-level row.
+Normal preflight rows read:
 
 ```text
 · sessions    codex
