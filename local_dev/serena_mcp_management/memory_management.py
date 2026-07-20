@@ -20,6 +20,8 @@ from .agent_paths import (
 
 CODEX_SCOPE = "all known Codex homes"
 CLAUDE_SCOPE = "all Claude auto-memory stores"
+PS_IDENTITY_COMMAND = ["/bin/ps", "-axo", "pid=,ppid=,comm="]
+PS_ARGUMENT_COMMAND = ["/bin/ps", "-axo", "pid=,args="]
 
 
 RunCommand = Callable[..., subprocess.CompletedProcess[str]]
@@ -46,6 +48,7 @@ class MemoryInventory:
 class ClientProcess:
     pid: int
     ppid: int
+    executable: str
     command: str
 
 
@@ -60,16 +63,7 @@ class MemoryDeleteResult:
         return self.error is None
 
 
-def running_client_processes(
-    client: str,
-    *,
-    run_command: RunCommand = subprocess.run,
-    current_pid: int | None = None,
-) -> tuple[ClientProcess, ...]:
-    if client not in {"codex", "claude"}:
-        raise ValueError(f"unsupported client: {client}")
-
-    command = ["/bin/ps", "-axo", "pid=,ppid=,comm=,args="]
+def _run_ps(command: list[str], run_command: RunCommand) -> str:
     result = run_command(
         command,
         capture_output=True,
@@ -79,11 +73,36 @@ def running_client_processes(
     if result.returncode != 0:
         detail = (result.stderr or "").strip() or f"exit {result.returncode}"
         raise RuntimeError(f"cannot inspect running processes: {detail}")
+    return result.stdout
 
-    entries: list[tuple[ClientProcess, str]] = []
+
+def running_client_processes(
+    client: str,
+    *,
+    run_command: RunCommand = subprocess.run,
+    current_pid: int | None = None,
+) -> tuple[ClientProcess, ...]:
+    if client not in {"codex", "claude"}:
+        raise ValueError(f"unsupported client: {client}")
+
+    identity_output = _run_ps(PS_IDENTITY_COMMAND, run_command)
+    argument_output = _run_ps(PS_ARGUMENT_COMMAND, run_command)
+
+    arguments_by_pid: dict[int, str] = {}
+    for line in argument_output.splitlines():
+        fields = line.strip().split(maxsplit=1)
+        if not fields:
+            continue
+        try:
+            pid = int(fields[0])
+        except ValueError:
+            continue
+        arguments_by_pid[pid] = fields[1] if len(fields) == 2 else ""
+
+    entries: list[ClientProcess] = []
     parents: dict[int, int] = {}
-    for line in result.stdout.splitlines():
-        fields = line.strip().split(maxsplit=3)
+    for line in identity_output.splitlines():
+        fields = line.strip().split(maxsplit=2)
         if len(fields) < 3:
             continue
         try:
@@ -92,13 +111,13 @@ def running_client_processes(
         except ValueError:
             continue
         executable = fields[2]
-        process_command = fields[3] if len(fields) == 4 else executable
         process = ClientProcess(
             pid=pid,
             ppid=ppid,
-            command=process_command,
+            executable=executable,
+            command=arguments_by_pid.get(pid) or executable,
         )
-        entries.append((process, executable))
+        entries.append(process)
         parents[pid] = ppid
 
     excluded_pids: set[int] = set()
@@ -109,11 +128,11 @@ def running_client_processes(
 
     return tuple(
         process
-        for process, executable in entries
+        for process in entries
         if process.pid not in excluded_pids
         and _matches_client_process(
             client,
-            executable=executable,
+            executable=process.executable,
             command=process.command,
         )
     )
@@ -199,34 +218,26 @@ def _matches_client_process(
     command: str,
 ) -> bool:
     tokens = _command_tokens(command)
-    executable_paths = [executable]
-    if tokens:
-        executable_paths.append(tokens[0])
 
-    if client == "claude" and any(
-        "/claude.app/contents/" in path.lower()
-        for path in executable_paths
+    if (
+        client == "claude"
+        and "/claude.app/contents/" in executable.lower()
     ):
         return False
 
-    executable_names = {
-        Path(path).name.lower()
-        for path in executable_paths
-        if path
-    }
-    if client == "codex" and any(
-        name == "codex"
+    executable_name = Path(executable).name.lower()
+    if client == "codex" and (
+        executable_name == "codex"
         or (
-            name.startswith("codex-")
-            and name.endswith("-apple-darwin")
+            executable_name.startswith("codex-")
+            and executable_name.endswith("-apple-darwin")
         )
-        for name in executable_names
     ):
         return True
-    if client == "claude" and "claude" in executable_names:
+    if client == "claude" and executable_name == "claude":
         return True
 
-    if not executable_names.intersection({"node", "nodejs"}):
+    if executable_name not in {"node", "nodejs"}:
         return False
     scripts = [token.lower() for token in tokens[1:]]
     if client == "codex":

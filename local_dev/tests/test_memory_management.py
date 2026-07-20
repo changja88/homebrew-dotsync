@@ -12,22 +12,52 @@ from local_dev.serena_mcp_management.memory_management import (
 )
 
 
-def fake_ps(output, *, returncode=0):
+PS_IDENTITY_COMMAND = ["/bin/ps", "-axo", "pid=,ppid=,comm="]
+PS_ARGUMENT_COMMAND = ["/bin/ps", "-axo", "pid=,args="]
+
+
+def _split_legacy_ps(output):
+    identity_lines = []
+    argument_lines = []
+    for line in output.splitlines():
+        fields = line.strip().split(maxsplit=3)
+        if len(fields) < 3:
+            continue
+        pid, ppid, executable = fields[:3]
+        arguments = fields[3] if len(fields) == 4 else executable
+        identity_lines.append(f"{pid} {ppid} {executable}")
+        argument_lines.append(f"{pid} {arguments}")
+    identity_output = "\n".join(identity_lines)
+    argument_output = "\n".join(argument_lines)
+    if identity_output:
+        identity_output += "\n"
+        argument_output += "\n"
+    return identity_output, argument_output
+
+
+def fake_ps(output, *, args_output=None, returncode=0):
+    if args_output is None:
+        identity_output, argument_output = _split_legacy_ps(output)
+    else:
+        identity_output = output
+        argument_output = args_output
+
     def run_command(command, **kwargs):
-        assert command == [
-            "/bin/ps",
-            "-axo",
-            "pid=,ppid=,comm=,args=",
-        ]
         assert kwargs == {
             "capture_output": True,
             "text": True,
             "check": False,
         }
+        if command == PS_IDENTITY_COMMAND:
+            command_output = identity_output
+        elif command == PS_ARGUMENT_COMMAND:
+            command_output = argument_output
+        else:
+            raise AssertionError(command)
         return subprocess.CompletedProcess(
             command,
             returncode,
-            stdout=output,
+            stdout=command_output,
             stderr="",
         )
 
@@ -756,6 +786,35 @@ def test_process_scan_ignores_claude_desktop_but_finds_claude_code():
     assert [process.pid for process in result] == [60]
 
 
+def test_process_scan_preserves_spaced_comm_and_ignores_chatgpt_helpers():
+    identities = (
+        "2176 1 /Applications/ChatGPT.app/Contents/Frameworks/"
+        "Codex Framework.framework/Helpers/browser_crashpad_handler\n"
+        "2419 1 /Applications/ChatGPT.app/Contents/Frameworks/"
+        "Codex Framework.framework/Helpers/Codex (Service).app/Contents/"
+        "MacOS/Codex (Service)\n"
+        "2502 1 /Applications/ChatGPT.app/Contents/Resources/codex\n"
+        "2612 1 /Users/me/.codex/computer-use/"
+        "Codex Computer Use.app/Contents/MacOS/SkyComputerUseService\n"
+    )
+    arguments = (
+        "2176 browser_crashpad_handler --monitor-self\n"
+        "2419 Codex (Service) --type=gpu-process\n"
+        "2502 /Applications/ChatGPT.app/Contents/Resources/codex app-server\n"
+        "2612 SkyComputerUseService\n"
+    )
+
+    result = running_client_processes(
+        "codex",
+        run_command=fake_ps(identities, args_output=arguments),
+        current_pid=9999,
+    )
+
+    assert [(process.pid, Path(process.executable).name) for process in result] == [
+        (2502, "codex")
+    ]
+
+
 @pytest.mark.parametrize("client", ["codex", "claude"])
 def test_process_scan_ignores_test_commands_that_mention_clients(client):
     ps = (
@@ -943,11 +1002,15 @@ def test_delete_prevalidates_every_store_before_mutation(tmp_path):
 def test_delete_revalidates_every_store_after_process_scan(tmp_path):
     home, active, orca = build_codex_memory_fixture(tmp_path)
     calls = []
+    replaced = False
 
     def replace_store_with_symlink(command, **kwargs):
-        store = orca / "memories"
-        store.rename(orca / "memories-real")
-        store.symlink_to(orca / "memories-real", target_is_directory=True)
+        nonlocal replaced
+        if command == PS_ARGUMENT_COMMAND and not replaced:
+            store = orca / "memories"
+            store.rename(orca / "memories-real")
+            store.symlink_to(orca / "memories-real", target_is_directory=True)
+            replaced = True
         return fake_ps("")(command, **kwargs)
 
     result = delete_all_memory(
