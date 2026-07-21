@@ -342,6 +342,105 @@ def test_cleanup_claude_does_not_delete_final_name_replacement(
     assert parked_original.exists()
 
 
+@pytest.mark.parametrize(
+    "cleanup_fails",
+    (False, True),
+    ids=("cleanup-succeeds", "cleanup-fails"),
+)
+def test_cleanup_claude_handles_quarantine_open_failure_after_mkdir(
+    tmp_path,
+    monkeypatch,
+    cleanup_fails,
+):
+    config = tmp_path / ".claude"
+    project_dir = config / "projects/-repo"
+    root = _write(project_dir / f"{SESSION_A}.jsonl", "expected")
+    inventory = scan_inventory(
+        client="claude",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        policy="all_inactive",
+        active_claude_session_ids=frozenset(),
+        open_file_identities=frozenset(),
+    )
+    original_root_stat = root.stat(follow_symlinks=False)
+    original_open = os.open
+    original_rmdir = os.rmdir
+    created_name = None
+    created_stat = None
+
+    def open_path(path, flags, *args, **kwargs):
+        nonlocal created_name, created_stat
+        candidate_name = Path(path).name
+        if (
+            kwargs.get("dir_fd") is not None
+            and candidate_name.startswith(".claude-cleanup-")
+        ):
+            created_name = candidate_name
+            created_stat = os.stat(
+                path,
+                dir_fd=kwargs["dir_fd"],
+                follow_symlinks=False,
+            )
+            raise OSError("injected quarantine open failure")
+        return original_open(path, flags, *args, **kwargs)
+
+    def rmdir(path, *args, **kwargs):
+        if cleanup_fails and Path(path).name.startswith(".claude-cleanup-"):
+            raise OSError("injected partial quarantine cleanup failure")
+        return original_rmdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", open_path)
+    monkeypatch.setattr(os, "rmdir", rmdir)
+
+    result = cleanup_claude_inventory(
+        inventory,
+        active_session_snapshot=lambda config_dir: frozenset(),
+        open_file_snapshot=lambda paths: frozenset(),
+    )
+
+    assert created_name is not None
+    assert created_stat is not None
+    quarantine_path = project_dir / created_name
+    current_root_stat = root.stat(follow_symlinks=False)
+    assert not result.succeeded
+    assert result.deleted == 0
+    assert root.read_text() == "expected"
+    assert (
+        current_root_stat.st_dev,
+        current_root_stat.st_ino,
+        current_root_stat.st_size,
+        current_root_stat.st_mtime_ns,
+    ) == (
+        original_root_stat.st_dev,
+        original_root_stat.st_ino,
+        original_root_stat.st_size,
+        original_root_stat.st_mtime_ns,
+    )
+    if cleanup_fails:
+        assert quarantine_path.is_dir()
+        assert list(quarantine_path.iterdir()) == []
+    else:
+        assert not quarantine_path.exists()
+    assert "injected quarantine open failure" in result.error
+    assert f"last-known lexical path={quarantine_path}" in result.error
+    assert f"quarantine name={created_name}" in result.error
+    assert (
+        "quarantine identity="
+        f"device:{created_stat.st_dev},inode:{created_stat.st_ino}"
+        in result.error
+    )
+    assert f"isolated entry name={root.name}" in result.error
+    assert "isolated identity/fingerprint=unavailable" in result.error
+    assert "current namespace location is not guaranteed" in result.error
+    if cleanup_fails:
+        assert (
+            "injected partial quarantine cleanup failure" in result.error
+        )
+    else:
+        assert "partial quarantine cleanup completed" in result.error
+
+
 def test_cleanup_claude_reports_last_verified_path_after_ancestor_remap(
     tmp_path,
     monkeypatch,

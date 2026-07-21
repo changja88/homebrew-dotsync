@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NoReturn
 
 from local_dev.serena_mcp_management.session_inventory import (
     ActiveSessionScanError,
@@ -59,6 +59,13 @@ class _DirectoryAnchor:
     name: str
     directory_fd: int
     identity: FileIdentity
+    path: Path
+
+
+@dataclass(frozen=True)
+class _QuarantineEvidence:
+    name: str
+    identity: FileIdentity | None
     path: Path
 
 
@@ -721,10 +728,68 @@ def _verify_entry_matches(
         )
 
 
+def _remove_partial_quarantine(
+    parent_fd: int,
+    anchors: tuple[_DirectoryAnchor, ...],
+    quarantine: _QuarantineEvidence,
+) -> None:
+    if quarantine.identity is None:
+        raise ActiveSessionScanError(
+            "partial quarantine identity is unavailable; cleanup not attempted"
+        )
+    _validate_directory_anchors(anchors)
+    current_stat = os.stat(
+        quarantine.name,
+        dir_fd=parent_fd,
+        follow_symlinks=False,
+    )
+    current_identity = _fingerprint_from_stat_result(current_stat).identity
+    if (
+        not stat.S_ISDIR(current_stat.st_mode)
+        or current_identity != quarantine.identity
+    ):
+        raise ActiveSessionScanError(
+            "partial quarantine identity changed; cleanup not attempted"
+        )
+    os.rmdir(quarantine.name, dir_fd=parent_fd)
+    _validate_directory_anchors(anchors)
+
+
+def _raise_quarantine_creation_failure(
+    parent_fd: int,
+    anchors: tuple[_DirectoryAnchor, ...],
+    quarantine: _QuarantineEvidence,
+    entry_name: str,
+    primary_error: Exception,
+) -> NoReturn:
+    diagnostic = _quarantine_recovery_diagnostic(
+        quarantine,
+        entry_name,
+        isolated_stat=None,
+        last_lexical_path=quarantine.path,
+        path_was_verified=False,
+    )
+    try:
+        _remove_partial_quarantine(parent_fd, anchors, quarantine)
+    except (ActiveSessionScanError, OSError) as cleanup_error:
+        raise ActiveSessionScanError(
+            "quarantine initialization failed after mkdir: "
+            f"{primary_error}; session entry was not moved into quarantine; "
+            "partial quarantine cleanup also failed: "
+            f"{cleanup_error}; {diagnostic}"
+        ) from primary_error
+    raise ActiveSessionScanError(
+        "quarantine initialization failed after mkdir: "
+        f"{primary_error}; session entry was not moved into quarantine; "
+        f"partial quarantine cleanup completed; {diagnostic}"
+    ) from primary_error
+
+
 def _create_private_quarantine(
     parent_fd: int,
     parent_path: Path,
     anchors: tuple[_DirectoryAnchor, ...],
+    entry_name: str,
 ) -> _DirectoryAnchor:
     _validate_directory_anchors(anchors)
     for _ in range(_QUARANTINE_CREATE_ATTEMPTS):
@@ -739,16 +804,51 @@ def _create_private_quarantine(
             f"cannot allocate private cleanup quarantine below {parent_path}"
         )
 
-    quarantine = _open_directory_anchor(
-        parent_fd,
-        name,
-        parent_path / name,
+    quarantine_path = parent_path / name
+    quarantine_evidence = _QuarantineEvidence(
+        name=name,
+        identity=None,
+        path=quarantine_path,
     )
+    try:
+        created_stat = os.stat(
+            name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+    except OSError as exc:
+        _raise_quarantine_creation_failure(
+            parent_fd,
+            anchors,
+            quarantine_evidence,
+            entry_name,
+            exc,
+        )
+    quarantine_evidence = _QuarantineEvidence(
+        name=name,
+        identity=_fingerprint_from_stat_result(created_stat).identity,
+        path=quarantine_path,
+    )
+    try:
+        quarantine = _open_directory_anchor(
+            parent_fd,
+            name,
+            quarantine_path,
+        )
+    except (ActiveSessionScanError, OSError) as exc:
+        _raise_quarantine_creation_failure(
+            parent_fd,
+            anchors,
+            quarantine_evidence,
+            entry_name,
+            exc,
+        )
     try:
         quarantine_stat = os.fstat(quarantine.directory_fd)
         parent_stat = os.fstat(parent_fd)
         if (
-            quarantine_stat.st_dev != parent_stat.st_dev
+            quarantine.identity != quarantine_evidence.identity
+            or quarantine_stat.st_dev != parent_stat.st_dev
             or quarantine_stat.st_uid != os.geteuid()
             or stat.S_IMODE(quarantine_stat.st_mode) & 0o077
         ):
@@ -756,6 +856,15 @@ def _create_private_quarantine(
                 f"unsafe Claude cleanup quarantine: {quarantine.path}"
             )
         _validate_directory_anchors((*anchors, quarantine))
+    except (ActiveSessionScanError, OSError) as exc:
+        os.close(quarantine.directory_fd)
+        _raise_quarantine_creation_failure(
+            parent_fd,
+            anchors,
+            quarantine_evidence,
+            entry_name,
+            exc,
+        )
     except BaseException:
         os.close(quarantine.directory_fd)
         raise
@@ -840,7 +949,7 @@ def _descriptor_recovery_path(
 
 
 def _quarantine_recovery_diagnostic(
-    quarantine: _DirectoryAnchor,
+    quarantine: _DirectoryAnchor | _QuarantineEvidence,
     name: str,
     *,
     isolated_stat: os.stat_result | None,
@@ -856,13 +965,16 @@ def _quarantine_recovery_diagnostic(
     details = [
         f"{path_label}={last_lexical_path}",
         f"quarantine name={quarantine.name}",
-        (
+    ]
+    if quarantine.identity is None:
+        details.append("quarantine identity=unavailable")
+    else:
+        details.append(
             "quarantine identity="
             f"device:{quarantine.identity.device},"
             f"inode:{quarantine.identity.inode}"
-        ),
-        f"isolated entry name={name}",
-    ]
+        )
+    details.append(f"isolated entry name={name}")
     if isolated_stat is None:
         details.append("isolated identity/fingerprint=unavailable")
     else:
@@ -900,6 +1012,7 @@ def _delete_entry_via_quarantine(
         parent_fd,
         path.parent,
         anchors,
+        name,
     )
     quarantine_anchors = (*anchors, quarantine)
     try:
