@@ -5,6 +5,7 @@ import time
 
 import pytest
 
+from local_dev.serena_mcp_management import serena_agent_launcher as launcher
 from local_dev.serena_mcp_management.serena_agent_launcher import (
     _launch_bare_child,
     _touch_lease_if_record_exists,
@@ -45,6 +46,38 @@ def stub_serena_cli_resolution(monkeypatch):
         "local_dev.serena_mcp_management.serena_agent_launcher.serena_server_command",
         lambda: ["serena"],
     )
+
+
+def _stub_isolated_preflight_overview(monkeypatch, tmp_path):
+    """Keep interactive launcher tests away from inherited user stores."""
+
+    temp_home = tmp_path / "home"
+    temp_home.mkdir()
+    monkeypatch.setenv("HOME", str(temp_home))
+    monkeypatch.setenv("CODEX_HOME", str(temp_home / ".codex"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(temp_home / ".claude"))
+
+    def fail_real_inventory(*args, **kwargs):
+        pytest.fail("real preflight inventory must not run")
+
+    monkeypatch.setattr(launcher, "_inventory_for_preflight", fail_real_inventory)
+    monkeypatch.setattr(
+        launcher,
+        "_memory_inventory_for_preflight",
+        fail_real_inventory,
+    )
+    snapshot = launcher.InventorySnapshot(
+        inventory=None,
+        error="synthetic session inventory",
+        memory_inventory=None,
+        memory_error="synthetic memory inventory",
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_render_preflight_overview_v2",
+        lambda **kwargs: snapshot,
+    )
+    return snapshot
 
 
 def test_infer_client_type_from_program_name():
@@ -269,6 +302,7 @@ def test_launcher_prints_mcp_progress_and_clears_before_child(monkeypatch, tmp_p
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "installed")
+    _stub_isolated_preflight_overview(monkeypatch, tmp_path)
     # Mock preflight to avoid stdin interaction
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_preflight_v2",
                         lambda **kw: 0, raising=False)
@@ -356,6 +390,7 @@ def test_launcher_opens_dashboard_for_interactive_agent(monkeypatch, tmp_path):
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "installed")
+    _stub_isolated_preflight_overview(monkeypatch, tmp_path)
     # Mock preflight/init/launch-prep to avoid stdin interaction
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_preflight_v2",
                         lambda **kw: 0, raising=False)
@@ -415,6 +450,7 @@ def test_launcher_prints_shutdown_stats_for_interactive_agent(monkeypatch, tmp_p
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "installed")
+    _stub_isolated_preflight_overview(monkeypatch, tmp_path)
     # Mock preflight/init/launch-prep to avoid stdin interaction
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_preflight_v2",
                         lambda **kw: 0, raising=False)

@@ -1152,6 +1152,38 @@ def _inventory_snapshot(
     )
 
 
+def _stub_isolated_main_preflight(monkeypatch, tmp_path):
+    """Keep interactive main tests away from inherited user stores."""
+
+    temp_home = tmp_path / "home"
+    temp_home.mkdir()
+    monkeypatch.setenv("HOME", str(temp_home))
+    monkeypatch.setenv("CODEX_HOME", str(temp_home / ".codex"))
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(temp_home / ".claude"))
+
+    def fail_real_inventory(*args, **kwargs):
+        pytest.fail("real preflight inventory must not run")
+
+    monkeypatch.setattr(launcher, "_inventory_for_preflight", fail_real_inventory)
+    monkeypatch.setattr(
+        launcher,
+        "_memory_inventory_for_preflight",
+        fail_real_inventory,
+    )
+    snapshot = launcher.InventorySnapshot(
+        inventory=None,
+        error="synthetic session inventory",
+        memory_inventory=None,
+        memory_error="synthetic memory inventory",
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_render_preflight_overview_v2",
+        lambda **kwargs: snapshot,
+    )
+    return snapshot
+
+
 def test_v2_launch_prep_claude_arms_native_cleanup_without_deleting_memory(
     tmp_path, monkeypatch
 ):
@@ -2271,6 +2303,7 @@ def test_v2_main_clears_terminal_before_child_when_serena_skipped(monkeypatch, t
     monkeypatch.setenv("SERENA_AGENT_CLEAR_BEFORE_CHILD", "1")
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
     _set_graphify_env(monkeypatch)
+    _stub_isolated_main_preflight(monkeypatch, tmp_path)
 
     monkeypatch.setattr(launcher, "_run_preflight_v2",
                         lambda **kw: 0, raising=False)
