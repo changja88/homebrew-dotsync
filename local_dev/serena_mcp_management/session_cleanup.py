@@ -839,26 +839,53 @@ def _descriptor_recovery_path(
     return recovery_path
 
 
-def _unavailable_quarantine_details(
+def _quarantine_recovery_diagnostic(
     quarantine: _DirectoryAnchor,
+    name: str,
+    *,
+    isolated_stat: os.stat_result | None,
+    last_lexical_path: Path,
+    path_was_verified: bool,
+    lookup_failure: Exception | None = None,
 ) -> str:
-    return (
-        "no trustworthy quarantine path is available; quarantine identity="
-        f"{quarantine.identity.device}:{quarantine.identity.inode}"
+    path_label = (
+        "last-verified lexical path"
+        if path_was_verified
+        else "last-known lexical path"
     )
-
-
-def _unavailable_recovery_details(
-    quarantine: _DirectoryAnchor,
-    isolated_stat: os.stat_result,
-) -> str:
-    isolated_identity = _fingerprint_from_stat_result(isolated_stat).identity
-    return (
-        "isolated entry remains preserved but no trustworthy recovery path "
-        f"is available; isolated identity={isolated_identity.device}:"
-        f"{isolated_identity.inode}; quarantine identity="
-        f"{quarantine.identity.device}:{quarantine.identity.inode}"
-    )
+    details = [
+        f"{path_label}={last_lexical_path}",
+        f"quarantine name={quarantine.name}",
+        (
+            "quarantine identity="
+            f"device:{quarantine.identity.device},"
+            f"inode:{quarantine.identity.inode}"
+        ),
+        f"isolated entry name={name}",
+    ]
+    if isolated_stat is None:
+        details.append("isolated identity/fingerprint=unavailable")
+    else:
+        fingerprint = _fingerprint_from_stat_result(isolated_stat)
+        details.extend(
+            (
+                (
+                    "isolated identity="
+                    f"device:{fingerprint.identity.device},"
+                    f"inode:{fingerprint.identity.inode}"
+                ),
+                (
+                    "isolated fingerprint="
+                    f"size:{fingerprint.size},mtime_ns:{fingerprint.mtime_ns}"
+                ),
+            )
+        )
+    if lookup_failure is not None:
+        details.append(
+            f"current-path lookup/F_GETPATH failed: {lookup_failure}"
+        )
+    details.append("current namespace location is not guaranteed")
+    return "; ".join(details)
 
 
 def _delete_entry_via_quarantine(
@@ -951,28 +978,66 @@ def _delete_entry_via_quarantine(
                 try:
                     leftover_path = _descriptor_directory_path(quarantine)
                 except (ActiveSessionScanError, OSError) as recovery_exc:
+                    diagnostic = _quarantine_recovery_diagnostic(
+                        quarantine,
+                        name,
+                        isolated_stat=None,
+                        last_lexical_path=quarantine.path,
+                        path_was_verified=False,
+                        lookup_failure=recovery_exc,
+                    )
                     raise ActiveSessionScanError(
                         f"{exc}; quarantine cleanup also failed: "
-                        f"{cleanup_exc}; "
-                        f"{_unavailable_quarantine_details(quarantine)}; "
-                        f"recovery lookup failed: {recovery_exc}"
+                        f"{cleanup_exc}; {diagnostic}"
                     ) from exc
+                diagnostic = _quarantine_recovery_diagnostic(
+                    quarantine,
+                    name,
+                    isolated_stat=None,
+                    last_lexical_path=leftover_path,
+                    path_was_verified=True,
+                )
                 raise ActiveSessionScanError(
                     f"{exc}; quarantine cleanup also failed: {cleanup_exc}; "
-                    f"empty quarantine remains at {leftover_path}"
+                    f"{diagnostic}"
                 ) from exc
+            diagnostic = _quarantine_recovery_diagnostic(
+                quarantine,
+                name,
+                isolated_stat=None,
+                last_lexical_path=quarantine.path,
+                path_was_verified=False,
+            )
+            raise ActiveSessionScanError(
+                f"{exc}; isolated entry was not found in quarantine and the "
+                f"empty quarantine cleanup completed; {diagnostic}"
+            ) from exc
         except OSError as inspection_exc:
             try:
                 quarantine_path = _descriptor_directory_path(quarantine)
             except (ActiveSessionScanError, OSError) as recovery_exc:
+                diagnostic = _quarantine_recovery_diagnostic(
+                    quarantine,
+                    name,
+                    isolated_stat=None,
+                    last_lexical_path=quarantine.path,
+                    path_was_verified=False,
+                    lookup_failure=recovery_exc,
+                )
                 raise ActiveSessionScanError(
                     f"{exc}; cannot inspect isolated entry: {inspection_exc}; "
-                    f"{_unavailable_quarantine_details(quarantine)}; "
-                    f"recovery lookup failed: {recovery_exc}"
+                    f"{diagnostic}"
                 ) from exc
+            diagnostic = _quarantine_recovery_diagnostic(
+                quarantine,
+                name,
+                isolated_stat=None,
+                last_lexical_path=quarantine_path,
+                path_was_verified=True,
+            )
             raise ActiveSessionScanError(
                 f"{exc}; cannot inspect isolated entry: {inspection_exc}; "
-                f"cleanup quarantine state is uncertain at {quarantine_path}"
+                f"{diagnostic}"
             ) from exc
         else:
             try:
@@ -982,13 +1047,28 @@ def _delete_entry_via_quarantine(
                     isolated_stat,
                 )
             except (ActiveSessionScanError, OSError) as recovery_exc:
+                diagnostic = _quarantine_recovery_diagnostic(
+                    quarantine,
+                    name,
+                    isolated_stat=isolated_stat,
+                    last_lexical_path=quarantine.path / name,
+                    path_was_verified=False,
+                    lookup_failure=recovery_exc,
+                )
                 raise ActiveSessionScanError(
-                    f"{exc}; "
-                    f"{_unavailable_recovery_details(quarantine, isolated_stat)}; "
-                    f"recovery lookup failed: {recovery_exc}"
+                    f"{exc}; isolated entry was observed through the held "
+                    f"quarantine descriptor; {diagnostic}"
                 ) from exc
+            diagnostic = _quarantine_recovery_diagnostic(
+                quarantine,
+                name,
+                isolated_stat=isolated_stat,
+                last_lexical_path=recovery_path,
+                path_was_verified=True,
+            )
             raise ActiveSessionScanError(
-                f"{exc}; isolated entry preserved at {recovery_path}"
+                f"{exc}; isolated entry was verified before diagnostic "
+                f"reporting; {diagnostic}"
             ) from exc
         raise
     finally:

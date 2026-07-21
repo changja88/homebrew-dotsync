@@ -1,3 +1,4 @@
+import fcntl
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -341,7 +342,7 @@ def test_cleanup_claude_does_not_delete_final_name_replacement(
     assert parked_original.exists()
 
 
-def test_cleanup_claude_reports_current_recovery_path_after_ancestor_remap(
+def test_cleanup_claude_reports_last_verified_path_after_ancestor_remap(
     tmp_path,
     monkeypatch,
 ):
@@ -388,8 +389,178 @@ def test_cleanup_claude_reports_current_recovery_path_after_ancestor_remap(
     assert result.deleted == 0
     assert recovery_path.read_text() == "expected"
     assert not stale_path.exists()
-    assert str(recovery_path) in result.error
+    assert f"last-verified lexical path={recovery_path}" in result.error
     assert str(stale_path) not in result.error
+    assert "current namespace location is not guaranteed" in result.error
+
+
+def test_cleanup_claude_labels_path_after_post_validation_ancestor_remap(
+    tmp_path,
+    monkeypatch,
+):
+    config = tmp_path / ".claude"
+    project_dir = config / "projects/-repo"
+    root = _write(project_dir / f"{SESSION_A}.jsonl", "expected")
+    inventory = scan_inventory(
+        client="claude",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        policy="all_inactive",
+        active_claude_session_ids=frozenset(),
+        open_file_identities=frozenset(),
+    )
+    first_remapped_project = tmp_path / "first-remapped-project"
+    final_remapped_project = tmp_path / "final-remapped-project"
+    original_rename = os.rename
+    original_stat = os.stat
+    isolation_remapped = False
+    post_validation_remapped = False
+
+    def rename(src, dst, *args, **kwargs):
+        nonlocal isolation_remapped
+        original_rename(src, dst, *args, **kwargs)
+        if (
+            not isolation_remapped
+            and kwargs.get("src_dir_fd") is not None
+            and Path(src).name == root.name
+        ):
+            original_rename(project_dir, first_remapped_project)
+            project_dir.mkdir()
+            isolation_remapped = True
+
+    def stat_path(path, *args, **kwargs):
+        nonlocal post_validation_remapped
+        result = original_stat(path, *args, **kwargs)
+        if (
+            isolation_remapped
+            and not post_validation_remapped
+            and isinstance(path, Path)
+            and path.name == root.name
+            and first_remapped_project in path.parents
+            and kwargs.get("follow_symlinks") is False
+        ):
+            original_rename(first_remapped_project, final_remapped_project)
+            first_remapped_project.mkdir()
+            post_validation_remapped = True
+        return result
+
+    monkeypatch.setattr(os, "rename", rename)
+    monkeypatch.setattr(os, "stat", stat_path)
+
+    result = cleanup_claude_inventory(
+        inventory,
+        active_session_snapshot=lambda config_dir: frozenset(),
+        open_file_snapshot=lambda paths: frozenset(),
+    )
+
+    quarantine = next(final_remapped_project.glob(".claude-cleanup-*"))
+    actual_recovery_path = quarantine / root.name
+    last_verified_path = (
+        first_remapped_project / quarantine.name / root.name
+    )
+    quarantine_stat = quarantine.stat(follow_symlinks=False)
+    isolated_stat = actual_recovery_path.stat(follow_symlinks=False)
+    assert isolation_remapped
+    assert post_validation_remapped
+    assert not result.succeeded
+    assert actual_recovery_path.read_text() == "expected"
+    assert not last_verified_path.exists()
+    assert f"last-verified lexical path={last_verified_path}" in result.error
+    assert f"quarantine name={quarantine.name}" in result.error
+    assert (
+        "quarantine identity="
+        f"device:{quarantine_stat.st_dev},inode:{quarantine_stat.st_ino}"
+        in result.error
+    )
+    assert f"isolated entry name={root.name}" in result.error
+    assert (
+        "isolated identity="
+        f"device:{isolated_stat.st_dev},inode:{isolated_stat.st_ino}"
+        in result.error
+    )
+    assert (
+        "isolated fingerprint="
+        f"size:{isolated_stat.st_size},mtime_ns:{isolated_stat.st_mtime_ns}"
+        in result.error
+    )
+    assert "current namespace location is not guaranteed" in result.error
+    assert "isolated entry preserved at" not in result.error
+
+
+def test_cleanup_claude_reports_durable_details_when_fgetpath_fails(
+    tmp_path,
+    monkeypatch,
+):
+    config = tmp_path / ".claude"
+    project_dir = config / "projects/-repo"
+    root = _write(project_dir / f"{SESSION_A}.jsonl", "expected")
+    inventory = scan_inventory(
+        client="claude",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        policy="all_inactive",
+        active_claude_session_ids=frozenset(),
+        open_file_identities=frozenset(),
+    )
+    original_rename = os.rename
+    isolated = False
+
+    def rename(src, dst, *args, **kwargs):
+        nonlocal isolated
+        original_rename(src, dst, *args, **kwargs)
+        if (
+            not isolated
+            and kwargs.get("src_dir_fd") is not None
+            and Path(src).name == root.name
+        ):
+            isolated = True
+            raise OSError("post-isolation failure")
+
+    def fail_fgetpath(fd, command, arg=0):
+        assert command == fcntl.F_GETPATH
+        raise OSError("injected F_GETPATH failure")
+
+    monkeypatch.setattr(os, "rename", rename)
+    monkeypatch.setattr(fcntl, "fcntl", fail_fgetpath)
+
+    result = cleanup_claude_inventory(
+        inventory,
+        active_session_snapshot=lambda config_dir: frozenset(),
+        open_file_snapshot=lambda paths: frozenset(),
+    )
+
+    quarantine = next(project_dir.glob(".claude-cleanup-*"))
+    recovery_path = quarantine / root.name
+    quarantine_stat = quarantine.stat(follow_symlinks=False)
+    isolated_stat = recovery_path.stat(follow_symlinks=False)
+    assert isolated
+    assert not result.succeeded
+    assert recovery_path.read_text() == "expected"
+    assert "post-isolation failure" in result.error
+    assert f"last-known lexical path={recovery_path}" in result.error
+    assert f"quarantine name={quarantine.name}" in result.error
+    assert (
+        "quarantine identity="
+        f"device:{quarantine_stat.st_dev},inode:{quarantine_stat.st_ino}"
+        in result.error
+    )
+    assert f"isolated entry name={root.name}" in result.error
+    assert (
+        "isolated identity="
+        f"device:{isolated_stat.st_dev},inode:{isolated_stat.st_ino}"
+        in result.error
+    )
+    assert (
+        "isolated fingerprint="
+        f"size:{isolated_stat.st_size},mtime_ns:{isolated_stat.st_mtime_ns}"
+        in result.error
+    )
+    assert (
+        "current-path lookup/F_GETPATH failed: "
+        "injected F_GETPATH failure" in result.error
+    )
+    assert "current namespace location is not guaranteed" in result.error
+    assert "remains preserved" not in result.error
 
 
 def test_cleanup_claude_reports_quarantine_cleanup_failure(
