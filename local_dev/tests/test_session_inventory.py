@@ -193,9 +193,12 @@ def test_scan_codex_builds_source_before_orca_delete_plan(tmp_path):
     assert inventory.records == CountStats(total=3, to_delete=3, to_keep=0)
     target = inventory.codex_targets[0]
     assert target.root_id == ROOT_A
-    assert [(owner.codex_home, owner.local_root_ids, owner.is_orca) for owner in target.owners] == [
+    assert [
+        (owner.codex_home, owner.local_delete_ids, owner.is_orca)
+        for owner in target.owners
+    ] == [
         (default_home, (ROOT_A,), False),
-        (orca_home, (ROOT_A,), True),
+        (orca_home, (CHILD_A, ROOT_A), True),
     ]
 
 
@@ -255,19 +258,53 @@ def test_scan_codex_keeps_open_logical_group(tmp_path):
     assert inventory.codex_targets == ()
 
 
+def test_scan_codex_treats_missing_parent_as_cleanup_root(tmp_path):
+    sessions = tmp_path / ".codex/sessions/2026/07/01"
+    orphan = sessions / "orphan.jsonl"
+    descendant = sessions / "descendant.jsonl"
+    grandchild = sessions / "grandchild.jsonl"
+    _write_jsonl(
+        orphan,
+        [_session_meta(ROOT_A, MISSING_PARENT)],
+        age_days=10,
+    )
+    _write_jsonl(
+        descendant,
+        [_session_meta(CHILD_A, ROOT_A)],
+        age_days=10,
+    )
+    _write_jsonl(
+        grandchild,
+        [_session_meta(GRANDCHILD_A, CHILD_A)],
+        age_days=10,
+    )
+
+    inventory = scan_inventory(
+        client="codex",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        now=NOW,
+        open_file_identities=frozenset(),
+    )
+
+    assert inventory.sessions == CountStats(total=1, to_delete=1, to_keep=0)
+    target = inventory.codex_targets[0]
+    assert target.root_id == MISSING_PARENT
+    assert target.owners[0].local_delete_ids == (
+        GRANDCHILD_A,
+        CHILD_A,
+        ROOT_A,
+    )
+    assert not any("missing parent" in warning for warning in inventory.warnings)
+
+
 def test_scan_codex_keeps_unsafe_graphs_with_warnings(tmp_path):
     sessions = tmp_path / ".codex/sessions/2026/07/01"
     malformed = sessions / "malformed.jsonl"
-    missing_parent = sessions / "missing-parent.jsonl"
     cycle_a = sessions / "cycle-a.jsonl"
     cycle_b = sessions / "cycle-b.jsonl"
     malformed.parent.mkdir(parents=True)
     malformed.write_text("not-json\n")
-    _write_jsonl(
-        missing_parent,
-        [_session_meta(ROOT_A, MISSING_PARENT)],
-        age_days=10,
-    )
     _write_jsonl(cycle_a, [_session_meta(ROOT_B, CHILD_A)], age_days=10)
     _write_jsonl(cycle_b, [_session_meta(CHILD_A, ROOT_B)], age_days=10)
 
@@ -282,7 +319,6 @@ def test_scan_codex_keeps_unsafe_graphs_with_warnings(tmp_path):
     assert inventory.sessions.to_delete == 0
     assert inventory.codex_targets == ()
     assert any("malformed" in warning for warning in inventory.warnings)
-    assert any("missing parent" in warning for warning in inventory.warnings)
     assert any("cycle" in warning for warning in inventory.warnings)
 
 
@@ -341,7 +377,9 @@ def test_scan_codex_uses_local_root_for_descendant_fragment(tmp_path):
     )
 
     target = inventory.codex_targets[0]
-    assert [(owner.codex_home, owner.local_root_ids) for owner in target.owners] == [
+    assert [
+        (owner.codex_home, owner.local_delete_ids) for owner in target.owners
+    ] == [
         (default_home, (ROOT_A,)),
         (orca_home, (CHILD_A,)),
     ]

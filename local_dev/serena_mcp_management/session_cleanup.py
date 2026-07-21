@@ -171,9 +171,9 @@ def cleanup_codex_inventory(
                     "Orca copy preserved"
                 )
                 continue
-            for local_root_id in owner.local_root_ids:
+            for local_delete_id in owner.local_delete_ids:
                 succeeded, detail = _run_codex_command(
-                    [codex_binary, "delete", "--force", local_root_id],
+                    [codex_binary, "delete", "--force", local_delete_id],
                     codex_home=owner.codex_home,
                     runner=runner,
                 )
@@ -183,7 +183,7 @@ def cleanup_codex_inventory(
                 if not owner.is_orca:
                     source_failed = True
                 warnings.append(
-                    f"Codex session {local_root_id} delete failed in "
+                    f"Codex session {local_delete_id} delete failed in "
                     f"{owner.codex_home}: {detail}"
                 )
                 break

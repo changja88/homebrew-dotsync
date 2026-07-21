@@ -118,7 +118,7 @@ class CodexSessionFile:
 @dataclass(frozen=True)
 class OwnerDeletePlan:
     codex_home: Path
-    local_root_ids: tuple[str, ...]
+    local_delete_ids: tuple[str, ...]
     is_orca: bool
 
 @dataclass(frozen=True)
@@ -202,12 +202,14 @@ def test_scan_codex_groups_all_homes_by_root_and_descendant_activity(tmp_path):
 - 첫 줄 뒤에 매우 큰 invalid body가 있어도 첫 줄 metadata만으로 성공한다.
 - root와 모든 descendant가 6일 이상이면 logical group 1개가 delete target이다.
 - open identity가 group member와 같으면 전체 group이 keep이다.
-- malformed UUID, missing parent, parent cycle, conflicting parent는 warning 후 keep이다.
+- malformed UUID, parent cycle, conflicting parent는 warning 후 keep이다.
+- missing parent UUID는 synthetic logical root로 취급하고, 해당 descendant
+  group에는 동일한 5일·open-file 안전 조건을 적용한다.
 - `archived_sessions`는 검색하지 않는다.
 - default/active/Orca home canonical path 중복을 제거한다.
 - 같은 UUID의 symlink/hard-link copy를 physical session 두 개로 세지 않는다.
-- owner home에 global root가 없으면 그 home의 local top-level descendant가
-  `OwnerDeletePlan.local_root_ids`에 들어간다.
+- owner home에 실제로 존재하는 group member는 모두 descendant-first 순서로
+  `OwnerDeletePlan.local_delete_ids`에 들어간다.
 
 - [ ] **Step 2: Codex tests가 현재 cwd filter와 per-file count 때문에 실패하는지 확인**
 
@@ -332,7 +334,7 @@ def test_cleanup_calls_official_delete_source_before_orca(tmp_path):
 - managed delete 실패 시 logical group deleted count를 올리지 않음.
 - fingerprint/path set이 바뀌거나 rollout이 새로 open되면 전체 cleanup skip.
 - delete timeout/exception은 warning으로 바꾸고 다음 agent launch를 막지 않음.
-- local root fragment가 여러 개면 각각 공식 delete 호출.
+- owner home의 local session ID마다 descendant-first로 공식 delete 호출.
 - `claude_retention_args([])`가
   `["--settings", '{"cleanupPeriodDays":5}']`를 반환.
 - 이미 `--settings`/`--settings=...`가 있으면 argv를 그대로 반환.

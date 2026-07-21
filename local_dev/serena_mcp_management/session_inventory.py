@@ -54,7 +54,7 @@ class CodexSessionFile:
 @dataclass(frozen=True)
 class OwnerDeletePlan:
     codex_home: Path
-    local_root_ids: tuple[str, ...]
+    local_delete_ids: tuple[str, ...]
     is_orca: bool
 
 
@@ -267,9 +267,9 @@ def _group_codex_files(
                     roots[item] = current
                 return current
             if parent not in files_by_id:
-                invalid.update(trail)
-                warnings.append(f"missing parent {parent} for session {current}")
-                return None
+                for item in trail:
+                    roots[item] = parent
+                return parent
             current = parent
 
     for session_id in sorted(files_by_id):
@@ -306,17 +306,27 @@ def _owner_delete_plans(
         }
         if not local_ids:
             continue
-        local_roots = tuple(
+
+        def local_depth(session_id: str) -> int:
+            depth = 0
+            current = session_id
+            while True:
+                parent = parents.get(current)
+                if parent is None or parent not in local_ids:
+                    return depth
+                depth += 1
+                current = parent
+
+        local_delete_ids = tuple(
             sorted(
-                session_id
-                for session_id in local_ids
-                if parents.get(session_id) not in local_ids
+                local_ids,
+                key=lambda session_id: (-local_depth(session_id), session_id),
             )
         )
         plans.append(
             OwnerDeletePlan(
                 codex_home=codex_home,
-                local_root_ids=local_roots,
+                local_delete_ids=local_delete_ids,
                 is_orca=codex_home == orca_home and codex_home != default_home,
             )
         )

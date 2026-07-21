@@ -39,9 +39,11 @@ def _bridged_inventory(tmp_path: Path):
     )
     source = default_home / "sessions/2026/07/01/root.jsonl"
     bridged = orca_home / "sessions/2026/07/01/root.jsonl"
+    child = orca_home / "sessions/2026/07/01/child.jsonl"
     _write_old_session(source, ROOT_A)
     bridged.parent.mkdir(parents=True)
     os.link(source, bridged)
+    _write_old_session(child, CHILD_A, ROOT_A)
     inventory = scan_inventory(
         client="codex",
         home=tmp_path,
@@ -74,6 +76,10 @@ def test_cleanup_calls_official_delete_source_before_orca(tmp_path):
         str(default_home),
     )
     assert calls[2] == (
+        ["/fake/codex", "delete", "--force", CHILD_A],
+        str(orca_home),
+    )
+    assert calls[3] == (
         ["/fake/codex", "delete", "--force", ROOT_A],
         str(orca_home),
     )
