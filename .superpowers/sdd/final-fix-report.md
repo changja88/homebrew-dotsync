@@ -16,7 +16,11 @@ Implemented only the three Important findings in
 No real Codex or Claude store was inspected or mutated. All destructive-path
 tests use pytest temporary directories, injected inventories, fake Codex
 runners, and injected filesystem failures. No deploy or graphify update was
-run; those remain controller work.
+invoked as task work; those remain controller work. The required git commit did
+trigger this repository's installed post-commit hook, which automatically
+refreshed ignored `graphify-out/` files after verification. No graph artifact is
+part of the fix commit. The controller must still re-review first and run its
+authoritative graph update afterward.
 
 ## Result contract
 
