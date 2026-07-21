@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import stat
 import subprocess
 from collections.abc import Iterator
@@ -30,6 +31,8 @@ _DIRECTORY_OPEN_FLAGS = (
     os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | _CLOSE_ON_EXEC
 )
 _FILE_OPEN_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | _CLOSE_ON_EXEC
+_QUARANTINE_PREFIX = ".claude-cleanup-"
+_QUARANTINE_CREATE_ATTEMPTS = 32
 
 
 RunCommand = Callable[..., subprocess.CompletedProcess[str]]
@@ -716,6 +719,164 @@ def _verify_entry_matches(
         )
 
 
+def _create_private_quarantine(
+    parent_fd: int,
+    parent_path: Path,
+    anchors: tuple[_DirectoryAnchor, ...],
+) -> _DirectoryAnchor:
+    _validate_directory_anchors(anchors)
+    for _ in range(_QUARANTINE_CREATE_ATTEMPTS):
+        name = f"{_QUARANTINE_PREFIX}{secrets.token_hex(16)}"
+        try:
+            os.mkdir(name, 0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            continue
+        break
+    else:
+        raise ActiveSessionScanError(
+            f"cannot allocate private cleanup quarantine below {parent_path}"
+        )
+
+    quarantine = _open_directory_anchor(
+        parent_fd,
+        name,
+        parent_path / name,
+    )
+    try:
+        quarantine_stat = os.fstat(quarantine.directory_fd)
+        parent_stat = os.fstat(parent_fd)
+        if (
+            quarantine_stat.st_dev != parent_stat.st_dev
+            or quarantine_stat.st_uid != os.geteuid()
+            or stat.S_IMODE(quarantine_stat.st_mode) & 0o077
+        ):
+            raise ActiveSessionScanError(
+                f"unsafe Claude cleanup quarantine: {quarantine.path}"
+            )
+        _validate_directory_anchors((*anchors, quarantine))
+    except BaseException:
+        os.close(quarantine.directory_fd)
+        raise
+    return quarantine
+
+
+def _remove_empty_quarantine(
+    parent_fd: int,
+    anchors: tuple[_DirectoryAnchor, ...],
+    quarantine: _DirectoryAnchor,
+) -> None:
+    quarantine_anchors = (*anchors, quarantine)
+    _validate_directory_anchors(quarantine_anchors)
+    if os.listdir(quarantine.directory_fd):
+        raise ActiveSessionScanError(
+            f"Claude cleanup quarantine is not empty: {quarantine.path}"
+        )
+    os.rmdir(quarantine.name, dir_fd=parent_fd)
+    _validate_directory_anchors(anchors)
+
+
+def _delete_entry_via_quarantine(
+    parent_fd: int,
+    name: str,
+    path: Path,
+    anchors: tuple[_DirectoryAnchor, ...],
+    expected: ClaudeSessionPath,
+    opened_fd: int,
+) -> None:
+    quarantine = _create_private_quarantine(
+        parent_fd,
+        path.parent,
+        anchors,
+    )
+    quarantine_anchors = (*anchors, quarantine)
+    try:
+        _validate_directory_anchors(quarantine_anchors)
+        os.rename(
+            name,
+            name,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=quarantine.directory_fd,
+        )
+        _validate_directory_anchors(quarantine_anchors)
+
+        isolated = _claude_entry_from_stat(
+            path,
+            os.stat(
+                name,
+                dir_fd=quarantine.directory_fd,
+                follow_symlinks=False,
+            ),
+        )
+        descriptor_entry = _claude_entry_from_stat(path, os.fstat(opened_fd))
+        if expected.is_directory:
+            expected_identity = expected.fingerprint.identity
+            if (
+                not isolated.is_directory
+                or not descriptor_entry.is_directory
+                or isolated.fingerprint.identity != expected_identity
+                or descriptor_entry.fingerprint.identity != expected_identity
+            ):
+                raise ActiveSessionScanError(
+                    f"Claude session directory changed during isolation: {path}"
+                )
+            if os.listdir(opened_fd):
+                raise ActiveSessionScanError(
+                    f"Claude session directory changed before removal: {path}"
+                )
+            os.rmdir(name, dir_fd=quarantine.directory_fd)
+        else:
+            _verify_entry_matches(isolated, expected)
+            _verify_entry_matches(descriptor_entry, expected)
+            os.unlink(name, dir_fd=quarantine.directory_fd)
+
+        try:
+            os.stat(
+                name,
+                dir_fd=quarantine.directory_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            raise ActiveSessionScanError(
+                f"Claude session path still exists in quarantine: {path}"
+            )
+
+        try:
+            os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise ActiveSessionScanError(
+                f"Claude session path replacement was preserved: {path}"
+            )
+        _remove_empty_quarantine(parent_fd, anchors, quarantine)
+    except (ActiveSessionScanError, OSError) as exc:
+        try:
+            os.stat(
+                name,
+                dir_fd=quarantine.directory_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            try:
+                _remove_empty_quarantine(parent_fd, anchors, quarantine)
+            except (ActiveSessionScanError, OSError):
+                pass
+        except OSError:
+            raise ActiveSessionScanError(
+                f"{exc}; cleanup quarantine state is uncertain at "
+                f"{quarantine.path}"
+            ) from exc
+        else:
+            raise ActiveSessionScanError(
+                f"{exc}; isolated entry preserved at {quarantine.path / name}"
+            ) from exc
+        raise
+    finally:
+        os.close(quarantine.directory_fd)
+
+
 def _delete_entry_no_follow(
     parent_fd: int,
     name: str,
@@ -742,7 +903,14 @@ def _delete_entry_no_follow(
                 os.stat(name, dir_fd=parent_fd, follow_symlinks=False),
             )
             _verify_entry_matches(current, expected)
-            os.unlink(name, dir_fd=parent_fd)
+            _delete_entry_via_quarantine(
+                parent_fd,
+                name,
+                path,
+                anchors,
+                expected,
+                file_fd,
+            )
         finally:
             os.close(file_fd)
     else:
@@ -792,7 +960,14 @@ def _delete_entry_no_follow(
                 raise ActiveSessionScanError(
                     f"Claude session directory replaced before removal: {path}"
                 )
-            os.rmdir(name, dir_fd=parent_fd)
+            _delete_entry_via_quarantine(
+                parent_fd,
+                name,
+                path,
+                anchors,
+                expected,
+                anchor.directory_fd,
+            )
         finally:
             os.close(anchor.directory_fd)
 
@@ -857,6 +1032,8 @@ def cleanup_claude_inventory(
 ) -> CleanupResult:
     """Delete only exact, revalidated inactive Claude session bundles."""
     preserved_running = inventory.active_sessions
+    if not inventory.claude_targets:
+        return CleanupResult(preserved_running=preserved_running)
     if inventory.client != "claude":
         return CleanupResult(
             preserved_running=preserved_running,
@@ -917,6 +1094,26 @@ def cleanup_claude_inventory(
             config_fd,
             config_anchors,
         ):
+            try:
+                prevalidated_roots = snapshot_claude_session_roots(config_dir)
+            except (ActiveSessionScanError, OSError) as exc:
+                return CleanupResult(
+                    preserved_running=preserved_running,
+                    error=(
+                        f"cannot prevalidate Claude session roots in "
+                        f"{config_dir}: {exc}"
+                    ),
+                )
+            for target in inactive_targets:
+                if prevalidated_roots.get(target.session_id, ()) != target.roots:
+                    return CleanupResult(
+                        preserved_running=preserved_running,
+                        error=(
+                            f"Claude session {target.session_id} roots changed "
+                            "after inventory"
+                        ),
+                    )
+
             for target in inactive_targets:
                 current_manifest = _snapshot_target_no_follow(
                     config_fd,

@@ -2,6 +2,8 @@ import os
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from local_dev.serena_mcp_management.session_cleanup import (
     cleanup_claude_inventory,
 )
@@ -169,6 +171,37 @@ def test_cleanup_claude_rejects_new_uuid_root_before_bundle_mutation(tmp_path):
     assert all(path.exists() for path in inventory.claude_targets[0].roots)
 
 
+def test_cleanup_claude_prevalidates_all_target_root_sets_before_delete(
+    tmp_path,
+):
+    _inventory(tmp_path)
+    config = tmp_path / ".claude"
+    _write(config / "projects/-repo" / f"{SESSION_B}.jsonl")
+    inventory = scan_inventory(
+        client="claude",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        policy="all_inactive",
+        active_claude_session_ids=frozenset(),
+        open_file_identities=frozenset(),
+    )
+    targets = {target.session_id: target for target in inventory.claude_targets}
+    new_root = _write(config / "debug" / f"{SESSION_B}.txt", "new")
+
+    result = cleanup_claude_inventory(
+        inventory,
+        active_session_snapshot=lambda config_dir: frozenset(),
+        open_file_snapshot=lambda paths: frozenset(),
+    )
+
+    assert not result.succeeded
+    assert result.deleted == 0
+    assert "roots changed" in result.error
+    assert all(path.exists() for path in targets[SESSION_A].roots)
+    assert all(path.exists() for path in targets[SESSION_B].roots)
+    assert new_root.read_text() == "new"
+
+
 def test_cleanup_claude_fails_before_delete_when_manifest_changes(tmp_path):
     inventory = _inventory(tmp_path)
     target = inventory.claude_targets[0]
@@ -225,6 +258,89 @@ def test_cleanup_claude_does_not_follow_swapped_ancestor(
     assert outside_file.read_text() == "keep"
 
 
+@pytest.mark.parametrize("root_kind", ("file", "directory"))
+def test_cleanup_claude_does_not_delete_final_name_replacement(
+    tmp_path,
+    monkeypatch,
+    root_kind,
+):
+    config = tmp_path / ".claude"
+    project_dir = config / "projects/-repo"
+    project_dir.mkdir(parents=True)
+    if root_kind == "file":
+        root = _write(project_dir / f"{SESSION_A}.jsonl", "expected")
+        replacement = _write(tmp_path / "replacement.jsonl", "replacement")
+    else:
+        root = project_dir / SESSION_A
+        root.mkdir()
+        replacement = tmp_path / "replacement-directory"
+        replacement.mkdir()
+    inventory = scan_inventory(
+        client="claude",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        policy="all_inactive",
+        active_claude_session_ids=frozenset(),
+        open_file_identities=frozenset(),
+    )
+    replacement_stat = replacement.stat()
+    replacement_identity = (
+        replacement_stat.st_dev,
+        replacement_stat.st_ino,
+    )
+    parked_original = tmp_path / f"parked-{root_kind}"
+    original_rename = os.rename
+    original_unlink = os.unlink
+    original_rmdir = os.rmdir
+    swapped = False
+
+    def swap_final_name():
+        nonlocal swapped
+        original_rename(root, parked_original)
+        original_rename(replacement, root)
+        swapped = True
+
+    def rename(src, dst, *args, **kwargs):
+        if (
+            not swapped
+            and kwargs.get("src_dir_fd") is not None
+            and Path(src).name == root.name
+        ):
+            swap_final_name()
+        original_rename(src, dst, *args, **kwargs)
+
+    def unlink(path, *args, **kwargs):
+        if not swapped and Path(path).name == root.name:
+            swap_final_name()
+        original_unlink(path, *args, **kwargs)
+
+    def rmdir(path, *args, **kwargs):
+        if not swapped and Path(path).name == root.name:
+            swap_final_name()
+        original_rmdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rename", rename)
+    monkeypatch.setattr(os, "unlink", unlink)
+    monkeypatch.setattr(os, "rmdir", rmdir)
+
+    result = cleanup_claude_inventory(
+        inventory,
+        active_session_snapshot=lambda config_dir: frozenset(),
+        open_file_snapshot=lambda paths: frozenset(),
+    )
+
+    surviving_identities = {
+        (candidate_stat.st_dev, candidate_stat.st_ino)
+        for candidate in tmp_path.rglob("*")
+        if (candidate_stat := candidate.stat(follow_symlinks=False))
+    }
+    assert swapped
+    assert replacement_identity in surviving_identities
+    assert not result.succeeded
+    assert result.deleted == 0
+    assert parked_original.exists()
+
+
 def test_cleanup_claude_preserves_freshly_open_transcript(tmp_path):
     inventory = _inventory(tmp_path)
     transcript = next(
@@ -259,16 +375,21 @@ def test_cleanup_claude_zero_targets_is_success(tmp_path):
         sessions=CountStats(total=0, to_delete=0, to_keep=0),
         criteria="sessions: all projects + all inactive; running preserved",
         claude_config_dir=tmp_path / ".claude",
+        active_sessions=2,
     )
+
+    def unexpected_snapshot(*args):
+        pytest.fail("zero-target cleanup must not take snapshots")
 
     result = cleanup_claude_inventory(
         inventory,
-        active_session_snapshot=lambda config_dir: frozenset(),
-        open_file_snapshot=lambda paths: frozenset(),
+        active_session_snapshot=unexpected_snapshot,
+        open_file_snapshot=unexpected_snapshot,
     )
 
     assert result.succeeded
     assert result.deleted == 0
+    assert result.preserved_running == 2
 
 
 def test_cleanup_claude_inventory_warning_fails_before_delete(tmp_path):
