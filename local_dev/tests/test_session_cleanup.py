@@ -119,6 +119,108 @@ def test_explicit_codex_cleanup_preserves_target_that_becomes_open(tmp_path):
     assert result.preserved_running == 1
 
 
+def test_explicit_codex_cleanup_refreshes_open_state_after_probe(tmp_path):
+    rollout = tmp_path / ".codex/sessions/2026/07/21/root.jsonl"
+    _write_old_session(rollout, ROOT_A)
+    inventory = scan_inventory(
+        client="codex",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        policy="all_inactive",
+        open_file_identities=frozenset(),
+    )
+    identity = inventory.codex_targets[0].files[0].fingerprint.identity
+    snapshots = iter((frozenset(), frozenset({identity})))
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    result = cleanup_codex_inventory(
+        inventory,
+        codex_binary="/fake/codex",
+        runner=runner,
+        open_file_snapshot=lambda paths: next(snapshots),
+    )
+
+    assert result.succeeded
+    assert result.deleted == 0
+    assert result.preserved_running == 1
+    assert calls == [["/fake/codex", "delete", "--help"]]
+
+
+def test_explicit_codex_cleanup_revalidates_fingerprint_after_probe(tmp_path):
+    rollout = tmp_path / ".codex/sessions/2026/07/21/root.jsonl"
+    _write_old_session(rollout, ROOT_A)
+    inventory = scan_inventory(
+        client="codex",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        policy="all_inactive",
+        open_file_identities=frozenset(),
+    )
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        if command[-1] == "--help":
+            rollout.write_text(rollout.read_text() + "changed\n")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    result = cleanup_codex_inventory(
+        inventory,
+        codex_binary="/fake/codex",
+        runner=runner,
+        open_file_snapshot=lambda paths: frozenset(),
+    )
+
+    assert not result.succeeded
+    assert result.deleted == 0
+    assert "changed after inventory" in result.error
+    assert calls == [["/fake/codex", "delete", "--help"]]
+
+
+def test_explicit_codex_cleanup_counts_initially_open_sessions(tmp_path):
+    root_b = "00000000-0000-4000-8000-000000000099"
+    first = tmp_path / ".codex/sessions/2026/07/21/first.jsonl"
+    opened = tmp_path / ".codex/sessions/2026/07/21/opened.jsonl"
+    _write_old_session(first, ROOT_A)
+    _write_old_session(opened, root_b)
+    opened_stat = opened.stat()
+    inventory = scan_inventory(
+        client="codex",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        policy="all_inactive",
+        open_file_identities=frozenset(
+            {
+                FileIdentity(
+                    device=opened_stat.st_dev,
+                    inode=opened_stat.st_ino,
+                )
+            }
+        ),
+    )
+
+    result = cleanup_codex_inventory(
+        inventory,
+        codex_binary="/fake/codex",
+        runner=lambda command, **kwargs: subprocess.CompletedProcess(
+            command,
+            0,
+            "",
+            "",
+        ),
+        open_file_snapshot=lambda paths: frozenset(),
+    )
+
+    assert inventory.active_sessions == 1
+    assert result.succeeded
+    assert result.deleted == 1
+    assert result.preserved_running == 1
+
+
 def test_explicit_codex_cleanup_reports_partial_cli_failure(tmp_path):
     root_b = "00000000-0000-4000-8000-000000000099"
     first = tmp_path / ".codex/sessions/2026/07/21/first.jsonl"

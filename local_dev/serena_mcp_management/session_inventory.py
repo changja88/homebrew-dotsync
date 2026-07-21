@@ -734,6 +734,19 @@ def _discover_claude_roots(
     )
 
 
+def snapshot_claude_session_roots(
+    config_dir: Path,
+) -> dict[str, tuple[Path, ...]]:
+    """Rediscover exact canonical Claude roots or fail on uncertainty."""
+    roots_by_id, warnings = _discover_claude_roots(config_dir)
+    if warnings:
+        raise ActiveSessionScanError(
+            "cannot safely rediscover Claude session roots: "
+            + "; ".join(warnings)
+        )
+    return roots_by_id
+
+
 def _scan_claude_all_inactive(
     *,
     config_dir: Path,

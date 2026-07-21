@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import os
-import shutil
+import stat
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -16,13 +18,18 @@ from local_dev.serena_mcp_management.session_inventory import (
     FileFingerprint,
     FileIdentity,
     snapshot_active_claude_sessions,
-    snapshot_claude_manifest,
+    snapshot_claude_session_roots,
     snapshot_open_rollouts,
 )
 
 
 CLAUDE_RETENTION_JSON = '{"cleanupPeriodDays":5}'
 DELETE_TIMEOUT_SECONDS = 30
+_CLOSE_ON_EXEC = getattr(os, "O_CLOEXEC", 0)
+_DIRECTORY_OPEN_FLAGS = (
+    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | _CLOSE_ON_EXEC
+)
+_FILE_OPEN_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | _CLOSE_ON_EXEC
 
 
 RunCommand = Callable[..., subprocess.CompletedProcess[str]]
@@ -39,6 +46,15 @@ class CleanupResult:
     @property
     def succeeded(self) -> bool:
         return self.error is None
+
+
+@dataclass(frozen=True)
+class _DirectoryAnchor:
+    parent_fd: int
+    name: str
+    directory_fd: int
+    identity: FileIdentity
+    path: Path
 
 
 def claude_retention_args(args: list[str]) -> list[str]:
@@ -77,6 +93,37 @@ def _target_unchanged(target: CodexCleanupTarget) -> bool:
         _current_fingerprint(session_file.path) == session_file.fingerprint
         for session_file in target.files
     )
+
+
+def _codex_target_is_open(
+    target: CodexCleanupTarget,
+    open_identities: frozenset[FileIdentity],
+) -> bool:
+    return any(
+        session_file.fingerprint.identity in open_identities
+        for session_file in target.files
+    )
+
+
+def _codex_target_revalidation_error(
+    inventory: AgentInventory,
+    target: CodexCleanupTarget,
+    completed_paths: frozenset[Path],
+) -> str | None:
+    try:
+        current_paths = set(_current_session_paths(inventory.session_dirs))
+    except OSError as exc:
+        return f"cannot revalidate Codex session paths: {exc}"
+
+    scanned_paths = set(inventory.scanned_paths)
+    required_paths = scanned_paths - completed_paths
+    if not required_paths.issubset(current_paths) or not current_paths.issubset(
+        scanned_paths
+    ):
+        return "Codex session paths changed after inventory"
+    if not _target_unchanged(target):
+        return f"Codex session {target.root_id} changed after inventory"
+    return None
 
 
 def _command_detail(result: subprocess.CompletedProcess[str]) -> str:
@@ -122,59 +169,95 @@ def cleanup_codex_inventory(
     """Delete eligible Codex groups through the official CLI only."""
     strict = inventory.policy == "all_inactive"
     warnings = list(inventory.warnings)
+    preserved_running = inventory.active_sessions
     if inventory.client != "codex":
         message = f"cannot run Codex cleanup for {inventory.client} inventory"
         if strict:
-            return CleanupResult(warnings=tuple(warnings), error=message)
+            return CleanupResult(
+                preserved_running=preserved_running,
+                warnings=tuple(warnings),
+                error=message,
+            )
         warnings.append(message)
-        return CleanupResult(warnings=tuple(warnings))
+        return CleanupResult(
+            preserved_running=preserved_running,
+            warnings=tuple(warnings),
+        )
     if strict and warnings:
         return CleanupResult(
+            preserved_running=preserved_running,
             warnings=tuple(warnings),
             error="cannot safely inventory every inactive Codex session",
         )
     if not inventory.codex_targets:
-        return CleanupResult(warnings=tuple(warnings))
+        return CleanupResult(
+            preserved_running=preserved_running,
+            warnings=tuple(warnings),
+        )
 
     try:
         current_paths = _current_session_paths(inventory.session_dirs)
     except OSError as exc:
         message = f"cannot revalidate Codex session paths: {exc}"
         if strict:
-            return CleanupResult(warnings=tuple(warnings), error=message)
+            return CleanupResult(
+                preserved_running=preserved_running,
+                warnings=tuple(warnings),
+                error=message,
+            )
         warnings.append(f"{message}; cleanup skipped")
-        return CleanupResult(warnings=tuple(warnings))
+        return CleanupResult(
+            preserved_running=preserved_running,
+            warnings=tuple(warnings),
+        )
     if current_paths != inventory.scanned_paths:
         message = "Codex session paths changed after inventory"
         if strict:
-            return CleanupResult(warnings=tuple(warnings), error=message)
+            return CleanupResult(
+                preserved_running=preserved_running,
+                warnings=tuple(warnings),
+                error=message,
+            )
         warnings.append(f"{message}; cleanup skipped")
-        return CleanupResult(warnings=tuple(warnings))
+        return CleanupResult(
+            preserved_running=preserved_running,
+            warnings=tuple(warnings),
+        )
 
     for target in inventory.codex_targets:
         if not _target_unchanged(target):
             message = f"Codex session {target.root_id} changed after inventory"
             if strict:
-                return CleanupResult(warnings=tuple(warnings), error=message)
+                return CleanupResult(
+                    preserved_running=preserved_running,
+                    warnings=tuple(warnings),
+                    error=message,
+                )
             warnings.append(f"{message}; cleanup skipped")
-            return CleanupResult(warnings=tuple(warnings))
+            return CleanupResult(
+                preserved_running=preserved_running,
+                warnings=tuple(warnings),
+            )
 
     try:
         open_identities = open_file_snapshot(inventory.session_dirs)
     except (ActiveSessionScanError, OSError) as exc:
         message = f"active session scan unavailable: {exc}"
         if strict:
-            return CleanupResult(warnings=tuple(warnings), error=message)
+            return CleanupResult(
+                preserved_running=preserved_running,
+                warnings=tuple(warnings),
+                error=message,
+            )
         warnings.append(f"{message}; cleanup skipped")
-        return CleanupResult(warnings=tuple(warnings))
+        return CleanupResult(
+            preserved_running=preserved_running,
+            warnings=tuple(warnings),
+        )
 
     safe_targets: list[CodexCleanupTarget] = []
-    preserved_running = 0
     for target in inventory.codex_targets:
-        if any(
-            session_file.fingerprint.identity in open_identities
-            for session_file in target.files
-        ):
+        if _codex_target_is_open(target, open_identities):
             preserved_running += 1
             warnings.append(
                 f"Codex session {target.root_id} is currently open; cleanup skipped"
@@ -209,7 +292,38 @@ def cleanup_codex_inventory(
 
     deleted = 0
     if strict:
+        completed_paths: set[Path] = set()
         for target in safe_targets:
+            revalidation_error = _codex_target_revalidation_error(
+                inventory,
+                target,
+                frozenset(completed_paths),
+            )
+            if revalidation_error is not None:
+                return CleanupResult(
+                    deleted=deleted,
+                    preserved_running=preserved_running,
+                    warnings=tuple(warnings),
+                    error=revalidation_error,
+                )
+            try:
+                current_open_identities = open_file_snapshot(
+                    inventory.session_dirs
+                )
+            except (ActiveSessionScanError, OSError) as exc:
+                return CleanupResult(
+                    deleted=deleted,
+                    preserved_running=preserved_running,
+                    warnings=tuple(warnings),
+                    error=f"active session scan unavailable: {exc}",
+                )
+            if _codex_target_is_open(target, current_open_identities):
+                preserved_running += 1
+                warnings.append(
+                    f"Codex session {target.root_id} is currently open; "
+                    "cleanup skipped"
+                )
+                continue
             for owner in target.owners:
                 for local_delete_id in owner.local_delete_ids:
                     succeeded, detail = _run_codex_command(
@@ -228,13 +342,44 @@ def cleanup_codex_inventory(
                             ),
                         )
             deleted += 1
+            completed_paths.update(
+                session_file.path for session_file in target.files
+            )
         return CleanupResult(
             deleted=deleted,
             preserved_running=preserved_running,
             warnings=tuple(warnings),
         )
 
+    completed_paths = set()
     for target in safe_targets:
+        revalidation_error = _codex_target_revalidation_error(
+            inventory,
+            target,
+            frozenset(completed_paths),
+        )
+        if revalidation_error is not None:
+            warnings.append(f"{revalidation_error}; cleanup skipped")
+            return CleanupResult(
+                deleted=deleted,
+                preserved_running=preserved_running,
+                warnings=tuple(warnings),
+            )
+        try:
+            current_open_identities = open_file_snapshot(inventory.session_dirs)
+        except (ActiveSessionScanError, OSError) as exc:
+            warnings.append(f"active session scan unavailable: {exc}; cleanup skipped")
+            return CleanupResult(
+                deleted=deleted,
+                preserved_running=preserved_running,
+                warnings=tuple(warnings),
+            )
+        if _codex_target_is_open(target, current_open_identities):
+            preserved_running += 1
+            warnings.append(
+                f"Codex session {target.root_id} is currently open; cleanup skipped"
+            )
+            continue
         group_succeeded = True
         source_failed = False
         for owner in target.owners:
@@ -263,6 +408,9 @@ def cleanup_codex_inventory(
                 break
         if group_succeeded:
             deleted += 1
+            completed_paths.update(
+                session_file.path for session_file in target.files
+            )
 
     return CleanupResult(
         deleted=deleted,
@@ -282,6 +430,423 @@ def _manifest_below_root(
     )
 
 
+def _fingerprint_from_stat_result(
+    stat_result: os.stat_result,
+) -> FileFingerprint:
+    return FileFingerprint(
+        identity=FileIdentity(
+            device=stat_result.st_dev,
+            inode=stat_result.st_ino,
+        ),
+        size=stat_result.st_size,
+        mtime_ns=stat_result.st_mtime_ns,
+    )
+
+
+def _claude_entry_from_stat(
+    path: Path,
+    stat_result: os.stat_result,
+) -> ClaudeSessionPath:
+    mode = stat_result.st_mode
+    if stat.S_ISLNK(mode):
+        raise ActiveSessionScanError(f"unsafe Claude session symlink: {path}")
+    is_directory = stat.S_ISDIR(mode)
+    if not is_directory and not stat.S_ISREG(mode):
+        raise ActiveSessionScanError(
+            f"unsupported Claude session path type: {path}"
+        )
+    return ClaudeSessionPath(
+        path=path,
+        fingerprint=_fingerprint_from_stat_result(stat_result),
+        is_directory=is_directory,
+    )
+
+
+def _open_directory_anchor(
+    parent_fd: int,
+    name: str,
+    path: Path,
+) -> _DirectoryAnchor:
+    directory_fd = os.open(
+        name,
+        _DIRECTORY_OPEN_FLAGS,
+        dir_fd=parent_fd,
+    )
+    try:
+        stat_result = os.fstat(directory_fd)
+        if not stat.S_ISDIR(stat_result.st_mode):
+            raise ActiveSessionScanError(
+                f"unsafe Claude directory type: {path}"
+            )
+        return _DirectoryAnchor(
+            parent_fd=parent_fd,
+            name=name,
+            directory_fd=directory_fd,
+            identity=_fingerprint_from_stat_result(stat_result).identity,
+            path=path,
+        )
+    except BaseException:
+        os.close(directory_fd)
+        raise
+
+
+def _validate_directory_anchors(
+    anchors: tuple[_DirectoryAnchor, ...],
+) -> None:
+    for anchor in anchors:
+        stat_result = os.stat(
+            anchor.name,
+            dir_fd=anchor.parent_fd,
+            follow_symlinks=False,
+        )
+        current = _claude_entry_from_stat(anchor.path, stat_result)
+        descriptor_stat = os.fstat(anchor.directory_fd)
+        descriptor_identity = _fingerprint_from_stat_result(
+            descriptor_stat
+        ).identity
+        if (
+            not current.is_directory
+            or current.fingerprint.identity != anchor.identity
+            or descriptor_identity != anchor.identity
+        ):
+            raise ActiveSessionScanError(
+                f"Claude directory changed during cleanup: {anchor.path}"
+            )
+
+
+@contextmanager
+def _open_absolute_directory_no_follow(
+    path: Path,
+) -> Iterator[tuple[int, tuple[_DirectoryAnchor, ...]]]:
+    if not path.is_absolute() or path == Path("/"):
+        raise ActiveSessionScanError(
+            f"Claude config directory must be a bounded absolute path: {path}"
+        )
+
+    root_fd = os.open("/", _DIRECTORY_OPEN_FLAGS)
+    opened_fds = [root_fd]
+    anchors: list[_DirectoryAnchor] = []
+    current_fd = root_fd
+    current_path = Path("/")
+    try:
+        for component in path.parts[1:]:
+            if component in {"", ".", ".."}:
+                raise ActiveSessionScanError(
+                    f"unsafe Claude config path component: {path}"
+                )
+            current_path /= component
+            anchor = _open_directory_anchor(
+                current_fd,
+                component,
+                current_path,
+            )
+            anchors.append(anchor)
+            opened_fds.append(anchor.directory_fd)
+            current_fd = anchor.directory_fd
+        anchor_tuple = tuple(anchors)
+        _validate_directory_anchors(anchor_tuple)
+        yield current_fd, anchor_tuple
+    finally:
+        for descriptor in reversed(opened_fds):
+            os.close(descriptor)
+
+
+@contextmanager
+def _open_relative_directories_no_follow(
+    base_fd: int,
+    base_path: Path,
+    components: tuple[str, ...],
+    base_anchors: tuple[_DirectoryAnchor, ...],
+) -> Iterator[tuple[int, tuple[_DirectoryAnchor, ...]]]:
+    opened_fds: list[int] = []
+    anchors = list(base_anchors)
+    current_fd = base_fd
+    current_path = base_path
+    try:
+        for component in components:
+            if component in {"", ".", ".."}:
+                raise ActiveSessionScanError(
+                    f"unsafe Claude relative path below {base_path}"
+                )
+            current_path /= component
+            anchor = _open_directory_anchor(
+                current_fd,
+                component,
+                current_path,
+            )
+            anchors.append(anchor)
+            opened_fds.append(anchor.directory_fd)
+            current_fd = anchor.directory_fd
+        anchor_tuple = tuple(anchors)
+        _validate_directory_anchors(anchor_tuple)
+        yield current_fd, anchor_tuple
+    finally:
+        for descriptor in reversed(opened_fds):
+            os.close(descriptor)
+
+
+def _claude_root_parts(config_dir: Path, root: Path) -> tuple[str, ...]:
+    try:
+        relative = root.relative_to(config_dir)
+    except ValueError as exc:
+        raise ActiveSessionScanError(
+            f"Claude session root escapes config directory: {root}"
+        ) from exc
+    if not relative.parts or any(
+        component in {"", ".", ".."} for component in relative.parts
+    ):
+        raise ActiveSessionScanError(f"unsafe Claude session root: {root}")
+    return relative.parts
+
+
+def _snapshot_entry_no_follow(
+    parent_fd: int,
+    name: str,
+    path: Path,
+    anchors: tuple[_DirectoryAnchor, ...],
+) -> tuple[ClaudeSessionPath, ...]:
+    _validate_directory_anchors(anchors)
+    stat_result = os.stat(
+        name,
+        dir_fd=parent_fd,
+        follow_symlinks=False,
+    )
+    entry = _claude_entry_from_stat(path, stat_result)
+    if not entry.is_directory:
+        file_fd = os.open(name, _FILE_OPEN_FLAGS, dir_fd=parent_fd)
+        try:
+            descriptor_entry = _claude_entry_from_stat(path, os.fstat(file_fd))
+            if descriptor_entry != entry:
+                raise ActiveSessionScanError(
+                    f"Claude session file changed during cleanup: {path}"
+                )
+            _validate_directory_anchors(anchors)
+            current_entry = _claude_entry_from_stat(
+                path,
+                os.stat(
+                    name,
+                    dir_fd=parent_fd,
+                    follow_symlinks=False,
+                ),
+            )
+            if current_entry != entry:
+                raise ActiveSessionScanError(
+                    f"Claude session file changed during cleanup: {path}"
+                )
+        finally:
+            os.close(file_fd)
+        return (entry,)
+
+    anchor = _open_directory_anchor(parent_fd, name, path)
+    child_anchors = (*anchors, anchor)
+    try:
+        descriptor_entry = _claude_entry_from_stat(
+            path,
+            os.fstat(anchor.directory_fd),
+        )
+        if descriptor_entry != entry:
+            raise ActiveSessionScanError(
+                f"Claude session directory changed during cleanup: {path}"
+            )
+        names = tuple(sorted(os.listdir(anchor.directory_fd)))
+        manifest = [entry]
+        for child_name in names:
+            manifest.extend(
+                _snapshot_entry_no_follow(
+                    anchor.directory_fd,
+                    child_name,
+                    path / child_name,
+                    child_anchors,
+                )
+            )
+        _validate_directory_anchors(child_anchors)
+        if tuple(sorted(os.listdir(anchor.directory_fd))) != names:
+            raise ActiveSessionScanError(
+                f"Claude session directory changed during cleanup: {path}"
+            )
+        final_entry = _claude_entry_from_stat(
+            path,
+            os.fstat(anchor.directory_fd),
+        )
+        if final_entry != entry:
+            raise ActiveSessionScanError(
+                f"Claude session directory changed during cleanup: {path}"
+            )
+        return tuple(manifest)
+    finally:
+        os.close(anchor.directory_fd)
+
+
+def _snapshot_target_no_follow(
+    config_fd: int,
+    config_dir: Path,
+    config_anchors: tuple[_DirectoryAnchor, ...],
+    roots: tuple[Path, ...],
+) -> tuple[ClaudeSessionPath, ...]:
+    manifest: list[ClaudeSessionPath] = []
+    for root in roots:
+        parts = _claude_root_parts(config_dir, root)
+        with _open_relative_directories_no_follow(
+            config_fd,
+            config_dir,
+            parts[:-1],
+            config_anchors,
+        ) as (parent_fd, anchors):
+            manifest.extend(
+                _snapshot_entry_no_follow(
+                    parent_fd,
+                    parts[-1],
+                    root,
+                    anchors,
+                )
+            )
+    paths = [entry.path for entry in manifest]
+    if len(paths) != len(set(paths)):
+        raise ActiveSessionScanError("overlapping Claude cleanup roots")
+    return tuple(sorted(manifest, key=lambda entry: str(entry.path)))
+
+
+def _verify_entry_matches(
+    current: ClaudeSessionPath,
+    expected: ClaudeSessionPath,
+) -> None:
+    if current != expected:
+        raise ActiveSessionScanError(
+            f"Claude session path changed before delete: {expected.path}"
+        )
+
+
+def _delete_entry_no_follow(
+    parent_fd: int,
+    name: str,
+    path: Path,
+    anchors: tuple[_DirectoryAnchor, ...],
+    expected_by_path: dict[Path, ClaudeSessionPath],
+) -> None:
+    expected = expected_by_path[path]
+    _validate_directory_anchors(anchors)
+    current = _claude_entry_from_stat(
+        path,
+        os.stat(name, dir_fd=parent_fd, follow_symlinks=False),
+    )
+    _verify_entry_matches(current, expected)
+
+    if not expected.is_directory:
+        file_fd = os.open(name, _FILE_OPEN_FLAGS, dir_fd=parent_fd)
+        try:
+            descriptor_entry = _claude_entry_from_stat(path, os.fstat(file_fd))
+            _verify_entry_matches(descriptor_entry, expected)
+            _validate_directory_anchors(anchors)
+            current = _claude_entry_from_stat(
+                path,
+                os.stat(name, dir_fd=parent_fd, follow_symlinks=False),
+            )
+            _verify_entry_matches(current, expected)
+            os.unlink(name, dir_fd=parent_fd)
+        finally:
+            os.close(file_fd)
+    else:
+        anchor = _open_directory_anchor(parent_fd, name, path)
+        child_anchors = (*anchors, anchor)
+        try:
+            descriptor_entry = _claude_entry_from_stat(
+                path,
+                os.fstat(anchor.directory_fd),
+            )
+            _verify_entry_matches(descriptor_entry, expected)
+            expected_names = {
+                entry_path.name
+                for entry_path in expected_by_path
+                if entry_path.parent == path
+            }
+            current_names = set(os.listdir(anchor.directory_fd))
+            if current_names != expected_names:
+                raise ActiveSessionScanError(
+                    f"Claude session directory changed before delete: {path}"
+                )
+            for child_name in sorted(current_names):
+                _delete_entry_no_follow(
+                    anchor.directory_fd,
+                    child_name,
+                    path / child_name,
+                    child_anchors,
+                    expected_by_path,
+                )
+            _validate_directory_anchors(child_anchors)
+            if os.listdir(anchor.directory_fd):
+                raise ActiveSessionScanError(
+                    f"Claude session directory changed before removal: {path}"
+                )
+            current_stat = os.stat(
+                name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+            current_identity = _fingerprint_from_stat_result(
+                current_stat
+            ).identity
+            if (
+                not stat.S_ISDIR(current_stat.st_mode)
+                or current_identity != expected.fingerprint.identity
+            ):
+                raise ActiveSessionScanError(
+                    f"Claude session directory replaced before removal: {path}"
+                )
+            os.rmdir(name, dir_fd=parent_fd)
+        finally:
+            os.close(anchor.directory_fd)
+
+    _validate_directory_anchors(anchors)
+    try:
+        os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    raise ActiveSessionScanError(
+        f"Claude session path still exists after delete: {path}"
+    )
+
+
+def _delete_root_no_follow(
+    config_fd: int,
+    config_dir: Path,
+    config_anchors: tuple[_DirectoryAnchor, ...],
+    root: Path,
+    expected_manifest: tuple[ClaudeSessionPath, ...],
+) -> None:
+    parts = _claude_root_parts(config_dir, root)
+    with _open_relative_directories_no_follow(
+        config_fd,
+        config_dir,
+        parts[:-1],
+        config_anchors,
+    ) as (parent_fd, anchors):
+        current_manifest = tuple(
+            sorted(
+                _snapshot_entry_no_follow(
+                    parent_fd,
+                    parts[-1],
+                    root,
+                    anchors,
+                ),
+                key=lambda entry: str(entry.path),
+            )
+        )
+        if current_manifest != expected_manifest:
+            raise ActiveSessionScanError(
+                f"Claude session path changed before delete: {root}"
+            )
+        expected_by_path = {
+            entry.path: entry for entry in expected_manifest
+        }
+        _delete_entry_no_follow(
+            parent_fd,
+            parts[-1],
+            root,
+            anchors,
+            expected_by_path,
+        )
+
+
 def cleanup_claude_inventory(
     inventory: AgentInventory,
     *,
@@ -289,30 +854,38 @@ def cleanup_claude_inventory(
         snapshot_active_claude_sessions
     ),
     open_file_snapshot: OpenFileSnapshot = snapshot_open_rollouts,
-    remove_tree: Callable[[Path], None] = shutil.rmtree,
-    unlink: Callable[[Path], None] = Path.unlink,
 ) -> CleanupResult:
     """Delete only exact, revalidated inactive Claude session bundles."""
+    preserved_running = inventory.active_sessions
     if inventory.client != "claude":
         return CleanupResult(
+            preserved_running=preserved_running,
             error=f"cannot run Claude cleanup for {inventory.client} inventory"
         )
     if inventory.policy != "all_inactive":
-        return CleanupResult(error="Claude cleanup requires all_inactive inventory")
+        return CleanupResult(
+            preserved_running=preserved_running,
+            error="Claude cleanup requires all_inactive inventory",
+        )
     if inventory.warnings:
         return CleanupResult(
+            preserved_running=preserved_running,
             warnings=inventory.warnings,
             error="cannot safely inventory every inactive Claude session",
         )
 
     config_dir = inventory.claude_config_dir
     if config_dir is None or not config_dir.is_absolute():
-        return CleanupResult(error="Claude inventory has no absolute config directory")
+        return CleanupResult(
+            preserved_running=preserved_running,
+            error="Claude inventory has no absolute config directory",
+        )
 
     try:
         active_session_ids = active_session_snapshot(config_dir)
     except (ActiveSessionScanError, OSError) as exc:
         return CleanupResult(
+            preserved_running=preserved_running,
             error=f"cannot scan active Claude sessions in {config_dir}: {exc}"
         )
     try:
@@ -320,10 +893,10 @@ def cleanup_claude_inventory(
     except (ActiveSessionScanError, OSError) as exc:
         paths = ", ".join(str(path) for path in inventory.session_dirs)
         return CleanupResult(
+            preserved_running=preserved_running,
             error=f"cannot scan open Claude transcripts in {paths}: {exc}"
         )
 
-    preserved_running = 0
     inactive_targets = []
     for target in inventory.claude_targets:
         is_open = any(
@@ -335,79 +908,128 @@ def cleanup_claude_inventory(
             continue
         inactive_targets.append(target)
 
-    for target in inactive_targets:
-        try:
-            current_manifest = snapshot_claude_manifest(target.roots)
-        except (ActiveSessionScanError, OSError) as exc:
-            return CleanupResult(
-                preserved_running=preserved_running,
-                error=(
-                    f"cannot validate Claude session {target.session_id} "
-                    f"at {target.roots}: {exc}"
-                ),
-            )
-        if current_manifest != target.manifest:
-            return CleanupResult(
-                preserved_running=preserved_running,
-                error=(
-                    f"Claude session {target.session_id} changed after inventory "
-                    f"at {target.roots}"
-                ),
-            )
+    if not inactive_targets:
+        return CleanupResult(preserved_running=preserved_running)
 
     deleted = 0
-    for target in inactive_targets:
-        roots = sorted(
-            target.roots,
-            key=lambda path: (len(path.parts), str(path)),
-            reverse=True,
-        )
-        entries_by_path = {entry.path: entry for entry in target.manifest}
-        for root in roots:
-            expected_manifest = _manifest_below_root(target.manifest, root)
-            try:
-                current_manifest = snapshot_claude_manifest((root,))
-            except (ActiveSessionScanError, OSError) as exc:
-                return CleanupResult(
-                    deleted=deleted,
-                    preserved_running=preserved_running,
-                    error=f"cannot revalidate Claude session path {root}: {exc}",
+    try:
+        with _open_absolute_directory_no_follow(config_dir) as (
+            config_fd,
+            config_anchors,
+        ):
+            for target in inactive_targets:
+                current_manifest = _snapshot_target_no_follow(
+                    config_fd,
+                    config_dir,
+                    config_anchors,
+                    target.roots,
                 )
-            if current_manifest != expected_manifest:
-                return CleanupResult(
-                    deleted=deleted,
-                    preserved_running=preserved_running,
-                    error=f"Claude session path changed before delete: {root}",
-                )
+                if current_manifest != target.manifest:
+                    return CleanupResult(
+                        preserved_running=preserved_running,
+                        error=(
+                            f"Claude session {target.session_id} changed after "
+                            f"inventory at {target.roots}"
+                        ),
+                    )
 
-            root_entry = entries_by_path[root]
-            try:
-                if root_entry.is_directory:
-                    remove_tree(root)
-                else:
-                    unlink(root)
-            except OSError as exc:
-                return CleanupResult(
-                    deleted=deleted,
-                    preserved_running=preserved_running,
-                    error=f"failed to remove Claude session path {root}: {exc}",
+            for target in inactive_targets:
+                try:
+                    current_active_session_ids = active_session_snapshot(
+                        config_dir
+                    )
+                except (ActiveSessionScanError, OSError) as exc:
+                    return CleanupResult(
+                        deleted=deleted,
+                        preserved_running=preserved_running,
+                        error=(
+                            f"cannot refresh active Claude sessions in "
+                            f"{config_dir}: {exc}"
+                        ),
+                    )
+                if target.session_id in current_active_session_ids:
+                    preserved_running += 1
+                    continue
+                try:
+                    current_open_identities = open_file_snapshot(
+                        inventory.session_dirs
+                    )
+                except (ActiveSessionScanError, OSError) as exc:
+                    paths = ", ".join(
+                        str(path) for path in inventory.session_dirs
+                    )
+                    return CleanupResult(
+                        deleted=deleted,
+                        preserved_running=preserved_running,
+                        error=(
+                            f"cannot refresh open Claude transcripts in "
+                            f"{paths}: {exc}"
+                        ),
+                    )
+                if any(
+                    entry.fingerprint.identity in current_open_identities
+                    for entry in target.manifest
+                ):
+                    preserved_running += 1
+                    continue
+                try:
+                    current_roots = snapshot_claude_session_roots(config_dir).get(
+                        target.session_id,
+                        (),
+                    )
+                except (ActiveSessionScanError, OSError) as exc:
+                    return CleanupResult(
+                        deleted=deleted,
+                        preserved_running=preserved_running,
+                        error=(
+                            f"cannot refresh Claude session roots in "
+                            f"{config_dir}: {exc}"
+                        ),
+                    )
+                if current_roots != target.roots:
+                    return CleanupResult(
+                        deleted=deleted,
+                        preserved_running=preserved_running,
+                        error=(
+                            f"Claude session {target.session_id} roots changed "
+                            "after inventory"
+                        ),
+                    )
+                current_manifest = _snapshot_target_no_follow(
+                    config_fd,
+                    config_dir,
+                    config_anchors,
+                    current_roots,
                 )
-            try:
-                root.lstat()
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                return CleanupResult(
-                    deleted=deleted,
-                    preserved_running=preserved_running,
-                    error=f"cannot verify removal of Claude session path {root}: {exc}",
+                if current_manifest != target.manifest:
+                    return CleanupResult(
+                        deleted=deleted,
+                        preserved_running=preserved_running,
+                        error=(
+                            f"Claude session {target.session_id} changed after "
+                            "inventory before delete"
+                        ),
+                    )
+                roots = sorted(
+                    target.roots,
+                    key=lambda path: (len(path.parts), str(path)),
+                    reverse=True,
                 )
-            return CleanupResult(
-                deleted=deleted,
-                preserved_running=preserved_running,
-                error=f"Claude session path still exists after delete: {root}",
-            )
-        deleted += 1
+                for root in roots:
+                    _delete_root_no_follow(
+                        config_fd,
+                        config_dir,
+                        config_anchors,
+                        root,
+                        _manifest_below_root(target.manifest, root),
+                    )
+                deleted += 1
+    except (ActiveSessionScanError, OSError) as exc:
+        return CleanupResult(
+            deleted=deleted,
+            preserved_running=preserved_running,
+            error=f"failed to remove Claude session path safely: {exc}",
+        )
 
     return CleanupResult(
         deleted=deleted,

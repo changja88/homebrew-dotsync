@@ -1,3 +1,4 @@
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -73,6 +74,101 @@ def test_cleanup_claude_preserves_bundle_that_becomes_active(tmp_path):
     assert inventory.claude_targets[0].roots[0].exists()
 
 
+def test_cleanup_claude_counts_initially_active_sessions(tmp_path):
+    inventory_a = _inventory(tmp_path)
+    active_transcript = _write(
+        tmp_path / ".claude/projects/-repo" / f"{SESSION_B}.jsonl"
+    )
+    inventory = scan_inventory(
+        client="claude",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        policy="all_inactive",
+        active_claude_session_ids=frozenset({SESSION_B}),
+        open_file_identities=frozenset(),
+    )
+
+    result = cleanup_claude_inventory(
+        inventory,
+        active_session_snapshot=lambda config_dir: frozenset({SESSION_B}),
+        open_file_snapshot=lambda paths: frozenset(),
+    )
+
+    assert len(inventory_a.claude_targets) == 1
+    assert inventory.active_sessions == 1
+    assert result.succeeded
+    assert result.deleted == 1
+    assert result.preserved_running == 1
+    assert active_transcript.exists()
+
+
+def test_cleanup_claude_refreshes_active_before_bundle_mutation(tmp_path):
+    inventory = _inventory(tmp_path)
+    snapshots = iter((frozenset(), frozenset({SESSION_A})))
+
+    result = cleanup_claude_inventory(
+        inventory,
+        active_session_snapshot=lambda config_dir: next(snapshots),
+        open_file_snapshot=lambda paths: frozenset(),
+    )
+
+    assert result.succeeded
+    assert result.deleted == 0
+    assert result.preserved_running == 1
+    assert all(path.exists() for path in inventory.claude_targets[0].roots)
+
+
+def test_cleanup_claude_refreshes_open_files_before_bundle_mutation(tmp_path):
+    inventory = _inventory(tmp_path)
+    transcript = next(
+        path
+        for path in inventory.claude_targets[0].roots
+        if path.suffix == ".jsonl"
+    )
+    stat_result = transcript.stat()
+    identity = FileIdentity(
+        device=stat_result.st_dev,
+        inode=stat_result.st_ino,
+    )
+    snapshots = iter((frozenset(), frozenset({identity})))
+
+    result = cleanup_claude_inventory(
+        inventory,
+        active_session_snapshot=lambda config_dir: frozenset(),
+        open_file_snapshot=lambda paths: next(snapshots),
+    )
+
+    assert result.succeeded
+    assert result.deleted == 0
+    assert result.preserved_running == 1
+    assert transcript.exists()
+
+
+def test_cleanup_claude_rejects_new_uuid_root_before_bundle_mutation(tmp_path):
+    inventory = _inventory(tmp_path)
+    config = tmp_path / ".claude"
+    new_root = config / "debug" / f"{SESSION_A}.txt"
+    snapshot_count = 0
+
+    def active_snapshot(config_dir):
+        nonlocal snapshot_count
+        snapshot_count += 1
+        if snapshot_count == 2:
+            _write(new_root, "new")
+        return frozenset()
+
+    result = cleanup_claude_inventory(
+        inventory,
+        active_session_snapshot=active_snapshot,
+        open_file_snapshot=lambda paths: frozenset(),
+    )
+
+    assert not result.succeeded
+    assert "roots changed" in result.error
+    assert new_root.read_text() == "new"
+    assert all(path.exists() for path in inventory.claude_targets[0].roots)
+
+
 def test_cleanup_claude_fails_before_delete_when_manifest_changes(tmp_path):
     inventory = _inventory(tmp_path)
     target = inventory.claude_targets[0]
@@ -88,6 +184,45 @@ def test_cleanup_claude_fails_before_delete_when_manifest_changes(tmp_path):
     assert not result.succeeded
     assert "changed after inventory" in result.error
     assert all(path.exists() for path in target.roots)
+
+
+def test_cleanup_claude_does_not_follow_swapped_ancestor(
+    tmp_path,
+    monkeypatch,
+):
+    inventory = _inventory(tmp_path)
+    config = tmp_path / ".claude"
+    project_dir = config / "projects/-repo"
+    parked_project = tmp_path / "parked-project"
+    outside_project = tmp_path / "outside-project"
+    outside_file = _write(
+        outside_project / SESSION_A / "outside.txt",
+        "keep",
+    )
+    transcript = config / "projects/-repo" / f"{SESSION_A}.jsonl"
+    original_unlink = os.unlink
+    swapped = False
+
+    def unlink(path, *args, **kwargs):
+        nonlocal swapped
+        original_unlink(path, *args, **kwargs)
+        if swapped or Path(path).name != transcript.name:
+            return
+        project_dir.rename(parked_project)
+        project_dir.symlink_to(outside_project, target_is_directory=True)
+        swapped = True
+
+    monkeypatch.setattr(os, "unlink", unlink)
+
+    result = cleanup_claude_inventory(
+        inventory,
+        active_session_snapshot=lambda config_dir: frozenset(),
+        open_file_snapshot=lambda paths: frozenset(),
+    )
+
+    assert swapped
+    assert not result.succeeded
+    assert outside_file.read_text() == "keep"
 
 
 def test_cleanup_claude_preserves_freshly_open_transcript(tmp_path):
@@ -150,7 +285,7 @@ def test_cleanup_claude_inventory_warning_fails_before_delete(tmp_path):
     assert all(path.exists() for path in inventory.claude_targets[0].roots)
 
 
-def test_cleanup_claude_reports_partial_unlink_failure(tmp_path):
+def test_cleanup_claude_reports_partial_unlink_failure(tmp_path, monkeypatch):
     inventory_a = _inventory(tmp_path)
     config = tmp_path / ".claude"
     _write(config / "projects/-repo" / f"{SESSION_B}.jsonl")
@@ -163,16 +298,19 @@ def test_cleanup_claude_reports_partial_unlink_failure(tmp_path):
         open_file_identities=frozenset(),
     )
 
-    def unlink(path: Path) -> None:
-        if path.name == f"{SESSION_B}.jsonl":
+    original_unlink = os.unlink
+
+    def unlink(path, *args, **kwargs):
+        if Path(path).name == f"{SESSION_B}.jsonl":
             raise OSError("disk failure")
-        path.unlink()
+        original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", unlink)
 
     result = cleanup_claude_inventory(
         inventory,
         active_session_snapshot=lambda config_dir: frozenset(),
         open_file_snapshot=lambda paths: frozenset(),
-        unlink=unlink,
     )
 
     assert len(inventory_a.claude_targets) == 1
