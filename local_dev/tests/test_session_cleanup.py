@@ -3,12 +3,19 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from local_dev.serena_mcp_management.session_cleanup import (
     CLAUDE_RETENTION_JSON,
     claude_retention_args,
     cleanup_codex_inventory,
 )
-from local_dev.serena_mcp_management.session_inventory import scan_inventory
+from local_dev.serena_mcp_management.session_inventory import (
+    AgentInventory,
+    CountStats,
+    FileIdentity,
+    scan_inventory,
+)
 
 
 NOW = 2_000_000_000.0
@@ -54,6 +61,93 @@ def _bridged_inventory(tmp_path: Path):
         open_file_identities=frozenset(),
     )
     return inventory, default_home, orca_home, source
+
+
+def test_explicit_codex_cleanup_treats_unsafe_inventory_as_failure():
+    inventory = AgentInventory(
+        client="codex",
+        policy="all_inactive",
+        sessions=CountStats(total=1, to_delete=0, to_keep=1),
+        criteria=(
+            "sessions: all known homes + all inactive; running preserved"
+        ),
+        warnings=("parent cycle",),
+    )
+    calls = []
+
+    result = cleanup_codex_inventory(
+        inventory,
+        codex_binary="/fake/codex",
+        runner=lambda *args, **kwargs: calls.append(args),
+    )
+
+    assert not result.succeeded
+    assert result.error == (
+        "cannot safely inventory every inactive Codex session"
+    )
+    assert calls == []
+
+
+def test_explicit_codex_cleanup_preserves_target_that_becomes_open(tmp_path):
+    rollout = tmp_path / ".codex/sessions/2026/07/21/root.jsonl"
+    _write_old_session(rollout, ROOT_A)
+    inventory = scan_inventory(
+        client="codex",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        policy="all_inactive",
+        open_file_identities=frozenset(),
+    )
+    stat_result = rollout.stat()
+
+    result = cleanup_codex_inventory(
+        inventory,
+        codex_binary="/fake/codex",
+        runner=lambda *args, **kwargs: pytest.fail("delete must not run"),
+        open_file_snapshot=lambda paths: frozenset(
+            {
+                FileIdentity(
+                    device=stat_result.st_dev,
+                    inode=stat_result.st_ino,
+                )
+            }
+        ),
+    )
+
+    assert result.succeeded
+    assert result.deleted == 0
+    assert result.preserved_running == 1
+
+
+def test_explicit_codex_cleanup_reports_partial_cli_failure(tmp_path):
+    root_b = "00000000-0000-4000-8000-000000000099"
+    first = tmp_path / ".codex/sessions/2026/07/21/first.jsonl"
+    second = tmp_path / ".codex/sessions/2026/07/21/second.jsonl"
+    _write_old_session(first, ROOT_A)
+    _write_old_session(second, root_b)
+    inventory = scan_inventory(
+        client="codex",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        policy="all_inactive",
+        open_file_identities=frozenset(),
+    )
+
+    def runner(command, **kwargs):
+        if command[-1] == root_b:
+            return subprocess.CompletedProcess(command, 1, "", "delete failed")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    result = cleanup_codex_inventory(
+        inventory,
+        codex_binary="/fake/codex",
+        runner=runner,
+        open_file_snapshot=lambda paths: frozenset(),
+    )
+
+    assert not result.succeeded
+    assert result.deleted == 1
+    assert "delete failed" in result.error
 
 
 def test_cleanup_calls_official_delete_source_before_orca(tmp_path):
