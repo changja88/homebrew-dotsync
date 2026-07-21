@@ -251,6 +251,12 @@ segments and child labels are mint, and tree glyphs are gray. The final summary
 reports `N sessions deleted` for default Codex retention,
 `native retention 5d . N eligible` for default Claude retention, or
 `N sessions deleted · M running preserved` after explicit session deletion.
+If explicit cleanup fails after mutation starts, its immediate yellow row keeps
+fully deleted logical sessions separate from completed member/root operations
+inside the incomplete session. It names up to three affected members or paths,
+adds `+N more` for any remainder, prints the exact failure, and stops before
+launch without claiming rollback. A strict inventory failure likewise shows up
+to three concrete path/reason warnings plus a remainder count before it stops.
 
 ## Workflow
 

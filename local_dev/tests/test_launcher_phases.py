@@ -1636,6 +1636,7 @@ def _run_main_for_cleanup_choices(
     codex_home=None,
     session_choice_exception=None,
     explicit_cleanup_result=None,
+    explicit_cleanup_inventory=None,
     call_public_main=False,
 ):
     from local_dev.serena_mcp_management.memory_management import MemoryDeleteResult
@@ -1710,17 +1711,32 @@ def _run_main_for_cleanup_choices(
         lambda **kwargs: call_log.append("session-retention")
         or launcher.LaunchPrepSummary(),
     )
-    monkeypatch.setattr(
-        launcher,
-        "_run_explicit_session_cleanup_v2",
-        lambda **kwargs: call_log.append("session-delete-inactive")
-        or (
-            explicit_cleanup_result
-            if explicit_cleanup_result is not None
-            else CleanupResult()
-        ),
-        raising=False,
-    )
+    if explicit_cleanup_inventory is None:
+        monkeypatch.setattr(
+            launcher,
+            "_run_explicit_session_cleanup_v2",
+            lambda **kwargs: call_log.append("session-delete-inactive")
+            or (
+                explicit_cleanup_result
+                if explicit_cleanup_result is not None
+                else CleanupResult()
+            ),
+            raising=False,
+        )
+    else:
+        run_explicit_cleanup = launcher._run_explicit_session_cleanup_v2
+        monkeypatch.setattr(
+            launcher,
+            "scan_inventory",
+            lambda **kwargs: explicit_cleanup_inventory,
+        )
+        monkeypatch.setattr(
+            launcher,
+            "_run_explicit_session_cleanup_v2",
+            lambda **kwargs: call_log.append("session-delete-inactive")
+            or run_explicit_cleanup(**kwargs),
+            raising=False,
+        )
     monkeypatch.setattr(
         launcher,
         "_launch_bare_child",
@@ -1811,6 +1827,44 @@ def test_v2_main_explicit_cleanup_failure_stops_launch(monkeypatch, tmp_path):
     assert "launch" not in call_log
 
 
+def test_v2_main_inventory_failure_renders_bounded_causes_before_exit(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    warnings = (
+        "parent cycle at /tmp/codex/a.jsonl",
+        "malformed session metadata at /tmp/codex/b.jsonl",
+        "active session scan unavailable: lsof is unavailable",
+        "unsafe fourth cause must be summarized",
+    )
+    inventory = AgentInventory(
+        client="codex",
+        policy="all_inactive",
+        sessions=CountStats(total=0, to_delete=0, to_keep=0),
+        criteria="all inactive",
+        warnings=warnings,
+    )
+
+    rc, call_log = _run_main_for_cleanup_choices(
+        monkeypatch,
+        tmp_path,
+        memory_choice="keep",
+        session_choice="delete_inactive",
+        explicit_cleanup_inventory=inventory,
+    )
+
+    text = _strip_ansi(capsys.readouterr().out)
+    assert rc == 1
+    assert call_log[-1] == "session-delete-inactive"
+    assert "launch" not in call_log
+    assert warnings[0] in text
+    assert warnings[1] in text
+    assert warnings[2] in text
+    assert "+1 more" in text
+    assert warnings[3] not in text
+
+
 def test_explicit_session_cleanup_reports_newly_running_session(
     monkeypatch,
     tmp_path,
@@ -1843,6 +1897,53 @@ def test_explicit_session_cleanup_reports_newly_running_session(
     assert result.succeeded
     assert result.preserved_running == 1
     assert "1 running preserved" in _strip_ansi(out.getvalue())
+
+
+def test_explicit_session_cleanup_reports_bounded_partial_mutation(
+    monkeypatch,
+):
+    inventory = AgentInventory(
+        client="codex",
+        policy="all_inactive",
+        sessions=CountStats(total=1, to_delete=1, to_keep=0),
+        criteria="all inactive",
+    )
+    monkeypatch.setattr(
+        launcher,
+        "scan_inventory",
+        lambda **kwargs: inventory,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "cleanup_codex_inventory",
+        lambda inventory, codex_binary: launcher.CleanupResult(
+            deleted=0,
+            partial_mutations=4,
+            partial_mutation_details=(
+                "Codex member child-a in /codex-a",
+                "Codex member child-b in /codex-b",
+                "Codex member child-c in /codex-c",
+            ),
+            error="injected parent failure",
+        ),
+    )
+    out = io.StringIO()
+
+    result = launcher._run_explicit_session_cleanup_v2(
+        client="codex",
+        real_binary="/fake/codex",
+        stream=out,
+    )
+
+    text = _strip_ansi(out.getvalue())
+    assert not result.succeeded
+    assert "0 sessions fully deleted" in text
+    assert "partial mutation: 4 operations completed" in text
+    assert "Codex member child-a in /codex-a" in text
+    assert "Codex member child-b in /codex-b" in text
+    assert "Codex member child-c in /codex-c" in text
+    assert "+1 more" in text
+    assert "injected parent failure" in text
 
 
 def test_explicit_session_cleanup_codex_uses_fresh_all_inactive_scan(

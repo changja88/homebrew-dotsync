@@ -6,7 +6,7 @@ import os
 import secrets
 import stat
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +35,7 @@ _FILE_OPEN_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | _CLOSE_ON_EXEC
 _QUARANTINE_PREFIX = ".claude-cleanup-"
 _QUARANTINE_CREATE_ATTEMPTS = 32
 _DESCRIPTOR_PATH_BUFFER_SIZE = 1024
+_RESULT_DETAIL_LIMIT = 3
 
 
 RunCommand = Callable[..., subprocess.CompletedProcess[str]]
@@ -47,10 +48,34 @@ class CleanupResult:
     preserved_running: int = 0
     warnings: tuple[str, ...] = ()
     error: str | None = None
+    partial_mutations: int = 0
+    partial_mutation_details: tuple[str, ...] = ()
 
     @property
     def succeeded(self) -> bool:
         return self.error is None
+
+
+def _append_partial_mutation_detail(
+    details: list[str],
+    detail: str,
+) -> None:
+    if len(details) < _RESULT_DETAIL_LIMIT:
+        details.append(detail)
+
+
+def _error_with_bounded_details(
+    message: str,
+    details: Sequence[str],
+) -> str:
+    bounded = details[:_RESULT_DETAIL_LIMIT]
+    if not bounded:
+        return message
+    value = "; ".join(bounded)
+    remainder = len(details) - len(bounded)
+    if remainder:
+        value = f"{value}; +{remainder} more"
+    return f"{message}: {value}"
 
 
 @dataclass(frozen=True)
@@ -199,7 +224,10 @@ def cleanup_codex_inventory(
         return CleanupResult(
             preserved_running=preserved_running,
             warnings=tuple(warnings),
-            error="cannot safely inventory every inactive Codex session",
+            error=_error_with_bounded_details(
+                "cannot safely inventory every inactive Codex session",
+                warnings,
+            ),
         )
     if not inventory.codex_targets:
         return CleanupResult(
@@ -306,6 +334,8 @@ def cleanup_codex_inventory(
     if strict:
         completed_paths: set[Path] = set()
         for target in safe_targets:
+            target_partial_mutations = 0
+            target_partial_details: list[str] = []
             revalidation_error = _codex_target_revalidation_error(
                 inventory,
                 target,
@@ -352,7 +382,16 @@ def cleanup_codex_inventory(
                                 f"Codex session {local_delete_id} delete failed in "
                                 f"{owner.codex_home}: {detail}"
                             ),
+                            partial_mutations=target_partial_mutations,
+                            partial_mutation_details=tuple(
+                                target_partial_details
+                            ),
                         )
+                    target_partial_mutations += 1
+                    _append_partial_mutation_detail(
+                        target_partial_details,
+                        f"Codex member {local_delete_id} in {owner.codex_home}",
+                    )
             deleted += 1
             completed_paths.update(
                 session_file.path for session_file in target.files
@@ -1356,8 +1395,6 @@ def cleanup_claude_inventory(
 ) -> CleanupResult:
     """Delete only exact, revalidated inactive Claude session bundles."""
     preserved_running = inventory.active_sessions
-    if not inventory.claude_targets:
-        return CleanupResult(preserved_running=preserved_running)
     if inventory.client != "claude":
         return CleanupResult(
             preserved_running=preserved_running,
@@ -1372,7 +1409,10 @@ def cleanup_claude_inventory(
         return CleanupResult(
             preserved_running=preserved_running,
             warnings=inventory.warnings,
-            error="cannot safely inventory every inactive Claude session",
+            error=_error_with_bounded_details(
+                "cannot safely inventory every inactive Claude session",
+                inventory.warnings,
+            ),
         )
 
     config_dir = inventory.claude_config_dir
@@ -1381,6 +1421,8 @@ def cleanup_claude_inventory(
             preserved_running=preserved_running,
             error="Claude inventory has no absolute config directory",
         )
+    if not inventory.claude_targets:
+        return CleanupResult(preserved_running=preserved_running)
 
     try:
         active_session_ids = active_session_snapshot(config_dir)
@@ -1413,6 +1455,8 @@ def cleanup_claude_inventory(
         return CleanupResult(preserved_running=preserved_running)
 
     deleted = 0
+    target_partial_mutations = 0
+    target_partial_details: list[str] = []
     try:
         with _open_absolute_directory_no_follow(config_dir) as (
             config_fd,
@@ -1455,6 +1499,8 @@ def cleanup_claude_inventory(
                     )
 
             for target in inactive_targets:
+                target_partial_mutations = 0
+                target_partial_details = []
                 try:
                     current_active_session_ids = active_session_snapshot(
                         config_dir
@@ -1544,12 +1590,21 @@ def cleanup_claude_inventory(
                         root,
                         _manifest_below_root(target.manifest, root),
                     )
+                    target_partial_mutations += 1
+                    _append_partial_mutation_detail(
+                        target_partial_details,
+                        f"Claude root {root}",
+                    )
                 deleted += 1
+                target_partial_mutations = 0
+                target_partial_details = []
     except (ActiveSessionScanError, OSError) as exc:
         return CleanupResult(
             deleted=deleted,
             preserved_running=preserved_running,
             error=f"failed to remove Claude session path safely: {exc}",
+            partial_mutations=target_partial_mutations,
+            partial_mutation_details=tuple(target_partial_details),
         )
 
     return CleanupResult(

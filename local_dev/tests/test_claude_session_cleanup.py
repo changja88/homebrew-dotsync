@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from local_dev.serena_mcp_management import session_cleanup
 from local_dev.serena_mcp_management.session_cleanup import (
     cleanup_claude_inventory,
 )
@@ -890,6 +891,68 @@ def test_cleanup_claude_zero_targets_is_success(tmp_path):
     assert result.preserved_running == 2
 
 
+@pytest.mark.parametrize(
+    "warning",
+    (
+        "unsafe Claude session symlink: /tmp/.claude/projects/escape",
+        "active session scan unavailable: lsof is unavailable",
+    ),
+)
+def test_cleanup_claude_zero_targets_with_warning_fails_closed(
+    tmp_path,
+    warning,
+):
+    inventory = AgentInventory(
+        client="claude",
+        policy="all_inactive",
+        sessions=CountStats(total=0, to_delete=0, to_keep=0),
+        criteria="sessions: all projects + all inactive; running preserved",
+        claude_config_dir=tmp_path / ".claude",
+        warnings=(warning,),
+    )
+
+    def unexpected_snapshot(*args):
+        pytest.fail("unsafe zero-target cleanup must not take snapshots")
+
+    result = cleanup_claude_inventory(
+        inventory,
+        active_session_snapshot=unexpected_snapshot,
+        open_file_snapshot=unexpected_snapshot,
+    )
+
+    assert not result.succeeded
+    assert result.deleted == 0
+    assert result.warnings == (warning,)
+    assert warning in result.error
+
+
+@pytest.mark.parametrize(
+    ("updates", "error_fragment"),
+    (
+        ({"client": "codex"}, "codex inventory"),
+        ({"policy": "retention_5d"}, "all_inactive"),
+        ({"claude_config_dir": None}, "absolute config directory"),
+    ),
+)
+def test_cleanup_claude_zero_targets_validates_inventory_invariants(
+    tmp_path,
+    updates,
+    error_fragment,
+):
+    inventory = AgentInventory(
+        client="claude",
+        policy="all_inactive",
+        sessions=CountStats(total=0, to_delete=0, to_keep=0),
+        criteria="sessions: all projects + all inactive; running preserved",
+        claude_config_dir=tmp_path / ".claude",
+    )
+
+    result = cleanup_claude_inventory(replace(inventory, **updates))
+
+    assert not result.succeeded
+    assert error_fragment in result.error
+
+
 def test_cleanup_claude_inventory_warning_fails_before_delete(tmp_path):
     inventory = _inventory(tmp_path)
     unsafe = replace(inventory, warnings=("unsafe bundle",))
@@ -936,6 +999,49 @@ def test_cleanup_claude_reports_partial_unlink_failure(tmp_path, monkeypatch):
     assert not result.succeeded
     assert result.deleted == 1
     assert "disk failure" in result.error
+
+
+def test_cleanup_claude_reports_intra_bundle_partial_root_mutation(
+    tmp_path,
+    monkeypatch,
+):
+    inventory = _inventory(tmp_path)
+    roots = sorted(
+        inventory.claude_targets[0].roots,
+        key=lambda path: (len(path.parts), str(path)),
+        reverse=True,
+    )
+    original_delete_root = session_cleanup._delete_root_no_follow
+    calls = []
+
+    def fail_second_root(*args):
+        root = args[3]
+        calls.append(root)
+        if len(calls) == 2:
+            raise OSError("injected second root failure")
+        return original_delete_root(*args)
+
+    monkeypatch.setattr(
+        session_cleanup,
+        "_delete_root_no_follow",
+        fail_second_root,
+    )
+
+    result = cleanup_claude_inventory(
+        inventory,
+        active_session_snapshot=lambda config_dir: frozenset(),
+        open_file_snapshot=lambda paths: frozenset(),
+    )
+
+    assert not result.succeeded
+    assert result.deleted == 0
+    assert result.partial_mutations == 1
+    assert result.partial_mutation_details == (
+        f"Claude root {roots[0]}",
+    )
+    assert not roots[0].exists()
+    assert roots[1].exists()
+    assert "injected second root failure" in result.error
 
 
 def test_cleanup_claude_leaves_stale_marker_files(tmp_path):

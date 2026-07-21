@@ -64,6 +64,12 @@ def _bridged_inventory(tmp_path: Path):
 
 
 def test_explicit_codex_cleanup_treats_unsafe_inventory_as_failure():
+    warnings = (
+        "parent cycle at /tmp/codex/a.jsonl",
+        "malformed session metadata at /tmp/codex/b.jsonl",
+        "active session scan unavailable: lsof is unavailable",
+        "unsafe fourth cause must be summarized",
+    )
     inventory = AgentInventory(
         client="codex",
         policy="all_inactive",
@@ -71,7 +77,7 @@ def test_explicit_codex_cleanup_treats_unsafe_inventory_as_failure():
         criteria=(
             "sessions: all known homes + all inactive; running preserved"
         ),
-        warnings=("parent cycle",),
+        warnings=warnings,
     )
     calls = []
 
@@ -83,8 +89,10 @@ def test_explicit_codex_cleanup_treats_unsafe_inventory_as_failure():
 
     assert not result.succeeded
     assert result.error == (
-        "cannot safely inventory every inactive Codex session"
+        "cannot safely inventory every inactive Codex session: "
+        f"{warnings[0]}; {warnings[1]}; {warnings[2]}; +1 more"
     )
+    assert warnings[3] not in result.error
     assert calls == []
 
 
@@ -250,6 +258,53 @@ def test_explicit_codex_cleanup_reports_partial_cli_failure(tmp_path):
     assert not result.succeeded
     assert result.deleted == 1
     assert "delete failed" in result.error
+
+
+def test_explicit_codex_cleanup_reports_intra_group_partial_mutation(
+    tmp_path,
+):
+    codex_home = tmp_path / ".codex"
+    _write_old_session(
+        codex_home / "sessions/2026/07/21/root.jsonl",
+        ROOT_A,
+    )
+    _write_old_session(
+        codex_home / "sessions/2026/07/21/child.jsonl",
+        CHILD_A,
+        ROOT_A,
+    )
+    inventory = scan_inventory(
+        client="codex",
+        home=tmp_path,
+        codex_home=codex_home,
+        policy="all_inactive",
+        open_file_identities=frozenset(),
+    )
+
+    def runner(command, **kwargs):
+        if command[-1] == ROOT_A:
+            return subprocess.CompletedProcess(
+                command,
+                1,
+                "",
+                "injected parent failure",
+            )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    result = cleanup_codex_inventory(
+        inventory,
+        codex_binary="/fake/codex",
+        runner=runner,
+        open_file_snapshot=lambda paths: frozenset(),
+    )
+
+    assert not result.succeeded
+    assert result.deleted == 0
+    assert result.partial_mutations == 1
+    assert result.partial_mutation_details == (
+        f"Codex member {CHILD_A} in {codex_home}",
+    )
+    assert "injected parent failure" in result.error
 
 
 def test_cleanup_calls_official_delete_source_before_orca(tmp_path):

@@ -1602,11 +1602,29 @@ def _run_explicit_session_cleanup_v2(
             error=str(exc) or exc.__class__.__name__
         )
 
+    status = "done" if result.succeeded else "warn"
+    deleted_label = "sessions deleted"
+    if not result.succeeded:
+        deleted_label = "sessions fully deleted"
     value = (
-        f"{result.deleted} sessions deleted · "
+        f"{result.deleted} {deleted_label} · "
         f"{result.preserved_running} running preserved"
     )
-    status = "done" if result.succeeded else "warn"
+    if result.partial_mutations:
+        operation_label = (
+            "operation" if result.partial_mutations == 1 else "operations"
+        )
+        details = result.partial_mutation_details[:3]
+        detail_value = "; ".join(details)
+        remainder = result.partial_mutations - len(details)
+        if remainder > 0:
+            detail_value = f"{detail_value}; +{remainder} more"
+        value = (
+            f"{value} · partial mutation: {result.partial_mutations} "
+            f"{operation_label} completed"
+        )
+        if detail_value:
+            value = f"{value} ({detail_value})"
     if not result.succeeded:
         value = f"{value} · failed · {result.error}"
     out.write(
