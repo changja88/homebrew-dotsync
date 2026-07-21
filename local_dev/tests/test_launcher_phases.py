@@ -12,6 +12,10 @@ import pytest
 from local_dev.serena_mcp_management import serena_agent_launcher as launcher
 from local_dev.serena_mcp_management.node_preflight import NodeNeed
 from local_dev.serena_mcp_management.serena_mcp.diagnostics import GlobalLifecycleSnapshot
+from local_dev.serena_mcp_management.session_inventory import (
+    AgentInventory,
+    CountStats,
+)
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -1155,19 +1159,28 @@ def test_v2_launch_prep_claude_arms_native_cleanup_without_deleting_memory(
     memory = tmp_path / ".claude/projects/-repo/memory/MEMORY.md"
     memory.parent.mkdir(parents=True)
     memory.write_text("keep")
+    snapshot = _inventory_snapshot(
+        client="claude", total=8, to_delete=5, to_keep=3
+    )
+    monkeypatch.setattr(
+        launcher,
+        "scan_inventory",
+        lambda **kwargs: pytest.fail("default cleanup must reuse the snapshot"),
+    )
     out = io.StringIO()
 
     summary = launcher._run_launch_prep_v2(
-        snapshot=_inventory_snapshot(
-            client="claude", total=8, to_delete=5, to_keep=3
-        ),
+        snapshot=snapshot,
         real_binary="/fake/claude",
         stream=out,
     )
 
     assert summary.cleanup_deleted == 0
     assert summary.native_eligible == 5
-    assert "native retention 5d . 5 eligible" in out.getvalue()
+    assert "native retention 5d . 5 eligible" in _strip_ansi(out.getvalue())
+    assert "sessions" in _strip_ansi(out.getvalue())
+    assert "cleanup" not in _strip_ansi(out.getvalue())
+    assert f"\x1b[{launcher.YELLOW}m" in out.getvalue()
     assert memory.read_text() == "keep"
 
 
@@ -1177,6 +1190,11 @@ def test_v2_launch_prep_codex_uses_snapshot_and_official_cleanup(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     snapshot = _inventory_snapshot()
     seen = []
+    monkeypatch.setattr(
+        launcher,
+        "scan_inventory",
+        lambda **kwargs: pytest.fail("default cleanup must reuse the snapshot"),
+    )
     monkeypatch.setattr(
         launcher,
         "cleanup_codex_inventory",
@@ -1194,8 +1212,11 @@ def test_v2_launch_prep_codex_uses_snapshot_and_official_cleanup(monkeypatch):
     assert seen == [(snapshot.inventory, "/fake/codex")]
     assert summary.cleanup_deleted == 3
     assert summary.warnings == ("one warning",)
-    assert "3 sessions deleted" in out.getvalue()
-    assert "memory" not in out.getvalue()
+    assert "3 sessions deleted" in _strip_ansi(out.getvalue())
+    assert "sessions" in _strip_ansi(out.getvalue())
+    assert "cleanup" not in _strip_ansi(out.getvalue())
+    assert "memory" not in _strip_ansi(out.getvalue())
+    assert f"\x1b[{launcher.YELLOW}m" in out.getvalue()
 
 
 def test_v2_launch_prep_scan_failure_skips_cleanup(monkeypatch):
@@ -1250,7 +1271,7 @@ def test_v2_start_mcp_with_spinner_raises_on_failure(monkeypatch):
     assert "server unhealthy" in text or "preparing" in text
 
 
-def test_v2_render_summary_box_includes_duration_and_cleanup():
+def test_v2_render_summary_box_includes_duration_and_full_session_cleanup():
     out = io.StringIO()
     summary = launcher._render_summary_v2(
         stream=out,
@@ -1258,6 +1279,8 @@ def test_v2_render_summary_box_includes_duration_and_cleanup():
         duration_seconds=125.0,
         cleanup_deleted=2,
         native_eligible=0,
+        running_preserved=1,
+        full_cleanup=True,
         mcp_lifecycle="stopped",
         warnings=[],
     )
@@ -1265,7 +1288,9 @@ def test_v2_render_summary_box_includes_duration_and_cleanup():
     text = out.getvalue()
     assert "summary" in text
     assert "2m 5s" in _strip_ansi(text) or "125" in _strip_ansi(text)
-    assert "2 sessions deleted" in _strip_ansi(text)
+    assert "2 sessions deleted · 1 running preserved" in _strip_ansi(text)
+    assert "sessions" in _strip_ansi(text)
+    assert f"\x1b[{launcher.YELLOW}m" in text
     assert "memory" not in _strip_ansi(text)
     assert "stopped" in text
 
@@ -1278,6 +1303,8 @@ def test_v2_render_summary_includes_warnings():
         duration_seconds=10.0,
         cleanup_deleted=0,
         native_eligible=4,
+        running_preserved=0,
+        full_cleanup=False,
         mcp_lifecycle="kept",
         warnings=["serena project create skipped"],
     )
@@ -1458,56 +1485,129 @@ def test_v2_preflight_no_longer_asks_run_codex(monkeypatch):
     assert "Run claude?" not in out.getvalue()
 
 
-def test_memory_choice_offers_keep_delete_cancel(monkeypatch):
+def test_cleanup_choices_are_product_scoped_and_default_to_keep(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
 
-    out = io.StringIO()
-    choice = launcher._run_memory_choice_v2(stream=out, input_fn=lambda: "2")
-
-    assert choice == "delete"
-    assert "Run with existing memory" in out.getvalue()
-    assert "Delete all Codex auto-memory and run" in out.getvalue()
-    assert "Cancel" in out.getvalue()
-
-
-def test_memory_choice_returns_cancel(monkeypatch):
-    monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
-    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-
-    out = io.StringIO()
-    choice = launcher._run_memory_choice_v2(stream=out, input_fn=lambda: "3")
-
-    assert choice == "cancel"
-    assert "Delete all Claude auto-memory and run" in out.getvalue()
-
-
-def test_memory_choice_keeps_without_prompt_when_non_interactive(monkeypatch):
-    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
-    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "0")
-
-    out = io.StringIO()
-    choice = launcher._run_memory_choice_v2(
-        stream=out, input_fn=lambda: pytest.fail("no input should be requested")
+    memory_out = io.StringIO()
+    session_out = io.StringIO()
+    memory = launcher._run_memory_choice_v2(
+        stream=memory_out,
+        input_fn=lambda: "",
+    )
+    sessions = launcher._run_session_choice_v2(
+        stream=session_out,
+        input_fn=lambda: "",
     )
 
-    assert choice == "keep"
+    assert memory == "keep"
+    assert sessions == "retention_5d"
+    assert "Keep all memory (default)" in _strip_ansi(memory_out.getvalue())
+    assert "Delete all Codex auto-memory" in _strip_ansi(memory_out.getvalue())
+    assert "automatic cleanup after 5 days (default)" in _strip_ansi(
+        session_out.getvalue()
+    )
+    assert "running sessions are preserved" in _strip_ansi(
+        session_out.getvalue()
+    )
+    assert f"\x1b[{launcher.PURPLE}m" in memory_out.getvalue()
+    assert f"\x1b[{launcher.YELLOW}m" in session_out.getvalue()
+
+
+def test_cleanup_choices_use_claude_product_scope(monkeypatch):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    memory_out = io.StringIO()
+    session_out = io.StringIO()
+
+    assert launcher._run_memory_choice_v2(
+        stream=memory_out,
+        input_fn=lambda: "2",
+    ) == "delete"
+    assert launcher._run_session_choice_v2(
+        stream=session_out,
+        input_fn=lambda: "2",
+    ) == "delete_inactive"
+    assert "Claude auto-memory" in _strip_ansi(memory_out.getvalue())
+    assert "Claude sessions" in _strip_ansi(session_out.getvalue())
+    assert "Codex" not in _strip_ansi(memory_out.getvalue())
+    assert "Codex" not in _strip_ansi(session_out.getvalue())
+
+
+def test_cleanup_choices_bypass_prompts_when_non_interactive(monkeypatch):
+    monkeypatch.delenv("SERENA_AGENT_INTERACTIVE", raising=False)
+    memory_out = io.StringIO()
+    session_out = io.StringIO()
+
+    assert launcher._run_memory_choice_v2(stream=memory_out) == "keep"
+    assert launcher._run_session_choice_v2(
+        stream=session_out
+    ) == "retention_5d"
+    assert memory_out.getvalue() == ""
+    assert session_out.getvalue() == ""
+
+
+def test_memory_delete_action_uses_purple_rows(monkeypatch, tmp_path):
+    from local_dev.serena_mcp_management.memory_management import MemoryDeleteResult
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    monkeypatch.setattr(
+        launcher,
+        "delete_all_memory",
+        lambda **kwargs: MemoryDeleteResult(
+            deleted_stores=2,
+            deleted_files=17,
+        ),
+    )
+    out = io.StringIO()
+
+    result = launcher._run_memory_action_v2(
+        choice="delete",
+        client="codex",
+        stream=out,
+    )
+
+    assert result.succeeded
+    assert "2 stores · 17 files deleted" in _strip_ansi(out.getvalue())
+    assert out.getvalue().count(f"\x1b[{launcher.PURPLE}m") >= 2
+
+
+def test_memory_keep_action_is_silent_and_does_not_access_stores(monkeypatch):
+    monkeypatch.setattr(
+        launcher,
+        "delete_all_memory",
+        lambda **kwargs: pytest.fail("keep must not access memory stores"),
+    )
+    out = io.StringIO()
+
+    result = launcher._run_memory_action_v2(
+        choice="keep",
+        client="codex",
+        stream=out,
+    )
+
+    assert result.succeeded
     assert out.getvalue() == ""
 
 
-def _run_main_for_memory_choice(
+def _run_main_for_cleanup_choices(
     monkeypatch,
     tmp_path,
     *,
-    choice,
+    memory_choice,
+    session_choice,
     deletion_succeeds=True,
     deletion_error="unsafe memory store",
     deleted_stores=2,
     deleted_files=17,
     delete_exception=None,
     codex_home=None,
+    session_choice_exception=None,
+    explicit_cleanup_result=None,
+    call_public_main=False,
 ):
     from local_dev.serena_mcp_management.memory_management import MemoryDeleteResult
+    from local_dev.serena_mcp_management.session_cleanup import CleanupResult
 
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
@@ -1518,7 +1618,6 @@ def _run_main_for_memory_choice(
     _set_graphify_env(monkeypatch)
 
     call_log: list[str] = []
-    delete_calls: list[dict] = []
     snapshot = _inventory_snapshot(total=1, to_delete=0, to_keep=1)
 
     def fake_overview(*, stream=None):
@@ -1534,12 +1633,17 @@ def _run_main_for_memory_choice(
         return "skipped"
 
     def fake_memory_choice(**kwargs):
-        if choice != "delete" or deletion_succeeds:
-            call_log.append(f"memory-{choice}")
-        return choice
+        call_log.append("memory-choice")
+        return memory_choice
+
+    def fake_session_choice(**kwargs):
+        call_log.append("session-choice")
+        if session_choice_exception is not None:
+            raise session_choice_exception
+        return session_choice
 
     def fake_delete_all_memory(**kwargs):
-        delete_calls.append(kwargs)
+        call_log.append("memory-delete")
         if delete_exception is not None:
             raise delete_exception
         if deletion_succeeds:
@@ -1547,7 +1651,6 @@ def _run_main_for_memory_choice(
                 deleted_stores=deleted_stores,
                 deleted_files=deleted_files,
             )
-        call_log.append("memory-delete-failed")
         return MemoryDeleteResult(
             deleted_stores=deleted_stores,
             deleted_files=deleted_files,
@@ -1560,128 +1663,261 @@ def _run_main_for_memory_choice(
     monkeypatch.setattr(launcher, "_run_serena_init_v2", fake_serena_init, raising=False)
     monkeypatch.setattr(launcher, "_run_memory_choice_v2", fake_memory_choice,
                         raising=False)
+    monkeypatch.setattr(launcher, "_run_session_choice_v2", fake_session_choice,
+                        raising=False)
     monkeypatch.setattr(launcher, "delete_all_memory", fake_delete_all_memory,
                         raising=False)
-
-    stopped = (
-        choice == "cancel"
-        or (choice == "delete" and not deletion_succeeds)
-        or delete_exception is not None
-        or not Path(configured_codex_home).is_absolute()
+    monkeypatch.setattr(
+        launcher,
+        "find_real_binary",
+        lambda client: "/usr/bin/true",
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_run_launch_prep_v2",
+        lambda **kwargs: call_log.append("session-retention")
+        or launcher.LaunchPrepSummary(),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_run_explicit_session_cleanup_v2",
+        lambda **kwargs: call_log.append("session-delete-inactive")
+        or (
+            explicit_cleanup_result
+            if explicit_cleanup_result is not None
+            else CleanupResult()
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_launch_bare_child",
+        lambda *args, **kwargs: call_log.append("launch") or 0,
     )
 
-    def forbidden(*args, **kwargs):
-        pytest.fail("stopped memory choices must not prepare or launch an agent")
-
-    if stopped:
-        monkeypatch.setattr(launcher, "find_real_binary", forbidden)
-        monkeypatch.setattr(launcher, "_run_launch_prep_v2", forbidden)
-        monkeypatch.setattr(launcher, "_start_mcp_with_spinner", forbidden)
-        monkeypatch.setattr(launcher, "ensure_server", forbidden)
-        monkeypatch.setattr(launcher, "_launch_bare_child", forbidden)
-        monkeypatch.setattr(launcher.subprocess, "Popen", forbidden)
-    else:
-        monkeypatch.setattr(
-            launcher,
-            "find_real_binary",
-            lambda client: "/usr/bin/true",
-        )
-        monkeypatch.setattr(
-            launcher,
-            "_run_launch_prep_v2",
-            lambda **kwargs: call_log.append("session-cleanup")
-            or launcher.LaunchPrepSummary(),
-        )
-        monkeypatch.setattr(
-            launcher,
-            "_launch_bare_child",
-            lambda *args, **kwargs: call_log.append("launch") or 0,
-        )
-
-    return launcher._main_v2([]), call_log, delete_calls
+    entrypoint = launcher.main if call_public_main else launcher._main_v2
+    return entrypoint([]), call_log
 
 
-def test_v2_main_keeps_memory_then_cleans_sessions_and_launches(monkeypatch, tmp_path):
-    rc, call_log, delete_calls = _run_main_for_memory_choice(
-        monkeypatch,
-        tmp_path,
-        choice="keep",
-    )
-
-    assert rc == 0
-    assert call_log == [
-        "overview", "serena-init", "setup", "memory-keep", "session-cleanup", "launch"
-    ]
-    assert delete_calls == []
-
-
-def test_v2_main_deletes_memory_then_cleans_sessions_and_launches(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize(
+    ("memory_choice", "session_choice", "expected_actions"),
+    [
+        ("keep", "retention_5d", ["session-retention"]),
+        (
+            "delete",
+            "retention_5d",
+            ["memory-delete", "session-retention"],
+        ),
+        ("keep", "delete_inactive", ["session-delete-inactive"]),
+        (
+            "delete",
+            "delete_inactive",
+            ["memory-delete", "session-delete-inactive"],
+        ),
+    ],
+)
+def test_v2_main_collects_both_choices_before_actions(
+    monkeypatch,
+    tmp_path,
+    memory_choice,
+    session_choice,
+    expected_actions,
 ):
-    rc, call_log, delete_calls = _run_main_for_memory_choice(
+    rc, call_log = _run_main_for_cleanup_choices(
         monkeypatch,
         tmp_path,
-        choice="delete",
+        memory_choice=memory_choice,
+        session_choice=session_choice,
     )
 
     assert rc == 0
-    assert call_log == [
-        "overview", "serena-init", "setup", "memory-delete", "session-cleanup", "launch"
+    assert call_log[:5] == [
+        "overview",
+        "serena-init",
+        "setup",
+        "memory-choice",
+        "session-choice",
     ]
-    assert len(delete_calls) == 1
-    assert delete_calls[0]["client"] == "codex"
-    assert delete_calls[0]["codex_home"] == tmp_path / "codex-home"
+    assert [
+        entry for entry in call_log if entry in expected_actions
+    ] == expected_actions
+    assert call_log[-1] == "launch"
+
+
+def test_v2_main_session_choice_ctrl_c_precedes_memory_delete(
+    monkeypatch,
+    tmp_path,
+):
+    rc, call_log = _run_main_for_cleanup_choices(
+        monkeypatch,
+        tmp_path,
+        memory_choice="delete",
+        session_choice="retention_5d",
+        session_choice_exception=KeyboardInterrupt(),
+        call_public_main=True,
+    )
+
+    assert rc == 130
+    assert call_log[-1] == "session-choice"
+    assert "memory-delete" not in call_log
+    assert "launch" not in call_log
+
+
+def test_v2_main_explicit_cleanup_failure_stops_launch(monkeypatch, tmp_path):
+    rc, call_log = _run_main_for_cleanup_choices(
+        monkeypatch,
+        tmp_path,
+        memory_choice="keep",
+        session_choice="delete_inactive",
+        explicit_cleanup_result=launcher.CleanupResult(
+            error="unsafe session inventory"
+        ),
+    )
+
+    assert rc == 1
+    assert "session-delete-inactive" in call_log
+    assert "launch" not in call_log
+
+
+def test_explicit_session_cleanup_reports_newly_running_session(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(
+        launcher,
+        "scan_inventory",
+        lambda **kwargs: _inventory_snapshot(
+            total=1,
+            to_delete=1,
+            to_keep=0,
+        ).inventory,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "cleanup_codex_inventory",
+        lambda inventory, codex_binary: launcher.CleanupResult(
+            deleted=0,
+            preserved_running=1,
+        ),
+    )
+    out = io.StringIO()
+
+    result = launcher._run_explicit_session_cleanup_v2(
+        client="codex",
+        real_binary="/fake/codex",
+        stream=out,
+    )
+
+    assert result.succeeded
+    assert result.preserved_running == 1
+    assert "1 running preserved" in _strip_ansi(out.getvalue())
+
+
+def test_explicit_session_cleanup_codex_uses_fresh_all_inactive_scan(
+    monkeypatch,
+):
+    inventory = AgentInventory(
+        client="codex",
+        policy="all_inactive",
+        sessions=CountStats(total=0),
+        criteria="all inactive",
+    )
+    scan_calls = []
+    cleanup_calls = []
+    monkeypatch.setattr(
+        launcher,
+        "scan_inventory",
+        lambda **kwargs: scan_calls.append(kwargs) or inventory,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "cleanup_codex_inventory",
+        lambda value, codex_binary: cleanup_calls.append(
+            (value, codex_binary)
+        )
+        or launcher.CleanupResult(),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "cleanup_claude_inventory",
+        lambda value: pytest.fail("Claude cleanup must not run"),
+        raising=False,
+    )
+
+    result = launcher._run_explicit_session_cleanup_v2(
+        client="codex",
+        real_binary="/fake/codex",
+        stream=io.StringIO(),
+    )
+
+    assert result.succeeded
+    assert scan_calls[0]["policy"] == "all_inactive"
+    assert cleanup_calls == [(inventory, "/fake/codex")]
+
+
+def test_explicit_session_cleanup_claude_uses_only_claude_cleanup(
+    monkeypatch,
+):
+    inventory = AgentInventory(
+        client="claude",
+        policy="all_inactive",
+        sessions=CountStats(total=0),
+        criteria="all inactive",
+    )
+    monkeypatch.setattr(
+        launcher,
+        "scan_inventory",
+        lambda **kwargs: inventory,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "cleanup_codex_inventory",
+        lambda *args, **kwargs: pytest.fail("Codex cleanup must not run"),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "cleanup_claude_inventory",
+        lambda value: launcher.CleanupResult(),
+        raising=False,
+    )
+
+    result = launcher._run_explicit_session_cleanup_v2(
+        client="claude",
+        real_binary="/fake/claude",
+        stream=io.StringIO(),
+    )
+
+    assert result.succeeded
 
 
 def test_v2_main_zero_store_delete_then_cleans_sessions_and_launches(
     monkeypatch, tmp_path, capsys
 ):
-    rc, call_log, delete_calls = _run_main_for_memory_choice(
+    rc, call_log = _run_main_for_cleanup_choices(
         monkeypatch,
         tmp_path,
-        choice="delete",
+        memory_choice="delete",
+        session_choice="retention_5d",
         deleted_stores=0,
         deleted_files=0,
     )
 
     assert rc == 0
-    assert call_log == [
-        "overview", "serena-init", "setup", "memory-delete", "session-cleanup", "launch"
-    ]
-    assert len(delete_calls) == 1
+    assert call_log[-3:] == ["memory-delete", "session-retention", "launch"]
     assert (
         "memory      0 stores · 0 files deleted"
         in _strip_ansi(capsys.readouterr().out)
     )
 
 
-def test_v2_main_cancel_prints_clean_row_and_stops_before_cleanup_or_launch(
-    monkeypatch, tmp_path, capsys
-):
-    rc, call_log, delete_calls = _run_main_for_memory_choice(
-        monkeypatch,
-        tmp_path,
-        choice="cancel",
-    )
-
-    assert rc == 130
-    assert call_log == ["overview", "serena-init", "setup", "memory-cancel"]
-    assert delete_calls == []
-    visible = (
-        _strip_ansi(capsys.readouterr().out)
-        .replace("\r", "")
-        .replace("\x1b[J", "")
-    )
-    assert visible == "  ! cancelled\n"
-
-
 def test_v2_main_partial_delete_failure_reports_counts_and_stops(
     monkeypatch, tmp_path, capsys
 ):
-    rc, call_log, delete_calls = _run_main_for_memory_choice(
+    rc, call_log = _run_main_for_cleanup_choices(
         monkeypatch,
         tmp_path,
-        choice="delete",
+        memory_choice="delete",
+        session_choice="retention_5d",
         deletion_succeeds=False,
         deletion_error="disk busy",
         deleted_stores=1,
@@ -1689,10 +1925,9 @@ def test_v2_main_partial_delete_failure_reports_counts_and_stops(
     )
 
     assert rc == 1
-    assert call_log == [
-        "overview", "serena-init", "setup", "memory-delete-failed"
-    ]
-    assert len(delete_calls) == 1
+    assert call_log[-1] == "memory-delete"
+    assert "session-retention" not in call_log
+    assert "launch" not in call_log
     assert (
         "memory      delete failed · 1 stores · 4 files deleted · disk busy"
         in _strip_ansi(capsys.readouterr().out)
@@ -1702,16 +1937,18 @@ def test_v2_main_partial_delete_failure_reports_counts_and_stops(
 def test_v2_main_invalid_memory_scan_config_returns_one_before_launch(
     monkeypatch, tmp_path, capsys
 ):
-    rc, call_log, delete_calls = _run_main_for_memory_choice(
+    rc, call_log = _run_main_for_cleanup_choices(
         monkeypatch,
         tmp_path,
-        choice="delete",
+        memory_choice="delete",
+        session_choice="retention_5d",
         codex_home=Path("relative-codex-home"),
     )
 
     assert rc == 1
-    assert call_log == ["overview", "serena-init", "setup", "memory-delete"]
-    assert delete_calls == []
+    assert call_log[-1] == "session-choice"
+    assert "memory-delete" not in call_log
+    assert "launch" not in call_log
     assert (
         "memory      delete failed · 0 stores · 0 files deleted · "
         "codex_home must be absolute"
@@ -1722,16 +1959,18 @@ def test_v2_main_invalid_memory_scan_config_returns_one_before_launch(
 def test_v2_main_authoritative_memory_rescan_failure_returns_one_before_launch(
     monkeypatch, tmp_path, capsys
 ):
-    rc, call_log, delete_calls = _run_main_for_memory_choice(
+    rc, call_log = _run_main_for_cleanup_choices(
         monkeypatch,
         tmp_path,
-        choice="delete",
+        memory_choice="delete",
+        session_choice="retention_5d",
         delete_exception=OSError("rescan unavailable"),
     )
 
     assert rc == 1
-    assert call_log == ["overview", "serena-init", "setup", "memory-delete"]
-    assert len(delete_calls) == 1
+    assert call_log[-1] == "memory-delete"
+    assert "session-retention" not in call_log
+    assert "launch" not in call_log
     assert (
         "memory      delete failed · 0 stores · 0 files deleted · "
         "rescan unavailable"
@@ -2039,6 +2278,8 @@ def test_v2_main_clears_terminal_before_child_when_serena_skipped(monkeypatch, t
                         lambda **kw: "skipped", raising=False)
     monkeypatch.setattr(launcher, "_run_memory_choice_v2",
                         lambda **kw: "keep", raising=False)
+    monkeypatch.setattr(launcher, "_run_session_choice_v2",
+                        lambda **kw: "retention_5d", raising=False)
     monkeypatch.setattr(launcher, "find_real_binary",
                         lambda client: "/usr/bin/true", raising=False)
 
@@ -2250,11 +2491,19 @@ def test_v2_main_passes_serena_state_to_preflight(monkeypatch, tmp_path):
     monkeypatch.setattr(launcher, "_run_preflight_v2", fake_preflight, raising=False)
     monkeypatch.setattr(launcher, "_run_serena_init_v2",
                         lambda *, stream=None, input_fn=None: "created", raising=False)
-    monkeypatch.setattr(launcher, "_run_memory_choice_v2",
-                        lambda *, stream=None, input_fn=None: "cancel", raising=False)
+    monkeypatch.setattr(
+        launcher,
+        "_run_memory_choice_v2",
+        lambda *, stream=None, input_fn=None: (_ for _ in ()).throw(
+            KeyboardInterrupt()
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(launcher, "_run_session_choice_v2",
+                        lambda **kwargs: "retention_5d", raising=False)
 
-    rc = launcher._main_v2([])
-    assert rc == 130  # memory choice cancelled
+    rc = launcher.main([])
+    assert rc == 130
     assert captured["serena_state"] == "created"
 
 
@@ -2424,6 +2673,8 @@ def test_v2_main_runs_cleanup_before_bare_launch_when_serena_cli_missing(
                         lambda **kw: 0, raising=False)
     monkeypatch.setattr(launcher, "_run_memory_choice_v2",
                         lambda **kw: "keep", raising=False)
+    monkeypatch.setattr(launcher, "_run_session_choice_v2",
+                        lambda **kw: "retention_5d", raising=False)
     monkeypatch.setattr(launcher, "serena_server_command",
                         lambda: None, raising=False)
     monkeypatch.setattr(launcher, "find_real_binary",
@@ -2774,6 +3025,8 @@ def test_v2_main_runs_serena_cli_phase_before_init(monkeypatch, tmp_path):
                         lambda **kw: 0, raising=False)
     monkeypatch.setattr(launcher, "_run_memory_choice_v2",
                         lambda **kw: "keep", raising=False)
+    monkeypatch.setattr(launcher, "_run_session_choice_v2",
+                        lambda **kw: "retention_5d", raising=False)
     monkeypatch.setattr(launcher, "find_real_binary",
                         lambda client: "/usr/bin/true", raising=False)
 

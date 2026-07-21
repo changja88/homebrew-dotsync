@@ -13,7 +13,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, TextIO, TypedDict
+from typing import Literal, TextIO, TypedDict, cast
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -52,7 +52,9 @@ from local_dev.serena_mcp_management.serena_mcp.watchdog import (
     release_lease_and_shutdown_if_empty,
 )
 from local_dev.serena_mcp_management.session_cleanup import (
+    CleanupResult,
     claude_retention_args,
+    cleanup_claude_inventory,
     cleanup_codex_inventory,
 )
 from local_dev.serena_mcp_management.session_inventory import (
@@ -64,6 +66,7 @@ from local_dev.serena_mcp_management.ui import (
     MINT,
     PINK,
     PURPLE,
+    YELLOW,
     BoxModel,
     BoxRenderer,
     Item,
@@ -72,7 +75,7 @@ from local_dev.serena_mcp_management.ui import (
     confirm,
     render_inline_row,
     select_option,
-    style_count,
+    style_action_value,
     style_memory_tree,
     style_mcp_inventory,
     style_session_tree,
@@ -86,6 +89,8 @@ class LaunchPrepSummary:
 
     cleanup_deleted: int = 0
     native_eligible: int = 0
+    running_preserved: int = 0
+    full_cleanup: bool = False
     warnings: tuple[str, ...] = ()
 
 
@@ -298,11 +303,28 @@ def _run_launch_prep_v2(
     if client not in {"codex", "claude"}:
         raise RuntimeError(f"unsupported launcher name: {client}")
 
+    out.write(
+        render_inline_row(
+            "sessions",
+            f"applying {client} 5-day retention",
+            status="spin",
+            accent=YELLOW,
+        )
+    )
+    out.flush()
+
     if snapshot is None or snapshot.inventory is None:
         detail = (
             snapshot.error if snapshot is not None else None
         ) or "inventory unavailable"
-        out.write(f"  ! cleanup     skipped . {detail}\n")
+        out.write(
+            render_inline_row(
+                "sessions",
+                f"skipped · {detail}",
+                status="warn",
+                accent=YELLOW,
+            )
+        )
         out.flush()
         return LaunchPrepSummary(warnings=(detail,))
 
@@ -311,14 +333,26 @@ def _run_launch_prep_v2(
         detail = (
             f"inventory client mismatch: expected {client}, got {inventory.client}"
         )
-        out.write(f"  ! cleanup     skipped . {detail}\n")
+        out.write(
+            render_inline_row(
+                "sessions",
+                f"skipped · {detail}",
+                status="warn",
+                accent=YELLOW,
+            )
+        )
         out.flush()
         return LaunchPrepSummary(warnings=(detail,))
 
     if client == "claude":
         eligible = inventory.sessions.to_delete
         out.write(
-            f"  ✓ cleanup     native retention 5d . {eligible} eligible\n"
+            render_inline_row(
+                "sessions",
+                f"native retention 5d . {eligible} eligible",
+                status="done",
+                accent=YELLOW,
+            )
         )
         out.flush()
         return LaunchPrepSummary(
@@ -330,11 +364,24 @@ def _run_launch_prep_v2(
         inventory,
         codex_binary=real_binary,
     )
-    out.write(f"  ✓ cleanup     {result.deleted} sessions deleted\n")
+    value = f"{result.deleted} sessions deleted"
+    status = "done" if result.succeeded else "warn"
+    warnings = result.warnings
+    if not result.succeeded:
+        value = f"{value} · failed · {result.error}"
+        warnings = (*warnings, result.error or "session cleanup failed")
+    out.write(
+        render_inline_row(
+            "sessions",
+            value,
+            status=status,
+            accent=YELLOW,
+        )
+    )
     out.flush()
     return LaunchPrepSummary(
         cleanup_deleted=result.deleted,
-        warnings=result.warnings,
+        warnings=warnings,
     )
 
 
@@ -401,14 +448,20 @@ def _render_summary_v2(
     duration_seconds: float,
     cleanup_deleted: int,
     native_eligible: int,
+    running_preserved: int,
+    full_cleanup: bool,
     mcp_lifecycle: str,
     warnings: list[str],
 ) -> None:
-    cleanup_value = (
-        f"native retention 5d . {native_eligible} eligible"
-        if client == "claude"
-        else f"{cleanup_deleted} sessions deleted"
-    )
+    if full_cleanup:
+        sessions_value = (
+            f"{cleanup_deleted} sessions deleted · "
+            f"{running_preserved} running preserved"
+        )
+    elif client == "claude":
+        sessions_value = f"native retention 5d . {native_eligible} eligible"
+    else:
+        sessions_value = f"{cleanup_deleted} sessions deleted"
     items = [
         Item(
             id="duration",
@@ -417,9 +470,9 @@ def _render_summary_v2(
             status="done",
         ),
         Item(
-            id="cleanup",
-            label="cleanup",
-            value=style_count(cleanup_value),
+            id="sessions",
+            label="sessions",
+            value=style_action_value(sessions_value, accent=YELLOW),
             status="done",
         ),
         Item(
@@ -465,46 +518,38 @@ def _main_v2(args: list[str]) -> int:
         os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0])
     )
     memory_choice = _run_memory_choice_v2()
-    if memory_choice == "cancel":
-        out.write("  ! cancelled\n")
-        out.flush()
-        return 130
-    if memory_choice == "delete":
-        try:
-            scan_kwargs = _memory_scan_kwargs(client_type)
-        except (OSError, RuntimeError, ValueError) as exc:
-            detail = str(exc) or exc.__class__.__name__
-            delete_result = MemoryDeleteResult(error=detail)
-        else:
-            try:
-                delete_result = delete_all_memory(**scan_kwargs)
-            except (OSError, ValueError) as exc:
-                detail = str(exc) or exc.__class__.__name__
-                delete_result = MemoryDeleteResult(error=detail)
-        if not delete_result.succeeded:
-            out.write(
-                f"  ! memory      delete failed · "
-                f"{delete_result.deleted_stores} stores · "
-                f"{delete_result.deleted_files} files deleted · "
-                f"{delete_result.error}\n"
-            )
-            out.flush()
-            return 1
-        out.write(
-            f"  ✓ memory      {delete_result.deleted_stores} stores · "
-            f"{delete_result.deleted_files} files deleted\n"
-        )
-        out.flush()
+    session_choice = _run_session_choice_v2()
+
+    memory_result = _run_memory_action_v2(
+        choice=memory_choice,
+        client=client_type,
+        stream=out,
+    )
+    if not memory_result.succeeded:
+        return 1
 
     real_binary = find_real_binary(client_type)
-    summary_state = (
-        _run_launch_prep_v2(
+    if interactive and session_choice == "delete_inactive":
+        cleanup_result = _run_explicit_session_cleanup_v2(
+            client=client_type,
+            real_binary=real_binary,
+            stream=out,
+        )
+        if not cleanup_result.succeeded:
+            return 1
+        summary_state = LaunchPrepSummary(
+            cleanup_deleted=cleanup_result.deleted,
+            running_preserved=cleanup_result.preserved_running,
+            full_cleanup=True,
+            warnings=cleanup_result.warnings,
+        )
+    elif interactive:
+        summary_state = _run_launch_prep_v2(
             snapshot=inventory_snapshot,
             real_binary=real_binary,
         )
-        if interactive
-        else None
-    )
+    else:
+        summary_state = None
     if summary_state is not None:
         warnings.extend(summary_state.warnings)
 
@@ -591,12 +636,18 @@ def _main_v2(args: list[str]) -> int:
             mcp_lifecycle = "none"
         cleanup_deleted = summary_state.cleanup_deleted if summary_state else 0
         native_eligible = summary_state.native_eligible if summary_state else 0
+        running_preserved = (
+            summary_state.running_preserved if summary_state else 0
+        )
+        full_cleanup = summary_state.full_cleanup if summary_state else False
         _render_summary_v2(
             stream=out,
             client=client_type,
             duration_seconds=time.time() - started_at,
             cleanup_deleted=cleanup_deleted,
             native_eligible=native_eligible,
+            running_preserved=running_preserved,
+            full_cleanup=full_cleanup,
             mcp_lifecycle=mcp_lifecycle,
             warnings=warnings,
         )
@@ -1404,7 +1455,7 @@ def _run_memory_choice_v2(
     *,
     stream: TextIO | None = None,
     input_fn: Callable[[], str] | None = None,
-) -> Literal["keep", "delete", "cancel"]:
+) -> Literal["keep", "delete"]:
     """Choose the product-wide auto-memory policy before launch."""
     if os.environ.get("SERENA_AGENT_INTERACTIVE") != "1":
         return "keep"
@@ -1412,26 +1463,162 @@ def _run_memory_choice_v2(
     client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
     product = "Codex" if client == "codex" else "Claude"
     choice = select_option(
-        f"Memory for {client}?",
+        f"Delete {product} auto-memory before launch?",
         options=(
-            SelectOption("keep", "Run with existing memory"),
+            SelectOption("keep", "Keep all memory (default)"),
             SelectOption(
                 "delete",
-                f"Delete all {product} auto-memory and run",
+                f"Delete all {product} auto-memory",
             ),
-            SelectOption("cancel", "Cancel"),
         ),
         default_index=0,
+        accent=PURPLE,
         stream=out,
         input_fn=input_fn,
     )
+    if choice not in {"keep", "delete"}:
+        raise RuntimeError(f"unsupported memory choice: {choice}")
+    return cast(Literal["keep", "delete"], choice)
+
+
+def _run_session_choice_v2(
+    *,
+    stream: TextIO | None = None,
+    input_fn: Callable[[], str] | None = None,
+) -> Literal["retention_5d", "delete_inactive"]:
+    """Choose the product-wide session policy before launch."""
+    if os.environ.get("SERENA_AGENT_INTERACTIVE") != "1":
+        return "retention_5d"
+    out = stream if stream is not None else sys.stdout
+    client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
+    product = "Codex" if client == "codex" else "Claude"
+    choice = select_option(
+        f"Delete {product} sessions before launch?",
+        options=(
+            SelectOption(
+                "retention_5d",
+                "No full deletion — automatic cleanup after 5 days "
+                "(default)",
+            ),
+            SelectOption(
+                "delete_inactive",
+                "Delete all inactive sessions — running sessions "
+                "are preserved",
+            ),
+        ),
+        default_index=0,
+        accent=YELLOW,
+        stream=out,
+        input_fn=input_fn,
+    )
+    if choice not in {"retention_5d", "delete_inactive"}:
+        raise RuntimeError(f"unsupported session choice: {choice}")
+    return cast(
+        Literal["retention_5d", "delete_inactive"],
+        choice,
+    )
+
+
+def _run_memory_action_v2(
+    *,
+    choice: Literal["keep", "delete"],
+    client: str,
+    stream: TextIO | None = None,
+) -> MemoryDeleteResult:
+    """Apply an explicit auto-memory deletion choice."""
     if choice == "keep":
-        return "keep"
-    if choice == "delete":
-        return "delete"
-    if choice == "cancel":
-        return "cancel"
-    raise RuntimeError(f"unsupported memory choice: {choice}")
+        return MemoryDeleteResult()
+    if choice != "delete":
+        raise RuntimeError(f"unsupported memory choice: {choice}")
+
+    out = stream if stream is not None else sys.stdout
+    out.write(
+        render_inline_row(
+            "memory",
+            f"deleting all {client} auto-memory",
+            status="spin",
+            accent=PURPLE,
+        )
+    )
+    out.flush()
+    try:
+        result = delete_all_memory(**_memory_scan_kwargs(client))
+    except (OSError, RuntimeError, ValueError) as exc:
+        result = MemoryDeleteResult(
+            error=str(exc) or exc.__class__.__name__,
+        )
+
+    value = (
+        f"{result.deleted_stores} stores · "
+        f"{result.deleted_files} files deleted"
+    )
+    status = "done" if result.succeeded else "warn"
+    if not result.succeeded:
+        value = f"delete failed · {value} · {result.error}"
+    out.write(
+        render_inline_row(
+            "memory",
+            value,
+            status=status,
+            accent=PURPLE,
+        )
+    )
+    out.flush()
+    return result
+
+
+def _run_explicit_session_cleanup_v2(
+    *,
+    client: str,
+    real_binary: str,
+    stream: TextIO | None = None,
+) -> CleanupResult:
+    """Delete all inactive sessions using a fresh product-scoped scan."""
+    out = stream if stream is not None else sys.stdout
+    out.write(
+        render_inline_row(
+            "sessions",
+            f"deleting inactive {client} sessions · running preserved",
+            status="spin",
+            accent=YELLOW,
+        )
+    )
+    out.flush()
+    try:
+        inventory = scan_inventory(
+            **_memory_scan_kwargs(client),
+            policy="all_inactive",
+        )
+        result = (
+            cleanup_codex_inventory(
+                inventory,
+                codex_binary=real_binary,
+            )
+            if client == "codex"
+            else cleanup_claude_inventory(inventory)
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        result = CleanupResult(
+            error=str(exc) or exc.__class__.__name__
+        )
+
+    value = (
+        f"{result.deleted} sessions deleted · "
+        f"{result.preserved_running} running preserved"
+    )
+    status = "done" if result.succeeded else "warn"
+    if not result.succeeded:
+        value = f"{value} · failed · {result.error}"
+    out.write(
+        render_inline_row(
+            "sessions",
+            value,
+            status=status,
+            accent=YELLOW,
+        )
+    )
+    out.flush()
+    return result
 
 
 def _serena_project_create(project_root: Path) -> tuple[int, str]:
