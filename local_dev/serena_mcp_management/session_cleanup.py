@@ -761,6 +761,8 @@ def _raise_quarantine_creation_failure(
     quarantine: _QuarantineEvidence,
     entry_name: str,
     primary_error: Exception,
+    *,
+    descriptor_provenance_established: bool,
 ) -> NoReturn:
     diagnostic = _quarantine_recovery_diagnostic(
         quarantine,
@@ -769,6 +771,14 @@ def _raise_quarantine_creation_failure(
         last_lexical_path=quarantine.path,
         path_was_verified=False,
     )
+    if not descriptor_provenance_established:
+        raise ActiveSessionScanError(
+            "quarantine initialization failed after mkdir: "
+            f"{primary_error}; session entry was not moved into quarantine; "
+            "quarantine provenance=unverified before descriptor-backed open; "
+            "public quarantine name was not removed; "
+            f"{diagnostic}"
+        ) from primary_error
     try:
         _remove_partial_quarantine(parent_fd, anchors, quarantine)
     except (ActiveSessionScanError, OSError) as cleanup_error:
@@ -823,6 +833,7 @@ def _create_private_quarantine(
             quarantine_evidence,
             entry_name,
             exc,
+            descriptor_provenance_established=False,
         )
     quarantine_evidence = _QuarantineEvidence(
         name=name,
@@ -842,6 +853,7 @@ def _create_private_quarantine(
             quarantine_evidence,
             entry_name,
             exc,
+            descriptor_provenance_established=False,
         )
     try:
         quarantine_stat = os.fstat(quarantine.directory_fd)
@@ -864,6 +876,7 @@ def _create_private_quarantine(
             quarantine_evidence,
             entry_name,
             exc,
+            descriptor_provenance_established=True,
         )
     except BaseException:
         os.close(quarantine.directory_fd)
