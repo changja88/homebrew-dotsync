@@ -88,11 +88,30 @@ def test_select_option_line_mode_lists_options_and_retries_invalid_input():
 
     assert result == "cancel"
     assert stream.getvalue().splitlines()[:4] == [
-        "  > Memory for codex?",
-        "    1. Run with existing memory",
-        "    2. Delete all Codex auto-memory and run",
-        "    3. Cancel",
+        f"  \x1b[{ui.PURPLE}m>\x1b[0m Memory for codex?",
+        f"    \x1b[{ui.PURPLE}m1. Run with existing memory\x1b[0m",
+        f"    \x1b[{ui.PURPLE}m2. Delete all Codex auto-memory and run\x1b[0m",
+        f"    \x1b[{ui.PURPLE}m3. Cancel\x1b[0m",
     ]
+
+
+def test_select_option_line_mode_uses_explicit_session_accent():
+    stream = io.StringIO()
+    result = select_option(
+        "Delete Codex sessions before launch?",
+        options=(
+            SelectOption("retention_5d", "No full deletion"),
+            SelectOption("delete_inactive", "Delete all inactive sessions"),
+        ),
+        accent=ui.YELLOW,
+        stream=stream,
+        input_fn=lambda: "",
+    )
+
+    assert result == "retention_5d"
+    output = stream.getvalue()
+    assert f"\x1b[{ui.YELLOW}m>\x1b[0m" in output
+    assert f"\x1b[{ui.YELLOW}m1. No full deletion\x1b[0m" in output
 
 
 def test_select_option_honors_nonzero_default_index():
@@ -200,6 +219,32 @@ def test_select_option_raw_navigation_collapses_selected_value(monkeypatch):
         f"\x1b[{ui.PURPLE}mDelete all Codex auto-memory and run\x1b[0m\n"
     )
     assert restored == [(7, ui.termios.TCSADRAIN, old_attrs)]
+
+
+def test_select_option_arrow_uses_explicit_session_accent(monkeypatch):
+    stream = io.StringIO()
+    old_attrs = ["old-terminal-state"]
+    reads = iter((b"\r",))
+    monkeypatch.setattr(ui.termios, "tcgetattr", lambda fd: old_attrs)
+    monkeypatch.setattr(ui.tty, "setcbreak", lambda fd: None)
+    monkeypatch.setattr(ui.os, "read", lambda fd, size: next(reads))
+    monkeypatch.setattr(ui.termios, "tcsetattr", lambda *args: None)
+
+    selected = ui._read_select_arrow(
+        "Delete Codex sessions before launch?",
+        options=(SelectOption("retention_5d", "No full deletion"),),
+        cursor=0,
+        stream=stream,
+        fd=7,
+        accent=ui.YELLOW,
+    )
+
+    assert selected == "retention_5d"
+    assert stream.getvalue().endswith(
+        f"  \x1b[{ui.YELLOW}m?\x1b[0m "
+        "Delete Codex sessions before launch? "
+        f"\x1b[{ui.YELLOW}mNo full deletion\x1b[0m\n"
+    )
 
 
 @pytest.mark.parametrize(

@@ -7,7 +7,10 @@ from local_dev.serena_mcp_management.ui import (
     Item,
     PINK,
     PURPLE,
+    YELLOW,
     render_box,
+    render_inline_row,
+    style_action_value,
     style_mcp_inventory,
 )
 
@@ -134,6 +137,26 @@ def test_render_box_uses_warn_marker_for_warn_items():
     )
     text = render_box(model)
     assert "!" in text
+
+
+def test_render_inline_row_colors_session_start_with_requested_accent():
+    rendered = render_inline_row(
+        "sessions",
+        "deleting inactive sessions",
+        status="spin",
+        accent=YELLOW,
+    )
+
+    assert f"\x1b[{YELLOW}m" in rendered
+    assert _strip_ansi(rendered) == (
+        "  ⠋ sessions    deleting inactive sessions\n"
+    )
+
+
+def test_style_action_value_wraps_complete_value_in_accent():
+    assert style_action_value("8 sessions deleted", accent=YELLOW) == (
+        f"\x1b[{YELLOW}m8 sessions deleted\x1b[0m"
+    )
 
 
 def test_style_mcp_inventory_renders_single_line_plain_text():

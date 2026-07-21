@@ -90,6 +90,7 @@ _HEADER_ART: dict[str, tuple[str, ...]] = {
 PINK = "38;2;247;128;226"  # #F780E2, huh fuchsia (cursor / button accent)
 PURPLE = "38;2;117;113;249"  # #7571F9, huh indigo (title / focused tone)
 MINT = "38;2;2;191;135"  # #02BF87, huh selected-option green (legible label)
+YELLOW = "33"
 
 # RGB endpoints for the cell-by-cell title gradient. Mid is the perceptual
 # midpoint between huh fuchsia and indigo, used so the gradient never crosses
@@ -106,6 +107,10 @@ _GRADIENT_PERIOD = 80
 
 def _ansi(code: str, text: str) -> str:
     return f"\x1b[{code}m{text}\x1b[0m"
+
+
+def style_action_value(value: str, *, accent: str) -> str:
+    return _ansi(accent, value)
 
 
 def style_spinner(frame: int) -> str:
@@ -219,14 +224,19 @@ def style_mcp_inventory(
     )
 
 
-def _marker_for(status: ItemStatus, *, spin_frame: int = 0) -> str:
+def _marker_for(
+    status: ItemStatus,
+    *,
+    spin_frame: int = 0,
+    accent: str = PURPLE,
+) -> str:
     if status == "spin":
         frame = SPINNER_FRAMES[spin_frame % len(SPINNER_FRAMES)]
-        return _ansi(PURPLE, frame)
+        return _ansi(accent, frame)
     if status == "done":
         return _ansi(PINK, "✓")
     if status == "warn":
-        return _ansi("33", "!")
+        return _ansi(YELLOW, "!")
     if status == "skip":
         return _ansi("90", "-")
     if status == "info":
@@ -281,7 +291,13 @@ def _gradient_line(line: str) -> str:
     return "".join(out)
 
 
-def render_inline_row(label: str, value: str, *, status: ItemStatus) -> str:
+def render_inline_row(
+    label: str,
+    value: str,
+    *,
+    status: ItemStatus,
+    accent: str | None = None,
+) -> str:
     """Render one BoxModel-style row as a standalone line (no surrounding box).
 
     Used by the launcher to surface post-install state changes below the
@@ -290,9 +306,11 @@ def render_inline_row(label: str, value: str, *, status: ItemStatus) -> str:
     the chronological flow intact and matches the row format inside the
     box so the visual style stays consistent.
     """
-    marker = _marker_for(status)
-    label_text = _ansi(MINT, f"{label:<10}")
-    return f"  {marker} {label_text}  {value}\n"
+    marker = _marker_for(status, accent=accent or PURPLE)
+    label_color = accent or MINT
+    label_text = _ansi(label_color, f"{label:<10}")
+    value_text = _ansi(accent, value) if accent is not None else value
+    return f"  {marker} {label_text}  {value_text}\n"
 
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -431,6 +449,7 @@ def _read_select_arrow(
     stream: TextIO,
     fd: int,
     shortcuts: dict[str, int] | None = None,
+    accent: str = PURPLE,
 ) -> str:
     """Read one option with a huh-inspired raw-terminal arrow selector.
 
@@ -443,12 +462,12 @@ def _read_select_arrow(
         if not initial:
             # Move cursor back to the start of the prompt block and erase.
             stream.write(f"\x1b[{block_line_count}A\x1b[J")
-        stream.write(f"  \x1b[{PURPLE}m?\x1b[0m {question}\n")
+        stream.write(f"  \x1b[{accent}m?\x1b[0m {question}\n")
         for index, option in enumerate(options):
             if index == cursor:
                 stream.write(
-                    f"    \x1b[{PURPLE}m▶\x1b[0m "
-                    f"\x1b[{PURPLE}m{option.label}\x1b[0m\n"
+                    f"    \x1b[{accent}m▶\x1b[0m "
+                    f"\x1b[{accent}m{option.label}\x1b[0m\n"
                 )
             else:
                 stream.write(f"      \x1b[90m{option.label}\x1b[0m\n")
@@ -492,8 +511,8 @@ def _read_select_arrow(
     stream.write(f"\x1b[{block_line_count}A\x1b[J")
     chosen = options[cursor]
     stream.write(
-        f"  \x1b[{PURPLE}m?\x1b[0m {question} "
-        f"\x1b[{PURPLE}m{chosen.label}\x1b[0m\n"
+        f"  \x1b[{accent}m?\x1b[0m {question} "
+        f"\x1b[{accent}m{chosen.label}\x1b[0m\n"
     )
     stream.flush()
     return chosen.value
@@ -529,17 +548,19 @@ def _read_select_line(
     default_index: int,
     stream: TextIO,
     input_fn: Callable[[], str],
+    accent: str = PURPLE,
 ) -> str:
-    stream.write(f"  > {question}\n")
+    stream.write(f"  {_ansi(accent, '>')} {question}\n")
     for index, option in enumerate(options, start=1):
-        stream.write(f"    {index}. {option.label}\n")
+        stream.write(f"    {_ansi(accent, f'{index}. {option.label}')}\n")
 
     numbered_values = {
         str(index): option.value for index, option in enumerate(options, start=1)
     }
     while True:
         stream.write(
-            f"  > Select [1-{len(options)}] (default {default_index + 1}): "
+            f"  {_ansi(accent, '>')} "
+            f"Select [1-{len(options)}] (default {default_index + 1}): "
         )
         stream.flush()
         reply = input_fn().strip()
@@ -556,6 +577,7 @@ def select_option(
     *,
     options: tuple[SelectOption, ...],
     default_index: int = 0,
+    accent: str = PURPLE,
     stream: TextIO | None = None,
     input_fn: Callable[[], str] | None = None,
 ) -> str:
@@ -574,6 +596,7 @@ def select_option(
             cursor=default_index,
             stream=out,
             fd=fd,
+            accent=accent,
         )
     return _read_select_line(
         question,
@@ -581,6 +604,7 @@ def select_option(
         default_index=default_index,
         stream=out,
         input_fn=input_fn or input,
+        accent=accent,
     )
 
 
