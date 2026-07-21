@@ -136,6 +136,48 @@ def test_scan_rejects_unknown_client(tmp_path):
         )
 
 
+def test_scan_codex_all_inactive_ignores_age_but_keeps_open_group(tmp_path):
+    closed = tmp_path / ".codex/sessions/2026/07/21/closed.jsonl"
+    opened = tmp_path / ".codex/sessions/2026/07/21/open.jsonl"
+    _write_jsonl(closed, [_session_meta(ROOT_A)], age_days=1)
+    _write_jsonl(opened, [_session_meta(ROOT_B)], age_days=1)
+    opened_stat = opened.stat()
+
+    inventory = scan_inventory(
+        client="codex",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        now=NOW,
+        policy="all_inactive",
+        open_file_identities=frozenset(
+            {
+                FileIdentity(
+                    device=opened_stat.st_dev,
+                    inode=opened_stat.st_ino,
+                )
+            }
+        ),
+    )
+
+    assert inventory.policy == "all_inactive"
+    assert inventory.sessions == CountStats(total=2, to_delete=1, to_keep=1)
+    assert inventory.active_sessions == 1
+    assert [target.root_id for target in inventory.codex_targets] == [ROOT_A]
+    assert inventory.criteria == (
+        "sessions: all known homes + all inactive; running preserved"
+    )
+
+
+def test_scan_rejects_unknown_session_policy(tmp_path):
+    with pytest.raises(ValueError, match="unsupported session policy: unknown"):
+        scan_inventory(
+            client="codex",
+            home=tmp_path,
+            codex_home=tmp_path / ".codex",
+            policy="unknown",
+        )
+
+
 def test_scan_codex_groups_all_homes_and_uses_descendant_activity(tmp_path):
     default_home = tmp_path / ".codex"
     orca_home = (
