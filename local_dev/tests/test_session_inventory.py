@@ -202,6 +202,46 @@ def test_scan_codex_builds_source_before_orca_delete_plan(tmp_path):
     ]
 
 
+def test_scan_codex_orders_local_ids_by_full_cross_home_ancestry(tmp_path):
+    default_home = tmp_path / ".codex"
+    orca_home = (
+        tmp_path / "Library/Application Support/orca/codex-runtime-home/home"
+    )
+    _write_jsonl(
+        default_home / "sessions/2026/07/01/root.jsonl",
+        [_session_meta(ROOT_A)],
+        age_days=6,
+    )
+    _write_jsonl(
+        orca_home / "sessions/2026/07/01/child.jsonl",
+        [_session_meta(CHILD_A, ROOT_A)],
+        age_days=6,
+    )
+    _write_jsonl(
+        default_home / "sessions/2026/07/01/grandchild.jsonl",
+        [_session_meta(GRANDCHILD_A, CHILD_A)],
+        age_days=6,
+    )
+
+    inventory = scan_inventory(
+        client="codex",
+        home=tmp_path,
+        codex_home=orca_home,
+        orca_codex_home=orca_home,
+        now=NOW,
+        open_file_identities=frozenset(),
+    )
+
+    target = inventory.codex_targets[0]
+    assert [
+        (owner.codex_home, owner.local_delete_ids, owner.is_orca)
+        for owner in target.owners
+    ] == [
+        (default_home, (GRANDCHILD_A, ROOT_A), False),
+        (orca_home, (CHILD_A,), True),
+    ]
+
+
 def test_scan_codex_reads_only_first_jsonl_record(tmp_path):
     rollout = tmp_path / ".codex/sessions/2026/07/01/root.jsonl"
     _write_jsonl(

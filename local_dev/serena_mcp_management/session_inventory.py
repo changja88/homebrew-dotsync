@@ -295,6 +295,7 @@ def _owner_delete_plans(
     orca_home: Path,
 ) -> tuple[OwnerDeletePlan, ...]:
     plans: list[OwnerDeletePlan] = []
+    group_id_set = set(group_ids)
     for codex_home in homes:
         local_ids = {
             session_id
@@ -307,12 +308,12 @@ def _owner_delete_plans(
         if not local_ids:
             continue
 
-        def local_depth(session_id: str) -> int:
+        def group_depth(session_id: str) -> int:
             depth = 0
             current = session_id
             while True:
                 parent = parents.get(current)
-                if parent is None or parent not in local_ids:
+                if parent is None or parent not in group_id_set:
                     return depth
                 depth += 1
                 current = parent
@@ -320,7 +321,7 @@ def _owner_delete_plans(
         local_delete_ids = tuple(
             sorted(
                 local_ids,
-                key=lambda session_id: (-local_depth(session_id), session_id),
+                key=lambda session_id: (-group_depth(session_id), session_id),
             )
         )
         plans.append(

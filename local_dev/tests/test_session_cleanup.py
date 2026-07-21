@@ -14,6 +14,7 @@ from local_dev.serena_mcp_management.session_inventory import scan_inventory
 NOW = 2_000_000_000.0
 ROOT_A = "00000000-0000-4000-8000-000000000001"
 CHILD_A = "00000000-0000-4000-8000-000000000003"
+GRANDCHILD_A = "00000000-0000-4000-8000-000000000004"
 
 
 def _session_meta(session_id: str, parent_id: str | None = None) -> dict:
@@ -83,6 +84,59 @@ def test_cleanup_calls_official_delete_source_before_orca(tmp_path):
         ["/fake/codex", "delete", "--force", ROOT_A],
         str(orca_home),
     )
+    assert result.deleted == 1
+    assert result.warnings == ()
+
+
+def test_cleanup_uses_full_ancestry_order_with_group_split_across_homes(tmp_path):
+    default_home = tmp_path / ".codex"
+    orca_home = (
+        tmp_path / "Library/Application Support/orca/codex-runtime-home/home"
+    )
+    _write_old_session(
+        default_home / "sessions/2026/07/01/root.jsonl",
+        ROOT_A,
+    )
+    _write_old_session(
+        orca_home / "sessions/2026/07/01/child.jsonl",
+        CHILD_A,
+        ROOT_A,
+    )
+    _write_old_session(
+        default_home / "sessions/2026/07/01/grandchild.jsonl",
+        GRANDCHILD_A,
+        CHILD_A,
+    )
+    inventory = scan_inventory(
+        client="codex",
+        home=tmp_path,
+        codex_home=orca_home,
+        orca_codex_home=orca_home,
+        now=NOW,
+        open_file_identities=frozenset(),
+    )
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append((cmd, kwargs["env"]["CODEX_HOME"]))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    result = cleanup_codex_inventory(
+        inventory,
+        codex_binary="/fake/codex",
+        runner=run,
+        open_file_snapshot=lambda _: frozenset(),
+    )
+
+    assert calls == [
+        (["/fake/codex", "delete", "--help"], str(default_home)),
+        (
+            ["/fake/codex", "delete", "--force", GRANDCHILD_A],
+            str(default_home),
+        ),
+        (["/fake/codex", "delete", "--force", ROOT_A], str(default_home)),
+        (["/fake/codex", "delete", "--force", CHILD_A], str(orca_home)),
+    ]
     assert result.deleted == 1
     assert result.warnings == ()
 
