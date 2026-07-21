@@ -341,6 +341,107 @@ def test_cleanup_claude_does_not_delete_final_name_replacement(
     assert parked_original.exists()
 
 
+def test_cleanup_claude_reports_current_recovery_path_after_ancestor_remap(
+    tmp_path,
+    monkeypatch,
+):
+    config = tmp_path / ".claude"
+    project_dir = config / "projects/-repo"
+    root = _write(project_dir / f"{SESSION_A}.jsonl", "expected")
+    inventory = scan_inventory(
+        client="claude",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        policy="all_inactive",
+        active_claude_session_ids=frozenset(),
+        open_file_identities=frozenset(),
+    )
+    remapped_project = tmp_path / "remapped-project"
+    original_rename = os.rename
+    remapped = False
+
+    def rename(src, dst, *args, **kwargs):
+        nonlocal remapped
+        original_rename(src, dst, *args, **kwargs)
+        if (
+            not remapped
+            and kwargs.get("src_dir_fd") is not None
+            and Path(src).name == root.name
+        ):
+            original_rename(project_dir, remapped_project)
+            project_dir.mkdir()
+            remapped = True
+
+    monkeypatch.setattr(os, "rename", rename)
+
+    result = cleanup_claude_inventory(
+        inventory,
+        active_session_snapshot=lambda config_dir: frozenset(),
+        open_file_snapshot=lambda paths: frozenset(),
+    )
+
+    quarantine = next(remapped_project.glob(".claude-cleanup-*"))
+    recovery_path = quarantine / root.name
+    stale_path = project_dir / quarantine.name / root.name
+    assert remapped
+    assert not result.succeeded
+    assert result.deleted == 0
+    assert recovery_path.read_text() == "expected"
+    assert not stale_path.exists()
+    assert str(recovery_path) in result.error
+    assert str(stale_path) not in result.error
+
+
+def test_cleanup_claude_reports_quarantine_cleanup_failure(
+    tmp_path,
+    monkeypatch,
+):
+    config = tmp_path / ".claude"
+    project_dir = config / "projects/-repo"
+    root = _write(project_dir / f"{SESSION_A}.jsonl", "expected")
+    inventory = scan_inventory(
+        client="claude",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        policy="all_inactive",
+        active_claude_session_ids=frozenset(),
+        open_file_identities=frozenset(),
+    )
+    original_rename = os.rename
+    original_rmdir = os.rmdir
+
+    def rename(src, dst, *args, **kwargs):
+        if (
+            kwargs.get("src_dir_fd") is not None
+            and Path(src).name == root.name
+        ):
+            raise OSError("isolation failure")
+        original_rename(src, dst, *args, **kwargs)
+
+    def rmdir(path, *args, **kwargs):
+        if Path(path).name.startswith(".claude-cleanup-"):
+            raise OSError("quarantine cleanup failure")
+        original_rmdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "rename", rename)
+    monkeypatch.setattr(os, "rmdir", rmdir)
+
+    result = cleanup_claude_inventory(
+        inventory,
+        active_session_snapshot=lambda config_dir: frozenset(),
+        open_file_snapshot=lambda paths: frozenset(),
+    )
+
+    quarantine = next(project_dir.glob(".claude-cleanup-*"))
+    assert not result.succeeded
+    assert result.deleted == 0
+    assert root.read_text() == "expected"
+    assert list(quarantine.iterdir()) == []
+    assert "isolation failure" in result.error
+    assert "quarantine cleanup failure" in result.error
+    assert str(quarantine) in result.error
+
+
 def test_cleanup_claude_preserves_freshly_open_transcript(tmp_path):
     inventory = _inventory(tmp_path)
     transcript = next(

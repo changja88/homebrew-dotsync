@@ -1,6 +1,7 @@
 """Native session cleanup operations for Codex and Claude Code."""
 from __future__ import annotations
 
+import fcntl
 import os
 import secrets
 import stat
@@ -33,6 +34,7 @@ _DIRECTORY_OPEN_FLAGS = (
 _FILE_OPEN_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | _CLOSE_ON_EXEC
 _QUARANTINE_PREFIX = ".claude-cleanup-"
 _QUARANTINE_CREATE_ATTEMPTS = 32
+_DESCRIPTOR_PATH_BUFFER_SIZE = 1024
 
 
 RunCommand = Callable[..., subprocess.CompletedProcess[str]]
@@ -775,6 +777,90 @@ def _remove_empty_quarantine(
     _validate_directory_anchors(anchors)
 
 
+def _descriptor_directory_path(
+    quarantine: _DirectoryAnchor,
+) -> Path:
+    raw_path = fcntl.fcntl(
+        quarantine.directory_fd,
+        fcntl.F_GETPATH,
+        bytes(_DESCRIPTOR_PATH_BUFFER_SIZE),
+    )
+    if not isinstance(raw_path, bytes) or b"\0" not in raw_path:
+        raise ActiveSessionScanError(
+            "descriptor recovery path was unavailable or truncated"
+        )
+    encoded_path = raw_path.split(b"\0", 1)[0]
+    if not encoded_path:
+        raise ActiveSessionScanError("descriptor recovery path was empty")
+    quarantine_path = Path(os.fsdecode(encoded_path))
+    if not quarantine_path.is_absolute():
+        raise ActiveSessionScanError(
+            "descriptor recovery path was not absolute"
+        )
+
+    current_quarantine_stat = os.stat(
+        quarantine_path,
+        follow_symlinks=False,
+    )
+    current_quarantine_identity = _fingerprint_from_stat_result(
+        current_quarantine_stat
+    ).identity
+    if (
+        not stat.S_ISDIR(current_quarantine_stat.st_mode)
+        or current_quarantine_identity != quarantine.identity
+    ):
+        raise ActiveSessionScanError(
+            "descriptor recovery directory identity changed"
+        )
+
+    return quarantine_path
+
+
+def _descriptor_recovery_path(
+    quarantine: _DirectoryAnchor,
+    name: str,
+    isolated_stat: os.stat_result,
+) -> Path:
+    quarantine_path = _descriptor_directory_path(quarantine)
+    recovery_path = quarantine_path / name
+    current_isolated_stat = os.stat(
+        recovery_path,
+        follow_symlinks=False,
+    )
+    if (
+        stat.S_IFMT(current_isolated_stat.st_mode)
+        != stat.S_IFMT(isolated_stat.st_mode)
+        or _fingerprint_from_stat_result(current_isolated_stat)
+        != _fingerprint_from_stat_result(isolated_stat)
+    ):
+        raise ActiveSessionScanError(
+            "descriptor recovery entry identity changed"
+        )
+    return recovery_path
+
+
+def _unavailable_quarantine_details(
+    quarantine: _DirectoryAnchor,
+) -> str:
+    return (
+        "no trustworthy quarantine path is available; quarantine identity="
+        f"{quarantine.identity.device}:{quarantine.identity.inode}"
+    )
+
+
+def _unavailable_recovery_details(
+    quarantine: _DirectoryAnchor,
+    isolated_stat: os.stat_result,
+) -> str:
+    isolated_identity = _fingerprint_from_stat_result(isolated_stat).identity
+    return (
+        "isolated entry remains preserved but no trustworthy recovery path "
+        f"is available; isolated identity={isolated_identity.device}:"
+        f"{isolated_identity.inode}; quarantine identity="
+        f"{quarantine.identity.device}:{quarantine.identity.inode}"
+    )
+
+
 def _delete_entry_via_quarantine(
     parent_fd: int,
     name: str,
@@ -853,7 +939,7 @@ def _delete_entry_via_quarantine(
         _remove_empty_quarantine(parent_fd, anchors, quarantine)
     except (ActiveSessionScanError, OSError) as exc:
         try:
-            os.stat(
+            isolated_stat = os.stat(
                 name,
                 dir_fd=quarantine.directory_fd,
                 follow_symlinks=False,
@@ -861,16 +947,48 @@ def _delete_entry_via_quarantine(
         except FileNotFoundError:
             try:
                 _remove_empty_quarantine(parent_fd, anchors, quarantine)
-            except (ActiveSessionScanError, OSError):
-                pass
-        except OSError:
+            except (ActiveSessionScanError, OSError) as cleanup_exc:
+                try:
+                    leftover_path = _descriptor_directory_path(quarantine)
+                except (ActiveSessionScanError, OSError) as recovery_exc:
+                    raise ActiveSessionScanError(
+                        f"{exc}; quarantine cleanup also failed: "
+                        f"{cleanup_exc}; "
+                        f"{_unavailable_quarantine_details(quarantine)}; "
+                        f"recovery lookup failed: {recovery_exc}"
+                    ) from exc
+                raise ActiveSessionScanError(
+                    f"{exc}; quarantine cleanup also failed: {cleanup_exc}; "
+                    f"empty quarantine remains at {leftover_path}"
+                ) from exc
+        except OSError as inspection_exc:
+            try:
+                quarantine_path = _descriptor_directory_path(quarantine)
+            except (ActiveSessionScanError, OSError) as recovery_exc:
+                raise ActiveSessionScanError(
+                    f"{exc}; cannot inspect isolated entry: {inspection_exc}; "
+                    f"{_unavailable_quarantine_details(quarantine)}; "
+                    f"recovery lookup failed: {recovery_exc}"
+                ) from exc
             raise ActiveSessionScanError(
-                f"{exc}; cleanup quarantine state is uncertain at "
-                f"{quarantine.path}"
+                f"{exc}; cannot inspect isolated entry: {inspection_exc}; "
+                f"cleanup quarantine state is uncertain at {quarantine_path}"
             ) from exc
         else:
+            try:
+                recovery_path = _descriptor_recovery_path(
+                    quarantine,
+                    name,
+                    isolated_stat,
+                )
+            except (ActiveSessionScanError, OSError) as recovery_exc:
+                raise ActiveSessionScanError(
+                    f"{exc}; "
+                    f"{_unavailable_recovery_details(quarantine, isolated_stat)}; "
+                    f"recovery lookup failed: {recovery_exc}"
+                ) from exc
             raise ActiveSessionScanError(
-                f"{exc}; isolated entry preserved at {quarantine.path / name}"
+                f"{exc}; isolated entry preserved at {recovery_path}"
             ) from exc
         raise
     finally:
