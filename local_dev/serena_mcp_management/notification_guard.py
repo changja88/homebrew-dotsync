@@ -7,6 +7,8 @@ notify 재주입, codex 신뢰 재기록, orca 재미러링)에 맞서 관리되
 """
 from __future__ import annotations
 
+import re
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,3 +45,51 @@ def discover_codex_targets(home: Path) -> list[CodexTarget]:
 def discover_orca_data_files(home: Path) -> list[Path]:
     orca = home / "Library" / "Application Support" / "orca"
     return sorted(orca.glob("profiles/*/orca-data.json"))
+
+
+_NOTIFY_LINE = re.compile(r"notify\s*=")
+_TUI_ALWAYS_LINE = re.compile(r'notification_condition\s*=\s*"always"')
+
+
+def repair_notify(text: str) -> tuple[str, str | None]:
+    """preamble의 notify를 []로 수렴. (새 텍스트, 제거된 줄|None) 반환.
+
+    파싱값 기준으로 판정하고 라인 기준으로 수리한다. 멀티라인 notify 배열은
+    관측된 적 없어 한 줄 치환만 지원 — 어긋나면 임시 파일 파싱 검증이 막는다.
+    """
+    if tomllib.loads(text).get("notify", []) == []:
+        return text, None
+    out: list[str] = []
+    removed: str | None = None
+    in_preamble = True
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if in_preamble and stripped.startswith("["):
+            in_preamble = False
+        if in_preamble and removed is None and _NOTIFY_LINE.match(stripped):
+            removed = stripped
+            out.append("notify = []" + ("\n" if line.endswith("\n") else ""))
+            continue
+        out.append(line)
+    return "".join(out), removed
+
+
+def repair_tui_condition(text: str) -> tuple[str, bool]:
+    if tomllib.loads(text).get("tui", {}).get("notification_condition") != "always":
+        return text, False
+    out: list[str] = []
+    in_tui = False
+    repaired = False
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_tui = stripped == "[tui]"
+        if in_tui and not repaired and _TUI_ALWAYS_LINE.match(stripped):
+            out.append(
+                'notification_condition = "unfocused"'
+                + ("\n" if line.endswith("\n") else "")
+            )
+            repaired = True
+            continue
+        out.append(line)
+    return "".join(out), repaired

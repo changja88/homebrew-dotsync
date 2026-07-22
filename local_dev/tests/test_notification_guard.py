@@ -10,6 +10,8 @@ from local_dev.serena_mcp_management.notification_guard import (
     CodexTarget,
     discover_codex_targets,
     discover_orca_data_files,
+    repair_notify,
+    repair_tui_condition,
 )
 
 HOOKS_JSON = json.dumps({
@@ -85,3 +87,57 @@ class TestDiscovery:
         files = discover_orca_data_files(fake_home)
         assert len(files) == 1
         assert files[0].name == "orca-data.json"
+
+
+SKY = ("/Users/x/.codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/"
+       "SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient")
+
+
+class TestRepairNotify:
+    def test_clean_config_unchanged(self) -> None:
+        text = "notify = []\n\n[tools]\nview_image = true\n"
+        assert repair_notify(text) == (text, None)
+
+    def test_sky_reinjection_with_previous_notify_arg(self) -> None:
+        text = (
+            "# 주석은 보존된다\n"
+            f'notify = ["{SKY}", "turn-ended", "--previous-notify", "[]"]\n'
+            "\n[mcp_servers.computer-use]\n"
+            f'command = "{SKY}"\n'
+        )
+        new, removed = repair_notify(text)
+        assert "notify = []\n" in new
+        assert removed is not None and "turn-ended" in removed
+        assert "# 주석은 보존된다" in new
+        # 테이블 내부의 SkyComputerUseClient 경로 줄은 무접촉
+        assert f'command = "{SKY}"' in new
+
+    def test_unknown_program_also_emptied(self) -> None:
+        text = 'notify = ["/usr/bin/say", "done"]\n\n[tools]\n'
+        new, removed = repair_notify(text)
+        assert "notify = []\n" in new
+        assert removed is not None and "/usr/bin/say" in removed
+
+    def test_absent_notify_untouched(self) -> None:
+        text = "[tools]\nview_image = true\n"
+        assert repair_notify(text) == (text, None)
+
+
+class TestRepairTuiCondition:
+    def test_always_becomes_unfocused(self) -> None:
+        text = '[tui]\nnotification_condition = "always"\ntheme = "x"\n'
+        new, repaired = repair_tui_condition(text)
+        assert repaired is True
+        assert 'notification_condition = "unfocused"' in new
+        assert 'theme = "x"' in new
+
+    def test_unfocused_unchanged(self) -> None:
+        text = '[tui]\nnotification_condition = "unfocused"\n'
+        assert repair_tui_condition(text) == (text, False)
+
+    def test_same_key_outside_tui_untouched(self) -> None:
+        text = (
+            '[other]\nnotification_condition = "always"\n\n'
+            '[tui]\nnotification_condition = "unfocused"\n'
+        )
+        assert repair_tui_condition(text) == (text, False)
