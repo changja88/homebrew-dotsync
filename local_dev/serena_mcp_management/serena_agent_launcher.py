@@ -1582,6 +1582,7 @@ def _run_explicit_session_cleanup_v2(
     """Delete all inactive sessions using a fresh product-scoped scan."""
     out = stream if stream is not None else sys.stdout
     output_lock = threading.Lock()
+    spinner_active = True
     progress_value = (
         f"deleting inactive {client} sessions · running preserved"
     )
@@ -1595,12 +1596,20 @@ def _run_explicit_session_cleanup_v2(
             spin_frame=frame,
         ).removesuffix("\n")
         with output_lock:
+            if not spinner_active:
+                return
             out.write(f"\r{row}\x1b[K")
             out.flush()
 
     on_tick(0)
-    ticker = SpinnerTicker(on_tick=on_tick, interval=0.1)
-    ticker.start()
+    ticker = None
+    ticker_started = False
+    try:
+        ticker = SpinnerTicker(on_tick=on_tick, interval=0.1)
+        ticker.start()
+        ticker_started = True
+    except Exception:
+        ticker = None
     try:
         try:
             inventory = scan_inventory(
@@ -1620,7 +1629,11 @@ def _run_explicit_session_cleanup_v2(
                 error=str(exc) or exc.__class__.__name__
             )
     finally:
-        ticker.stop()
+        if ticker_started and ticker is not None:
+            try:
+                ticker.stop()
+            except Exception:
+                pass
 
     status = "done" if result.succeeded else "warn"
     deleted_label = "sessions deleted"
@@ -1648,6 +1661,7 @@ def _run_explicit_session_cleanup_v2(
     if not result.succeeded:
         value = f"{value} · failed · {result.error}"
     with output_lock:
+        spinner_active = False
         out.write("\r\x1b[K")
         out.write(
             render_inline_row(

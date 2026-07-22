@@ -2126,6 +2126,100 @@ def test_explicit_session_cleanup_waits_for_inflight_tick_before_final_row(
     assert not worker.is_alive()
 
 
+def test_explicit_session_cleanup_ignores_delayed_tick_after_final_row(
+    monkeypatch,
+):
+    saved_callbacks = []
+
+    class FakeSpinnerTicker:
+        def __init__(self, *, on_tick, interval):
+            saved_callbacks.append(on_tick)
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+    out = io.StringIO()
+    monkeypatch.setattr(launcher, "SpinnerTicker", FakeSpinnerTicker)
+    monkeypatch.setattr(
+        launcher,
+        "scan_inventory",
+        lambda **kwargs: _inventory_snapshot(
+            total=1,
+            to_delete=1,
+            to_keep=0,
+        ).inventory,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "cleanup_codex_inventory",
+        lambda inventory, codex_binary: launcher.CleanupResult(deleted=1),
+    )
+
+    result = launcher._run_explicit_session_cleanup_v2(
+        client="codex",
+        real_binary="/fake/codex",
+        stream=out,
+    )
+    output_after_final_row = out.getvalue()
+
+    saved_callbacks[0](7)
+
+    assert result.succeeded
+    assert "✓ sessions" in _strip_ansi(output_after_final_row)
+    assert out.getvalue() == output_after_final_row
+
+
+def test_explicit_session_cleanup_continues_when_ticker_start_raises(
+    monkeypatch,
+):
+    cleanup_calls = []
+
+    class FailingSpinnerTicker:
+        def __init__(self, *, on_tick, interval):
+            pass
+
+        def start(self):
+            raise RuntimeError("injected ticker start failure")
+
+        def stop(self):
+            raise AssertionError("ticker that failed to start must not be stopped")
+
+    def cleanup(inventory, codex_binary):
+        cleanup_calls.append((inventory, codex_binary))
+        return launcher.CleanupResult(deleted=1)
+
+    out = io.StringIO()
+    monkeypatch.setattr(launcher, "SpinnerTicker", FailingSpinnerTicker)
+    monkeypatch.setattr(
+        launcher,
+        "scan_inventory",
+        lambda **kwargs: _inventory_snapshot(
+            total=1,
+            to_delete=1,
+            to_keep=0,
+        ).inventory,
+    )
+    monkeypatch.setattr(launcher, "cleanup_codex_inventory", cleanup)
+
+    result = launcher._run_explicit_session_cleanup_v2(
+        client="codex",
+        real_binary="/fake/codex",
+        stream=out,
+    )
+
+    text = _strip_ansi(out.getvalue())
+    assert result.succeeded
+    assert result.deleted == 1
+    assert len(cleanup_calls) == 1
+    assert cleanup_calls[0][1] == "/fake/codex"
+    assert "✓ sessions" in text
+    assert "1 sessions deleted · 0 running preserved" in text
+    assert "injected ticker start failure" not in text
+
+
 def test_explicit_session_cleanup_reports_newly_running_session(
     monkeypatch,
     tmp_path,
