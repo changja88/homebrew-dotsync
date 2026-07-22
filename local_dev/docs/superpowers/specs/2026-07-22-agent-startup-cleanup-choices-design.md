@@ -71,7 +71,7 @@ question cannot occur after memory was already deleted.
 Memory and session actions are not a cross-product transaction. If memory
 deletion succeeds and a later explicit session deletion encounters a filesystem
 or safety failure, the launcher reports that memory was already deleted and
-stops before launching. It never claims that both actions were rolled back.
+continues to launch. It never claims that either action was rolled back.
 
 ## Memory Policy
 
@@ -91,7 +91,9 @@ same-product process-conflict check immediately before deletion.
 
 Unlike session deletion, memory deletion cannot safely preserve only a running
 process's portion of shared product memory. If another process of the selected
-product is running, explicit memory deletion fails closed and the launcher stops.
+product is running, explicit memory deletion fails closed without mutating the
+memory store, reports a warning, and the launcher continues with the selected
+session policy and child launch.
 
 ## Session Policies
 
@@ -236,7 +238,8 @@ counts depend on the selected product and result.
   selectors.
 - Gather both choices before mutation.
 - Orchestrate memory deletion, default retention, explicit session deletion,
-  strict failure handling, child launch, and the final summary.
+  fail-closed cleanup with best-effort launch continuation, and the final
+  summary.
 - Keep non-interactive behavior and Serena lifecycle management unchanged.
 
 ### `ui.py`
@@ -278,19 +281,20 @@ processes. Do not mention `local_dev` behavior in the public root README.
 - Ctrl+C at either choice: no deletion, no cleanup, no child; return 130 without
   a traceback.
 - Memory keep: memory inventory warnings do not block launch.
-- Explicit memory delete failure: report the reason and stop before session
-  cleanup and child launch.
+- Explicit memory delete failure: report the reason, continue to the selected
+  session policy, and launch the child.
 - Default five-day cleanup warning: report the warning and continue launching,
   matching current best-effort behavior.
-- Explicit all-inactive session scan or validation failure: delete nothing and
-  stop before child launch.
+- Explicit all-inactive session scan or validation failure: delete nothing,
+  report the reason, and continue to child launch.
 - Explicit deletion runtime failure after mutation begins: report partial counts
-  and the exact failure, do not launch, and do not claim rollback.
+  and the exact failure, continue launching, and do not claim rollback.
 - Target became active: preserve its complete session bundle, include it in the
   running-preserved count, and continue with other inactive targets.
 - Inactive target changed unexpectedly: stop before mutation when detected in
   prevalidation; if detected after another target was already removed, report
-  partial counts and stop the launch.
+  partial counts. In either case, continue the child launch after reporting the
+  cleanup failure.
 - Zero memory stores or zero inactive sessions: successful no-op and continue.
 
 Warnings and failures must identify whether they belong to `memory` or
@@ -318,7 +322,8 @@ process tables, fake `lsof`, and fake client binaries. Tests must cover:
 - Claude exact bundle deletion and proof that memory, settings, history,
   credentials, plugins, and unrelated files remain;
 - path-set, symlink, fingerprint, and active-state race revalidation;
-- explicit failure and partial-failure paths stop child launch;
+- explicit failure and partial-failure paths report warnings and continue child
+  launch;
 - zero-target actions succeed;
 - non-interactive behavior and existing Serena lifecycle tests remain green.
 

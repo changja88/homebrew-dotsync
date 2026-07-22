@@ -1638,6 +1638,8 @@ def _run_main_for_cleanup_choices(
     explicit_cleanup_result=None,
     explicit_cleanup_inventory=None,
     call_public_main=False,
+    serena_state="skipped",
+    captured_summary_warnings=None,
 ):
     from local_dev.serena_mcp_management.memory_management import MemoryDeleteResult
     from local_dev.serena_mcp_management.session_cleanup import CleanupResult
@@ -1663,7 +1665,7 @@ def _run_main_for_cleanup_choices(
 
     def fake_serena_init(**kwargs):
         call_log.append("serena-init")
-        return "skipped"
+        return serena_state
 
     def fake_memory_choice(**kwargs):
         call_log.append("memory-choice")
@@ -1742,6 +1744,64 @@ def _run_main_for_cleanup_choices(
         "_launch_bare_child",
         lambda *args, **kwargs: call_log.append("launch") or 0,
     )
+    if captured_summary_warnings is not None:
+        fake_record = mock.Mock(
+            mcp_url="http://127.0.0.1:9999/mcp",
+            dashboard_url="",
+        )
+
+        class FakeChild:
+            def poll(self):
+                return 0
+
+            def terminate(self):
+                return None
+
+            def wait(self):
+                return 0
+
+        monkeypatch.setattr(
+            launcher,
+            "serena_server_command",
+            lambda: ["/fake/serena"],
+        )
+        monkeypatch.setattr(
+            launcher,
+            "_start_mcp_with_spinner",
+            lambda **kwargs: fake_record,
+        )
+        monkeypatch.setattr(
+            launcher,
+            "make_launcher_lease",
+            lambda lease_id: mock.Mock(lease_id=lease_id),
+        )
+        monkeypatch.setattr(launcher, "_heartbeat_loop", lambda *args: None)
+        monkeypatch.setattr(
+            launcher,
+            "build_child_command",
+            lambda **kwargs: (["/usr/bin/true"], lambda: None),
+        )
+        monkeypatch.setattr(launcher, "open_dashboard_if_requested", lambda url: None)
+        monkeypatch.setattr(
+            launcher.subprocess,
+            "Popen",
+            lambda *args, **kwargs: call_log.append("launch") or FakeChild(),
+        )
+        monkeypatch.setattr(launcher.signal, "signal", lambda *args: None)
+        monkeypatch.setattr(
+            launcher,
+            "_stop_mcp_with_spinner",
+            lambda **kwargs: mock.Mock(
+                server_stopped=True,
+                server_was_running=True,
+                sessions_remaining=0,
+            ),
+        )
+        monkeypatch.setattr(
+            launcher,
+            "_render_summary_v2",
+            lambda **kwargs: captured_summary_warnings.extend(kwargs["warnings"]),
+        )
 
     entrypoint = launcher.main if call_public_main else launcher._main_v2
     return entrypoint([]), call_log
@@ -1811,23 +1871,49 @@ def test_v2_main_session_choice_ctrl_c_precedes_memory_delete(
     assert "launch" not in call_log
 
 
-def test_v2_main_explicit_cleanup_failure_stops_launch(monkeypatch, tmp_path):
+def test_v2_main_combined_cleanup_failures_warn_once_and_launch(
+    monkeypatch,
+    tmp_path,
+):
+    inventory_warnings = (
+        "parent cycle at /tmp/codex/a.jsonl",
+        "malformed session metadata at /tmp/codex/b.jsonl",
+        "active session scan unavailable: lsof is unavailable",
+        "unsafe fourth cause must remain summarized",
+    )
+    session_error = (
+        "cannot safely inventory every inactive Codex session: "
+        f"{inventory_warnings[0]}; {inventory_warnings[1]}; "
+        f"{inventory_warnings[2]}; +1 more"
+    )
+    summary_warnings: list[str] = []
+
     rc, call_log = _run_main_for_cleanup_choices(
         monkeypatch,
         tmp_path,
-        memory_choice="keep",
+        memory_choice="delete",
         session_choice="delete_inactive",
+        deletion_succeeds=False,
+        deletion_error="4 running Codex process(es)",
+        deleted_stores=0,
+        deleted_files=0,
         explicit_cleanup_result=launcher.CleanupResult(
-            error="unsafe session inventory"
+            warnings=inventory_warnings,
+            error=session_error,
         ),
+        serena_state="created",
+        captured_summary_warnings=summary_warnings,
     )
 
-    assert rc == 1
-    assert "session-delete-inactive" in call_log
-    assert "launch" not in call_log
+    assert rc == 0
+    assert call_log[-3:] == ["memory-delete", "session-delete-inactive", "launch"]
+    assert summary_warnings == [
+        "memory: 4 running Codex process(es)",
+        f"sessions: {session_error}",
+    ]
 
 
-def test_v2_main_inventory_failure_renders_bounded_causes_before_exit(
+def test_v2_main_inventory_failure_renders_bounded_causes_and_launches(
     monkeypatch,
     tmp_path,
     capsys,
@@ -1855,9 +1941,9 @@ def test_v2_main_inventory_failure_renders_bounded_causes_before_exit(
     )
 
     text = _strip_ansi(capsys.readouterr().out)
-    assert rc == 1
-    assert call_log[-1] == "session-delete-inactive"
-    assert "launch" not in call_log
+    assert rc == 0
+    assert "session-delete-inactive" in call_log
+    assert call_log[-1] == "launch"
     assert warnings[0] in text
     assert warnings[1] in text
     assert warnings[2] in text
@@ -2043,31 +2129,40 @@ def test_v2_main_zero_store_delete_then_cleans_sessions_and_launches(
     )
 
 
-def test_v2_main_partial_delete_failure_reports_counts_and_stops(
-    monkeypatch, tmp_path, capsys
+@pytest.mark.parametrize(
+    ("session_choice", "expected_session_action"),
+    (
+        ("retention_5d", "session-retention"),
+        ("delete_inactive", "session-delete-inactive"),
+    ),
+)
+def test_v2_main_partial_delete_failure_reports_counts_and_launches(
+    monkeypatch,
+    tmp_path,
+    capsys,
+    session_choice,
+    expected_session_action,
 ):
     rc, call_log = _run_main_for_cleanup_choices(
         monkeypatch,
         tmp_path,
         memory_choice="delete",
-        session_choice="retention_5d",
+        session_choice=session_choice,
         deletion_succeeds=False,
         deletion_error="disk busy",
         deleted_stores=1,
         deleted_files=4,
     )
 
-    assert rc == 1
-    assert call_log[-1] == "memory-delete"
-    assert "session-retention" not in call_log
-    assert "launch" not in call_log
+    assert rc == 0
+    assert call_log[-3:] == ["memory-delete", expected_session_action, "launch"]
     assert (
         "memory      delete failed · 1 stores · 4 files deleted · disk busy"
         in _strip_ansi(capsys.readouterr().out)
     )
 
 
-def test_v2_main_invalid_memory_scan_config_returns_one_before_launch(
+def test_v2_main_invalid_memory_scan_config_warns_and_launches(
     monkeypatch, tmp_path, capsys
 ):
     rc, call_log = _run_main_for_cleanup_choices(
@@ -2078,10 +2173,9 @@ def test_v2_main_invalid_memory_scan_config_returns_one_before_launch(
         codex_home=Path("relative-codex-home"),
     )
 
-    assert rc == 1
-    assert call_log[-1] == "session-choice"
+    assert rc == 0
     assert "memory-delete" not in call_log
-    assert "launch" not in call_log
+    assert call_log[-2:] == ["session-retention", "launch"]
     assert (
         "memory      delete failed · 0 stores · 0 files deleted · "
         "codex_home must be absolute"
@@ -2089,7 +2183,7 @@ def test_v2_main_invalid_memory_scan_config_returns_one_before_launch(
     )
 
 
-def test_v2_main_authoritative_memory_rescan_failure_returns_one_before_launch(
+def test_v2_main_authoritative_memory_rescan_failure_warns_and_launches(
     monkeypatch, tmp_path, capsys
 ):
     rc, call_log = _run_main_for_cleanup_choices(
@@ -2100,10 +2194,8 @@ def test_v2_main_authoritative_memory_rescan_failure_returns_one_before_launch(
         delete_exception=OSError("rescan unavailable"),
     )
 
-    assert rc == 1
-    assert call_log[-1] == "memory-delete"
-    assert "session-retention" not in call_log
-    assert "launch" not in call_log
+    assert rc == 0
+    assert call_log[-3:] == ["memory-delete", "session-retention", "launch"]
     assert (
         "memory      delete failed · 0 stores · 0 files deleted · "
         "rescan unavailable"

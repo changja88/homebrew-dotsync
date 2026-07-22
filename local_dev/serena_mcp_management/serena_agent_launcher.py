@@ -526,7 +526,9 @@ def _main_v2(args: list[str]) -> int:
         stream=out,
     )
     if not memory_result.succeeded:
-        return 1
+        warnings.append(
+            f"memory: {memory_result.error or 'auto-memory deletion failed'}"
+        )
 
     real_binary = find_real_binary(client_type)
     if interactive and session_choice == "delete_inactive":
@@ -535,13 +537,17 @@ def _main_v2(args: list[str]) -> int:
             real_binary=real_binary,
             stream=out,
         )
-        if not cleanup_result.succeeded:
-            return 1
+        if cleanup_result.succeeded:
+            cleanup_warnings = cleanup_result.warnings
+        else:
+            cleanup_warnings = (
+                f"sessions: {cleanup_result.error or 'session cleanup failed'}",
+            )
         summary_state = LaunchPrepSummary(
             cleanup_deleted=cleanup_result.deleted,
             running_preserved=cleanup_result.preserved_running,
             full_cleanup=True,
-            warnings=cleanup_result.warnings,
+            warnings=cleanup_warnings,
         )
     elif interactive:
         summary_state = _run_launch_prep_v2(

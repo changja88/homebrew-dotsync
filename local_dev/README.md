@@ -155,10 +155,12 @@ non-empty inventory, another real native or official Node process for the same
 product blocks explicit memory deletion; ChatGPT/Claude GUI helper processes do
 not. The failure names up to three representative PID/executable pairs and
 summarizes any remainder. If a process conflict, scan, safety validation, or
-filesystem deletion fails, the launcher stops: it does not run session cleanup,
-launch the agent, or silently continue with memory the user asked to delete. A
-deletion failure returns exit code `1`; partial deletion is reported with its
-counts and is not automatically backed up.
+filesystem deletion fails, the launcher reports the failure and continues to the
+selected session policy and agent launch. The failed deletion is never reported
+as successful; partial deletion keeps its exact counts and is not automatically
+backed up. Cleanup choices affect cleanup only — after both questions have been
+answered, only an explicit cancellation or a launch/setup failure prevents the
+agent from starting.
 
 `serena project create` (run on Initialize) is **captured, not streamed**: its
 verbose language detection, the interactive language prompts auto-answered via
@@ -254,9 +256,9 @@ reports `N sessions deleted` for default Codex retention,
 If explicit cleanup fails after mutation starts, its immediate yellow row keeps
 fully deleted logical sessions separate from completed member/root operations
 inside the incomplete session. It names up to three affected members or paths,
-adds `+N more` for any remainder, prints the exact failure, and stops before
+adds `+N more` for any remainder, prints the exact failure, and continues to
 launch without claiming rollback. A strict inventory failure likewise shows up
-to three concrete path/reason warnings plus a remainder count before it stops.
+to three concrete path/reason warnings plus a remainder count before launch.
 
 ## Workflow
 
