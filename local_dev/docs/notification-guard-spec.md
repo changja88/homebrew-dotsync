@@ -85,14 +85,16 @@ glob으로 발견한다.
 
 ## 동작 규율
 
-- **가시성 (2026-07-23 개정, v3)**: interactive launch에서는 가드 실행 동안
-  스피너 행(`⠋ notif guard checking notification config`)을 표시하고, 완료
-  시 결과 행을 **항상** 남긴다 — clean이면 `✓ notif guard clean`, 아니면
-  `✓ notif guard N repaired · M warning(s)` 요약 뒤에 상세 행들. 가드
-  행이 끝난 뒤에야 이후 preflight/선택지가 이어진다(동기 호출로 순서 보장).
-  상세 행은 스피너의 `\r` 갱신과 겹치지 않게 버퍼에 받아 완료 후 출력한다.
-  **비대화식 launch는 기존 silent-when-clean 유지** (스피너 없음, 수리/경고
-  시에만 행 출력) — 파이프 환경에 스피너는 부적절.
+- **가시성 (2026-07-23 개정, v4)**: interactive launch에서는 가드 결과를
+  **preflight 박스 안 맨 위 `notif guard` 행**으로 표시한다 (`✓ serena`,
+  `✓ graphify global` 등과 같은 `Item`). 값은 clean이면 `clean`(status done),
+  드리프트가 있으면 `N repaired · M warning(s)` 요약(경고가 하나라도 있으면
+  status warn, 아니면 done), 가드 자체 오류면 `check failed — launch continues`
+  (warn). 실제 수리/경고가 있을 때의 상세 행은 **박스 아래**에 이어 출력한다
+  (버퍼에 받아 박스 렌더 후 flush). 박스가 그려진 뒤에 이후 선택지가 이어지므로
+  순서는 자연히 보장된다. **비대화식 launch는 기존 silent-when-clean 유지**
+  (박스 없음 — 가드가 직접 stdout에 위임, 수리/경고 시에만 행 출력).
+  (v3의 박스 밖 스피너 행 방식은 폐기 — 박스 안 정적 항목으로 대체.)
 - **수리/경고 상세는 항목당 한 줄**, 기존 `ui.render_inline_row` 사용
   (수리 = `done`, 경고 = `warn`). 예:
   - `↳ notif guard  codex notify 재주입 제거 (~/.codex/config.toml)`

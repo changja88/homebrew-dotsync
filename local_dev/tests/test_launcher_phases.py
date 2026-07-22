@@ -1664,7 +1664,7 @@ def _run_main_for_cleanup_choices(
     call_log: list[str] = []
     snapshot = _inventory_snapshot(total=1, to_delete=0, to_keep=1)
 
-    def fake_overview(*, stream=None):
+    def fake_overview(*, stream=None, guard_item=None):
         call_log.append("overview")
         return snapshot
 
@@ -2992,7 +2992,7 @@ def test_v2_main_passes_serena_state_to_preflight(monkeypatch, tmp_path):
         return 0
 
     monkeypatch.setattr(launcher, "_render_preflight_overview_v2",
-                        lambda *, stream=None: None, raising=False)
+                        lambda *, stream=None, guard_item=None: None, raising=False)
     monkeypatch.setattr(launcher, "_run_preflight_v2", fake_preflight, raising=False)
     monkeypatch.setattr(launcher, "_run_serena_init_v2",
                         lambda *, stream=None, input_fn=None: "created", raising=False)
@@ -3171,7 +3171,7 @@ def test_v2_main_runs_cleanup_before_bare_launch_when_serena_cli_missing(
 
     snapshot = _inventory_snapshot(total=1, to_delete=0, to_keep=1)
     monkeypatch.setattr(launcher, "_render_preflight_overview_v2",
-                        lambda *, stream=None: snapshot, raising=False)
+                        lambda *, stream=None, guard_item=None: snapshot, raising=False)
     monkeypatch.setattr(launcher, "_run_serena_cli_install_v2",
                         lambda **kw: "declined", raising=False)
     monkeypatch.setattr(launcher, "_run_preflight_v2",
@@ -3519,7 +3519,7 @@ def test_v2_main_runs_serena_cli_phase_before_init(monkeypatch, tmp_path):
 
     order = []
     monkeypatch.setattr(launcher, "_render_preflight_overview_v2",
-                        lambda *, stream=None: None, raising=False)
+                        lambda *, stream=None, guard_item=None: None, raising=False)
     monkeypatch.setattr(launcher, "_run_serena_cli_install_v2",
                         lambda **kw: order.append("cli") or "present",
                         raising=False)
@@ -3677,58 +3677,73 @@ def test_main_v2_runs_notification_guard_before_launch(monkeypatch, tmp_path):
     assert calls == [True]
 
 
-class TestNotificationGuardV2Row:
+class TestNotificationGuardBoxItem:
     def _actions(self, *kinds: str):
         from local_dev.serena_mcp_management.notification_guard import GuardAction
         return [GuardAction(kind, f"msg-{i}") for i, kind in enumerate(kinds)]
 
-    def test_interactive_clean_shows_row(self, monkeypatch, capsys=None):
-        import io
+    def test_interactive_clean_returns_done_item(self, monkeypatch):
         monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
         monkeypatch.setattr(launcher, "run_notification_guard", lambda *, stream=None: [])
-        out = io.StringIO()
-        launcher._run_notification_guard_v2(stream=out)
-        text = out.getvalue()
-        assert "notif guard" in text
-        assert "clean" in text
+        item, detail = launcher._run_notification_guard_capture(interactive=True)
+        assert item is not None
+        assert (item.id, item.label, item.value, item.status) == (
+            "notif-guard", "notif guard", "clean", "done",
+        )
+        assert detail == ""
 
-    def test_interactive_actions_show_summary_then_details(self, monkeypatch):
-        import io
-
+    def test_interactive_actions_summarized_with_detail_returned(self, monkeypatch):
         def fake_guard(*, stream=None):
             stream.write("DETAIL-LINE\n")
             return self._actions("repair", "warn")
 
         monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
         monkeypatch.setattr(launcher, "run_notification_guard", fake_guard)
-        out = io.StringIO()
-        launcher._run_notification_guard_v2(stream=out)
-        text = out.getvalue()
-        assert "1 repaired" in text
-        assert "1 warning" in text
-        assert text.index("repaired") < text.index("DETAIL-LINE")  # 요약 → 상세 순서
+        item, detail = launcher._run_notification_guard_capture(interactive=True)
+        assert item.value == "1 repaired · 1 warning"
+        assert item.status == "warn"          # 경고가 하나라도 있으면 warn
+        assert detail == "DETAIL-LINE\n"      # 상세는 박스 아래 출력용으로 반환
 
-    def test_interactive_guard_crash_degrades_to_warn_row(self, monkeypatch):
-        import io
+    def test_interactive_repairs_only_are_done_status(self, monkeypatch):
+        monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+        monkeypatch.setattr(
+            launcher, "run_notification_guard",
+            lambda *, stream=None: self._actions("repair", "repair"),
+        )
+        item, _ = launcher._run_notification_guard_capture(interactive=True)
+        assert item.value == "2 repaired"
+        assert item.status == "done"
 
+    def test_interactive_guard_crash_is_warn_item(self, monkeypatch):
         def boom(*, stream=None):
             raise RuntimeError("boom")
 
         monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
         monkeypatch.setattr(launcher, "run_notification_guard", boom)
-        out = io.StringIO()
-        launcher._run_notification_guard_v2(stream=out)  # 예외가 전파되면 실패
-        assert "failed" in out.getvalue()
+        item, detail = launcher._run_notification_guard_capture(interactive=True)
+        assert item.status == "warn"
+        assert "failed" in item.value
+        assert detail == ""
 
     def test_non_interactive_delegates_silently(self, monkeypatch):
-        import io
         calls = []
         monkeypatch.delenv("SERENA_AGENT_INTERACTIVE", raising=False)
         monkeypatch.setattr(
             launcher, "run_notification_guard",
             lambda *, stream=None: calls.append(stream) or [],
         )
-        out = io.StringIO()
-        launcher._run_notification_guard_v2(stream=out)
-        assert calls == [out]          # 가드에 스트림 직접 위임
-        assert out.getvalue() == ""    # 스피너/결과 행 없음 (silent-when-clean은 가드 몫)
+        item, detail = launcher._run_notification_guard_capture(interactive=False)
+        assert (item, detail) == (None, "")
+        assert len(calls) == 1          # 가드는 여전히 조용히 1회 실행됨
+
+    def test_preflight_box_places_guard_item_first(self, monkeypatch):
+        from local_dev.serena_mcp_management.ui import Item
+        monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+        monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
+        monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
+        _set_graphify_env(monkeypatch)
+        guard_item = Item(id="notif-guard", label="notif guard", value="clean", status="done")
+        box = launcher._preflight_box(guard_item=guard_item)
+        assert box.items[0].id == "notif-guard"
+        # 주입 안 하면 박스에 없다
+        assert all(i.id != "notif-guard" for i in launcher._preflight_box().items)
