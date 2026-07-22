@@ -7,6 +7,7 @@ notify 재주입, codex 신뢰 재기록, orca 재미러링)에 맞서 관리되
 """
 from __future__ import annotations
 
+import json
 import re
 import tomllib
 from dataclasses import dataclass
@@ -93,3 +94,44 @@ def repair_tui_condition(text: str) -> tuple[str, bool]:
             continue
         out.append(line)
     return "".join(out), repaired
+
+
+GUARDIAN_REVIEWER = "guardian_subagent"
+_GUARD_COMMENT = (
+    "# [notification guard] guardian_subagent가 승인을 자동 처리하므로 이 훅"
+    '(가짜 "Codex needs input" 알림의 원인)만 끈다.'
+)
+
+
+def permission_request_state_keys(hooks_json: Path) -> list[str]:
+    data = json.loads(hooks_json.read_text())
+    groups = data.get("hooks", {}).get("PermissionRequest") or []
+    keys: list[str] = []
+    for g, group in enumerate(groups):
+        for h in range(len(group.get("hooks") or [])):
+            keys.append(f"{hooks_json}:permission_request:{g}:{h}")
+    return keys
+
+
+def repair_hooks_state(text: str, keys: list[str]) -> tuple[str, list[str]]:
+    state = tomllib.loads(text).get("hooks", {}).get("state", {})
+    needs = [k for k in keys if (state.get(k) or {}).get("enabled") is not False]
+    if not needs:
+        return text, []
+    lines = text.splitlines()
+    for key in needs:
+        header = f'[hooks.state."{key}"]'
+        try:
+            start = lines.index(header)
+        except ValueError:
+            if lines and lines[-1].strip():
+                lines.append("")
+            lines.extend([_GUARD_COMMENT, header, "enabled = false"])
+            continue
+        end = start + 1
+        while end < len(lines) and not lines[end].lstrip().startswith("["):
+            end += 1
+        while end > start + 1 and not lines[end - 1].strip():
+            end -= 1
+        lines[end:end] = [_GUARD_COMMENT, "enabled = false"]
+    return "\n".join(lines) + "\n", needs

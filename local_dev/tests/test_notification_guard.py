@@ -10,6 +10,8 @@ from local_dev.serena_mcp_management.notification_guard import (
     CodexTarget,
     discover_codex_targets,
     discover_orca_data_files,
+    permission_request_state_keys,
+    repair_hooks_state,
     repair_notify,
     repair_tui_condition,
 )
@@ -151,3 +153,51 @@ class TestRepairTuiCondition:
         assert repaired is True
         assert '[other]\nnotification_condition = "always"' in new
         assert '[tui]\nnotification_condition = "unfocused"' in new
+
+
+class TestPermissionRequestKeys:
+    def test_derives_index_from_hooks_json(self, tmp_path: Path) -> None:
+        hooks = tmp_path / "fake home" / "hooks.json"
+        hooks.parent.mkdir(parents=True)
+        hooks.write_text(json.dumps({"hooks": {"PermissionRequest": [
+            {"hooks": [{"type": "command", "command": "/bin/true"},
+                       {"type": "command", "command": "/bin/echo"}]},
+        ]}}))
+        keys = permission_request_state_keys(hooks)
+        assert keys == [
+            f"{hooks}:permission_request:0:0",
+            f"{hooks}:permission_request:0:1",
+        ]
+
+    def test_no_permission_request_event(self, tmp_path: Path) -> None:
+        hooks = tmp_path / "hooks.json"
+        hooks.write_text(json.dumps({"hooks": {"Stop": []}}))
+        assert permission_request_state_keys(hooks) == []
+
+
+class TestRepairHooksState:
+    KEY = "/fake home/hooks.json:permission_request:0:0"
+
+    def test_enabled_false_already_present(self) -> None:
+        text = f'[hooks.state."{self.KEY}"]\ntrusted_hash = "sha256:x"\nenabled = false\n'
+        assert repair_hooks_state(text, [self.KEY]) == (text, [])
+
+    def test_reinserts_removed_enabled_line(self) -> None:
+        text = (
+            f'[hooks.state."{self.KEY}"]\n'
+            'trusted_hash = "sha256:x"\n\n'
+            "[tools]\nview_image = true\n"
+        )
+        new, repaired = repair_hooks_state(text, [self.KEY])
+        assert repaired == [self.KEY]
+        cfg = __import__("tomllib").loads(new)
+        assert cfg["hooks"]["state"][self.KEY]["enabled"] is False
+        assert cfg["hooks"]["state"][self.KEY]["trusted_hash"] == "sha256:x"
+        assert cfg["tools"]["view_image"] is True
+
+    def test_creates_missing_block_at_eof(self) -> None:
+        text = "[tools]\nview_image = true\n"
+        new, repaired = repair_hooks_state(text, [self.KEY])
+        assert repaired == [self.KEY]
+        cfg = __import__("tomllib").loads(new)
+        assert cfg["hooks"]["state"][self.KEY]["enabled"] is False
