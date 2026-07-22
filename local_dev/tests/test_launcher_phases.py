@@ -3,6 +3,7 @@ import json
 import os
 import re
 import shutil
+import threading
 import time
 from pathlib import Path
 from unittest import mock
@@ -1995,8 +1996,12 @@ def test_explicit_session_cleanup_animates_until_result(monkeypatch):
     assert text.index("<ticker-stopped>") < text.index("✓ sessions")
 
 
-def test_explicit_session_cleanup_stops_spinner_when_scan_raises(monkeypatch):
-    stopped = []
+@pytest.mark.parametrize("failure_site", ("scan", "cleanup"))
+def test_explicit_session_cleanup_stops_spinner_before_error_result(
+    monkeypatch,
+    failure_site,
+):
+    out = io.StringIO()
 
     class FakeSpinnerTicker:
         def __init__(self, *, on_tick, interval):
@@ -2006,23 +2011,119 @@ def test_explicit_session_cleanup_stops_spinner_when_scan_raises(monkeypatch):
             self._on_tick(1)
 
         def stop(self):
-            stopped.append(True)
+            out.write("<ticker-stopped>")
 
     def raise_scan_error(**kwargs):
         raise RuntimeError("injected scan failure")
 
+    def raise_cleanup_error(inventory, codex_binary):
+        raise RuntimeError("injected cleanup failure")
+
     monkeypatch.setattr(launcher, "SpinnerTicker", FakeSpinnerTicker)
-    monkeypatch.setattr(launcher, "scan_inventory", raise_scan_error)
+    if failure_site == "scan":
+        monkeypatch.setattr(launcher, "scan_inventory", raise_scan_error)
+        expected_error = "injected scan failure"
+    else:
+        monkeypatch.setattr(
+            launcher,
+            "scan_inventory",
+            lambda **kwargs: _inventory_snapshot(
+                total=1,
+                to_delete=1,
+                to_keep=0,
+            ).inventory,
+        )
+        monkeypatch.setattr(
+            launcher,
+            "cleanup_codex_inventory",
+            raise_cleanup_error,
+        )
+        expected_error = "injected cleanup failure"
 
     result = launcher._run_explicit_session_cleanup_v2(
         client="codex",
         real_binary="/fake/codex",
-        stream=io.StringIO(),
+        stream=out,
     )
 
+    text = _strip_ansi(out.getvalue())
     assert not result.succeeded
-    assert result.error == "injected scan failure"
-    assert stopped == [True]
+    assert result.error == expected_error
+    assert text.index("<ticker-stopped>") < text.index("! sessions")
+
+
+def test_explicit_session_cleanup_waits_for_inflight_tick_before_final_row(
+    monkeypatch,
+):
+    tick_write_started = threading.Event()
+    release_tick_write = threading.Event()
+    final_write_during_tick = threading.Event()
+    ticker_threads = []
+
+    class BlockingStream:
+        def __init__(self):
+            self.ticker_thread = None
+
+        def write(self, value):
+            if threading.current_thread() is self.ticker_thread:
+                tick_write_started.set()
+                assert release_tick_write.wait(timeout=1)
+            elif tick_write_started.is_set() and not release_tick_write.is_set():
+                final_write_during_tick.set()
+
+        def flush(self):
+            pass
+
+    class FakeSpinnerTicker:
+        def __init__(self, *, on_tick, interval):
+            self._on_tick = on_tick
+
+        def start(self):
+            thread = threading.Thread(target=self._on_tick, args=(1,))
+            ticker_threads.append(thread)
+            stream.ticker_thread = thread
+            thread.start()
+
+        def stop(self):
+            pass
+
+    stream = BlockingStream()
+    monkeypatch.setattr(launcher, "SpinnerTicker", FakeSpinnerTicker)
+    monkeypatch.setattr(
+        launcher,
+        "scan_inventory",
+        lambda **kwargs: _inventory_snapshot(
+            total=1,
+            to_delete=1,
+            to_keep=0,
+        ).inventory,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "cleanup_codex_inventory",
+        lambda inventory, codex_binary: launcher.CleanupResult(deleted=1),
+    )
+
+    worker = threading.Thread(
+        target=launcher._run_explicit_session_cleanup_v2,
+        kwargs={
+            "client": "codex",
+            "real_binary": "/fake/codex",
+            "stream": stream,
+        },
+    )
+    worker.start()
+    try:
+        assert tick_write_started.wait(timeout=1)
+        assert not final_write_during_tick.wait(timeout=0.1)
+    finally:
+        release_tick_write.set()
+        if ticker_threads:
+            ticker_threads[0].join(timeout=1)
+        worker.join(timeout=1)
+
+    assert not ticker_threads[0].is_alive()
+    assert not worker.is_alive()
 
 
 def test_explicit_session_cleanup_reports_newly_running_session(
