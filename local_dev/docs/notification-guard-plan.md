@@ -1143,3 +1143,184 @@ Orca 패널에서 `codex` 실행 → 화면에 `notif guard  codex notify 재주
 - **Spec coverage**: 불변식 #1(T3) #2(T3) #3(T1+T4) #4(T6) #5(T6), 동적 발견(T2), 원자 절차·레이스(T5), best-effort·silent(T7), 통합 지점·커버리지 실증(T8), 선행 검증(T1), README/롤아웃(T8) — 스펙 테스트 계획 14케이스 전부 태스크에 매핑됨.
 - **Placeholder**: 없음 (모든 스텝에 코드/커맨드/기대값 포함).
 - **Type consistency**: `GuardAction`/`CodexTarget`/`RepairOutcome`/`apply_text_repair`/`run_notification_guard` 시그니처가 태스크 간 일치함을 확인.
+
+---
+
+### Task 9: 가드 가시성 — interactive 스피너 행 + 상시 결과 행 (스펙 v3 개정 반영)
+
+**Files:**
+- Modify: `local_dev/serena_mcp_management/serena_agent_launcher.py` (`_run_notification_guard_v2` 신설, `_main_v2` 최상단 호출 교체)
+- Modify: `local_dev/tests/test_launcher_phases.py`
+
+**Interfaces:**
+- Consumes: `run_notification_guard(*, home=None, stream=None) -> list[GuardAction]`, `GuardAction.kind`
+- Produces: `_run_notification_guard_v2(*, stream: TextIO | None = None) -> None` — interactive면 스피너+결과 행, 비대화식이면 기존 위임. 예외 절대 전파 금지.
+
+- [ ] **Step 1: 실패하는 테스트 작성** — `test_launcher_phases.py`에 추가 (기존 autouse `_stub_notification_guard`는 그대로 두고, 이 테스트들은 자체 monkeypatch로 덮는다):
+
+```python
+class TestNotificationGuardV2Row:
+    def _actions(self, *kinds: str):
+        from local_dev.serena_mcp_management.notification_guard import GuardAction
+        return [GuardAction(kind, f"msg-{i}") for i, kind in enumerate(kinds)]
+
+    def test_interactive_clean_shows_row(self, monkeypatch, capsys=None):
+        import io
+        monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+        monkeypatch.setattr(launcher, "run_notification_guard", lambda *, stream=None: [])
+        out = io.StringIO()
+        launcher._run_notification_guard_v2(stream=out)
+        text = out.getvalue()
+        assert "notif guard" in text
+        assert "clean" in text
+
+    def test_interactive_actions_show_summary_then_details(self, monkeypatch):
+        import io
+
+        def fake_guard(*, stream=None):
+            stream.write("DETAIL-LINE\n")
+            return self._actions("repair", "warn")
+
+        monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+        monkeypatch.setattr(launcher, "run_notification_guard", fake_guard)
+        out = io.StringIO()
+        launcher._run_notification_guard_v2(stream=out)
+        text = out.getvalue()
+        assert "1 repaired" in text
+        assert "1 warning" in text
+        assert text.index("repaired") < text.index("DETAIL-LINE")  # 요약 → 상세 순서
+
+    def test_interactive_guard_crash_degrades_to_warn_row(self, monkeypatch):
+        import io
+
+        def boom(*, stream=None):
+            raise RuntimeError("boom")
+
+        monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+        monkeypatch.setattr(launcher, "run_notification_guard", boom)
+        out = io.StringIO()
+        launcher._run_notification_guard_v2(stream=out)  # 예외가 전파되면 실패
+        assert "failed" in out.getvalue()
+
+    def test_non_interactive_delegates_silently(self, monkeypatch):
+        import io
+        calls = []
+        monkeypatch.delenv("SERENA_AGENT_INTERACTIVE", raising=False)
+        monkeypatch.setattr(
+            launcher, "run_notification_guard",
+            lambda *, stream=None: calls.append(stream) or [],
+        )
+        out = io.StringIO()
+        launcher._run_notification_guard_v2(stream=out)
+        assert calls == [out]          # 가드에 스트림 직접 위임
+        assert out.getvalue() == ""    # 스피너/결과 행 없음 (silent-when-clean은 가드 몫)
+```
+
+- [ ] **Step 2: RED 확인** — `.venv/bin/python3 -m pytest local_dev/tests/test_launcher_phases.py -v -k NotificationGuardV2Row` → AttributeError 기대
+
+- [ ] **Step 3: 구현** — launcher에 추가 (`import io`가 상단에 없으면 추가; PURPLE/PINK/style_spinner/SpinnerTicker는 기존 ui import에 이미 있음). `_start_mcp_with_spinner` 근처에:
+
+```python
+_GUARD_SPINNER_TEXT = "notif guard checking notification config"
+
+
+def _run_notification_guard_v2(*, stream: TextIO | None = None) -> None:
+    """알림 불변식 가드를 가시적으로 실행한다.
+
+    interactive면 스피너 행 후 결과 행을 항상 남기고, 비대화식이면 가드에
+    그대로 위임한다(silent-when-clean). 어떤 실패도 launch를 막지 않는다.
+    상세 행은 스피너의 \r 갱신과 겹치지 않게 버퍼에 받아 완료 후 출력한다.
+    """
+    out = stream if stream is not None else sys.stdout
+    if os.environ.get("SERENA_AGENT_INTERACTIVE") != "1":
+        try:
+            run_notification_guard(stream=out)
+        except Exception:
+            pass
+        return
+    try:
+        out.write(f"  \x1b[{PURPLE}m·\x1b[0m {_GUARD_SPINNER_TEXT}")
+        out.flush()
+
+        def on_tick(frame: int) -> None:
+            out.write(f"\r  {style_spinner(frame)} {_GUARD_SPINNER_TEXT}")
+            out.flush()
+
+        ticker = SpinnerTicker(on_tick=on_tick, interval=0.1)
+        ticker.start()
+        detail = io.StringIO()
+        try:
+            actions = run_notification_guard(stream=detail)
+        except Exception:
+            actions = None
+        finally:
+            ticker.stop()
+        if actions is None:
+            line = "\x1b[33m!\x1b[0m notif guard check failed — launch continues"
+        elif not actions:
+            line = f"\x1b[{PINK}m✓\x1b[0m notif guard clean"
+        else:
+            repaired = sum(1 for action in actions if action.kind == "repair")
+            warned = len(actions) - repaired
+            parts = []
+            if repaired:
+                parts.append(f"{repaired} repaired")
+            if warned:
+                parts.append(f"{warned} warning" + ("s" if warned > 1 else ""))
+            line = f"\x1b[{PINK}m✓\x1b[0m notif guard " + " · ".join(parts)
+        # \r 덮어쓰기: 스피너 줄보다 짧은 결과 줄이 잔상을 남기지 않게 패딩
+        out.write("\r  " + line.ljust(len(_GUARD_SPINNER_TEXT) + 12) + "\n")
+        if actions:
+            out.write(detail.getvalue())
+        out.flush()
+    except Exception:
+        pass
+```
+
+`_main_v2` 최상단의 기존 가드 블록(try/except로 감싼 `run_notification_guard(stream=sys.stdout)`)을 다음으로 교체:
+
+```python
+    # 알림 설정 불변식 가드 — 외부 writer가 되돌린 설정을 launch마다 수렴시킨다.
+    # (spec: local_dev/docs/notification-guard-spec.md) 실패해도 launch는 계속.
+    _run_notification_guard_v2()
+```
+
+- [ ] **Step 4: GREEN + 전체 회귀** — `.venv/bin/python3 -m pytest local_dev/tests/ -q` 전부 통과 (기존 `test_main_v2_runs_notification_guard_before_launch`는 비대화식 위임 경로로 그대로 통과해야 함)
+
+- [ ] **Step 5: 커밋** — `feat(local_dev): notification guard 가시성 — interactive 스피너·상시 결과 행`
+
+---
+
+### Task 10: graphify 통합 프롬프트 기본값을 No로 고정
+
+**Files:**
+- Modify: `local_dev/serena_mcp_management/serena_agent_launcher.py` (`_run_preflight_v2`)
+- Modify: `local_dev/tests/test_launcher_phases.py` (동적 기본값을 단언하는 기존 테스트 갱신)
+- Modify(해당 시): `local_dev/README.md`, `local_dev/docs/cli-self-install-prompt-spec.md` 등 동적 기본값을 서술한 문서
+
+**Interfaces:**
+- Consumes: `_run_preflight_v2(serena_state=...)` — 시그니처 유지 (호출부/테스트 변경 최소화)
+
+- [ ] **Step 1: 기존 동작 파악** — `grep -n "integration_default\|serena_done\|global_done" local_dev/serena_mcp_management/serena_agent_launcher.py local_dev/tests/test_launcher_phases.py` 로 동적 기본값(`serena_done and global_done`)을 단언하는 테스트를 찾는다.
+
+- [ ] **Step 2: RED — 테스트를 새 명세로 갱신** — 동적 기본값을 단언하던 테스트를 "항상 default No"로 바꾸고 실행해 실패 확인. 기본값 검증 테스트가 없다면 신설:
+
+```python
+def test_graphify_integration_prompt_defaults_to_no(monkeypatch):
+    """통합 프롬프트는 serena/global 상태와 무관하게 기본 No — 사용자 선호."""
+    # 기존 preflight 테스트들의 픽스처/monkeypatch 스타일을 따라
+    # integration_status=missing + serena_state="managed" + global 설치 완료 상태를 구성하고,
+    # confirm에 전달되는 default가 False임을 단언한다 (confirm을 가로채 default 기록).
+```
+
+(구체 픽스처는 파일 내 기존 `_run_preflight_v2` 테스트들의 관례를 그대로 따른다.)
+
+- [ ] **Step 3: 구현** — `_run_preflight_v2`에서:
+  - `integration_default = serena_done and global_done` → `integration_default = False` 로 교체하고 다음 주석을 남긴다: `# 사용자 선호(2026-07-23): 프로젝트에 graphify를 실수로 심지 않도록 통합 프롬프트는 항상 No 기본값.`
+  - 이제 죽은 코드가 된 `serena_done = ...` 줄과 `global_done` 변수(초기화 + install 성공 시 `global_done = True`)를 제거한다. `serena_state` 파라미터는 시그니처 유지를 위해 남기되, docstring의 "dynamic default" 문단을 새 동작(항상 No)으로 갱신한다.
+
+- [ ] **Step 4: GREEN + 전체 회귀** — `.venv/bin/python3 -m pytest local_dev/tests/ -q`
+
+- [ ] **Step 5: 문서 갱신** — Step 1에서 찾은 동적 기본값 서술(문서·docstring)을 새 동작으로 갱신.
+
+- [ ] **Step 6: 커밋 + 미러** — `feat(local_dev): graphify 통합 프롬프트 기본값을 No로 고정` → `make -C local_dev install-shim` → 미러 diff 무출력 확인.

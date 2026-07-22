@@ -85,8 +85,15 @@ glob으로 발견한다.
 
 ## 동작 규율
 
-- **silent-when-clean**: 모든 불변식이 정상이면 출력 0줄.
-- **수리/경고 시에만 출력**: 항목당 한 줄, 기존 `ui.render_inline_row` 사용
+- **가시성 (2026-07-23 개정, v3)**: interactive launch에서는 가드 실행 동안
+  스피너 행(`⠋ notif guard checking notification config`)을 표시하고, 완료
+  시 결과 행을 **항상** 남긴다 — clean이면 `✓ notif guard clean`, 아니면
+  `✓ notif guard N repaired · M warning(s)` 요약 뒤에 상세 행들. 가드
+  행이 끝난 뒤에야 이후 preflight/선택지가 이어진다(동기 호출로 순서 보장).
+  상세 행은 스피너의 `\r` 갱신과 겹치지 않게 버퍼에 받아 완료 후 출력한다.
+  **비대화식 launch는 기존 silent-when-clean 유지** (스피너 없음, 수리/경고
+  시에만 행 출력) — 파이프 환경에 스피너는 부적절.
+- **수리/경고 상세는 항목당 한 줄**, 기존 `ui.render_inline_row` 사용
   (수리 = `done`, 경고 = `warn`). 예:
   - `↳ notif guard  codex notify 재주입 제거 (~/.codex/config.toml)`
   - `⚠ notif guard  orca 알림 토글이 어긋남 — Orca 설정 › Notifications에서 조정 필요`
