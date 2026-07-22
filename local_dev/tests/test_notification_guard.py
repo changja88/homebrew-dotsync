@@ -118,6 +118,12 @@ class TestRepairNotify:
         assert "notify = []\n" in new
         assert removed is not None and "/usr/bin/say" in removed
 
+    def test_quoted_notify_key_also_repaired(self) -> None:
+        text = '"notify" = ["/usr/bin/say"]\n\n[tools]\n'
+        new, removed = repair_notify(text)
+        assert "notify = []\n" in new
+        assert removed is not None and "/usr/bin/say" in removed
+
     def test_absent_notify_untouched(self) -> None:
         text = "[tools]\nview_image = true\n"
         assert repair_notify(text) == (text, None)
@@ -136,8 +142,12 @@ class TestRepairTuiCondition:
         assert repair_tui_condition(text) == (text, False)
 
     def test_same_key_outside_tui_untouched(self) -> None:
+        # 수리가 실제로 일어나는 경로에서 [tui] 밖 동명 키가 보호되는지 검증
         text = (
             '[other]\nnotification_condition = "always"\n\n'
-            '[tui]\nnotification_condition = "unfocused"\n'
+            '[tui]\nnotification_condition = "always"\n'
         )
-        assert repair_tui_condition(text) == (text, False)
+        new, repaired = repair_tui_condition(text)
+        assert repaired is True
+        assert '[other]\nnotification_condition = "always"' in new
+        assert '[tui]\nnotification_condition = "unfocused"' in new

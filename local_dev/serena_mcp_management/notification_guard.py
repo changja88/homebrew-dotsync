@@ -47,7 +47,7 @@ def discover_orca_data_files(home: Path) -> list[Path]:
     return sorted(orca.glob("profiles/*/orca-data.json"))
 
 
-_NOTIFY_LINE = re.compile(r"notify\s*=")
+_NOTIFY_LINE = re.compile(r'"?notify"?\s*=')
 _TUI_ALWAYS_LINE = re.compile(r'notification_condition\s*=\s*"always"')
 
 
