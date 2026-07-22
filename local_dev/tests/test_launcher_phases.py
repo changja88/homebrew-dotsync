@@ -2812,10 +2812,10 @@ def test_v2_main_clears_terminal_before_child_when_serena_skipped(monkeypatch, t
 # Rule (per user request):
 #   1. Serena init prompt          -> default=No  (only shown when missing)
 #   2. graphify global install     -> default=No  (only shown when missing)
-#   3. graphify integration install-> default=Yes only if Serena is initialized
-#                                     AND graphify global is installed (either
-#                                     was already, or just got installed in
-#                                     this session); otherwise default=No
+#   3. graphify integration install-> default=No (always). 사용자 선호
+#                                     (2026-07-23): Serena/graphify-global
+#                                     상태와 무관하게 항상 No — 실수로 Enter를
+#                                     쳐도 프로젝트에 graphify가 심기지 않도록.
 #   4. graphify hook install       -> default=Yes (always)
 #   5. final "Run <client>?"       -> default=Yes (always)
 #
@@ -2895,7 +2895,9 @@ def test_v2_preflight_graphify_integration_default_no_when_global_declined(monke
     assert integration_calls == []
 
 
-def test_v2_preflight_graphify_integration_default_yes_when_serena_and_global_done(monkeypatch):
+def test_v2_preflight_graphify_integration_default_no_even_when_serena_and_global_done(monkeypatch):
+    """사용자 선호(2026-07-23): Serena/global이 모두 done이어도 통합 프롬프트는
+    여전히 No가 기본값 — 실수로 Enter를 쳐도 install이 실행되지 않는다."""
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
@@ -2904,7 +2906,7 @@ def test_v2_preflight_graphify_integration_default_yes_when_serena_and_global_do
 
     integration_calls: list = []
     out = io.StringIO()
-    answers = iter([""])  # bare Enter -> should accept (Yes default)
+    answers = iter([""])  # bare Enter -> should decline (No default)
     launcher._run_preflight_v2(
         stream=out,
         input_fn=lambda: next(answers),
@@ -2912,13 +2914,13 @@ def test_v2_preflight_graphify_integration_default_yes_when_serena_and_global_do
         install_graphify_integration=lambda root, client:
             integration_calls.append(client) or 0,
     )
-    assert integration_calls == ["claude"]
-    assert "[Y/n]" in out.getvalue()
+    assert integration_calls == []
+    assert "[y/N]" in out.getvalue()
 
 
-def test_v2_preflight_graphify_integration_default_yes_after_just_installing_global(monkeypatch):
-    """If user accepts global install in the same flow, integration treats
-    global as 'done' and defaults to Yes."""
+def test_v2_preflight_graphify_integration_default_no_even_after_just_installing_global(monkeypatch):
+    """global install을 같은 흐름에서 방금 수락했더라도, 통합 프롬프트는
+    여전히 No가 기본값이다 (동적 기본값 폐지, 2026-07-23)."""
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
@@ -2927,7 +2929,7 @@ def test_v2_preflight_graphify_integration_default_yes_after_just_installing_glo
 
     integration_calls: list = []
     out = io.StringIO()
-    # Accept global ("y"), bare Enter on integration -> should accept (Yes default)
+    # Accept global ("y"), bare Enter on integration -> should still decline
     answers = iter(["y", ""])
     launcher._run_preflight_v2(
         stream=out,
@@ -2937,7 +2939,7 @@ def test_v2_preflight_graphify_integration_default_yes_after_just_installing_glo
         install_graphify_integration=lambda root, client:
             integration_calls.append(client) or 0,
     )
-    assert integration_calls == ["claude"]
+    assert integration_calls == []
 
 
 def test_v2_preflight_graphify_hook_prompt_defaults_to_yes(monkeypatch):

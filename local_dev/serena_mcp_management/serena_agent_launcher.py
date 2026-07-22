@@ -1358,9 +1358,11 @@ def _run_preflight_v2(
     """Run the v2 preflight phase with confirmation prompt.
 
     ``serena_state`` is the result returned by ``_run_serena_init_v2``
-    (one of ``managed``/``created``/``skipped``/``failed``). It feeds the
-    integration prompt's dynamic default — graphify integration only
-    defaults to Yes when both Serena and graphify-global are in place.
+    (one of ``managed``/``created``/``skipped``/``failed``). It is accepted
+    for signature compatibility with existing callers only: the integration
+    prompt no longer derives its default from Serena/graphify-global state.
+    Per user preference (2026-07-23) that prompt always defaults to No, so
+    an accidental bare Enter never wires graphify into the project.
 
     Returns:
         0 if interactive mode is off or user confirms, 130 if user aborts.
@@ -1416,7 +1418,6 @@ def _run_preflight_v2(
     global_status = os.environ.get(
         "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS", "unknown"
     )
-    global_done = global_status not in {"missing", "unknown"}
     if global_status == "missing":
         cmd = "graphify install" if client == "claude" else "graphify install --platform codex"
         if confirm(
@@ -1427,7 +1428,6 @@ def _run_preflight_v2(
         ):
             rc = install_global_fn(client)
             if rc == 0:
-                global_done = True
                 if client == "claude":
                     _emit("graphify global", "user skill at ~/.claude/skills/graphify", ok=True)
                 else:
@@ -1443,8 +1443,9 @@ def _run_preflight_v2(
         cmd = (
             "graphify claude install" if client == "claude" else "graphify codex install"
         )
-        serena_done = serena_state in {"managed", "created"}
-        integration_default = serena_done and global_done
+        # 사용자 선호(2026-07-23): 프로젝트에 graphify를 실수로 심지 않도록
+        # 통합 프롬프트는 항상 No 기본값.
+        integration_default = False
         if confirm(
             f"graphify is not wired into this project — set it up? ({cmd})",
             default=integration_default,
