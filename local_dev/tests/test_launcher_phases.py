@@ -1951,6 +1951,80 @@ def test_v2_main_inventory_failure_renders_bounded_causes_and_launches(
     assert warnings[3] not in text
 
 
+def test_explicit_session_cleanup_animates_until_result(monkeypatch):
+    out = io.StringIO()
+
+    class FakeSpinnerTicker:
+        def __init__(self, *, on_tick, interval):
+            assert interval == 0.1
+            self._on_tick = on_tick
+
+        def start(self):
+            self._on_tick(1)
+            self._on_tick(2)
+
+        def stop(self):
+            out.write("<ticker-stopped>")
+
+    monkeypatch.setattr(launcher, "SpinnerTicker", FakeSpinnerTicker)
+    monkeypatch.setattr(
+        launcher,
+        "scan_inventory",
+        lambda **kwargs: _inventory_snapshot(
+            total=1,
+            to_delete=1,
+            to_keep=0,
+        ).inventory,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "cleanup_codex_inventory",
+        lambda inventory, codex_binary: launcher.CleanupResult(deleted=1),
+    )
+
+    result = launcher._run_explicit_session_cleanup_v2(
+        client="codex",
+        real_binary="/fake/codex",
+        stream=out,
+    )
+
+    text = _strip_ansi(out.getvalue())
+    assert result.succeeded
+    assert "\r  ⠙ sessions" in text
+    assert "\r  ⠹ sessions" in text
+    assert text.index("<ticker-stopped>") < text.index("✓ sessions")
+
+
+def test_explicit_session_cleanup_stops_spinner_when_scan_raises(monkeypatch):
+    stopped = []
+
+    class FakeSpinnerTicker:
+        def __init__(self, *, on_tick, interval):
+            self._on_tick = on_tick
+
+        def start(self):
+            self._on_tick(1)
+
+        def stop(self):
+            stopped.append(True)
+
+    def raise_scan_error(**kwargs):
+        raise RuntimeError("injected scan failure")
+
+    monkeypatch.setattr(launcher, "SpinnerTicker", FakeSpinnerTicker)
+    monkeypatch.setattr(launcher, "scan_inventory", raise_scan_error)
+
+    result = launcher._run_explicit_session_cleanup_v2(
+        client="codex",
+        real_binary="/fake/codex",
+        stream=io.StringIO(),
+    )
+
+    assert not result.succeeded
+    assert result.error == "injected scan failure"
+    assert stopped == [True]
+
+
 def test_explicit_session_cleanup_reports_newly_running_session(
     monkeypatch,
     tmp_path,

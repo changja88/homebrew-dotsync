@@ -1581,32 +1581,44 @@ def _run_explicit_session_cleanup_v2(
 ) -> CleanupResult:
     """Delete all inactive sessions using a fresh product-scoped scan."""
     out = stream if stream is not None else sys.stdout
-    out.write(
-        render_inline_row(
+    progress_value = (
+        f"deleting inactive {client} sessions · running preserved"
+    )
+
+    def on_tick(frame: int) -> None:
+        row = render_inline_row(
             "sessions",
-            f"deleting inactive {client} sessions · running preserved",
+            progress_value,
             status="spin",
             accent=YELLOW,
-        )
-    )
-    out.flush()
+            spin_frame=frame,
+        ).removesuffix("\n")
+        out.write(f"\r{row}\x1b[K")
+        out.flush()
+
+    on_tick(0)
+    ticker = SpinnerTicker(on_tick=on_tick, interval=0.1)
+    ticker.start()
     try:
-        inventory = scan_inventory(
-            **_memory_scan_kwargs(client),
-            policy="all_inactive",
-        )
-        result = (
-            cleanup_codex_inventory(
-                inventory,
-                codex_binary=real_binary,
+        try:
+            inventory = scan_inventory(
+                **_memory_scan_kwargs(client),
+                policy="all_inactive",
             )
-            if client == "codex"
-            else cleanup_claude_inventory(inventory)
-        )
-    except (OSError, RuntimeError, ValueError) as exc:
-        result = CleanupResult(
-            error=str(exc) or exc.__class__.__name__
-        )
+            result = (
+                cleanup_codex_inventory(
+                    inventory,
+                    codex_binary=real_binary,
+                )
+                if client == "codex"
+                else cleanup_claude_inventory(inventory)
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            result = CleanupResult(
+                error=str(exc) or exc.__class__.__name__
+            )
+    finally:
+        ticker.stop()
 
     status = "done" if result.succeeded else "warn"
     deleted_label = "sessions deleted"
@@ -1633,6 +1645,7 @@ def _run_explicit_session_cleanup_v2(
             value = f"{value} ({detail_value})"
     if not result.succeeded:
         value = f"{value} · failed · {result.error}"
+    out.write("\r\x1b[K")
     out.write(
         render_inline_row(
             "sessions",
