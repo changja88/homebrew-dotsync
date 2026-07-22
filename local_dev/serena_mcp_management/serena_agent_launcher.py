@@ -1,8 +1,10 @@
 """Launch Codex or Claude with a scoped Serena MCP server."""
 from __future__ import annotations
 
+import io
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -386,6 +388,67 @@ def _run_launch_prep_v2(
     )
 
 
+_GUARD_SPINNER_TEXT = "notif guard checking notification config"
+_GUARD_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _run_notification_guard_v2(*, stream: TextIO | None = None) -> None:
+    """알림 불변식 가드를 가시적으로 실행한다.
+
+    interactive면 스피너 행 후 결과 행을 항상 남기고, 비대화식이면 가드에
+    그대로 위임한다(silent-when-clean). 어떤 실패도 launch를 막지 않는다.
+    상세 행은 스피너의 \r 갱신과 겹치지 않게 버퍼에 받아 완료 후 출력한다.
+    """
+    out = stream if stream is not None else sys.stdout
+    if os.environ.get("SERENA_AGENT_INTERACTIVE") != "1":
+        try:
+            run_notification_guard(stream=out)
+        except Exception:
+            pass
+        return
+    try:
+        out.write(f"  \x1b[{PURPLE}m·\x1b[0m {_GUARD_SPINNER_TEXT}")
+        out.flush()
+
+        def on_tick(frame: int) -> None:
+            out.write(f"\r  {style_spinner(frame)} {_GUARD_SPINNER_TEXT}")
+            out.flush()
+
+        ticker = SpinnerTicker(on_tick=on_tick, interval=0.1)
+        ticker.start()
+        detail = io.StringIO()
+        try:
+            actions = run_notification_guard(stream=detail)
+        except Exception:
+            actions = None
+        finally:
+            ticker.stop()
+        if actions is None:
+            line = "\x1b[33m!\x1b[0m notif guard check failed — launch continues"
+        elif not actions:
+            line = f"\x1b[{PINK}m✓\x1b[0m notif guard clean"
+        else:
+            repaired = sum(1 for action in actions if action.kind == "repair")
+            warned = len(actions) - repaired
+            parts = []
+            if repaired:
+                parts.append(f"{repaired} repaired")
+            if warned:
+                parts.append(f"{warned} warning" + ("s" if warned > 1 else ""))
+            line = f"\x1b[{PINK}m✓\x1b[0m notif guard " + " · ".join(parts)
+        # \r 덮어쓰기: ljust는 raw 길이(ANSI 코드 포함)를 기준으로 삼아 트루컬러
+        # 이스케이프 아래서는 패딩이 부족해진다 — 가시 길이 기준으로 스피너 줄의
+        # 가시 폭(glyph 1 + space 1 + text)만큼은 최소 덮어써서 잔상을 없앤다.
+        spinner_visible_width = len(_GUARD_SPINNER_TEXT) + 2
+        pad = max(0, spinner_visible_width - len(_GUARD_ANSI_ESCAPE_RE.sub("", line)))
+        out.write("\r  " + line + (" " * pad) + "\n")
+        if actions:
+            out.write(detail.getvalue())
+        out.flush()
+    except Exception:
+        pass
+
+
 def _start_mcp_with_spinner(
     *,
     scope,
@@ -501,10 +564,7 @@ def _main_v2(args: list[str]) -> int:
     started_at = time.time()
     # 알림 설정 불변식 가드 — 외부 writer가 되돌린 설정을 launch마다 수렴시킨다.
     # (spec: local_dev/docs/notification-guard-spec.md) 실패해도 launch는 계속.
-    try:
-        run_notification_guard(stream=sys.stdout)
-    except Exception:
-        pass
+    _run_notification_guard_v2()
     warnings: list[str] = []
     interactive = os.environ.get("SERENA_AGENT_INTERACTIVE") == "1"
     out = sys.stdout

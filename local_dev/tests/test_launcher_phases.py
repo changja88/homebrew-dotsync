@@ -3673,3 +3673,60 @@ def test_main_v2_runs_notification_guard_before_launch(monkeypatch, tmp_path):
     with pytest.raises(SystemExit):
         launcher._main_v2([])
     assert calls == [True]
+
+
+class TestNotificationGuardV2Row:
+    def _actions(self, *kinds: str):
+        from local_dev.serena_mcp_management.notification_guard import GuardAction
+        return [GuardAction(kind, f"msg-{i}") for i, kind in enumerate(kinds)]
+
+    def test_interactive_clean_shows_row(self, monkeypatch, capsys=None):
+        import io
+        monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+        monkeypatch.setattr(launcher, "run_notification_guard", lambda *, stream=None: [])
+        out = io.StringIO()
+        launcher._run_notification_guard_v2(stream=out)
+        text = out.getvalue()
+        assert "notif guard" in text
+        assert "clean" in text
+
+    def test_interactive_actions_show_summary_then_details(self, monkeypatch):
+        import io
+
+        def fake_guard(*, stream=None):
+            stream.write("DETAIL-LINE\n")
+            return self._actions("repair", "warn")
+
+        monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+        monkeypatch.setattr(launcher, "run_notification_guard", fake_guard)
+        out = io.StringIO()
+        launcher._run_notification_guard_v2(stream=out)
+        text = out.getvalue()
+        assert "1 repaired" in text
+        assert "1 warning" in text
+        assert text.index("repaired") < text.index("DETAIL-LINE")  # 요약 → 상세 순서
+
+    def test_interactive_guard_crash_degrades_to_warn_row(self, monkeypatch):
+        import io
+
+        def boom(*, stream=None):
+            raise RuntimeError("boom")
+
+        monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+        monkeypatch.setattr(launcher, "run_notification_guard", boom)
+        out = io.StringIO()
+        launcher._run_notification_guard_v2(stream=out)  # 예외가 전파되면 실패
+        assert "failed" in out.getvalue()
+
+    def test_non_interactive_delegates_silently(self, monkeypatch):
+        import io
+        calls = []
+        monkeypatch.delenv("SERENA_AGENT_INTERACTIVE", raising=False)
+        monkeypatch.setattr(
+            launcher, "run_notification_guard",
+            lambda *, stream=None: calls.append(stream) or [],
+        )
+        out = io.StringIO()
+        launcher._run_notification_guard_v2(stream=out)
+        assert calls == [out]          # 가드에 스트림 직접 위임
+        assert out.getvalue() == ""    # 스피너/결과 행 없음 (silent-when-clean은 가드 몫)
