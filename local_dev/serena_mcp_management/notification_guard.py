@@ -51,7 +51,12 @@ def apply_text_repair(
         if (after.st_mtime_ns, after.st_size) != (before.st_mtime_ns, before.st_size):
             tmp.unlink(missing_ok=True)
             continue  # 동시 수정 감지 — 처음부터 1회 재시도
-        os.replace(tmp, path)
+        try:
+            os.replace(tmp, path)
+        except OSError:
+            # 임시 파일 잔류 금지 — 실패해도 흔적을 남기지 않는다. 예외는 호출부(오케스트레이터)가 warn으로 강등한다.
+            tmp.unlink(missing_ok=True)
+            raise
         return RepairOutcome("repaired", meta)
     return RepairOutcome("conflicted")
 

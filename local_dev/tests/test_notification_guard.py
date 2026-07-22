@@ -272,3 +272,36 @@ class TestApplyTextRepair:
         assert outcome.status == "repaired"
         assert calls["n"] == 2          # 재시도 1회
         assert p.read_text() == "x = 2\n"
+
+    def test_replace_failure_cleans_tmp_and_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        p = tmp_path / "a.toml"
+        p.write_text("x = 1\n")
+
+        def boom(src: object, dst: object) -> None:
+            raise OSError("replace denied")
+
+        monkeypatch.setattr(
+            "local_dev.serena_mcp_management.notification_guard.os.replace", boom
+        )
+        with pytest.raises(OSError):
+            apply_text_repair(p, lambda t: ("x = 2\n", None), tomllib.loads)
+        assert p.read_text() == "x = 1\n"
+        assert list(tmp_path.iterdir()) == [p]  # 임시 파일 잔류 없음
+
+    def test_repeated_concurrent_writes_conflicted(self, tmp_path: Path) -> None:
+        p = tmp_path / "a.toml"
+        p.write_text("x = 1\n")
+        counter = {"n": 0}
+
+        def transform(text: str) -> tuple[str, None]:
+            counter["n"] += 1
+            # 매 시도마다 다른 writer가 개입 (크기가 매번 달라지도록 해 mtime 해상도 플레이크 회피)
+            p.write_text(f"x = {'9' * (counter['n'] + 1)}\n")
+            return "x = 2\n", None
+
+        outcome = apply_text_repair(p, transform, tomllib.loads)
+        assert outcome.status == "conflicted"
+        assert counter["n"] == 2  # 정확히 1회 재시도 후 포기
+        assert list(tmp_path.iterdir()) == [p]  # 임시 파일 잔류 없음
