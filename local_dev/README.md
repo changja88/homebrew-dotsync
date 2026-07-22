@@ -63,6 +63,16 @@ Graphify preflight paths follow graphifyy 0.8.x behavior: the codex
 user-level skill lives at `~/.codex/skills/graphify` (claude:
 `~/.claude/skills/graphify`).
 
+## Notification guard
+
+launcher는 매 관리 launch 시작 시 알림 설정 불변식을 점검하고 드리프트를
+자동 수리한다 (`notification_guard.py`, 설계: `docs/notification-guard-spec.md`).
+대상: codex `notify = []`·`notification_condition`·permission_request 훅
+비활성(guardian_subagent 구성일 때만), claude 알림 채널, orca 알림 토글(경고만).
+정상이면 출력이 없고, 수리/경고 시에만 `notif guard` 행이 표시된다.
+비대화식 호출(`codex exec` 등)은 shim이 launcher를 거치지 않으므로 가드
+범위 밖이다.
+
 ## Serena MCP Management
 
 `serena_mcp_management/` contains the local Serena MCP launcher, zsh shim

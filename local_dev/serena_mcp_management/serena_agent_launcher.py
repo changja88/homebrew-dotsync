@@ -40,6 +40,7 @@ from local_dev.serena_mcp_management.node_preflight import (
     NodeNeed,
     node_need,
 )
+from local_dev.serena_mcp_management.notification_guard import run_notification_guard
 from local_dev.serena_mcp_management.serena_mcp.diagnostics import snapshot_global_lifecycle
 from local_dev.serena_mcp_management.serena_mcp.paths import Scope, find_project_root
 from local_dev.serena_mcp_management.serena_mcp.registry import locked_registry, touch_lease
@@ -498,6 +499,12 @@ def _render_summary_v2(
 def _main_v2(args: list[str]) -> int:
     """v2 box-model TUI flow."""
     started_at = time.time()
+    # 알림 설정 불변식 가드 — 외부 writer가 되돌린 설정을 launch마다 수렴시킨다.
+    # (spec: local_dev/docs/notification-guard-spec.md) 실패해도 launch는 계속.
+    try:
+        run_notification_guard(stream=sys.stdout)
+    except Exception:
+        pass
     warnings: list[str] = []
     interactive = os.environ.get("SERENA_AGENT_INTERACTIVE") == "1"
     out = sys.stdout

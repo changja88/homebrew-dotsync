@@ -3645,3 +3645,23 @@ def test_cli_install_runners_return_2_without_uv(monkeypatch):
                         lambda *a, **k: pytest.fail("must not spawn anything"))
     assert launcher._serena_cli_install() == 2
     assert launcher._graphify_cli_install() == 2
+
+
+def test_main_v2_runs_notification_guard_before_launch(monkeypatch, tmp_path):
+    """가드는 interactive 여부와 무관하게 _main_v2 진입 즉시 1회 호출된다."""
+    from local_dev.serena_mcp_management import serena_agent_launcher as launcher
+
+    calls: list[bool] = []
+    monkeypatch.setattr(
+        launcher, "run_notification_guard",
+        lambda *, stream=None: calls.append(True) or [],
+    )
+    # 가드 직후 단계에서 의도적으로 중단시켜 나머지 flow를 실행하지 않는다
+    monkeypatch.setattr(
+        launcher, "infer_client_type",
+        lambda *a, **k: (_ for _ in ()).throw(SystemExit(99)),
+    )
+    monkeypatch.delenv("SERENA_AGENT_INTERACTIVE", raising=False)
+    with pytest.raises(SystemExit):
+        launcher._main_v2([])
+    assert calls == [True]
