@@ -8,8 +8,10 @@ notify 재주입, codex 신뢰 재기록, orca 재미러링)에 맞서 관리되
 from __future__ import annotations
 
 import json
+import os
 import re
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +21,39 @@ class GuardAction:
     kind: str  # "repair" | "warn"
     message: str
     path: Path | None = None
+
+
+@dataclass(frozen=True)
+class RepairOutcome:
+    status: str  # "unchanged" | "repaired" | "invalid" | "conflicted"
+    meta: object = None
+
+
+def apply_text_repair(
+    path: Path,
+    transform: Callable[[str], tuple[str, object]],
+    validate: Callable[[str], object],
+) -> RepairOutcome:
+    for _attempt in range(2):
+        original = path.read_text()
+        before = path.stat()
+        new_text, meta = transform(original)
+        if new_text == original:
+            return RepairOutcome("unchanged")
+        tmp = path.with_name(f".{path.name}.notifguard.tmp")
+        tmp.write_text(new_text)
+        try:
+            validate(tmp.read_text())
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            return RepairOutcome("invalid")
+        after = path.stat()
+        if (after.st_mtime_ns, after.st_size) != (before.st_mtime_ns, before.st_size):
+            tmp.unlink(missing_ok=True)
+            continue  # 동시 수정 감지 — 처음부터 1회 재시도
+        os.replace(tmp, path)
+        return RepairOutcome("repaired", meta)
+    return RepairOutcome("conflicted")
 
 
 @dataclass(frozen=True)

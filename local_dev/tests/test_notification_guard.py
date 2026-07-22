@@ -9,6 +9,8 @@ import pytest
 
 from local_dev.serena_mcp_management.notification_guard import (
     CodexTarget,
+    RepairOutcome,
+    apply_text_repair,
     discover_codex_targets,
     discover_orca_data_files,
     permission_request_state_keys,
@@ -229,3 +231,44 @@ class TestRepairHooksState:
         assert cfg["hooks"]["state"][self.KEY]["enabled"] is False
         assert cfg["hooks"]["state"][k2]["enabled"] is False
         assert cfg["hooks"]["state"][self.KEY]["trusted_hash"] == "sha256:x"
+
+
+class TestApplyTextRepair:
+    def test_unchanged_when_transform_is_identity(self, tmp_path: Path) -> None:
+        p = tmp_path / "a.toml"
+        p.write_text("x = 1\n")
+        outcome = apply_text_repair(p, lambda t: (t, None), tomllib.loads)
+        assert outcome.status == "unchanged"
+
+    def test_repaired_and_meta_passthrough(self, tmp_path: Path) -> None:
+        p = tmp_path / "a.toml"
+        p.write_text("x = 1\n")
+        outcome = apply_text_repair(p, lambda t: ("x = 2\n", "meta!"), tomllib.loads)
+        assert outcome.status == "repaired"
+        assert outcome.meta == "meta!"
+        assert p.read_text() == "x = 2\n"
+
+    def test_invalid_result_leaves_original_untouched(self, tmp_path: Path) -> None:
+        p = tmp_path / "a.toml"
+        p.write_text("x = 1\n")
+        outcome = apply_text_repair(p, lambda t: ("[broken", None), tomllib.loads)
+        assert outcome.status == "invalid"
+        assert p.read_text() == "x = 1\n"
+        assert list(tmp_path.iterdir()) == [p]  # 임시 파일 잔류 없음
+
+    def test_concurrent_write_detected_then_retried(self, tmp_path: Path) -> None:
+        p = tmp_path / "a.toml"
+        p.write_text("x = 1\n")
+        calls = {"n": 0}
+
+        def transform(text: str) -> tuple[str, None]:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # 첫 시도 도중 다른 writer가 파일을 바꿔치기
+                p.write_text("x = 99\n")
+            return text.replace("x = 99", "x = 2").replace("x = 1", "x = 2"), None
+
+        outcome = apply_text_repair(p, transform, tomllib.loads)
+        assert outcome.status == "repaired"
+        assert calls["n"] == 2          # 재시도 1회
+        assert p.read_text() == "x = 2\n"
