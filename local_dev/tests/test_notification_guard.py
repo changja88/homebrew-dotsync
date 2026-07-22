@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -201,3 +202,30 @@ class TestRepairHooksState:
         assert repaired == [self.KEY]
         cfg = __import__("tomllib").loads(new)
         assert cfg["hooks"]["state"][self.KEY]["enabled"] is False
+
+    def test_enabled_true_replaced_in_place(self) -> None:
+        text = (
+            f'[hooks.state."{self.KEY}"]\n'
+            'trusted_hash = "sha256:x"\n'
+            "enabled = true\n\n"
+            "[tools]\nview_image = true\n"
+        )
+        new, repaired = repair_hooks_state(text, [self.KEY])
+        assert repaired == [self.KEY]
+        cfg = tomllib.loads(new)  # 중복 키 없이 유효 TOML이어야 한다
+        assert cfg["hooks"]["state"][self.KEY]["enabled"] is False
+        assert cfg["hooks"]["state"][self.KEY]["trusted_hash"] == "sha256:x"
+
+    def test_multiple_keys_and_adjacent_headers(self) -> None:
+        # 블록이 빈 줄 없이 다음 [hooks.state...] 헤더와 붙어 있는 변형 + 다중 키 한 번에 수리
+        k2 = "/fake home/hooks.json:permission_request:0:1"
+        text = (
+            f'[hooks.state."{self.KEY}"]\ntrusted_hash = "sha256:x"\n'
+            f'[hooks.state."{k2}"]\ntrusted_hash = "sha256:y"\n'
+        )
+        new, repaired = repair_hooks_state(text, [self.KEY, k2])
+        assert repaired == [self.KEY, k2]
+        cfg = tomllib.loads(new)
+        assert cfg["hooks"]["state"][self.KEY]["enabled"] is False
+        assert cfg["hooks"]["state"][k2]["enabled"] is False
+        assert cfg["hooks"]["state"][self.KEY]["trusted_hash"] == "sha256:x"

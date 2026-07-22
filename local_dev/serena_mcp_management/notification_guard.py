@@ -133,5 +133,12 @@ def repair_hooks_state(text: str, keys: list[str]) -> tuple[str, list[str]]:
             end += 1
         while end > start + 1 and not lines[end - 1].strip():
             end -= 1
-        lines[end:end] = [_GUARD_COMMENT, "enabled = false"]
+        replaced = False
+        for i in range(start + 1, end):
+            if re.match(r'"?enabled"?\s*=', lines[i].strip()):
+                lines[i] = "enabled = false"
+                replaced = True
+                break
+        if not replaced:
+            lines[end:end] = [_GUARD_COMMENT, "enabled = false"]
     return "\n".join(lines) + "\n", needs
