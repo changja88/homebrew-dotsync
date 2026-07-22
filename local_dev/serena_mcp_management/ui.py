@@ -297,6 +297,7 @@ def render_inline_row(
     *,
     status: ItemStatus,
     accent: str | None = None,
+    spin_frame: int = 0,
 ) -> str:
     """Render one BoxModel-style row as a standalone line (no surrounding box).
 
@@ -306,7 +307,11 @@ def render_inline_row(
     the chronological flow intact and matches the row format inside the
     box so the visual style stays consistent.
     """
-    marker = _marker_for(status, accent=accent or PURPLE)
+    marker = _marker_for(
+        status,
+        spin_frame=spin_frame,
+        accent=accent or PURPLE,
+    )
     label_color = accent or MINT
     label_text = _ansi(label_color, f"{label:<10}")
     value_text = _ansi(accent, value) if accent is not None else value

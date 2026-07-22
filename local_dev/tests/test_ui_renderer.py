@@ -153,6 +153,30 @@ def test_render_inline_row_colors_session_start_with_requested_accent():
     )
 
 
+def test_render_inline_row_uses_requested_spinner_frame():
+    first = _strip_ansi(
+        render_inline_row(
+            "sessions",
+            "deleting inactive sessions",
+            status="spin",
+            accent=YELLOW,
+            spin_frame=0,
+        )
+    )
+    second = _strip_ansi(
+        render_inline_row(
+            "sessions",
+            "deleting inactive sessions",
+            status="spin",
+            accent=YELLOW,
+            spin_frame=1,
+        )
+    )
+
+    assert first.startswith("  ⠋ sessions")
+    assert second.startswith("  ⠙ sessions")
+
+
 def test_style_action_value_wraps_complete_value_in_accent():
     assert style_action_value("8 sessions deleted", accent=YELLOW) == (
         f"\x1b[{YELLOW}m8 sessions deleted\x1b[0m"
