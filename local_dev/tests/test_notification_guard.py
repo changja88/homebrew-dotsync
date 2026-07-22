@@ -94,9 +94,13 @@ class TestDiscovery:
         assert discover_codex_targets(tmp_path / "empty home") == []
 
     def test_finds_orca_profiles(self, fake_home: Path) -> None:
+        second = (fake_home / "Library" / "Application Support" / "orca"
+                  / "profiles" / "work" / "orca-data.json")
+        second.parent.mkdir(parents=True)
+        second.write_text("{}")
         files = discover_orca_data_files(fake_home)
-        assert len(files) == 1
-        assert files[0].name == "orca-data.json"
+        assert len(files) == 2
+        assert all(f.name == "orca-data.json" for f in files)
 
 
 SKY = ("/Users/x/.codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/"
@@ -133,6 +137,10 @@ class TestRepairNotify:
         new, removed = repair_notify(text)
         assert "notify = []\n" in new
         assert removed is not None and "/usr/bin/say" in removed
+
+        text2 = "'notify' = ['/usr/bin/say']\n\n[tools]\n"
+        new2, removed2 = repair_notify(text2)
+        assert "notify = []\n" in new2
 
     def test_absent_notify_untouched(self) -> None:
         text = "[tools]\nview_image = true\n"
@@ -311,6 +319,14 @@ class TestApplyTextRepair:
         assert counter["n"] == 2  # 정확히 1회 재시도 후 포기
         assert list(tmp_path.iterdir()) == [p]  # 임시 파일 잔류 없음
 
+    def test_preserves_file_mode(self, tmp_path: Path) -> None:
+        p = tmp_path / "a.toml"
+        p.write_text("x = 1\n")
+        p.chmod(0o600)
+        outcome = apply_text_repair(p, lambda t: ("x = 2\n", None), tomllib.loads)
+        assert outcome.status == "repaired"
+        assert (p.stat().st_mode & 0o777) == 0o600
+
 
 class TestClaudeSettings:
     def test_drifted_channel_repaired_with_korean_preserved(self, tmp_path: Path) -> None:
@@ -379,6 +395,21 @@ class TestGuardCodexTarget:
                              hooks_json=managed / "hooks.json")
         actions = guard_codex_target(target)
         assert any(a.kind == "warn" for a in actions)
+
+    def test_corrupt_hooks_json_warns_but_keeps_other_repairs(self, fake_home: Path) -> None:
+        managed = (fake_home / "Library" / "Application Support" / "orca"
+                   / "codex-accounts" / "abc-123" / "home")
+        (managed / "hooks.json").write_text("{broken json")
+        config = managed / "config.toml"
+        config.write_text(clean_managed_config(managed).replace(
+            "notify = []", f'notify = ["{SKY}", "turn-ended"]'
+        ))
+        target = CodexTarget(config=config, hooks_json=managed / "hooks.json")
+        actions = guard_codex_target(target)
+        # notify 수리는 수행·보고되고, hooks.json 문제는 warn으로 남는다
+        assert any(a.kind == "repair" for a in actions)
+        assert any(a.kind == "warn" and "hooks.json" in a.message for a in actions)
+        assert 'notify = []' in config.read_text()
 
 
 class TestRunNotificationGuard:

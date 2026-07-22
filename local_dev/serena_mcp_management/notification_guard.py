@@ -39,13 +39,14 @@ def apply_text_repair(
     validate: Callable[[str], object],
 ) -> RepairOutcome:
     for _attempt in range(2):
-        original = path.read_text()
         before = path.stat()
+        original = path.read_text()
         new_text, meta = transform(original)
         if new_text == original:
             return RepairOutcome("unchanged")
         tmp = path.with_name(f".{path.name}.notifguard.tmp")
         tmp.write_text(new_text)
+        os.chmod(tmp, before.st_mode & 0o7777)
         try:
             validate(tmp.read_text())
         except Exception:
@@ -92,7 +93,7 @@ def discover_orca_data_files(home: Path) -> list[Path]:
     return sorted(orca.glob("profiles/*/orca-data.json"))
 
 
-_NOTIFY_LINE = re.compile(r'"?notify"?\s*=')
+_NOTIFY_LINE = re.compile(r"['\"]?notify['\"]?\s*=")
 _TUI_ALWAYS_LINE = re.compile(r'notification_condition\s*=\s*"always"')
 
 
@@ -264,7 +265,15 @@ def guard_codex_target(target: CodexTarget) -> list[GuardAction]:
             target.hooks_json,
         ))
         return actions
-    keys = permission_request_state_keys(target.hooks_json)
+    try:
+        keys = permission_request_state_keys(target.hooks_json)
+    except Exception as exc:
+        actions.append(GuardAction(
+            "warn",
+            f"hooks.json 파싱 불가 — permission_request 점검 건너뜀 ({_short(target.hooks_json)}): {exc}",
+            target.hooks_json,
+        ))
+        return actions
     if not keys:
         return actions
     cfg = tomllib.loads(target.config.read_text())

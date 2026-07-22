@@ -55,6 +55,14 @@ def stub_external_cli_resolution(monkeypatch):
         lambda client: NodeNeed(generic=False, homebrew=False), raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _stub_notification_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """가드가 실사용자 홈을 읽고 쓰지 않도록 기본 스텁 — 가드 자체 테스트는 자체 monkeypatch로 덮는다."""
+    monkeypatch.setattr(
+        launcher, "run_notification_guard", lambda *, stream=None: []
+    )
+
+
 def test_main_always_dispatches_to_v2(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     called = {}
