@@ -1,0 +1,87 @@
+"""notification_guard 짝 테스트 — 설계 명세: local_dev/docs/notification-guard-spec.md"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from local_dev.serena_mcp_management.notification_guard import (
+    CodexTarget,
+    discover_codex_targets,
+    discover_orca_data_files,
+)
+
+HOOKS_JSON = json.dumps({
+    "hooks": {
+        "PermissionRequest": [
+            {"hooks": [{"type": "command", "command": "/bin/true", "timeout": 10}]}
+        ],
+        "Stop": [
+            {"hooks": [{"type": "command", "command": "/bin/true", "timeout": 10}]}
+        ],
+    }
+})
+
+CLEAN_TUI = '[tui]\nnotifications = ["approval-requested"]\nnotification_condition = "unfocused"\n'
+
+
+def clean_managed_config(home_dir: Path) -> str:
+    key = f"{home_dir}/hooks.json:permission_request:0:0"
+    return (
+        'approvals_reviewer = "guardian_subagent"\n'
+        "notify = []\n\n"
+        f"{CLEAN_TUI}\n"
+        f'[hooks.state."{key}"]\n'
+        'trusted_hash = "sha256:e460"\n'
+        "enabled = false\n"
+    )
+
+
+@pytest.fixture
+def fake_home(tmp_path: Path) -> Path:
+    # 공백 포함 경로 강제: 실경로의 "Application Support" 대응을 우회로 통과 못 하게 한다
+    home = tmp_path / "fake home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".codex" / "config.toml").write_text(
+        'notify = []\n\n' + CLEAN_TUI
+    )
+    orca = home / "Library" / "Application Support" / "orca"
+    for rel in ("codex-accounts/abc-123/home", "codex-runtime-home/home"):
+        managed = orca / rel
+        managed.mkdir(parents=True)
+        (managed / "hooks.json").write_text(HOOKS_JSON)
+        (managed / "config.toml").write_text(clean_managed_config(managed))
+    (home / ".claude").mkdir()
+    (home / ".claude" / "settings.json").write_text(
+        json.dumps({"preferredNotifChannel": "notifications_disabled"}, indent=2)
+    )
+    profile = orca / "profiles" / "local-default"
+    profile.mkdir(parents=True)
+    (profile / "orca-data.json").write_text(json.dumps({
+        "settings": {"notifications": {
+            "enabled": True, "agentTaskComplete": True, "terminalBell": False,
+        }}
+    }))
+    return home
+
+
+class TestDiscovery:
+    def test_finds_user_and_managed_configs(self, fake_home: Path) -> None:
+        targets = discover_codex_targets(fake_home)
+        configs = [t.config for t in targets]
+        assert fake_home / ".codex" / "config.toml" in configs
+        assert len([t for t in targets if t.hooks_json is not None]) == 2
+
+    def test_user_config_has_no_hooks_json(self, fake_home: Path) -> None:
+        user = [t for t in discover_codex_targets(fake_home)
+                if t.config == fake_home / ".codex" / "config.toml"]
+        assert user[0].hooks_json is None
+
+    def test_missing_files_are_skipped(self, tmp_path: Path) -> None:
+        assert discover_codex_targets(tmp_path / "empty home") == []
+
+    def test_finds_orca_profiles(self, fake_home: Path) -> None:
+        files = discover_orca_data_files(fake_home)
+        assert len(files) == 1
+        assert files[0].name == "orca-data.json"
