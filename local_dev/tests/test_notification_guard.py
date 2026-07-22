@@ -11,9 +11,11 @@ from local_dev.serena_mcp_management.notification_guard import (
     CodexTarget,
     RepairOutcome,
     apply_text_repair,
+    check_orca_notifications,
     discover_codex_targets,
     discover_orca_data_files,
     permission_request_state_keys,
+    repair_claude_settings,
     repair_hooks_state,
     repair_notify,
     repair_tui_condition,
@@ -305,3 +307,45 @@ class TestApplyTextRepair:
         assert outcome.status == "conflicted"
         assert counter["n"] == 2  # 정확히 1회 재시도 후 포기
         assert list(tmp_path.iterdir()) == [p]  # 임시 파일 잔류 없음
+
+
+class TestClaudeSettings:
+    def test_drifted_channel_repaired_with_korean_preserved(self, tmp_path: Path) -> None:
+        p = tmp_path / "settings.json"
+        p.write_text(json.dumps(
+            {"preferredNotifChannel": "terminal_bell", "language": "한국어"},
+            indent=2, ensure_ascii=False,
+        ))
+        outcome = repair_claude_settings(p)
+        assert outcome.status == "repaired"
+        data = json.loads(p.read_text())
+        assert data["preferredNotifChannel"] == "notifications_disabled"
+        assert "한국어" in p.read_text()  # ensure_ascii=False 왕복
+
+    def test_clean_settings_unchanged(self, tmp_path: Path) -> None:
+        p = tmp_path / "settings.json"
+        p.write_text(json.dumps({"preferredNotifChannel": "notifications_disabled"}))
+        assert repair_claude_settings(p).status == "unchanged"
+
+
+class TestOrcaToggles:
+    def _write(self, tmp_path: Path, **notif: object) -> Path:
+        p = tmp_path / "orca-data.json"
+        base = {"enabled": True, "agentTaskComplete": True, "terminalBell": False}
+        base.update(notif)
+        p.write_text(json.dumps({"settings": {"notifications": base}}))
+        return p
+
+    def test_clean_toggles_no_actions(self, tmp_path: Path) -> None:
+        assert check_orca_notifications(self._write(tmp_path)) == []
+
+    def test_master_enabled_off_warns(self, tmp_path: Path) -> None:
+        actions = check_orca_notifications(self._write(tmp_path, enabled=False))
+        assert len(actions) == 1 and actions[0].kind == "warn"
+
+    def test_bell_on_warns_without_writing(self, tmp_path: Path) -> None:
+        p = self._write(tmp_path, terminalBell=True)
+        before = p.read_text()
+        actions = check_orca_notifications(p)
+        assert actions[0].kind == "warn"
+        assert p.read_text() == before  # 절대 수정하지 않는다

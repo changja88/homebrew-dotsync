@@ -182,3 +182,36 @@ def repair_hooks_state(text: str, keys: list[str]) -> tuple[str, list[str]]:
         if not replaced:
             lines[end:end] = [_GUARD_COMMENT, "enabled = false"]
     return "\n".join(lines) + "\n", needs
+
+
+DESIRED_CLAUDE_NOTIF_CHANNEL = "notifications_disabled"
+
+
+def repair_claude_settings(path: Path) -> RepairOutcome:
+    def transform(text: str) -> tuple[str, object]:
+        data = json.loads(text)
+        if data.get("preferredNotifChannel") == DESIRED_CLAUDE_NOTIF_CHANNEL:
+            return text, None
+        previous = data.get("preferredNotifChannel")
+        data["preferredNotifChannel"] = DESIRED_CLAUDE_NOTIF_CHANNEL
+        return json.dumps(data, indent=2, ensure_ascii=False) + "\n", previous
+
+    return apply_text_repair(path, transform, json.loads)
+
+
+def check_orca_notifications(path: Path) -> list[GuardAction]:
+    notif = json.loads(path.read_text()).get("settings", {}).get("notifications", {})
+    problems: list[str] = []
+    if notif.get("enabled") is not True:
+        problems.append("알림 비활성")
+    if notif.get("agentTaskComplete") is not True:
+        problems.append("Agent 작업 완료 꺼짐")
+    if notif.get("terminalBell") is not False:
+        problems.append("Terminal 벨 켜짐")
+    if not problems:
+        return []
+    return [GuardAction(
+        "warn",
+        f"orca 알림 토글 어긋남({', '.join(problems)}) — Orca 설정 › Notifications에서 조정 필요",
+        path,
+    )]
