@@ -91,6 +91,7 @@ EOF
 ```bash
 python3 "$S/../hook_listener.py" 41799 "$S/posts_a.log" &  LISTENER=$!
 cd "$S/work" && CODEX_HOME="$S/home" \
+  ORCA_AGENT_HOOK_ENDPOINT="" \
   ORCA_AGENT_HOOK_PORT=41799 ORCA_AGENT_HOOK_TOKEN=test \
   ORCA_PANE_KEY=test-pane ORCA_TAB_ID=t1 ORCA_WORKTREE_ID=w1 \
   /opt/homebrew/bin/codex exec --skip-git-repo-check "reply with exactly: ok"
@@ -105,7 +106,9 @@ grep -c "hook_event_name" "$S/posts_a.log"   # 기대: ≥1 (SessionStart/UserPr
 ```bash
 # config.toml의 해당 블록에 enabled = false 추가 후:
 python3 "$S/../hook_listener.py" 41799 "$S/posts_b.log" &  LISTENER=$!
-cd "$S/work" && CODEX_HOME="$S/home" ORCA_AGENT_HOOK_PORT=41799 ORCA_AGENT_HOOK_TOKEN=test \
+cd "$S/work" && CODEX_HOME="$S/home" \
+  ORCA_AGENT_HOOK_ENDPOINT="" \
+  ORCA_AGENT_HOOK_PORT=41799 ORCA_AGENT_HOOK_TOKEN=test \
   ORCA_PANE_KEY=test-pane ORCA_TAB_ID=t1 ORCA_WORKTREE_ID=w1 \
   /opt/homebrew/bin/codex exec --skip-git-repo-check "reply with exactly: ok"
 kill $LISTENER
