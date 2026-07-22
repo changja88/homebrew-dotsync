@@ -1,6 +1,7 @@
 """notification_guard 짝 테스트 — 설계 명세: local_dev/docs/notification-guard-spec.md"""
 from __future__ import annotations
 
+import io
 import json
 import tomllib
 from pathlib import Path
@@ -14,11 +15,13 @@ from local_dev.serena_mcp_management.notification_guard import (
     check_orca_notifications,
     discover_codex_targets,
     discover_orca_data_files,
+    guard_codex_target,
     permission_request_state_keys,
     repair_claude_settings,
     repair_hooks_state,
     repair_notify,
     repair_tui_condition,
+    run_notification_guard,
 )
 
 HOOKS_JSON = json.dumps({
@@ -349,3 +352,54 @@ class TestOrcaToggles:
         actions = check_orca_notifications(p)
         assert actions[0].kind == "warn"
         assert p.read_text() == before  # 절대 수정하지 않는다
+
+
+class TestGuardCodexTarget:
+    def test_reviewer_user_skips_hooks_repair_but_warns_on_leftover(
+        self, fake_home: Path
+    ) -> None:
+        managed = (fake_home / "Library" / "Application Support" / "orca"
+                   / "codex-accounts" / "abc-123" / "home")
+        config = managed / "config.toml"
+        config.write_text(
+            clean_managed_config(managed).replace(
+                '"guardian_subagent"', '"user"'
+            )
+        )
+        target = CodexTarget(config=config, hooks_json=managed / "hooks.json")
+        actions = guard_codex_target(target)
+        # enabled=false가 남아 있으므로 경고 1건, 수리 0건
+        assert [a.kind for a in actions] == ["warn"]
+
+    def test_missing_hooks_json_warns_and_skips(self, fake_home: Path) -> None:
+        managed = (fake_home / "Library" / "Application Support" / "orca"
+                   / "codex-runtime-home" / "home")
+        (managed / "hooks.json").unlink()
+        target = CodexTarget(config=managed / "config.toml",
+                             hooks_json=managed / "hooks.json")
+        actions = guard_codex_target(target)
+        assert any(a.kind == "warn" for a in actions)
+
+
+class TestRunNotificationGuard:
+    def test_clean_home_silent(self, fake_home: Path) -> None:
+        out = io.StringIO()
+        actions = run_notification_guard(home=fake_home, stream=out)
+        assert actions == []
+        assert out.getvalue() == ""
+
+    def test_drift_repaired_and_reported(self, fake_home: Path) -> None:
+        user = fake_home / ".codex" / "config.toml"
+        user.write_text(f'notify = ["{SKY}", "turn-ended"]\n\n' + CLEAN_TUI)
+        out = io.StringIO()
+        actions = run_notification_guard(home=fake_home, stream=out)
+        assert any(a.kind == "repair" for a in actions)
+        assert "notif guard" in out.getvalue()
+        assert "notify = []" in user.read_text().splitlines()[0]
+
+    def test_internal_error_becomes_warn_not_raise(self, fake_home: Path) -> None:
+        # 파손된 TOML → 개별 대상 오류가 warn으로 강등되고 전체는 계속
+        (fake_home / ".codex" / "config.toml").write_text("[broken")
+        out = io.StringIO()
+        actions = run_notification_guard(home=fake_home, stream=out)
+        assert any(a.kind == "warn" for a in actions)

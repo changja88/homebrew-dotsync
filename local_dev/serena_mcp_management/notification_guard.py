@@ -10,10 +10,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
+
+from local_dev.serena_mcp_management.ui import render_inline_row
 
 
 @dataclass(frozen=True)
@@ -215,3 +219,130 @@ def check_orca_notifications(path: Path) -> list[GuardAction]:
         f"orca 알림 토글 어긋남({', '.join(problems)}) — Orca 설정 › Notifications에서 조정 필요",
         path,
     )]
+
+
+def _short(path: Path) -> str:
+    try:
+        return "~/" + str(path.relative_to(Path.home()))
+    except ValueError:
+        return str(path)
+
+
+def guard_codex_target(target: CodexTarget) -> list[GuardAction]:
+    actions: list[GuardAction] = []
+
+    outcome = apply_text_repair(target.config, repair_notify, tomllib.loads)
+    if outcome.status == "repaired":
+        actions.append(GuardAction(
+            "repair", f"codex notify 재주입 제거 ({_short(target.config)}): {outcome.meta}",
+            target.config,
+        ))
+    elif outcome.status in {"invalid", "conflicted"}:
+        actions.append(GuardAction(
+            "warn", f"notify 수리 실패[{outcome.status}] ({_short(target.config)})",
+            target.config,
+        ))
+
+    outcome = apply_text_repair(target.config, repair_tui_condition, tomllib.loads)
+    if outcome.status == "repaired":
+        actions.append(GuardAction(
+            "repair", f"tui notification_condition → unfocused ({_short(target.config)})",
+            target.config,
+        ))
+    elif outcome.status in {"invalid", "conflicted"}:
+        actions.append(GuardAction(
+            "warn",
+            f"notification_condition 수리 실패[{outcome.status}] ({_short(target.config)})",
+            target.config,
+        ))
+
+    if target.hooks_json is None:
+        return actions
+    if not target.hooks_json.is_file():
+        actions.append(GuardAction(
+            "warn", f"hooks.json 없음 — permission_request 점검 건너뜀 ({_short(target.hooks_json)})",
+            target.hooks_json,
+        ))
+        return actions
+    keys = permission_request_state_keys(target.hooks_json)
+    if not keys:
+        return actions
+    cfg = tomllib.loads(target.config.read_text())
+    if cfg.get("approvals_reviewer") == GUARDIAN_REVIEWER:
+        outcome = apply_text_repair(
+            target.config, lambda text: repair_hooks_state(text, keys), tomllib.loads
+        )
+        if outcome.status == "repaired":
+            actions.append(GuardAction(
+                "repair", f"permission_request 훅 비활성 복구 ({_short(target.config)})",
+                target.config,
+            ))
+        elif outcome.status in {"invalid", "conflicted"}:
+            actions.append(GuardAction(
+                "warn",
+                f"permission_request 수리 실패[{outcome.status}] ({_short(target.config)})",
+                target.config,
+            ))
+    else:
+        state = cfg.get("hooks", {}).get("state", {})
+        if any((state.get(k) or {}).get("enabled") is False for k in keys):
+            actions.append(GuardAction(
+                "warn",
+                "approvals_reviewer가 guardian이 아닌데 permission_request 훅이 꺼져 있음 —"
+                f" 진짜 승인 알림이 오지 않습니다 ({_short(target.config)})",
+                target.config,
+            ))
+    return actions
+
+
+def run_notification_guard(
+    *, home: Path | None = None, stream: TextIO | None = None
+) -> list[GuardAction]:
+    """모든 불변식을 점검·수리하고 GuardAction 목록을 반환한다. 예외 전파 금지."""
+    out = stream if stream is not None else sys.stdout
+    actions: list[GuardAction] = []
+    try:
+        base = home if home is not None else Path.home()
+        for target in discover_codex_targets(base):
+            try:
+                actions.extend(guard_codex_target(target))
+            except Exception as exc:
+                actions.append(GuardAction(
+                    "warn", f"가드 오류 ({_short(target.config)}): {exc}", target.config
+                ))
+        claude_settings = base / ".claude" / "settings.json"
+        if claude_settings.is_file():
+            try:
+                outcome = repair_claude_settings(claude_settings)
+                if outcome.status == "repaired":
+                    actions.append(GuardAction(
+                        "repair",
+                        f"claude 알림 채널 → notifications_disabled (이전: {outcome.meta})",
+                        claude_settings,
+                    ))
+                elif outcome.status in {"invalid", "conflicted"}:
+                    actions.append(GuardAction(
+                        "warn", f"claude settings 수리 실패[{outcome.status}]",
+                        claude_settings,
+                    ))
+            except Exception as exc:
+                actions.append(GuardAction("warn", f"claude settings 가드 오류: {exc}",
+                                           claude_settings))
+        for orca_data in discover_orca_data_files(base):
+            try:
+                actions.extend(check_orca_notifications(orca_data))
+            except Exception as exc:
+                actions.append(GuardAction("warn", f"orca 설정 점검 오류: {exc}", orca_data))
+    except Exception as exc:  # 가드 자체가 launch를 막으면 안 된다
+        actions.append(GuardAction("warn", f"notification guard 내부 오류: {exc}", None))
+    try:
+        for action in actions:
+            out.write(render_inline_row(
+                "notif guard", action.message,
+                status="done" if action.kind == "repair" else "warn",
+            ))
+        if actions:
+            out.flush()
+    except Exception:
+        pass
+    return actions
