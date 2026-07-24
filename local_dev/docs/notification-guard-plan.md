@@ -1352,3 +1352,36 @@ def test_graphify_integration_prompt_defaults_to_no(monkeypatch):
 잔여 수동 조치(가드가 대신 못 하는 것, Orca 실행 중 파일 수정 불가):
 Orca Settings › Notifications에서 `agentTaskComplete` ON,
 `suppressWhenFocused` OFF. 반영 전까지 가드가 경고 행으로 안내한다.
+
+### Task 12: 요구 3 구조 보장 반증 대응 — 불변식 #6 + user 홈 확장 (스펙 v6) ✅
+
+2026-07-24 서브에이전트 완료 알림이 codex에서 재발. 원인은 Orca 07-23
+업데이트로 무너진 전제 2개: ① codex 패널이 CODEX_HOME 주입 없이 user 홈으로
+실행 + `~/.codex/hooks.json` 설치 ② worktree 패널이 `bash -lc`로 shim 우회.
+app.asar 실측으로 "SubagentStop은 pane 상태를 안 바꾼다"(v5 요구 3의 구조
+보장)를 반증 — lead Stop 후 늦게 도착한 subagent 이벤트가 roster를 되살리고
+마지막 SubagentStop이 working→done 전이를 재생성해 알림을 발화한다.
+
+- Produces: 스펙 v6(불변식 #6, #3·#6 user 홈 확장, 커버리지 실측), 
+  `hook_state_keys()` 일반화, 짝 테스트 개정, `tests/conftest.py`(가드
+  autouse 스텁 공용화), README 가드 절 갱신
+- Consumes: app.asar 상태 머신 실측, 실행 중 codex 프로세스 env 실측
+
+- [x] **Step 1: RED** — user 홈 hooks.json 타깃팅, `hook_state_keys` 스네이크
+  키 도출, #6 무조건 적용(reviewer="user"여도 수리), Subagent 이벤트 부재 시
+  공허 충족, user 홈 풀 수리 시나리오. ImportError로 RED 확인.
+- [x] **Step 2: GREEN** — `discover_codex_targets`가 user 홈에도 hooks.json
+  경로 부여, `guard_codex_target`에 #6(무조건) 추가, `repair_hooks_state`에
+  comment 파라미터. 가드 44건 + 전체 578건 통과.
+- [x] **Step 3: 테스트 격리 수리** — launcher 통합 테스트(`main([])`)가
+  실사용자 홈 config를 수리하던 누수를 발견(전체 스위트 실행 중 실홈 mtime
+  변경으로 실측), `tests/conftest.py` autouse 스텁으로 차단 후 재실행으로
+  실홈 무접촉 검증.
+- [x] **Step 4: 라이브 수렴 + 문서 + 커밋 + 미러** — 실홈 가드 실행으로
+  `~/.codex`·orca 관리 홈 수리 확인(재실행 0건), 스펙 v6·README·계획 갱신,
+  `make -C local_dev install-shim` 후 미러 diff 무출력 확인.
+
+잔여 수동 조치: 수리 이전에 시작된 codex 세션은 옛 훅 상태로 돌므로
+**세션 재시작 필요**. 감시 항목: claude 쪽도 같은 roster 구조라 재발 시
+동일 방식 검토, codex 신뢰 재기록이 enabled=false를 지우면 다음 interactive
+launch에서 가드가 복구.
