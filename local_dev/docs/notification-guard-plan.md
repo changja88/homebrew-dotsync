@@ -1324,3 +1324,31 @@ def test_graphify_integration_prompt_defaults_to_no(monkeypatch):
 - [ ] **Step 5: 문서 갱신** — Step 1에서 찾은 동적 기본값 서술(문서·docstring)을 새 동작으로 갱신.
 
 - [ ] **Step 6: 커밋 + 미러** — `feat(local_dev): graphify 통합 프롬프트 기본값을 No로 고정` → `make -C local_dev install-shim` → 미러 diff 무출력 확인.
+
+### Task 11: 요구사항 확정 반영 — #2 폐기·#3 공허 충족·#5 재정의 (스펙 v5)
+
+2026-07-24 사용자 요구사항 확정: ①입력 필요 ②메인 작업 완료 시에만, 포커스
+무관 항상 알림 · 서브에이전트 완료 알림 절대 금지 · 벨 계열 설정은 사용자
+관리(가드 비관여).
+
+- Produces: 스펙 v5(요구사항 절 + 불변식 표 개정), `notification_guard.py`
+  개정, 짝 테스트 개정, README 가드 절 갱신
+- Consumes: Orca 알림 파이프라인 실측(발화 주체 = Orca 데몬, 메인 pane
+  working→idle 전이에서만 발화 — 서브에이전트 구조적 무음 확인)
+
+- [x] **Step 1: RED** — 새 명세 테스트로 교체: hooks.json 부재 시 무경고
+  (`test_missing_hooks_json_silently_skipped`), codex `notification_condition`
+  무접촉(`test_tui_notification_condition_left_untouched`), orca 토글에서
+  `terminalBell` 무관여·`suppressWhenFocused=false` 요구
+  (`TestOrcaToggles`), clean 픽스처에 `terminalBell=True` 포함. 6건 실패 확인.
+- [x] **Step 2: GREEN** — `repair_tui_condition` 제거(불변식 #2 폐기),
+  hooks.json 부재를 공허 충족으로 조용히 통과, `check_orca_notifications`를
+  `enabled`/`agentTaskComplete`/`suppressWhenFocused`로 재정의(벨 제거).
+  가드 37건 + 전체 1141건 통과.
+- [x] **Step 3: 문서** — 스펙 v5(요구사항 절, 불변식 표, 테스트 계획 4·7·10),
+  README 가드 절.
+- [x] **Step 4: 커밋 + 미러** — `make -C local_dev install-shim` 후 스모크.
+
+잔여 수동 조치(가드가 대신 못 하는 것, Orca 실행 중 파일 수정 불가):
+Orca Settings › Notifications에서 `agentTaskComplete` ON,
+`suppressWhenFocused` OFF. 반영 전까지 가드가 경고 행으로 안내한다.

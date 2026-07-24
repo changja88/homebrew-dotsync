@@ -67,8 +67,11 @@ user-level skill lives at `~/.codex/skills/graphify` (claude:
 
 launcher는 매 관리 launch 시작 시 알림 설정 불변식을 점검하고 드리프트를
 자동 수리한다 (`notification_guard.py`, 설계: `docs/notification-guard-spec.md`).
-대상: codex `notify = []`·`notification_condition`·permission_request 훅
-비활성(guardian_subagent 구성일 때만), claude 알림 채널, orca 알림 토글(경고만).
+알림 정책: **입력 필요·메인 작업 완료 시에만, 포커스 무관 항상** — 서브에이전트
+완료 알림 금지, 벨(terminal bell) 계열 설정은 사용자 관리라 가드가 관여하지 않는다.
+대상: codex `notify = []`·permission_request 훅 비활성(guardian_subagent 구성일
+때만, hooks.json이 없는 홈은 공허 충족으로 조용히 통과), claude 알림 채널,
+orca 알림 토글(`enabled`·`agentTaskComplete` ON, `suppressWhenFocused` OFF — 경고만).
 정상이면 출력이 없고, 수리/경고 시에만 `notif guard` 행이 표시된다.
 비대화식 호출(`codex exec` 등)은 shim이 launcher를 거치지 않으므로 가드
 범위 밖이다.

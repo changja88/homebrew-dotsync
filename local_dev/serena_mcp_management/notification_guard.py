@@ -1,8 +1,9 @@
 """launch 시 알림 설정 불변식을 점검·자동 수리하는 가드.
 
 설계 명세: local_dev/docs/notification-guard-spec.md
-알림 정책("입력 필요/완료 시에만")을 되돌리는 외부 writer(ChatGPT 앱의
-notify 재주입, codex 신뢰 재기록, orca 재미러링)에 맞서 관리되는 launch마다
+알림 정책(입력 필요·메인 작업 완료 시에만, 포커스 무관 — 서브에이전트 완료
+알림 금지, 벨은 사용자 관리)을 되돌리는 외부 writer(ChatGPT 앱의 notify
+재주입, codex 신뢰 재기록, orca 재미러링)에 맞서 관리되는 launch마다
 설정을 수렴시킨다. silent-when-clean, best-effort — launch를 절대 막지 않는다.
 """
 from __future__ import annotations
@@ -94,7 +95,6 @@ def discover_orca_data_files(home: Path) -> list[Path]:
 
 
 _NOTIFY_LINE = re.compile(r"['\"]?notify['\"]?\s*=")
-_TUI_ALWAYS_LINE = re.compile(r'notification_condition\s*=\s*"always"')
 
 
 def repair_notify(text: str) -> tuple[str, str | None]:
@@ -118,27 +118,6 @@ def repair_notify(text: str) -> tuple[str, str | None]:
             continue
         out.append(line)
     return "".join(out), removed
-
-
-def repair_tui_condition(text: str) -> tuple[str, bool]:
-    if tomllib.loads(text).get("tui", {}).get("notification_condition") != "always":
-        return text, False
-    out: list[str] = []
-    in_tui = False
-    repaired = False
-    for line in text.splitlines(keepends=True):
-        stripped = line.strip()
-        if stripped.startswith("["):
-            in_tui = stripped == "[tui]"
-        if in_tui and not repaired and _TUI_ALWAYS_LINE.match(stripped):
-            out.append(
-                'notification_condition = "unfocused"'
-                + ("\n" if line.endswith("\n") else "")
-            )
-            repaired = True
-            continue
-        out.append(line)
-    return "".join(out), repaired
 
 
 GUARDIAN_REVIEWER = "guardian_subagent"
@@ -205,14 +184,15 @@ def repair_claude_settings(path: Path) -> RepairOutcome:
 
 
 def check_orca_notifications(path: Path) -> list[GuardAction]:
+    """#5: 마스터·완료 알림 ON + 포커스 중 억제 OFF. terminalBell은 사용자 관리 — 불관여."""
     notif = json.loads(path.read_text()).get("settings", {}).get("notifications", {})
     problems: list[str] = []
     if notif.get("enabled") is not True:
         problems.append("알림 비활성")
     if notif.get("agentTaskComplete") is not True:
-        problems.append("Agent 작업 완료 꺼짐")
-    if notif.get("terminalBell") is not False:
-        problems.append("Terminal 벨 켜짐")
+        problems.append("Agent 작업 완료 알림 꺼짐")
+    if notif.get("suppressWhenFocused") is not False:
+        problems.append("포커스 중 알림 억제 켜짐(suppressWhenFocused)")
     if not problems:
         return []
     return [GuardAction(
@@ -244,26 +224,9 @@ def guard_codex_target(target: CodexTarget) -> list[GuardAction]:
             target.config,
         ))
 
-    outcome = apply_text_repair(target.config, repair_tui_condition, tomllib.loads)
-    if outcome.status == "repaired":
-        actions.append(GuardAction(
-            "repair", f"tui notification_condition → unfocused ({_short(target.config)})",
-            target.config,
-        ))
-    elif outcome.status in {"invalid", "conflicted"}:
-        actions.append(GuardAction(
-            "warn",
-            f"notification_condition 수리 실패[{outcome.status}] ({_short(target.config)})",
-            target.config,
-        ))
-
-    if target.hooks_json is None:
-        return actions
-    if not target.hooks_json.is_file():
-        actions.append(GuardAction(
-            "warn", f"hooks.json 없음 — permission_request 점검 건너뜀 ({_short(target.hooks_json)})",
-            target.hooks_json,
-        ))
+    if target.hooks_json is None or not target.hooks_json.is_file():
+        # 훅 파일이 없으면 가짜 "needs input" 알림의 원인도 없다 — 공허 충족.
+        # (로그인 잔재 홈처럼 config.toml만 있는 홈에서 경고를 반복하지 않는다.)
         return actions
     try:
         keys = permission_request_state_keys(target.hooks_json)

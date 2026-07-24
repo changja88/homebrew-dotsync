@@ -1,10 +1,34 @@
 # Notification Guard 설계 명세
 
-> 상태: 승인 대기 (적대 리뷰 1회 반영, v2) · 작성 2026-07-23
+> 상태: 승인 대기 (적대 리뷰 1회 반영, v2) · 작성 2026-07-23 ·
+> 2026-07-24 요구사항 확정 개정(v5): #2 폐기, #3 부재 시 공허 충족, #5 재정의
+
+## 요구사항 (2026-07-24 사용자 확정)
+
+1. 알림은 **입력 필요**(권한·승인·질문)와 **메인 에이전트 작업 완료**(턴 종료,
+   입력 대기 복귀) 두 순간에만 울린다.
+2. **포커스 무관 항상** — Orca 창이 포커스를 갖고 있어도 위 두 알림은 온다.
+3. **서브에이전트 완료는 어떤 경우에도 알림 금지.**
+4. Terminal 벨 계열 설정(orca `terminalBell`, codex `[tui]`의
+   `notifications`/`notification_method`/`notification_condition`)은 사용자가
+   직접 관리한다 — 가드는 벨 관련 점검·경고·수리를 하지 않는다.
+
+알림의 실제 발화 주체는 **Orca 앱**이다: claude/codex의 훅은 이벤트를 Orca
+데몬(127.0.0.1 HTTP POST)으로 전달만 하고, Orca가 orca-data.json의
+`settings.notifications` 값으로 발화 여부를 결정한다.
+
+- 요구 1·2의 Orca 쪽 스위치: `enabled=true` + `agentTaskComplete=true` +
+  `suppressWhenFocused=false`. 불변식 #5가 경고로 감시한다(수리 불가 —
+  실행 중 Orca가 외부 수정을 되돌림, 07-22 실측).
+- 요구 3은 구조적으로 보장된다: Orca는 **메인 pane이 working→idle로 전이할
+  때만** 알림을 발화하고(onorca.dev/docs/notifications + last-status.json
+  실측), SubagentStop 이벤트는 pane 상태를 바꾸지 않는다. 네이티브 우회
+  경로도 닫혀 있다 — claude 자체 채널은 #4(`notifications_disabled`)가,
+  codex 외부 notify 프로그램은 #1(`notify = []`)이 차단한다.
 
 ## 배경과 목적
 
-에이전트 알림 정책은 "**입력 필요** 또는 **작업 완료**일 때만 알림"이다. 이를 위해
+에이전트 알림 정책은 위 요구사항 절과 같다. 이를 위해
 2026-07-22에 codex/claude/orca 설정을 정리했으나, 외부 프로세스가 이 설정을
 주기적으로 되돌린다는 것이 실측됐다:
 
@@ -40,29 +64,34 @@ interactive tty + 인자 allowlist(무인자, `resume`/`fork`/`-c`/`--continue`/
   인자 형태를 바꾸면 커버리지가 통째로 사라질 수 있다. 롤아웃 절의 스모크
   검증으로 실제 동작을 확인하고, 재발 시 이 전제부터 의심한다.
 
-## 불변식 (5종)
+## 불변식 (4종 유효 · #2는 폐기)
 
 | # | 파일 | 원하는 형태 | 드리프트 시 |
 |---|---|---|---|
 | 1 | codex config들의 최상위 `notify` | 정확히 `[]` | 수리 (제거한 내용을 로그에 남김) |
-| 2 | codex config들의 `[tui] notification_condition` | `"unfocused"` | `"always"`면 수리 |
+| 2 | ~~codex `[tui] notification_condition`~~ | **폐기 (2026-07-24)** — 벨 채널 설정은 사용자 관리(요구사항 4). 가드는 읽지도 고치지도 않는다 | — |
 | 3 | codex config들의 `[hooks.state."<홈>/hooks.json:permission_request:<g>:<h>"]` | `enabled = false` | 수리 (줄 삽입, 엔트리 없으면 생성) |
 | 4 | `~/.claude/settings.json`의 `preferredNotifChannel` | `"notifications_disabled"` | 수리 |
-| 5 | orca-data.json의 `notifications.enabled` / `agentTaskComplete` / `terminalBell` | `true` / `true` / `false` | **경고만** (수리 안 함) |
+| 5 | orca-data.json의 `notifications.enabled` / `agentTaskComplete` / `suppressWhenFocused` | `true` / `true` / `false` | **경고만** (수리 안 함). `terminalBell`은 점검 대상 아님 |
 
 ### codex config 파일 발견 (동적)
 
 하드코딩된 계정 ID 없이 glob으로 발견한다. 존재하는 것만 대상으로 한다.
 
-- `~/.codex/config.toml` — 불변식 #1, #2만 적용
-- `~/Library/Application Support/orca/codex-accounts/*/home/config.toml` — #1, #2, #3
-- `~/Library/Application Support/orca/codex-runtime-home/home/config.toml` — #1, #2, #3
+- `~/.codex/config.toml` — 불변식 #1만 적용
+- `~/Library/Application Support/orca/codex-accounts/*/home/config.toml` — #1, #3
+- `~/Library/Application Support/orca/codex-runtime-home/home/config.toml` — #1, #3
 
 불변식 #3의 키는 각 관리 홈의 hooks.json을 **파싱해서 도출**한다:
 `PermissionRequest` 이벤트의 실제 (group, handler) 인덱스로
 `<홈>/hooks.json:permission_request:<g>:<h>` 키를 만든다 (인덱스 하드코딩
-금지 — orca가 핸들러를 추가/재배열하면 `:0:0`이 stale해진다). hooks.json이
-없거나 파싱 불가면 그 홈의 #3은 건너뛰고 경고 행을 남긴다.
+금지 — orca가 핸들러를 추가/재배열하면 `:0:0`이 stale해진다). **hooks.json이
+없으면 그 홈의 #3은 공허 충족으로 조용히 건너뛴다** (2026-07-24 개정) —
+훅 파일이 없다 = PermissionRequest 훅이 0개 = 가짜 "needs input" 알림의
+원인이 없다. 로그인 잔재 홈(orca가 브라우저 로그인 시 만드는
+`codex-accounts/*/home`에 config.toml만 남는 경우)이 매 launch마다 고칠 수
+없는 경고를 반복하던 문제의 해소. 파싱 불가면(파일이 있는데 깨짐) 실제
+이상이므로 경고 행을 남기고 건너뛴다.
 
 user config에는 #3을 적용하지 않는다 — `~/.codex/hooks.json`은 존재하지
 않고, orca 재미러링은 user config의 hooks.state를 어차피 제거한다(배경 3).
@@ -117,8 +146,6 @@ glob으로 발견한다.
     대상으로 한다 (`[mcp_servers.computer-use]`의 SkyComputerUseClient 경로
     줄 오폭 방지). 값이 `[]`가 아니면 무엇이든 `notify = []`로 치환하고
     제거한 내용을 로그 행에 포함한다.
-  - #2: `[tui]` 헤더부터 다음 `[` 헤더 전까지 구간의
-    `notification_condition = "always"` 줄을 `"unfocused"`로 치환.
   - #3: 해당 hooks.state 블록에 `enabled = false` 줄이 없으면 블록 끝에 삽입
     (`trusted_hash` 등 기존 줄 보존). 블록 자체가 없으면 EOF에 헤더 +
     `enabled = false` 추가. guardian 판단은 그 config 파일 자신의
@@ -179,18 +206,20 @@ tmp_path에 가짜 홈 구조를 만드는 픽스처를 둔다. **가짜 orca �
    해당 줄만 `notify = []`로, 주석/다른 줄/`[mcp_servers.computer-use]`의
    경로 줄 보존
 3. notify에 미지의 프로그램 → 역시 `[]`로 수리 + 제거 내용 로그
-4. `notification_condition = "always"` → `"unfocused"` ([tui] 밖의 동명
-   키는 무접촉)
+4. (폐기 2026-07-24) codex `notification_condition`은 가드 비관여 —
+   `"always"`여도 무접촉임을 검증
 5. permission_request 블록에서 `enabled = false` 제거됨 → 재삽입
 6. permission_request 블록 자체가 없음 → hooks.json 인덱스로 키 도출해 생성;
    hooks.json의 핸들러가 `:0:1`에 있는 변형 → 키가 따라감
-7. hooks.json 부재/파싱 불가 → #3 건너뛰고 경고
+7. hooks.json 부재 → #3 조용히 건너뜀(경고 없음, 공허 충족); 파싱 불가 →
+   건너뛰고 경고
 8. `approvals_reviewer = "user"`인 config → #3 수리 안 함; 기존
    `enabled = false` 잔존 시 경고만
 9. claude `preferredNotifChannel` 드리프트 → 수리 (`ensure_ascii=False`
    왕복 확인)
-10. orca 토글 어긋남(master `enabled=false` 포함) → 수리 없이 경고 액션만;
-    `profiles/*/` glob 다중 프로파일 커버
+10. orca 토글 어긋남(master `enabled=false` / `agentTaskComplete=false` /
+    `suppressWhenFocused=true`) → 수리 없이 경고 액션만; `terminalBell`은
+    어떤 값이든 무액션; `profiles/*/` glob 다중 프로파일 커버
 11. 임시 파일 파싱 실패(인위적 파손 주입) → 원본 무접촉 + 경고
 12. 원본 mtime/size가 수리 중 변경됨 → 1회 재시도, 재차 변경 시 경고 강등
 13. 대상 파일 부재 → 무시(에러 없음)

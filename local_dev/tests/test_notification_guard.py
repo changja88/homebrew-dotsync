@@ -20,7 +20,6 @@ from local_dev.serena_mcp_management.notification_guard import (
     repair_claude_settings,
     repair_hooks_state,
     repair_notify,
-    repair_tui_condition,
     run_notification_guard,
 )
 
@@ -72,7 +71,9 @@ def fake_home(tmp_path: Path) -> Path:
     profile.mkdir(parents=True)
     (profile / "orca-data.json").write_text(json.dumps({
         "settings": {"notifications": {
-            "enabled": True, "agentTaskComplete": True, "terminalBell": False,
+            # terminalBell은 사용자 관리 영역 — 켜져 있어도 clean이어야 한다
+            "enabled": True, "agentTaskComplete": True,
+            "suppressWhenFocused": False, "terminalBell": True,
         }}
     }))
     return home
@@ -145,30 +146,6 @@ class TestRepairNotify:
     def test_absent_notify_untouched(self) -> None:
         text = "[tools]\nview_image = true\n"
         assert repair_notify(text) == (text, None)
-
-
-class TestRepairTuiCondition:
-    def test_always_becomes_unfocused(self) -> None:
-        text = '[tui]\nnotification_condition = "always"\ntheme = "x"\n'
-        new, repaired = repair_tui_condition(text)
-        assert repaired is True
-        assert 'notification_condition = "unfocused"' in new
-        assert 'theme = "x"' in new
-
-    def test_unfocused_unchanged(self) -> None:
-        text = '[tui]\nnotification_condition = "unfocused"\n'
-        assert repair_tui_condition(text) == (text, False)
-
-    def test_same_key_outside_tui_untouched(self) -> None:
-        # 수리가 실제로 일어나는 경로에서 [tui] 밖 동명 키가 보호되는지 검증
-        text = (
-            '[other]\nnotification_condition = "always"\n\n'
-            '[tui]\nnotification_condition = "always"\n'
-        )
-        new, repaired = repair_tui_condition(text)
-        assert repaired is True
-        assert '[other]\nnotification_condition = "always"' in new
-        assert '[tui]\nnotification_condition = "unfocused"' in new
 
 
 class TestPermissionRequestKeys:
@@ -350,7 +327,7 @@ class TestClaudeSettings:
 class TestOrcaToggles:
     def _write(self, tmp_path: Path, **notif: object) -> Path:
         p = tmp_path / "orca-data.json"
-        base = {"enabled": True, "agentTaskComplete": True, "terminalBell": False}
+        base = {"enabled": True, "agentTaskComplete": True, "suppressWhenFocused": False}
         base.update(notif)
         p.write_text(json.dumps({"settings": {"notifications": base}}))
         return p
@@ -362,12 +339,24 @@ class TestOrcaToggles:
         actions = check_orca_notifications(self._write(tmp_path, enabled=False))
         assert len(actions) == 1 and actions[0].kind == "warn"
 
-    def test_bell_on_warns_without_writing(self, tmp_path: Path) -> None:
-        p = self._write(tmp_path, terminalBell=True)
+    def test_agent_task_complete_off_warns(self, tmp_path: Path) -> None:
+        actions = check_orca_notifications(self._write(tmp_path, agentTaskComplete=False))
+        assert len(actions) == 1 and actions[0].kind == "warn"
+        assert "완료" in actions[0].message
+
+    def test_suppress_when_focused_on_warns_without_writing(self, tmp_path: Path) -> None:
+        # 요구사항 "포커스 무관 항상 알림"의 핵심 스위치 — 켜져 있으면 경고, 수리는 안 함
+        p = self._write(tmp_path, suppressWhenFocused=True)
         before = p.read_text()
         actions = check_orca_notifications(p)
-        assert actions[0].kind == "warn"
+        assert len(actions) == 1 and actions[0].kind == "warn"
+        assert "포커스" in actions[0].message
         assert p.read_text() == before  # 절대 수정하지 않는다
+
+    def test_terminal_bell_is_user_managed_not_checked(self, tmp_path: Path) -> None:
+        # 벨은 사용자 관리 영역 — 어떤 값이든 가드가 관여하지 않는다
+        assert check_orca_notifications(self._write(tmp_path, terminalBell=True)) == []
+        assert check_orca_notifications(self._write(tmp_path, terminalBell=False)) == []
 
 
 class TestGuardCodexTarget:
@@ -387,14 +376,30 @@ class TestGuardCodexTarget:
         # enabled=false가 남아 있으므로 경고 1건, 수리 0건
         assert [a.kind for a in actions] == ["warn"]
 
-    def test_missing_hooks_json_warns_and_skips(self, fake_home: Path) -> None:
+    def test_missing_hooks_json_silently_skipped(self, fake_home: Path) -> None:
+        # 훅이 없다 = 가짜 "needs input" 알림의 원인이 없다 — 공허 충족.
+        # 로그인 잔재 홈(config.toml만 있는 codex-accounts/*/home)이 매 launch마다
+        # 고칠 수 없는 경고를 반복하지 않아야 한다.
         managed = (fake_home / "Library" / "Application Support" / "orca"
                    / "codex-runtime-home" / "home")
         (managed / "hooks.json").unlink()
         target = CodexTarget(config=managed / "config.toml",
                              hooks_json=managed / "hooks.json")
-        actions = guard_codex_target(target)
-        assert any(a.kind == "warn" for a in actions)
+        assert guard_codex_target(target) == []
+
+    def test_tui_notification_condition_left_untouched(self, fake_home: Path) -> None:
+        # 벨 채널 설정(codex TUI)은 사용자 관리 — "always"여도 되돌리지 않는다
+        managed = (fake_home / "Library" / "Application Support" / "orca"
+                   / "codex-runtime-home" / "home")
+        config = managed / "config.toml"
+        config.write_text(clean_managed_config(managed).replace(
+            'notification_condition = "unfocused"',
+            'notification_condition = "always"',
+        ))
+        before = config.read_text()
+        target = CodexTarget(config=config, hooks_json=managed / "hooks.json")
+        assert guard_codex_target(target) == []
+        assert config.read_text() == before
 
     def test_corrupt_hooks_json_warns_but_keeps_other_repairs(self, fake_home: Path) -> None:
         managed = (fake_home / "Library" / "Application Support" / "orca"
