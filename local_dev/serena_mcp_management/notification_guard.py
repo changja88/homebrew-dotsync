@@ -70,14 +70,16 @@ def apply_text_repair(
 @dataclass(frozen=True)
 class CodexTarget:
     config: Path
-    hooks_json: Path | None  # None → 불변식 #3 미적용 (user config)
+    hooks_json: Path | None  # 부재(is_file 아님)면 #3·#6 공허 충족
 
 
 def discover_codex_targets(home: Path) -> list[CodexTarget]:
     targets: list[CodexTarget] = []
     user = home / ".codex" / "config.toml"
     if user.is_file():
-        targets.append(CodexTarget(config=user, hooks_json=None))
+        # v6: orca 07-23 업데이트 후 codex는 user 홈으로 실행되고 orca가
+        # ~/.codex/hooks.json을 설치한다 — user config에도 #3·#6을 적용한다.
+        targets.append(CodexTarget(config=user, hooks_json=home / ".codex" / "hooks.json"))
     orca = home / "Library" / "Application Support" / "orca"
     for pattern in ("codex-accounts/*/home", "codex-runtime-home/home"):
         for managed_home in sorted(orca.glob(pattern)):
@@ -125,19 +127,32 @@ _GUARD_COMMENT = (
     "# [notification guard] guardian_subagent가 승인을 자동 처리하므로 이 훅"
     '(가짜 "Codex needs input" 알림의 원인)만 끈다.'
 )
+_SUBAGENT_COMMENT = (
+    "# [notification guard] 서브에이전트 완료 알림 금지(요구 3) — orca가 "
+    "SubagentStop을 working→done 전이로 되살릴 수 있어 subagent 훅 전달을 끈다."
+)
+_CAMEL_BOUNDARY = re.compile(r"(?<!^)(?=[A-Z])")
 
 
-def permission_request_state_keys(hooks_json: Path) -> list[str]:
+def hook_state_keys(hooks_json: Path, event: str) -> list[str]:
+    """hooks.json에서 event의 실제 (group, handler) 인덱스로 hooks.state 키 도출."""
     data = json.loads(hooks_json.read_text())
-    groups = data.get("hooks", {}).get("PermissionRequest") or []
+    groups = data.get("hooks", {}).get(event) or []
+    snake = _CAMEL_BOUNDARY.sub("_", event).lower()
     keys: list[str] = []
     for g, group in enumerate(groups):
         for h in range(len(group.get("hooks") or [])):
-            keys.append(f"{hooks_json}:permission_request:{g}:{h}")
+            keys.append(f"{hooks_json}:{snake}:{g}:{h}")
     return keys
 
 
-def repair_hooks_state(text: str, keys: list[str]) -> tuple[str, list[str]]:
+def permission_request_state_keys(hooks_json: Path) -> list[str]:
+    return hook_state_keys(hooks_json, "PermissionRequest")
+
+
+def repair_hooks_state(
+    text: str, keys: list[str], comment: str = _GUARD_COMMENT
+) -> tuple[str, list[str]]:
     state = tomllib.loads(text).get("hooks", {}).get("state", {})
     needs = [k for k in keys if (state.get(k) or {}).get("enabled") is not False]
     if not needs:
@@ -150,7 +165,7 @@ def repair_hooks_state(text: str, keys: list[str]) -> tuple[str, list[str]]:
         except ValueError:
             if lines and lines[-1].strip():
                 lines.append("")
-            lines.extend([_GUARD_COMMENT, header, "enabled = false"])
+            lines.extend([comment, header, "enabled = false"])
             continue
         end = start + 1
         while end < len(lines) and not lines[end].lstrip().startswith("["):
@@ -164,7 +179,7 @@ def repair_hooks_state(text: str, keys: list[str]) -> tuple[str, list[str]]:
                 replaced = True
                 break
         if not replaced:
-            lines[end:end] = [_GUARD_COMMENT, "enabled = false"]
+            lines[end:end] = [comment, "enabled = false"]
     return "\n".join(lines) + "\n", needs
 
 
@@ -225,18 +240,39 @@ def guard_codex_target(target: CodexTarget) -> list[GuardAction]:
         ))
 
     if target.hooks_json is None or not target.hooks_json.is_file():
-        # 훅 파일이 없으면 가짜 "needs input" 알림의 원인도 없다 — 공허 충족.
+        # 훅 파일이 없으면 훅발 알림의 원인도 없다 — #3·#6 공허 충족.
         # (로그인 잔재 홈처럼 config.toml만 있는 홈에서 경고를 반복하지 않는다.)
         return actions
     try:
         keys = permission_request_state_keys(target.hooks_json)
+        subagent_keys = [
+            *hook_state_keys(target.hooks_json, "SubagentStart"),
+            *hook_state_keys(target.hooks_json, "SubagentStop"),
+        ]
     except Exception as exc:
         actions.append(GuardAction(
             "warn",
-            f"hooks.json 파싱 불가 — permission_request 점검 건너뜀 ({_short(target.hooks_json)}): {exc}",
+            f"hooks.json 파싱 불가 — hooks.state 점검 건너뜀 ({_short(target.hooks_json)}): {exc}",
             target.hooks_json,
         ))
         return actions
+    if subagent_keys:
+        # #6: 서브에이전트 완료 알림 금지(요구 3) — reviewer와 무관하게 무조건
+        outcome = apply_text_repair(
+            target.config,
+            lambda text: repair_hooks_state(text, subagent_keys, comment=_SUBAGENT_COMMENT),
+            tomllib.loads,
+        )
+        if outcome.status == "repaired":
+            actions.append(GuardAction(
+                "repair", f"subagent 훅 비활성 복구 ({_short(target.config)})",
+                target.config,
+            ))
+        elif outcome.status in {"invalid", "conflicted"}:
+            actions.append(GuardAction(
+                "warn", f"subagent 훅 수리 실패[{outcome.status}] ({_short(target.config)})",
+                target.config,
+            ))
     if not keys:
         return actions
     cfg = tomllib.loads(target.config.read_text())

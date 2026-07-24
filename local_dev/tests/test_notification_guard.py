@@ -16,6 +16,7 @@ from local_dev.serena_mcp_management.notification_guard import (
     discover_codex_targets,
     discover_orca_data_files,
     guard_codex_target,
+    hook_state_keys,
     permission_request_state_keys,
     repair_claude_settings,
     repair_hooks_state,
@@ -23,14 +24,14 @@ from local_dev.serena_mcp_management.notification_guard import (
     run_notification_guard,
 )
 
+_HOOK = {"type": "command", "command": "/bin/true", "timeout": 10}
+# 실환경(orca 07-23 설치본) 근사: Subagent 이벤트 포함
 HOOKS_JSON = json.dumps({
     "hooks": {
-        "PermissionRequest": [
-            {"hooks": [{"type": "command", "command": "/bin/true", "timeout": 10}]}
-        ],
-        "Stop": [
-            {"hooks": [{"type": "command", "command": "/bin/true", "timeout": 10}]}
-        ],
+        "PermissionRequest": [{"hooks": [_HOOK]}],
+        "SubagentStart": [{"hooks": [_HOOK]}],
+        "SubagentStop": [{"hooks": [_HOOK]}],
+        "Stop": [{"hooks": [_HOOK]}],
     }
 })
 
@@ -38,14 +39,17 @@ CLEAN_TUI = '[tui]\nnotifications = ["approval-requested"]\nnotification_conditi
 
 
 def clean_managed_config(home_dir: Path) -> str:
-    key = f"{home_dir}/hooks.json:permission_request:0:0"
+    blocks = "".join(
+        f'[hooks.state."{home_dir}/hooks.json:{event}:0:0"]\n'
+        f'trusted_hash = "sha256:e460"\n'
+        "enabled = false\n\n"
+        for event in ("permission_request", "subagent_start", "subagent_stop")
+    )
     return (
         'approvals_reviewer = "guardian_subagent"\n'
         "notify = []\n\n"
         f"{CLEAN_TUI}\n"
-        f'[hooks.state."{key}"]\n'
-        'trusted_hash = "sha256:e460"\n'
-        "enabled = false\n"
+        f"{blocks}"
     )
 
 
@@ -53,10 +57,11 @@ def clean_managed_config(home_dir: Path) -> str:
 def fake_home(tmp_path: Path) -> Path:
     # 공백 포함 경로 강제: 실경로의 "Application Support" 대응을 우회로 통과 못 하게 한다
     home = tmp_path / "fake home"
-    (home / ".codex").mkdir(parents=True)
-    (home / ".codex" / "config.toml").write_text(
-        'notify = []\n\n' + CLEAN_TUI
-    )
+    user = home / ".codex"
+    user.mkdir(parents=True)
+    # v6: orca가 user 홈에도 hooks.json을 설치한다 (실행 홈이 user 홈)
+    (user / "hooks.json").write_text(HOOKS_JSON)
+    (user / "config.toml").write_text(clean_managed_config(user))
     orca = home / "Library" / "Application Support" / "orca"
     for rel in ("codex-accounts/abc-123/home", "codex-runtime-home/home"):
         managed = orca / rel
@@ -84,12 +89,14 @@ class TestDiscovery:
         targets = discover_codex_targets(fake_home)
         configs = [t.config for t in targets]
         assert fake_home / ".codex" / "config.toml" in configs
-        assert len([t for t in targets if t.hooks_json is not None]) == 2
+        assert len([t for t in targets if t.hooks_json is not None]) == 3
 
-    def test_user_config_has_no_hooks_json(self, fake_home: Path) -> None:
+    def test_user_config_targets_user_hooks_json(self, fake_home: Path) -> None:
+        # v6: orca가 user 홈에 hooks.json을 설치하고 codex가 user 홈으로 실행되므로
+        # user config에도 #3/#6을 적용한다 (부재 시 공허 충족은 guard 쪽에서)
         user = [t for t in discover_codex_targets(fake_home)
                 if t.config == fake_home / ".codex" / "config.toml"]
-        assert user[0].hooks_json is None
+        assert user[0].hooks_json == fake_home / ".codex" / "hooks.json"
 
     def test_missing_files_are_skipped(self, tmp_path: Path) -> None:
         assert discover_codex_targets(tmp_path / "empty home") == []
@@ -166,6 +173,36 @@ class TestPermissionRequestKeys:
         hooks = tmp_path / "hooks.json"
         hooks.write_text(json.dumps({"hooks": {"Stop": []}}))
         assert permission_request_state_keys(hooks) == []
+
+
+class TestHookStateKeys:
+    def test_subagent_events_derive_snake_case_keys(self, tmp_path: Path) -> None:
+        hooks = tmp_path / "fake home" / "hooks.json"
+        hooks.parent.mkdir(parents=True)
+        hooks.write_text(HOOKS_JSON)
+        assert hook_state_keys(hooks, "SubagentStart") == [
+            f"{hooks}:subagent_start:0:0"
+        ]
+        assert hook_state_keys(hooks, "SubagentStop") == [
+            f"{hooks}:subagent_stop:0:0"
+        ]
+
+    def test_handler_index_follows_json(self, tmp_path: Path) -> None:
+        hooks = tmp_path / "hooks.json"
+        hooks.write_text(json.dumps({"hooks": {"SubagentStop": [
+            {"hooks": [_HOOK, _HOOK]},
+            {"hooks": [_HOOK]},
+        ]}}))
+        assert hook_state_keys(hooks, "SubagentStop") == [
+            f"{hooks}:subagent_stop:0:0",
+            f"{hooks}:subagent_stop:0:1",
+            f"{hooks}:subagent_stop:1:0",
+        ]
+
+    def test_absent_event_yields_no_keys(self, tmp_path: Path) -> None:
+        hooks = tmp_path / "hooks.json"
+        hooks.write_text(json.dumps({"hooks": {"Stop": [{"hooks": [_HOOK]}]}}))
+        assert hook_state_keys(hooks, "SubagentStart") == []
 
 
 class TestRepairHooksState:
@@ -400,6 +437,97 @@ class TestGuardCodexTarget:
         target = CodexTarget(config=config, hooks_json=managed / "hooks.json")
         assert guard_codex_target(target) == []
         assert config.read_text() == before
+
+    def test_subagent_hooks_disabled_even_when_reviewer_is_user(
+        self, fake_home: Path
+    ) -> None:
+        # #6은 무조건 적용 — 요구 3("어떤 경우에도 알림 금지")은 reviewer와 무관
+        managed = (fake_home / "Library" / "Application Support" / "orca"
+                   / "codex-runtime-home" / "home")
+        config = managed / "config.toml"
+        text = clean_managed_config(managed).replace('"guardian_subagent"', '"user"')
+        # subagent 두 블록의 enabled 줄이 제거된 드리프트 (codex 신뢰 재기록 형태)
+        text = text.replace(
+            f'[hooks.state."{managed}/hooks.json:subagent_start:0:0"]\n'
+            'trusted_hash = "sha256:e460"\nenabled = false\n',
+            f'[hooks.state."{managed}/hooks.json:subagent_start:0:0"]\n'
+            'trusted_hash = "sha256:e460"\n',
+        ).replace(
+            f'[hooks.state."{managed}/hooks.json:subagent_stop:0:0"]\n'
+            'trusted_hash = "sha256:e460"\nenabled = false\n',
+            f'[hooks.state."{managed}/hooks.json:subagent_stop:0:0"]\n'
+            'trusted_hash = "sha256:e460"\n',
+        )
+        config.write_text(text)
+        target = CodexTarget(config=config, hooks_json=managed / "hooks.json")
+        actions = guard_codex_target(target)
+        assert any(a.kind == "repair" and "subagent" in a.message for a in actions)
+        state = tomllib.loads(config.read_text())["hooks"]["state"]
+        assert state[f"{managed}/hooks.json:subagent_start:0:0"]["enabled"] is False
+        assert state[f"{managed}/hooks.json:subagent_stop:0:0"]["enabled"] is False
+        # reviewer="user"이므로 permission_request는 수리하지 않는다 (잔존 경고만)
+        assert any(a.kind == "warn" for a in actions)
+
+    def test_subagent_blocks_created_when_missing(self, fake_home: Path) -> None:
+        # 엔트리 자체가 없는 홈 (orca 관리 홈 재생성 직후 형태) → 블록 생성
+        managed = (fake_home / "Library" / "Application Support" / "orca"
+                   / "codex-accounts" / "abc-123" / "home")
+        config = managed / "config.toml"
+        key = f"{managed}/hooks.json:permission_request:0:0"
+        config.write_text(
+            'approvals_reviewer = "guardian_subagent"\n'
+            "notify = []\n\n"
+            f'[hooks.state."{key}"]\n'
+            "enabled = false\n"
+        )
+        target = CodexTarget(config=config, hooks_json=managed / "hooks.json")
+        actions = guard_codex_target(target)
+        assert any(a.kind == "repair" and "subagent" in a.message for a in actions)
+        state = tomllib.loads(config.read_text())["hooks"]["state"]
+        assert state[f"{managed}/hooks.json:subagent_start:0:0"]["enabled"] is False
+        assert state[f"{managed}/hooks.json:subagent_stop:0:0"]["enabled"] is False
+
+    def test_hooks_json_without_subagent_events_vacuously_clean(
+        self, fake_home: Path
+    ) -> None:
+        # Subagent 이벤트가 없는 hooks.json → #6 공허 충족 (수리·경고 없음)
+        managed = (fake_home / "Library" / "Application Support" / "orca"
+                   / "codex-runtime-home" / "home")
+        (managed / "hooks.json").write_text(json.dumps({
+            "hooks": {"PermissionRequest": [{"hooks": [_HOOK]}]}
+        }))
+        config = managed / "config.toml"
+        key = f"{managed}/hooks.json:permission_request:0:0"
+        config.write_text(
+            'approvals_reviewer = "guardian_subagent"\n'
+            "notify = []\n\n"
+            f'[hooks.state."{key}"]\n'
+            "enabled = false\n"
+        )
+        target = CodexTarget(config=config, hooks_json=managed / "hooks.json")
+        assert guard_codex_target(target) == []
+
+    def test_user_home_hooks_json_gets_full_repair(self, fake_home: Path) -> None:
+        # v6 핵심 시나리오: user 홈이 실행 홈 — trusted_hash만 있고 enabled 없음
+        user = fake_home / ".codex"
+        config = user / "config.toml"
+        blocks = "".join(
+            f'[hooks.state."{user}/hooks.json:{event}:0:0"]\n'
+            f'trusted_hash = "sha256:e460"\n\n'
+            for event in ("permission_request", "subagent_start", "subagent_stop")
+        )
+        config.write_text(
+            'approvals_reviewer = "guardian_subagent"\n'
+            "notify = []\n\n" + blocks
+        )
+        out = io.StringIO()
+        actions = run_notification_guard(home=fake_home, stream=out)
+        repairs = [a for a in actions if a.kind == "repair" and a.path == config]
+        assert repairs, "user config가 수리 대상이어야 한다"
+        state = tomllib.loads(config.read_text())["hooks"]["state"]
+        for event in ("permission_request", "subagent_start", "subagent_stop"):
+            assert state[f"{user}/hooks.json:{event}:0:0"]["enabled"] is False, event
+            assert state[f"{user}/hooks.json:{event}:0:0"]["trusted_hash"] == "sha256:e460"
 
     def test_corrupt_hooks_json_warns_but_keeps_other_repairs(self, fake_home: Path) -> None:
         managed = (fake_home / "Library" / "Application Support" / "orca"

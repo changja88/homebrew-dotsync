@@ -1,7 +1,9 @@
 # Notification Guard 설계 명세
 
 > 상태: 승인 대기 (적대 리뷰 1회 반영, v2) · 작성 2026-07-23 ·
-> 2026-07-24 요구사항 확정 개정(v5): #2 폐기, #3 부재 시 공허 충족, #5 재정의
+> 2026-07-24 요구사항 확정 개정(v5): #2 폐기, #3 부재 시 공허 충족, #5 재정의 ·
+> 2026-07-24 v6: 요구 3 "구조적 보장" 반증 — 불변식 #6(subagent 훅 비활성) 추가,
+> #3·#6을 user 홈(`~/.codex`)까지 확장 (orca 07-23 업데이트로 전제 2개 붕괴)
 
 ## 요구사항 (2026-07-24 사용자 확정)
 
@@ -20,11 +22,19 @@
 - 요구 1·2의 Orca 쪽 스위치: `enabled=true` + `agentTaskComplete=true` +
   `suppressWhenFocused=false`. 불변식 #5가 경고로 감시한다(수리 불가 —
   실행 중 Orca가 외부 수정을 되돌림, 07-22 실측).
-- 요구 3은 구조적으로 보장된다: Orca는 **메인 pane이 working→idle로 전이할
-  때만** 알림을 발화하고(onorca.dev/docs/notifications + last-status.json
-  실측), SubagentStop 이벤트는 pane 상태를 바꾸지 않는다. 네이티브 우회
-  경로도 닫혀 있다 — claude 자체 채널은 #4(`notifications_disabled`)가,
-  codex 외부 notify 프로그램은 #1(`notify = []`)이 차단한다.
+- ~~요구 3은 구조적으로 보장된다~~ **(v6 반증, 2026-07-24 app.asar 실측)**:
+  Orca가 "메인 pane working→idle 전이 시에만 발화"하는 것 자체는 사실이지만,
+  codex의 `SubagentStop` 이벤트가 그 전이를 **만들 수 있다**. Orca의 codex
+  상태 머신(`normalizeCodexEvent`)은 lead `Stop`에서 subagent roster를 통째로
+  삭제하고 done을 발화하는데, 그 뒤 늦게 도착한 서브에이전트 이벤트(payload에
+  `agent_id` 포함 — 훅 POST는 개별 curl이라 순서 보장 없음, 배경 subagent도
+  turn 경계를 넘음)가 roster를 되살려 pane을 다시 working으로 만들고, 마지막
+  `SubagentStop`이 roster를 비우는 순간 working→done 전이가 재발생 →
+  `observeHookStatus`가 새 `stateStartedAt`으로 알림을 발화한다(서브에이전트
+  완료 알림). 따라서 요구 3은 구조 의존이 아니라 **불변식 #6**(subagent 훅
+  비활성)으로 보장한다. 네이티브 우회 경로는 기존대로 닫혀 있다 — claude
+  자체 채널은 #4(`notifications_disabled`)가, codex 외부 notify 프로그램은
+  #1(`notify = []`)이 차단한다.
 
 ## 배경과 목적
 
@@ -60,11 +70,19 @@ interactive tty + 인자 allowlist(무인자, `resume`/`fork`/`-c`/`--continue`/
   allowlist 밖 인자를 가진 호출. 이 경로들은 가드 없이 실행되므로 드리프트
   창이 남는다. shim의 관리 판정 **이전**(모든 셸 호출)으로 가드를 옮기는
   대안은 비대화식 스크립트 루프마다 python 기동 비용을 물리므로 기각.
+- **커버 안 됨 (2026-07-24 실측 추가)**: orca **worktree 패널**은
+  `bash -lc 'deadline=…; … exec codex'` 형태(setup 대기 루프 + bash 로그인
+  셸)로 에이전트를 실행해 zsh shim을 타지 않는다. 즉 "orca 패널은 shim을
+  통과한다"는 v2의 전제는 일반 터미널 패널에만 성립한다. 가드는 사용자가
+  직접 치는 interactive launch에서 실행될 때마다 전체 config를 수렴시키는
+  방식으로 이 구멍을 보완한다(수리 대상 발견은 launch 경로와 무관).
 - **전제의 취약성**: orca가 pty/셸 구성(login zsh, ZDOTDIR 래퍼)이나 실행
   인자 형태를 바꾸면 커버리지가 통째로 사라질 수 있다. 롤아웃 절의 스모크
   검증으로 실제 동작을 확인하고, 재발 시 이 전제부터 의심한다.
+  (실제로 07-23 orca 업데이트가 이 방식으로 전제 2개를 무너뜨렸다 — 위
+  worktree 패널 실측과, 아래 "user 홈" 절.)
 
-## 불변식 (4종 유효 · #2는 폐기)
+## 불변식 (5종 유효 · #2는 폐기)
 
 | # | 파일 | 원하는 형태 | 드리프트 시 |
 |---|---|---|---|
@@ -73,30 +91,49 @@ interactive tty + 인자 allowlist(무인자, `resume`/`fork`/`-c`/`--continue`/
 | 3 | codex config들의 `[hooks.state."<홈>/hooks.json:permission_request:<g>:<h>"]` | `enabled = false` | 수리 (줄 삽입, 엔트리 없으면 생성) |
 | 4 | `~/.claude/settings.json`의 `preferredNotifChannel` | `"notifications_disabled"` | 수리 |
 | 5 | orca-data.json의 `notifications.enabled` / `agentTaskComplete` / `suppressWhenFocused` | `true` / `true` / `false` | **경고만** (수리 안 함). `terminalBell`은 점검 대상 아님 |
+| 6 | codex config들의 `[hooks.state."<홈>/hooks.json:subagent_start:<g>:<h>"]`와 `…:subagent_stop:<g>:<h>` | `enabled = false` (**무조건** — `approvals_reviewer` 무관) | 수리 (줄 삽입, 엔트리 없으면 생성) |
+
+불변식 #6이 요구 3의 실질 보장 장치다(요구사항 절의 v6 반증 참조).
+SubagentStart/SubagentStop이 Orca에 도달하지 않으면 subagent roster의
+부활→소진이 만드는 두 번째 working→done 전이 자체가 불가능해진다. 부작용:
+Orca 사이드바의 서브에이전트 활동 표시가 사라지고, `agent_id`가 딸린 도구
+훅 이벤트(pre/post_tool_use는 lead 상태 추적에 필요해 살려둠)가 lead Stop
+이후 pane을 일시적으로 working으로 되살릴 수 있으나, `SubagentStop`이 없으면
+done 전이가 뒤따르지 않으므로 **알림은 발생하지 않고** 다음 turn의 lead
+Stop(roster 전체 삭제)에서 자연 수렴한다.
 
 ### codex config 파일 발견 (동적)
 
 하드코딩된 계정 ID 없이 glob으로 발견한다. 존재하는 것만 대상으로 한다.
 
-- `~/.codex/config.toml` — 불변식 #1만 적용
-- `~/Library/Application Support/orca/codex-accounts/*/home/config.toml` — #1, #3
-- `~/Library/Application Support/orca/codex-runtime-home/home/config.toml` — #1, #3
+- `~/.codex/config.toml` — #1, #3, #6 (hooks.json은 `~/.codex/hooks.json`)
+- `~/Library/Application Support/orca/codex-accounts/*/home/config.toml` — #1, #3, #6
+- `~/Library/Application Support/orca/codex-runtime-home/home/config.toml` — #1, #3, #6
 
-불변식 #3의 키는 각 관리 홈의 hooks.json을 **파싱해서 도출**한다:
-`PermissionRequest` 이벤트의 실제 (group, handler) 인덱스로
-`<홈>/hooks.json:permission_request:<g>:<h>` 키를 만든다 (인덱스 하드코딩
-금지 — orca가 핸들러를 추가/재배열하면 `:0:0`이 stale해진다). **hooks.json이
-없으면 그 홈의 #3은 공허 충족으로 조용히 건너뛴다** (2026-07-24 개정) —
-훅 파일이 없다 = PermissionRequest 훅이 0개 = 가짜 "needs input" 알림의
-원인이 없다. 로그인 잔재 홈(orca가 브라우저 로그인 시 만드는
+**user 홈 포함 근거 (v6 개정)**: 07-23 orca 업데이트 후 orca 패널의 codex는
+`CODEX_HOME` 주입 없이 **user 홈으로 실행**되고(실행 중 프로세스 env +
+`~/.codex/sessions` rollout 실측), orca가 `~/.codex/hooks.json`을 설치했다.
+즉 v5의 "user 홈에 hooks.json 없음" 전제가 깨졌고, 현재 실제로 발화하는
+훅은 user 홈의 것이다. orca 재미러링이 user config의 hooks.state를 제거하는
+동작(배경 3)은 여전하므로 이 엔트리는 지워질 수 있다 — 가드가 launch마다
+재수리해 수렴시킨다(그게 가드의 존재 이유다).
+
+불변식 #3·#6의 키는 각 홈의 hooks.json을 **파싱해서 도출**한다:
+해당 이벤트(`PermissionRequest`/`SubagentStart`/`SubagentStop`)의 실제
+(group, handler) 인덱스로 `<홈>/hooks.json:<snake_case 이벤트>:<g>:<h>` 키를
+만든다 (인덱스 하드코딩 금지 — orca가 핸들러를 추가/재배열하면 `:0:0`이
+stale해진다). **hooks.json이 없으면 그 홈의 #3·#6은 공허 충족으로 조용히
+건너뛴다** (2026-07-24 개정) — 훅 파일이 없다 = 해당 훅이 0개 = 알림 원인이
+없다. 로그인 잔재 홈(orca가 브라우저 로그인 시 만드는
 `codex-accounts/*/home`에 config.toml만 남는 경우)이 매 launch마다 고칠 수
 없는 경고를 반복하던 문제의 해소. 파싱 불가면(파일이 있는데 깨짐) 실제
-이상이므로 경고 행을 남기고 건너뛴다.
+이상이므로 경고 행을 남기고 건너뛴다. hooks.json에 해당 이벤트가 없으면
+그 이벤트의 불변식도 공허 충족이다.
 
-user config에는 #3을 적용하지 않는다 — `~/.codex/hooks.json`은 존재하지
-않고, orca 재미러링은 user config의 hooks.state를 어차피 제거한다(배경 3).
-**관리 홈 재생성 직후 첫 launch 동안은 훅이 살아 있는 창이 존재한다** — 그
-다음 launch에서 glob이 새 홈을 발견해 수리하는 것이 이 설계의 한계다.
+~~user config에는 #3을 적용하지 않는다~~ (v6 폐기 — 위 "user 홈 포함 근거"
+참조). **관리 홈 재생성 직후 첫 launch 동안은 훅이 살아 있는 창이
+존재한다** — 그 다음 launch에서 glob이 새 홈을 발견해 수리하는 것이 이
+설계의 한계다.
 
 불변식 #5의 파일은 `~/Library/Application Support/orca/profiles/*/orca-data.json`
 glob으로 발견한다.
@@ -108,6 +145,10 @@ glob으로 발견한다.
   실제로 사용자에게 오는 구성에서는 PermissionRequest 훅이 진짜 "입력 필요"
   신호다. 이때 기존 `enabled = false`가 남아 있으면 경고 행으로만 알린다
   (자동 삭제 금지 — 사용자가 직접 지운다).
+- **#6은 무조건 적용한다** — 요구 3이 "어떤 경우에도 알림 금지"이므로
+  `approvals_reviewer` 값과 무관하다. 서브에이전트의 진짜 "입력 필요"
+  신호는 subagent 훅이 아니라 `agent_id`가 딸린 PreToolUse(AskUserQuestion)
+  → waiting 전이로 전달되므로 #6이 요구 1을 해치지 않는다.
 - **#5는 절대 파일을 수정하지 않는다.** orca-data.json은 실행 중인 Orca가
   메모리 상태로 덮어쓰므로 외부 수정이 유실된다(07-22 실측). 어긋나 있으면
   Orca 설정 UI에서 바꾸라는 경고 행만 출력한다.
@@ -215,6 +256,11 @@ tmp_path에 가짜 홈 구조를 만드는 픽스처를 둔다. **가짜 orca �
    건너뛰고 경고
 8. `approvals_reviewer = "user"`인 config → #3 수리 안 함; 기존
    `enabled = false` 잔존 시 경고만
+8b. (#6) subagent_start/subagent_stop 블록에서 `enabled = false` 누락 →
+    재삽입/생성; `approvals_reviewer = "user"`여도 수리(무조건 적용);
+    hooks.json에 Subagent 이벤트가 없으면 공허 충족
+8c. user 홈(`~/.codex`)에 hooks.json 존재 → #3·#6이 user config에도 적용;
+    부재 → 공허 충족 (기존 user 홈 동작 유지)
 9. claude `preferredNotifChannel` 드리프트 → 수리 (`ensure_ascii=False`
    왕복 확인)
 10. orca 토글 어긋남(master `enabled=false` / `agentTaskComplete=false` /
