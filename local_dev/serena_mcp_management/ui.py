@@ -84,20 +84,22 @@ _HEADER_ART: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# charmbracelet/huh dark theme (ThemeCharm). Truecolor escapes pinned to
-# the exact hex values from huh/theme.go so the accents match the screenshots
-# in the huh README rather than 256-colour approximations.
-PINK = "38;2;247;128;226"  # #F780E2, huh fuchsia (cursor / button accent)
-PURPLE = "38;2;117;113;249"  # #7571F9, huh indigo (title / focused tone)
-MINT = "38;2;2;191;135"  # #02BF87, huh selected-option green (legible label)
-YELLOW = "33"
+# Light-terminal palette. The hues are charmbracelet/huh's ThemeCharm accents
+# (fuchsia #F780E2, indigo #7571F9, green #02BF87), but huh tunes those for a
+# dark background: on white they fall to 2.3-3.8:1 and the banner washes out.
+# Each accent below keeps its hue and saturation and is darkened only until it
+# clears WCAG AA (4.5:1) against white. Verified by tests/test_ui_style.py.
+PINK = "38;2;216;14;181"  # #D80EB5, 4.52:1 on white (cursor / button accent)
+PURPLE = "38;2;102;97;248"  # #6661F8, 4.54:1 on white (title / focused tone)
+MINT = "38;2;1;135;96"  # #018760, 4.53:1 on white (legible label)
+YELLOW = "33"  # ANSI yellow — follows the terminal palette, not truecolor
 
 # RGB endpoints for the cell-by-cell title gradient. Mid is the perceptual
-# midpoint between huh fuchsia and indigo, used so the gradient never crosses
-# through gray.
-_PINK_RGB = (247, 128, 226)
-_MID_RGB = (192, 105, 240)
-_PURPLE_RGB = (117, 113, 249)
+# midpoint between the pink and purple accents, used so the gradient never
+# crosses through gray. Same light-background contrast floor applies.
+_PINK_RGB = (216, 14, 181)
+_MID_RGB = (173, 61, 236)
+_PURPLE_RGB = (102, 97, 248)
 
 # Length of one full pink → mid → purple → mid → pink cycle, in cells. Picked
 # slightly larger than the widest banner (~50 cells) so a single line shows

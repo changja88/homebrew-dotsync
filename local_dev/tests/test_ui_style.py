@@ -4,6 +4,9 @@ from local_dev.serena_mcp_management.ui import (
     MINT,
     PINK,
     PURPLE,
+    _MID_RGB,
+    _PINK_RGB,
+    _PURPLE_RGB,
     style_count,
     style_memory_tree,
     style_session_tree,
@@ -17,12 +20,54 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_ESCAPE_RE.sub("", text)
 
 
-def test_palette_uses_huh_truecolor_hexes():
-    # huh/theme.go ThemeCharm dark: indigo #7571F9, fuchsia #F780E2,
-    # selected-option green #02BF87.
-    assert PINK == "38;2;247;128;226"
-    assert PURPLE == "38;2;117;113;249"
-    assert MINT == "38;2;2;191;135"
+def _rgb_from_ansi(code: str) -> tuple[int, int, int]:
+    """Parse ``38;2;R;G;B`` into an RGB triple."""
+    _, _, r, g, b = code.split(";")
+    return int(r), int(g), int(b)
+
+
+def _relative_luminance(rgb: tuple[int, int, int]) -> float:
+    """WCAG 2.x relative luminance."""
+
+    def channel(value: int) -> float:
+        c = value / 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (channel(v) for v in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _contrast_on_white(rgb: tuple[int, int, int]) -> float:
+    return 1.05 / (_relative_luminance(rgb) + 0.05)
+
+
+# WCAG AA for body text. The launcher renders these accents as small labels,
+# not just large banner art, so the stricter threshold is the right one.
+_MIN_CONTRAST = 4.5
+
+
+def test_palette_uses_light_theme_truecolor_hexes():
+    # Hues carried over from huh/theme.go ThemeCharm, darkened until each one
+    # clears WCAG AA on a white terminal background.
+    assert PINK == "38;2;216;14;181"
+    assert PURPLE == "38;2;102;97;248"
+    assert MINT == "38;2;1;135;96"
+
+
+def test_palette_accents_are_legible_on_light_background():
+    for name, code in (("PINK", PINK), ("PURPLE", PURPLE), ("MINT", MINT)):
+        ratio = _contrast_on_white(_rgb_from_ansi(code))
+        assert ratio >= _MIN_CONTRAST, f"{name} contrast {ratio:.2f}:1 on white"
+
+
+def test_banner_gradient_endpoints_are_legible_on_light_background():
+    for name, rgb in (
+        ("_PINK_RGB", _PINK_RGB),
+        ("_MID_RGB", _MID_RGB),
+        ("_PURPLE_RGB", _PURPLE_RGB),
+    ):
+        ratio = _contrast_on_white(rgb)
+        assert ratio >= _MIN_CONTRAST, f"{name} contrast {ratio:.2f}:1 on white"
 
 
 def test_style_count_colors_digits_pink():
