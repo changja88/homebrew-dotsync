@@ -375,24 +375,29 @@ def test_render_box_uses_double_gradient_border():
         assert line.startswith("  " + f"\x1b[1;{PURPLE}m")
 
 
-def test_render_box_shifts_banner_gradient_per_row():
-    """Art rows advance the gradient phase, producing a diagonal sweep: the
-    same column shows different colors on different rows."""
+def test_render_box_banner_gradient_sweeps_across_columns():
+    """Glyph colors sweep horizontally without vertical striping: on one
+    glyph row the stops span from the pink end to the purple end of the
+    gradient. Glyph hues are the only bright foregrounds on the band —
+    stars and nebula tints stay below the channel ceiling."""
     model = BoxModel(phase="preflight", title="codex", items=[])
     text = render_box(model)
     art_lines = [line for line in text.split("\n") if "\x1b[48;2;" in line]
-    assert len(art_lines) >= 5
+    assert len(art_lines) == 9
 
-    # Glyph gradient hues are the only bright foregrounds on the band —
-    # stars and shadow pixels stay well below this channel ceiling.
-    first_stop = re.compile(r"\x1b\[38;2;(\d+);(\d+);(\d+)m")
-    leading_colors = []
-    for line in art_lines:
-        for match in first_stop.finditer(line):
-            if max(int(c) for c in match.groups()) >= 200:
-                leading_colors.append(match.group(0))
-                break
-    assert len(set(leading_colors)) >= 4
+    # Uniform glyph cells render as background-painted spaces, so glyph
+    # colors appear in both foreground and background escapes.
+    stop = re.compile(r"\x1b\[[34]8;2;(\d+);(\d+);(\d+)m")
+    mid_row = art_lines[4]
+    bright = [
+        tuple(int(c) for c in match.groups())
+        for match in stop.finditer(mid_row)
+        if max(int(c) for c in match.groups()) >= 200
+    ]
+    assert len(set(bright)) >= 4
+    first, last = bright[0], bright[-1]
+    assert first[0] > first[2]  # pink end: red dominates blue
+    assert last[2] > last[0]  # purple end: blue dominates red
 
 
 def test_render_box_banner_draws_textured_hero_band():
@@ -404,9 +409,12 @@ def test_render_box_banner_draws_textured_hero_band():
     art_lines = [line for line in text.split("\n") if "\x1b[48;2;" in line]
     # 2 pad + 12 glyph + 2 shadow + 2 pad pixel rows = 9 terminal rows.
     assert len(art_lines) == 9
-    # The band itself sweeps through several tints on a single padding row.
+    # The band itself sweeps through several tints on a single padding row,
+    # and the nebula falloff makes top and bottom padding rows differ too.
     top_tints = set(re.findall(r"\x1b\[48;2;\d+;\d+;\d+m", art_lines[0]))
+    bottom_tints = set(re.findall(r"\x1b\[48;2;\d+;\d+;\d+m", art_lines[-1]))
     assert len(top_tints) >= 3
+    assert top_tints != bottom_tints
     # Sparse stars sparkle somewhere on the band.
     dim = "38;2;{};{};{}".format(*_STAR_DIM_RGB)
     bright = "38;2;{};{};{}".format(*_STAR_BRIGHT_RGB)

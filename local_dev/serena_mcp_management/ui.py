@@ -64,14 +64,13 @@ SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇",
 _BOX_WIDTH = 60
 
 # 8x12 pixel letterforms ("#" = lit) for the client banners, rendered two
-# pixel rows per terminal row with half blocks. Clean geometric shapes:
-# a uniform 2-pixel stroke and stepped corner rounding, no serif flares.
-# Solid pixel mass keeps the banner readable on a light background where the
-# old shadow-line block font (██╗ …) fell apart into thin outlines.
+# pixel rows per terminal row with half blocks. Minimal square shapes: a
+# uniform 2-pixel stroke, at most a single corner pixel softened — no serif
+# flares and no multi-step rounding, so the wordmark stays calm and clean.
 _BANNER_GLYPHS: dict[str, tuple[str, ...]] = {
     "A": (
-        "..####..",
         ".######.",
+        "########",
         "##....##",
         "##....##",
         "##....##",
@@ -84,8 +83,8 @@ _BANNER_GLYPHS: dict[str, tuple[str, ...]] = {
         "##....##",
     ),
     "C": (
-        "..######",
         ".#######",
+        "########",
         "##......",
         "##......",
         "##......",
@@ -94,12 +93,12 @@ _BANNER_GLYPHS: dict[str, tuple[str, ...]] = {
         "##......",
         "##......",
         "##......",
+        "########",
         ".#######",
-        "..######",
     ),
     "D": (
-        "######..",
         "#######.",
+        "########",
         "##....##",
         "##....##",
         "##....##",
@@ -108,8 +107,8 @@ _BANNER_GLYPHS: dict[str, tuple[str, ...]] = {
         "##....##",
         "##....##",
         "##....##",
+        "########",
         "#######.",
-        "######..",
     ),
     "E": (
         "########",
@@ -117,8 +116,8 @@ _BANNER_GLYPHS: dict[str, tuple[str, ...]] = {
         "##......",
         "##......",
         "##......",
-        "#######.",
-        "#######.",
+        "######..",
+        "######..",
         "##......",
         "##......",
         "##......",
@@ -140,8 +139,8 @@ _BANNER_GLYPHS: dict[str, tuple[str, ...]] = {
         "########",
     ),
     "O": (
-        "..####..",
         ".######.",
+        "########",
         "##....##",
         "##....##",
         "##....##",
@@ -150,8 +149,8 @@ _BANNER_GLYPHS: dict[str, tuple[str, ...]] = {
         "##....##",
         "##....##",
         "##....##",
+        "########",
         ".######.",
-        "..####..",
     ),
     "U": (
         "##....##",
@@ -164,8 +163,8 @@ _BANNER_GLYPHS: dict[str, tuple[str, ...]] = {
         "##....##",
         "##....##",
         "##....##",
+        "########",
         ".######.",
-        "..####..",
     ),
     "X": (
         "##....##",
@@ -191,8 +190,8 @@ _GLYPH_GAP = 1  # blank pixel columns between letters (tight, wordmark-style)
 # terminal instead of floating on bare white. Glyphs cast a darker flat drop
 # shadow down-right onto the band, and use the original bright huh hues —
 # the AA-darkened accents are for white, these sit on the dark band.
-_BANNER_BG_RGB = (27, 24, 48)  # #1B1830
-_BANNER_SHADOW_RGB = (13, 11, 26)  # #0D0B1A
+_BANNER_BG_RGB = (10, 12, 30)  # #0A0C1E — deep-space base
+_BANNER_SHADOW_RGB = (4, 5, 14)  # #04050E
 _BANNER_PINK_RGB = (247, 128, 226)  # #F780E2
 _BANNER_MID_RGB = (192, 105, 240)  # #C069F0
 _BANNER_PURPLE_RGB = (117, 113, 249)  # #7571F9
@@ -200,18 +199,29 @@ _BAND_PAD_ROWS = 2  # pixel rows of band above the glyphs / below the shadow
 _SHADOW_DROP_ROWS = 2  # pixel rows the drop shadow falls below the glyphs
 _SHADOW_DROP_COLS = 1  # cells the drop shadow falls to the right
 
-# Band texture. A flat fill reads as monotonous, so the band soaks up a
-# fraction of the glyph gradient (a diagonal tint sweep at terminal-row
-# granularity — both pixel halves of a cell match, keeping band cells cheap
-# spaces) and carries a sparse deterministic starfield at pixel granularity.
-_BAND_TINT = 0.16
-_STAR_DIM_RGB = (96, 88, 148)  # #605894 — faint half-pixel sparkle
-_STAR_BRIGHT_RGB = (156, 146, 208)  # #9C92D0 — rare brighter sparkle
+# Band texture: deep space. Two soft nebula glows (pink upper-left, violet
+# lower-right) fade quadratically into the base — computed at terminal-row
+# granularity so both pixel halves of a band cell match and stay cheap
+# spaces — plus a sparse deterministic starfield at pixel granularity.
+# Nebula centers/radii are in (cell, terminal-row) units of the 60x9 band.
+_NEBULA_STRENGTH = 0.28
+_NEBULA_GLOWS = (
+    # (center_col, center_row, radius_cols, radius_rows, color)
+    (13, 1, 26, 6, _BANNER_PINK_RGB),
+    (49, 8, 24, 6, _BANNER_PURPLE_RGB),
+)
+_STAR_DIM_RGB = (58, 54, 88)  # #3A3658 — faint half-pixel sparkle
+_STAR_BRIGHT_RGB = (124, 120, 172)  # #7C78AC — rare brighter sparkle
 
 
 def _band_color(col: int, term_row: int) -> tuple[int, int, int]:
-    accent = _banner_gradient_color(col + term_row * 2 * _HALF_ROW_DRIFT)
-    return _lerp_rgb(_BANNER_BG_RGB, accent, _BAND_TINT)
+    color = _BANNER_BG_RGB
+    for center_col, center_row, radius_cols, radius_rows, glow in _NEBULA_GLOWS:
+        dx = (col - center_col) / radius_cols
+        dy = (term_row - center_row) / radius_rows
+        falloff = max(0.0, 1.0 - (dx * dx + dy * dy))
+        color = _lerp_rgb(color, glow, falloff * _NEBULA_STRENGTH)
+    return color
 
 
 def _star_at(col: int, row: int) -> tuple[int, int, int] | None:
@@ -223,9 +233,9 @@ def _star_at(col: int, row: int) -> tuple[int, int, int] | None:
     h = (col * 73856093) ^ (row * 19349663)
     h = ((h ^ (h >> 13)) * 1274126177) & 0xFFFFFFFF
     h ^= h >> 16
-    if h % 211 == 7:
+    if h % 241 == 7:
         return _STAR_BRIGHT_RGB
-    if h % 79 == 0:
+    if h % 61 == 0:
         return _STAR_DIM_RGB
     return None
 
@@ -254,11 +264,6 @@ _PURPLE_RGB = (102, 97, 248)
 # roughly one and a quarter cycles.
 _GRADIENT_PERIOD = 80
 
-# Gradient phase added per banner pixel row (half a terminal row). Each pixel
-# row starts a little further into the cycle, turning the horizontal sweep
-# into a diagonal one. The cycle is seamless (pink → purple → pink), so the
-# widest banner simply sweeps through roughly one full cycle corner to corner.
-_HALF_ROW_DRIFT = 2
 
 
 def _ansi(code: str, text: str) -> str:
@@ -492,6 +497,10 @@ def _banner_pixels(
     height, width = len(bitmap), len(bitmap[0])
     total_h = height + _SHADOW_DROP_ROWS + 2 * _BAND_PAD_ROWS
     left = max(0, (band_width - width - _SHADOW_DROP_COLS) // 2)
+    # Column-only gradient, scaled so the word spans exactly the pink →
+    # purple half of the cycle — a smooth horizontal sweep with no vertical
+    # striping inside the strokes.
+    half_cycle = _GRADIENT_PERIOD // 2
 
     def lit(glyph_row: int, glyph_col: int) -> bool:
         return (
@@ -509,7 +518,7 @@ def _banner_pixels(
             if lit(glyph_row, glyph_col):
                 line.append(
                     _banner_gradient_color(
-                        glyph_col + glyph_row * _HALF_ROW_DRIFT
+                        glyph_col * half_cycle // (width - 1)
                     )
                 )
             elif lit(
