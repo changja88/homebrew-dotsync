@@ -1029,7 +1029,7 @@ def test_v2_preflight_does_not_redraw_box_after_install(monkeypatch):
     실제 사용자 보고된 증상: 한 세션에서 박스가 두 번 그려졌다.
 
     이 테스트는 _run_preflight_v2가 BoxRenderer를 안 쓰고 inline 출력만 한다는 걸
-    배너 art (██████)와 박스 테두리 (── 60자)가 안 나타나는 것으로 검증한다.
+    배너 art (▀▄ 픽셀 폰트)와 박스 테두리 (── 60자)가 안 나타나는 것으로 검증한다.
     """
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
@@ -1047,9 +1047,9 @@ def test_v2_preflight_does_not_redraw_box_after_install(monkeypatch):
         install_graphify_hooks=lambda project_root: 0,
     )
     text = _strip_ansi(out.getvalue())
-    # No banner art (claude block font) should appear — that only belongs to
+    # No banner art (claude pixel font) should appear — that only belongs to
     # the box rendered upstream by _render_preflight_overview_v2.
-    assert "██████" not in text, (
+    assert "▀" not in text and "▄" not in text, (
         "preflight must surface install results inline, not by redrawing "
         "the entire box (which flashes the banner art again)"
     )
@@ -1213,7 +1213,7 @@ def test_v2_launch_prep_claude_arms_native_cleanup_without_deleting_memory(
     assert "native retention 5d . 5 eligible" in _strip_ansi(out.getvalue())
     assert "sessions" in _strip_ansi(out.getvalue())
     assert "cleanup" not in _strip_ansi(out.getvalue())
-    assert f"\x1b[{launcher.YELLOW}m" in out.getvalue()
+    assert f"\x1b[{launcher.AMBER}m" in out.getvalue()
     assert memory.read_text() == "keep"
 
 
@@ -1249,7 +1249,7 @@ def test_v2_launch_prep_codex_uses_snapshot_and_official_cleanup(monkeypatch):
     assert "sessions" in _strip_ansi(out.getvalue())
     assert "cleanup" not in _strip_ansi(out.getvalue())
     assert "memory" not in _strip_ansi(out.getvalue())
-    assert f"\x1b[{launcher.YELLOW}m" in out.getvalue()
+    assert f"\x1b[{launcher.AMBER}m" in out.getvalue()
 
 
 def test_v2_launch_prep_scan_failure_skips_cleanup(monkeypatch):
@@ -1323,7 +1323,7 @@ def test_v2_render_summary_box_includes_duration_and_full_session_cleanup():
     assert "2m 5s" in _strip_ansi(text) or "125" in _strip_ansi(text)
     assert "2 sessions deleted · 1 running preserved" in _strip_ansi(text)
     assert "sessions" in _strip_ansi(text)
-    assert f"\x1b[{launcher.YELLOW}m" in text
+    assert f"\x1b[{launcher.AMBER}m" in text
     assert "memory" not in _strip_ansi(text)
     assert "stopped" in text
 
@@ -1544,7 +1544,7 @@ def test_cleanup_choices_are_product_scoped_and_default_to_keep(monkeypatch):
         session_out.getvalue()
     )
     assert f"\x1b[{launcher.PURPLE}m" in memory_out.getvalue()
-    assert f"\x1b[{launcher.YELLOW}m" in session_out.getvalue()
+    assert f"\x1b[{launcher.AMBER}m" in session_out.getvalue()
 
 
 def test_cleanup_choices_use_claude_product_scope(monkeypatch):

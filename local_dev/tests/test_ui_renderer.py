@@ -2,17 +2,22 @@ import io
 import re
 
 from local_dev.serena_mcp_management.ui import (
+    AMBER,
     BoxModel,
     BoxRenderer,
     Item,
     PINK,
     PURPLE,
-    YELLOW,
+    _BANNER_SHADOW_RGB,
+    _STAR_BRIGHT_RGB,
+    _STAR_DIM_RGB,
     render_box,
     render_inline_row,
     style_action_value,
     style_mcp_inventory,
 )
+
+_SHADOW_CODE = "48;2;{};{};{}".format(*_BANNER_SHADOW_RGB)
 
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -26,9 +31,11 @@ def test_render_box_includes_title_art_and_phase_label():
     model = BoxModel(phase="preflight", title="codex", items=[])
     text = render_box(model)
     plain = _strip_ansi(text)
-    # Known clients render as a block ASCII banner instead of plain text title.
-    assert "██████╗" in plain
-    assert "╚═════╝" in plain
+    # Known clients render as a half-block pixel banner: solid color mass
+    # with two pixel rows per terminal row. The old shadow-line block font
+    # (██╗ …) read as hollow outlines on a light background.
+    assert "▀" in plain
+    assert "╗" not in plain
     assert "preflight" in plain
 
 
@@ -144,10 +151,10 @@ def test_render_inline_row_colors_session_start_with_requested_accent():
         "sessions",
         "deleting inactive sessions",
         status="spin",
-        accent=YELLOW,
+        accent=AMBER,
     )
 
-    assert f"\x1b[{YELLOW}m" in rendered
+    assert f"\x1b[{AMBER}m" in rendered
     assert _strip_ansi(rendered) == (
         "  ⠋ sessions    deleting inactive sessions\n"
     )
@@ -159,7 +166,7 @@ def test_render_inline_row_uses_requested_spinner_frame():
             "sessions",
             "deleting inactive sessions",
             status="spin",
-            accent=YELLOW,
+            accent=AMBER,
             spin_frame=0,
         )
     )
@@ -168,7 +175,7 @@ def test_render_inline_row_uses_requested_spinner_frame():
             "sessions",
             "deleting inactive sessions",
             status="spin",
-            accent=YELLOW,
+            accent=AMBER,
             spin_frame=1,
         )
     )
@@ -178,8 +185,8 @@ def test_render_inline_row_uses_requested_spinner_frame():
 
 
 def test_style_action_value_wraps_complete_value_in_accent():
-    assert style_action_value("8 sessions deleted", accent=YELLOW) == (
-        f"\x1b[{YELLOW}m8 sessions deleted\x1b[0m"
+    assert style_action_value("8 sessions deleted", accent=AMBER) == (
+        f"\x1b[{AMBER}m8 sessions deleted\x1b[0m"
     )
 
 
@@ -209,7 +216,7 @@ def test_style_mcp_inventory_highlights_orphan_and_stale_when_nonzero():
         stale_leases=1,
     )
 
-    assert "\x1b[33m" in text
+    assert f"\x1b[{AMBER}m" in text
     assert "orphan" in text
     assert "stale" in text
 
@@ -266,11 +273,10 @@ def test_box_renderer_first_draw_writes_text_only():
     model = BoxModel(phase="preflight", title="codex", items=[])
     renderer.draw(model)
     output = stream.getvalue()
-    # codex art fingerprint sits inside the rendered box.
-    assert "██████╗" in _strip_ansi(output)
+    # codex pixel-banner fingerprint sits inside the rendered box.
+    assert "▀" in _strip_ansi(output)
     # no cursor movement (up/erase) before first frame; color codes ok
-    plain = _strip_ansi(output)
-    prefix = output[: output.find(plain[plain.find("██████╗"):plain.find("██████╗")+1])]
+    prefix = output[: output.find("▀")]
     assert "A\x1b[J" not in prefix  # cursor-up + erase sequence should not appear
 
 
@@ -327,29 +333,83 @@ def test_box_renderer_clear_resets_line_count_for_next_draw():
 # ----- Holographic Shimmer (concept 02) ---------------------------------------
 
 
-def test_render_box_claude_uses_ansi_shadow_block_font():
-    """claude is unified with codex on the ANSI Shadow block font."""
+def test_render_box_claude_uses_pixel_block_font():
+    """claude is unified with codex on the half-block pixel font."""
     model = BoxModel(phase="preflight", title="claude", items=[])
     plain = _strip_ansi(render_box(model))
-    assert "██████╗" in plain
-    assert "╚═════╝" in plain
+    assert "▀" in plain
+    assert "╗" not in plain
 
 
-def test_render_box_applies_horizontal_gradient_per_cell():
-    """Each art line is colored cell-by-cell, producing many distinct stops."""
+def test_render_box_applies_gradient_per_pixel():
+    """Banner cells are colored pixel-by-pixel: many distinct foreground
+    stops, plus background paint carrying the lower pixel of full cells."""
     model = BoxModel(phase="preflight", title="codex", items=[])
     text = render_box(model)
-    truecolor = re.findall(r"\x1b\[1;38;2;\d+;\d+;\d+m", text)
+    fg = re.findall(r"\x1b\[38;2;\d+;\d+;\d+m", text)
     # Plenty of distinct interpolated stops, not a single line-wide color.
-    assert len(set(truecolor)) >= 8
+    assert len(set(fg)) >= 8
+    assert re.search(r"\x1b\[48;2;\d+;\d+;\d+m", text)
 
 
-def test_render_box_uses_double_top_and_bottom_border():
-    """Top and bottom borders are doubled (pink line + purple line)."""
+def test_render_box_uses_double_gradient_border():
+    """Top/bottom borders are doubled gradient ribbons: a heavy outer line
+    starting at the pink endpoint plus a hairline echo starting at purple
+    (the outline-offset look, tuned for a light background)."""
     model = BoxModel(phase="preflight", title="codex", items=[])
     text = render_box(model)
     lines = text.split("\n")
-    assert "─" in _strip_ansi(lines[0])
-    assert "─" in _strip_ansi(lines[1])
-    assert f"\x1b[{PINK}m" in lines[0] or f"\x1b[1;{PINK}m" in lines[0]
-    assert f"\x1b[{PURPLE}m" in lines[1] or f"\x1b[1;{PURPLE}m" in lines[1]
+    top_outer, top_inner = lines[0], lines[1]
+    bottom_inner, bottom_outer = lines[-3], lines[-2]
+
+    truecolor = re.compile(r"\x1b\[1;38;2;\d+;\d+;\d+m")
+    for line in (top_outer, top_inner, bottom_inner, bottom_outer):
+        # A ribbon sweeps through many interpolated stops, not one flat color.
+        assert len(set(truecolor.findall(line))) >= 8
+
+    for line in (top_outer, bottom_outer):
+        assert "━" in _strip_ansi(line)
+        assert line.startswith("  " + f"\x1b[1;{PINK}m")
+    for line in (top_inner, bottom_inner):
+        assert "─" in _strip_ansi(line)
+        assert line.startswith("  " + f"\x1b[1;{PURPLE}m")
+
+
+def test_render_box_shifts_banner_gradient_per_row():
+    """Art rows advance the gradient phase, producing a diagonal sweep: the
+    same column shows different colors on different rows."""
+    model = BoxModel(phase="preflight", title="codex", items=[])
+    text = render_box(model)
+    art_lines = [line for line in text.split("\n") if "\x1b[48;2;" in line]
+    assert len(art_lines) >= 5
+
+    # Glyph gradient hues are the only bright foregrounds on the band —
+    # stars and shadow pixels stay well below this channel ceiling.
+    first_stop = re.compile(r"\x1b\[38;2;(\d+);(\d+);(\d+)m")
+    leading_colors = []
+    for line in art_lines:
+        for match in first_stop.finditer(line):
+            if max(int(c) for c in match.groups()) >= 200:
+                leading_colors.append(match.group(0))
+                break
+    assert len(set(leading_colors)) >= 4
+
+
+def test_render_box_banner_draws_textured_hero_band():
+    """The banner sits on a full-width dark hero band: not a flat fill but a
+    subtle tint gradient with sparse star pixels, plus the darker drop
+    shadow the glyphs cast down-right."""
+    model = BoxModel(phase="preflight", title="codex", items=[])
+    text = render_box(model)
+    art_lines = [line for line in text.split("\n") if "\x1b[48;2;" in line]
+    # 2 pad + 12 glyph + 2 shadow + 2 pad pixel rows = 9 terminal rows.
+    assert len(art_lines) == 9
+    # The band itself sweeps through several tints on a single padding row.
+    top_tints = set(re.findall(r"\x1b\[48;2;\d+;\d+;\d+m", art_lines[0]))
+    assert len(top_tints) >= 3
+    # Sparse stars sparkle somewhere on the band.
+    dim = "38;2;{};{};{}".format(*_STAR_DIM_RGB)
+    bright = "38;2;{};{};{}".format(*_STAR_BRIGHT_RGB)
+    assert any(dim in line or bright in line for line in art_lines)
+    # The drop shadow appears as its own darker color on the band.
+    assert any(_SHADOW_CODE in line for line in art_lines)

@@ -103,15 +103,15 @@ def test_select_option_line_mode_uses_explicit_session_accent():
             SelectOption("retention_5d", "No full deletion"),
             SelectOption("delete_inactive", "Delete all inactive sessions"),
         ),
-        accent=ui.YELLOW,
+        accent=ui.AMBER,
         stream=stream,
         input_fn=lambda: "",
     )
 
     assert result == "retention_5d"
     output = stream.getvalue()
-    assert f"\x1b[{ui.YELLOW}m>\x1b[0m" in output
-    assert f"\x1b[{ui.YELLOW}m1. No full deletion\x1b[0m" in output
+    assert f"\x1b[{ui.AMBER}m>\x1b[0m" in output
+    assert f"\x1b[{ui.AMBER}m1. No full deletion\x1b[0m" in output
 
 
 def test_select_option_honors_nonzero_default_index():
@@ -236,14 +236,14 @@ def test_select_option_arrow_uses_explicit_session_accent(monkeypatch):
         cursor=0,
         stream=stream,
         fd=7,
-        accent=ui.YELLOW,
+        accent=ui.AMBER,
     )
 
     assert selected == "retention_5d"
     assert stream.getvalue().endswith(
-        f"  \x1b[{ui.YELLOW}m?\x1b[0m "
+        f"  \x1b[{ui.AMBER}m?\x1b[0m "
         "Delete Codex sessions before launch? "
-        f"\x1b[{ui.YELLOW}mNo full deletion\x1b[0m\n"
+        f"\x1b[{ui.AMBER}mNo full deletion\x1b[0m\n"
     )
 
 

@@ -69,7 +69,7 @@ from local_dev.serena_mcp_management.ui import (
     MINT,
     PINK,
     PURPLE,
-    YELLOW,
+    AMBER,
     BoxModel,
     BoxRenderer,
     Item,
@@ -311,7 +311,7 @@ def _run_launch_prep_v2(
             "sessions",
             f"applying {client} 5-day retention",
             status="spin",
-            accent=YELLOW,
+            accent=AMBER,
         )
     )
     out.flush()
@@ -325,7 +325,7 @@ def _run_launch_prep_v2(
                 "sessions",
                 f"skipped · {detail}",
                 status="warn",
-                accent=YELLOW,
+                accent=AMBER,
             )
         )
         out.flush()
@@ -341,7 +341,7 @@ def _run_launch_prep_v2(
                 "sessions",
                 f"skipped · {detail}",
                 status="warn",
-                accent=YELLOW,
+                accent=AMBER,
             )
         )
         out.flush()
@@ -354,7 +354,7 @@ def _run_launch_prep_v2(
                 "sessions",
                 f"native retention 5d . {eligible} eligible",
                 status="done",
-                accent=YELLOW,
+                accent=AMBER,
             )
         )
         out.flush()
@@ -378,7 +378,7 @@ def _run_launch_prep_v2(
             "sessions",
             value,
             status=status,
-            accent=YELLOW,
+            accent=AMBER,
         )
     )
     out.flush()
@@ -515,7 +515,7 @@ def _render_summary_v2(
         Item(
             id="sessions",
             label="sessions",
-            value=style_action_value(sessions_value, accent=YELLOW),
+            value=style_action_value(sessions_value, accent=AMBER),
             status="done",
         ),
         Item(
@@ -1574,7 +1574,7 @@ def _run_session_choice_v2(
             ),
         ),
         default_index=0,
-        accent=YELLOW,
+        accent=AMBER,
         stream=out,
         input_fn=input_fn,
     )
@@ -1653,7 +1653,7 @@ def _run_explicit_session_cleanup_v2(
             "sessions",
             progress_value,
             status="spin",
-            accent=YELLOW,
+            accent=AMBER,
             spin_frame=frame,
         ).removesuffix("\n")
         with output_lock:
@@ -1729,7 +1729,7 @@ def _run_explicit_session_cleanup_v2(
                 "sessions",
                 value,
                 status=status,
-                accent=YELLOW,
+                accent=AMBER,
             )
         )
         out.flush()

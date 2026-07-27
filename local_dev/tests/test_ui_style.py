@@ -1,9 +1,15 @@
 import re
 
 from local_dev.serena_mcp_management.ui import (
+    AMBER,
+    GRAY,
     MINT,
     PINK,
     PURPLE,
+    _BANNER_BG_RGB,
+    _BANNER_MID_RGB,
+    _BANNER_PINK_RGB,
+    _BANNER_PURPLE_RGB,
     _MID_RGB,
     _PINK_RGB,
     _PURPLE_RGB,
@@ -48,19 +54,31 @@ _MIN_CONTRAST = 4.5
 
 def test_palette_uses_light_theme_truecolor_hexes():
     # Hues carried over from huh/theme.go ThemeCharm, darkened until each one
-    # clears WCAG AA on a white terminal background.
+    # clears WCAG AA on a white terminal background. AMBER and GRAY replace the
+    # palette-dependent ANSI yellow/bright-black, which wash out on light
+    # terminal themes.
     assert PINK == "38;2;216;14;181"
     assert PURPLE == "38;2;102;97;248"
     assert MINT == "38;2;1;135;96"
+    assert AMBER == "38;2;180;83;9"
+    assert GRAY == "38;2;110;106;133"
 
 
 def test_palette_accents_are_legible_on_light_background():
-    for name, code in (("PINK", PINK), ("PURPLE", PURPLE), ("MINT", MINT)):
+    for name, code in (
+        ("PINK", PINK),
+        ("PURPLE", PURPLE),
+        ("MINT", MINT),
+        ("AMBER", AMBER),
+        ("GRAY", GRAY),
+    ):
         ratio = _contrast_on_white(_rgb_from_ansi(code))
         assert ratio >= _MIN_CONTRAST, f"{name} contrast {ratio:.2f}:1 on white"
 
 
-def test_banner_gradient_endpoints_are_legible_on_light_background():
+def test_border_gradient_endpoints_are_legible_on_light_background():
+    # These endpoints paint the border ribbons directly on the light
+    # terminal background, so they carry the same AA floor as the accents.
     for name, rgb in (
         ("_PINK_RGB", _PINK_RGB),
         ("_MID_RGB", _MID_RGB),
@@ -68,6 +86,23 @@ def test_banner_gradient_endpoints_are_legible_on_light_background():
     ):
         ratio = _contrast_on_white(rgb)
         assert ratio >= _MIN_CONTRAST, f"{name} contrast {ratio:.2f}:1 on white"
+
+
+def test_banner_glyphs_are_legible_on_hero_band():
+    # Banner glyphs render on the dark hero band, not on white: the bright
+    # endpoints must clear the WCAG large-art floor (3:1) against the band.
+    def contrast(a: tuple[int, int, int], b: tuple[int, int, int]) -> float:
+        lighter = max(_relative_luminance(a), _relative_luminance(b))
+        darker = min(_relative_luminance(a), _relative_luminance(b))
+        return (lighter + 0.05) / (darker + 0.05)
+
+    for name, rgb in (
+        ("_BANNER_PINK_RGB", _BANNER_PINK_RGB),
+        ("_BANNER_MID_RGB", _BANNER_MID_RGB),
+        ("_BANNER_PURPLE_RGB", _BANNER_PURPLE_RGB),
+    ):
+        ratio = contrast(rgb, _BANNER_BG_RGB)
+        assert ratio >= 3.0, f"{name} contrast {ratio:.2f}:1 on the band"
 
 
 def test_style_count_colors_digits_pink():
@@ -101,10 +136,10 @@ def test_style_session_tree_colors_counts_and_policy_by_meaning():
         "└─ cleanup  inactive longer than 5 days"
     )
     assert f"\x1b[{PINK}m58 total\x1b[0m" in result
-    assert "\x1b[33m35 to delete\x1b[0m" in result
+    assert f"\x1b[{AMBER}m35 to delete\x1b[0m" in result
     assert f"\x1b[{MINT}m23 to keep\x1b[0m" in result
     assert f"\x1b[{PURPLE}minactive longer than 5 days\x1b[0m" in result
-    assert "\x1b[90m├─\x1b[0m" in result
+    assert f"\x1b[{GRAY}m├─\x1b[0m" in result
     assert f"\x1b[{MINT}mgroups   \x1b[0m" in result
 
 
