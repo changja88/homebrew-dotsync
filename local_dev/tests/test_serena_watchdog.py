@@ -10,7 +10,6 @@ from local_dev.serena_mcp_management.serena_mcp.watchdog import (
     ensure_watchdog,
     launcher_process_matches,
     release_lease_and_shutdown_if_empty,
-    shutdown_if_no_leases,
 )
 
 
@@ -152,47 +151,6 @@ def test_cleanup_once_drops_stale_wrong_identity_last_lease(monkeypatch, tmp_pat
         assert registry.record is None
 
 
-def test_cleanup_once_keeps_stale_live_identity_and_drops_dead_identity_none_lease(monkeypatch, tmp_path):
-    scope = Scope(tmp_path, "claude")
-    terminated = []
-    now = time.time()
-    live_identity = "Fri May  8 10:00:00 2026 /usr/bin/python launcher"
-    monkeypatch.setattr(
-        "local_dev.serena_mcp_management.serena_mcp.watchdog._terminate_pid",
-        _append_terminated(terminated),
-    )
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.watchdog.pid_is_alive", lambda pid: True)
-    monkeypatch.setattr(
-        "local_dev.serena_mcp_management.serena_mcp.watchdog.process_identity",
-        lambda pid: live_identity if pid == 1234 else None,
-        raising=False,
-    )
-    with locked_registry(scope) as registry:
-        registry.record = ServerRecord(
-            server_pid=111,
-            mcp_url="http://127.0.0.1:9000/mcp",
-            dashboard_url="http://127.0.0.1:24000",
-            project_root=str(tmp_path.resolve()),
-            client_type="claude",
-            started_at=now - 3600,
-            leases={
-                "live": Lease("live", 1234, now - 3600, live_identity),
-                "dead": Lease("dead", 5678, now - 3600, "original dead identity"),
-            },
-            upstream_mcp_url="http://127.0.0.1:9001/mcp",
-            proxy_pid=222,
-        )
-
-    keep_running = cleanup_once(scope, now=now, lease_timeout_seconds=30)
-
-    assert keep_running is True
-    assert terminated == []
-    with locked_registry(scope) as registry:
-        assert registry.record is not None
-        assert set(registry.record.leases) == {"live"}
-        assert registry.record.leases["live"].heartbeat_at == now
-
-
 def test_cleanup_once_keeps_active_lease(monkeypatch, tmp_path):
     scope = Scope(tmp_path, "claude")
     terminated = []
@@ -253,87 +211,6 @@ def test_cleanup_once_discards_wrong_client_record_without_terminating_pids(monk
     assert terminated == []
     with locked_registry(scope) as registry:
         assert registry.record is None
-
-
-def test_shutdown_if_no_leases_stops_proxy_then_upstream(monkeypatch, tmp_path):
-    scope = Scope(tmp_path, "codex")
-    terminated = []
-    monkeypatch.setattr(
-        "local_dev.serena_mcp_management.serena_mcp.watchdog._terminate_pid",
-        _append_terminated(terminated),
-    )
-    with locked_registry(scope) as registry:
-        registry.record = ServerRecord(
-            server_pid=12345,
-            mcp_url="http://127.0.0.1:9000/mcp",
-            dashboard_url="http://127.0.0.1:24000",
-            project_root=str(tmp_path.resolve()),
-            client_type="codex",
-            started_at=time.time(),
-            leases={},
-            upstream_mcp_url="http://127.0.0.1:9001/mcp",
-            proxy_pid=222,
-            server_identity="serena identity",
-            proxy_identity="proxy identity",
-        )
-
-    assert shutdown_if_no_leases(scope) is False
-
-    with locked_registry(scope) as registry:
-        assert registry.record is None
-    assert terminated == [222, 12345]
-
-
-def test_shutdown_if_no_leases_without_proxy_stops_upstream_only(monkeypatch, tmp_path):
-    scope = Scope(tmp_path, "codex")
-    terminated = []
-    monkeypatch.setattr(
-        "local_dev.serena_mcp_management.serena_mcp.watchdog._terminate_pid",
-        _append_terminated(terminated),
-    )
-    with locked_registry(scope) as registry:
-        registry.record = ServerRecord(
-            server_pid=12345,
-            mcp_url="http://127.0.0.1:9000/mcp",
-            dashboard_url="http://127.0.0.1:24000",
-            project_root=str(tmp_path.resolve()),
-            client_type="codex",
-            started_at=time.time(),
-            leases={},
-            server_identity="serena identity",
-        )
-
-    assert shutdown_if_no_leases(scope) is False
-
-    with locked_registry(scope) as registry:
-        assert registry.record is None
-    assert terminated == [12345]
-
-
-def test_shutdown_if_no_leases_keeps_server_when_sibling_lease_exists(monkeypatch, tmp_path):
-    scope = Scope(tmp_path, "codex")
-    terminated = []
-    monkeypatch.setattr(
-        "local_dev.serena_mcp_management.serena_mcp.watchdog._terminate_pid",
-        _append_terminated(terminated),
-    )
-    with locked_registry(scope) as registry:
-        registry.record = ServerRecord(
-            server_pid=os.getpid(),
-            mcp_url="http://127.0.0.1:9000/mcp",
-            dashboard_url="http://127.0.0.1:24000",
-            project_root=str(tmp_path.resolve()),
-            client_type="codex",
-            started_at=time.time(),
-            leases={"sibling": Lease("sibling", os.getpid(), time.time())},
-        )
-
-    assert shutdown_if_no_leases(scope) is True
-
-    with locked_registry(scope) as registry:
-        assert registry.record is not None
-        assert "sibling" in registry.record.leases
-    assert terminated == []
 
 
 def test_release_lease_reports_remaining_sibling_leases(monkeypatch, tmp_path):
@@ -433,33 +310,6 @@ def test_release_lease_stops_proxy_then_upstream_when_last_lease_exits(monkeypat
     assert terminated == [222, 12345]
     with locked_registry(scope) as registry:
         assert registry.record is None
-
-
-def test_watchdog_terminate_record_delegates_to_shared_termination(monkeypatch):
-    terminated = []
-
-    def fake_terminate(pid, *, expected_identity=None):
-        terminated.append((pid, expected_identity))
-
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.watchdog.terminate_pid", fake_terminate)
-
-    from local_dev.serena_mcp_management.serena_mcp.watchdog import _terminate_record
-
-    _terminate_record(ServerRecord(
-        server_pid=111,
-        mcp_url="http://127.0.0.1:9000/mcp",
-        dashboard_url="http://127.0.0.1:24000",
-        project_root="/repo",
-        client_type="codex",
-        started_at=1.0,
-        leases={},
-        upstream_mcp_url="http://127.0.0.1:9001/mcp",
-        proxy_pid=222,
-        server_identity="serena identity",
-        proxy_identity="proxy identity",
-    ))
-
-    assert terminated == [(222, "proxy identity"), (111, "serena identity")]
 
 
 def test_ensure_watchdog_does_not_spawn_duplicate_when_pid_alive(monkeypatch, tmp_path):

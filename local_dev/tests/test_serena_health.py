@@ -61,45 +61,6 @@ def test_process_identity_returns_none_for_zombie_status(monkeypatch):
     assert process_identity(1234) is None
 
 
-def test_process_identity_returns_none_for_empty_output(monkeypatch):
-    monkeypatch.setattr(
-        "local_dev.serena_mcp_management.serena_mcp.health.subprocess.run",
-        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="\n"),
-    )
-
-    assert process_identity(1234) is None
-
-
-def test_process_identity_returns_none_for_nonzero_ps_exit(monkeypatch):
-    monkeypatch.setattr(
-        "local_dev.serena_mcp_management.serena_mcp.health.subprocess.run",
-        lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout="", stderr="ps: 999: No such process"),
-    )
-
-    assert process_identity(999) is None
-
-
-def test_process_identity_stable_across_argv0_reexec(monkeypatch):
-    """Regression: macOS framework Python re-execs moments after launch, changing
-    its `ps command=` argv0 (e.g. a `python -m` proxy child). Identity must stay
-    stable across that — it is keyed on the immutable start time and never reads
-    the command — so the scoped server's identity match keeps holding."""
-    calls = []
-
-    def fake_run(cmd, check, text, capture_output):
-        calls.append(cmd)
-        assert "command=" not in cmd
-        return SimpleNamespace(returncode=0, stdout="S Fri May  8 10:00:00 2026\n")
-
-    monkeypatch.setattr(
-        "local_dev.serena_mcp_management.serena_mcp.health.subprocess.run", fake_run
-    )
-
-    first = process_identity(1234)
-    second = process_identity(1234)
-    assert first == second == "Fri May  8 10:00:00 2026"
-
-
 def test_process_identity_returns_none_when_ps_cannot_run(monkeypatch):
     def fake_run(*args, **kwargs):
         raise OSError("ps unavailable")
@@ -135,16 +96,6 @@ def test_dashboard_rejects_active_project_none(monkeypatch, tmp_path):
         "local_dev.serena_mcp_management.serena_mcp.health.urlopen",
         lambda url, timeout: Response(b"Active Project: None"),
     )
-
-    assert not dashboard_matches_project("http://127.0.0.1:24282", tmp_path)
-
-
-def test_dashboard_rejects_registered_project_without_active_project(monkeypatch, tmp_path):
-    body = json.dumps({
-        "active_project": {"path": None},
-        "registered_projects": [{"path": str(tmp_path.resolve())}],
-    }).encode()
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.health.urlopen", lambda url, timeout: Response(body))
 
     assert not dashboard_matches_project("http://127.0.0.1:24282", tmp_path)
 

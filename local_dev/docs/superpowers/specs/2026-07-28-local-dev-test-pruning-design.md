@@ -17,7 +17,7 @@
 
 ## 현행 기준선
 
-- `local_dev/tests`: 30개 테스트 파일, 614개 테스트
+- `local_dev/tests`: 29개 테스트 파일, 614개 테스트
 - 기준선 실행 결과: `614 passed in 18.01s`
 - 프로덕션 코드: `local_dev/serena_mcp_management/`
 - 런타임 진입점:

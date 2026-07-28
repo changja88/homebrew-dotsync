@@ -6,15 +6,9 @@ from local_dev.serena_mcp_management.ui import (
     BoxModel,
     BoxRenderer,
     Item,
-    PINK,
-    PURPLE,
     _BANNER_SHADOW_RGB,
-    _STAR_BRIGHT_RGB,
-    _STAR_DIM_RGB,
     render_box,
     render_inline_row,
-    style_action_value,
-    style_mcp_inventory,
 )
 
 _SHADOW_CODE = "48;2;{};{};{}".format(*_BANNER_SHADOW_RGB)
@@ -37,22 +31,6 @@ def test_render_box_includes_title_art_and_phase_label():
     assert "▀" in plain
     assert "╗" not in plain
     assert "preflight" in plain
-
-
-def test_render_box_colors_known_title_art_pink_and_purple():
-    model = BoxModel(phase="preflight", title="codex", items=[])
-    text = render_box(model)
-    # Both palette accents must appear: PINK shows up on the outer border
-    # (non-bold), PURPLE reaches its endpoint at the gradient mid-cell.
-    assert f"\x1b[{PINK}m" in text
-    assert f"\x1b[1;{PURPLE}m" in text
-
-
-def test_render_box_falls_back_to_plain_title_for_unknown_client():
-    model = BoxModel(phase="preflight", title="other-client", items=[])
-    text = render_box(model)
-    assert "other-client" in text
-    assert "preflight" in text
 
 
 def test_render_box_includes_each_item_label_and_value():
@@ -146,20 +124,6 @@ def test_render_box_uses_warn_marker_for_warn_items():
     assert "!" in text
 
 
-def test_render_inline_row_colors_session_start_with_requested_accent():
-    rendered = render_inline_row(
-        "sessions",
-        "deleting inactive sessions",
-        status="spin",
-        accent=AMBER,
-    )
-
-    assert f"\x1b[{AMBER}m" in rendered
-    assert _strip_ansi(rendered) == (
-        "  ⠋ sessions    deleting inactive sessions\n"
-    )
-
-
 def test_render_inline_row_uses_requested_spinner_frame():
     first = _strip_ansi(
         render_inline_row(
@@ -182,84 +146,6 @@ def test_render_inline_row_uses_requested_spinner_frame():
 
     assert first.startswith("  ⠋ sessions")
     assert second.startswith("  ⠙ sessions")
-
-
-def test_style_action_value_wraps_complete_value_in_accent():
-    assert style_action_value("8 sessions deleted", accent=AMBER) == (
-        f"\x1b[{AMBER}m8 sessions deleted\x1b[0m"
-    )
-
-
-def test_style_mcp_inventory_renders_single_line_plain_text():
-    text = style_mcp_inventory(
-        ps_servers=3,
-        managed_servers=2,
-        orphan_servers=1,
-        leases=3,
-        stale_leases=1,
-    )
-
-    plain = _strip_ansi(text)
-    assert plain == (
-        "server processes[3] → managed servers[2] · "
-        "orphaned servers[1] · leases[3] · stale leases[1]"
-    )
-    assert "ps[" not in plain
-
-
-def test_style_mcp_inventory_highlights_orphan_and_stale_when_nonzero():
-    text = style_mcp_inventory(
-        ps_servers=3,
-        managed_servers=2,
-        orphan_servers=1,
-        leases=3,
-        stale_leases=1,
-    )
-
-    assert f"\x1b[{AMBER}m" in text
-    assert "orphan" in text
-    assert "stale" in text
-
-
-def test_render_box_expands_border_for_long_mcp_inventory_row():
-    model = BoxModel(
-        phase="preflight",
-        title="codex",
-        items=[
-            Item(
-                id="serena-mcp",
-                label="serena mcp",
-                value=style_mcp_inventory(
-                    ps_servers=123,
-                    managed_servers=122,
-                    orphan_servers=1,
-                    leases=987,
-                    stale_leases=1,
-                ),
-                status="warn",
-            ),
-        ],
-    )
-
-    plain_lines = _strip_ansi(render_box(model)).splitlines()
-    border_width = max(
-        len(line.strip()) for line in plain_lines if set(line.strip()) == {"─"}
-    )
-    item_width = max(len(line.strip()) for line in plain_lines if "serena mcp" in line)
-
-    assert border_width >= item_width
-
-
-def test_render_box_spin_frame_cycles_through_braille_set():
-    model = BoxModel(
-        phase="launch-prep",
-        title="codex",
-        items=[Item(id="mcp", label="serena", value="preparing", status="spin")],
-    )
-    frame_zero = render_box(model, spin_frame=0)
-    frame_one = render_box(model, spin_frame=1)
-    assert "⠋" in frame_zero
-    assert "⠙" in frame_one
 
 
 def test_render_box_ends_with_newline():
@@ -317,107 +203,3 @@ def test_render_box_uses_info_marker_for_info_items():
     )
     text = render_box(model)
     assert "·" in text
-
-
-def test_box_renderer_clear_resets_line_count_for_next_draw():
-    stream = io.StringIO()
-    renderer = BoxRenderer(stream=stream)
-    renderer.draw(BoxModel(phase="preflight", title="codex", items=[]))
-    renderer.clear()
-    after_clear = len(stream.getvalue())
-    renderer.draw(BoxModel(phase="preflight", title="codex", items=[]))
-    third_chunk = stream.getvalue()[after_clear:]
-    assert "A" not in third_chunk  # treats next draw as first frame
-
-
-# ----- Holographic Shimmer (concept 02) ---------------------------------------
-
-
-def test_render_box_claude_uses_pixel_block_font():
-    """claude is unified with codex on the half-block pixel font."""
-    model = BoxModel(phase="preflight", title="claude", items=[])
-    plain = _strip_ansi(render_box(model))
-    assert "▀" in plain
-    assert "╗" not in plain
-
-
-def test_render_box_applies_gradient_per_pixel():
-    """Banner cells are colored pixel-by-pixel: many distinct foreground
-    stops, plus background paint carrying the lower pixel of full cells."""
-    model = BoxModel(phase="preflight", title="codex", items=[])
-    text = render_box(model)
-    fg = re.findall(r"\x1b\[38;2;\d+;\d+;\d+m", text)
-    # Plenty of distinct interpolated stops, not a single line-wide color.
-    assert len(set(fg)) >= 8
-    assert re.search(r"\x1b\[48;2;\d+;\d+;\d+m", text)
-
-
-def test_render_box_uses_double_gradient_border():
-    """Top/bottom borders are doubled gradient ribbons: a heavy outer line
-    starting at the pink endpoint plus a hairline echo starting at purple
-    (the outline-offset look, tuned for a light background)."""
-    model = BoxModel(phase="preflight", title="codex", items=[])
-    text = render_box(model)
-    lines = text.split("\n")
-    top_outer, top_inner = lines[0], lines[1]
-    bottom_inner, bottom_outer = lines[-3], lines[-2]
-
-    truecolor = re.compile(r"\x1b\[1;38;2;\d+;\d+;\d+m")
-    for line in (top_outer, top_inner, bottom_inner, bottom_outer):
-        # A ribbon sweeps through many interpolated stops, not one flat color.
-        assert len(set(truecolor.findall(line))) >= 8
-
-    for line in (top_outer, bottom_outer):
-        assert "━" in _strip_ansi(line)
-        assert line.startswith("  " + f"\x1b[1;{PINK}m")
-    for line in (top_inner, bottom_inner):
-        assert "─" in _strip_ansi(line)
-        assert line.startswith("  " + f"\x1b[1;{PURPLE}m")
-
-
-def test_render_box_banner_gradient_sweeps_across_columns():
-    """Glyph colors sweep horizontally without vertical striping: on one
-    glyph row the stops span from the pink end to the purple end of the
-    gradient. Glyph hues are the only bright foregrounds on the band —
-    stars and nebula tints stay below the channel ceiling."""
-    model = BoxModel(phase="preflight", title="codex", items=[])
-    text = render_box(model)
-    art_lines = [line for line in text.split("\n") if "\x1b[48;2;" in line]
-    assert len(art_lines) == 9
-
-    # Uniform glyph cells render as background-painted spaces, so glyph
-    # colors appear in both foreground and background escapes.
-    stop = re.compile(r"\x1b\[[34]8;2;(\d+);(\d+);(\d+)m")
-    mid_row = art_lines[4]
-    bright = [
-        tuple(int(c) for c in match.groups())
-        for match in stop.finditer(mid_row)
-        if max(int(c) for c in match.groups()) >= 200
-    ]
-    assert len(set(bright)) >= 4
-    first, last = bright[0], bright[-1]
-    assert first[0] > first[2]  # pink end: red dominates blue
-    assert last[2] > last[0]  # purple end: blue dominates red
-
-
-def test_render_box_banner_draws_textured_hero_band():
-    """The banner sits on a full-width dark hero band: not a flat fill but a
-    subtle tint gradient with sparse star pixels, plus the darker drop
-    shadow the glyphs cast down-right."""
-    model = BoxModel(phase="preflight", title="codex", items=[])
-    text = render_box(model)
-    art_lines = [line for line in text.split("\n") if "\x1b[48;2;" in line]
-    # 2 pad + 12 glyph + 2 shadow + 2 pad pixel rows = 9 terminal rows.
-    assert len(art_lines) == 9
-    # The band itself sweeps through several tints on a single padding row,
-    # and the nebula falloff makes top and bottom padding rows differ too.
-    top_tints = set(re.findall(r"\x1b\[48;2;\d+;\d+;\d+m", art_lines[0]))
-    bottom_tints = set(re.findall(r"\x1b\[48;2;\d+;\d+;\d+m", art_lines[-1]))
-    assert len(top_tints) >= 3
-    assert top_tints != bottom_tints
-    # Sparse stars sparkle somewhere on the band.
-    dim = "38;2;{};{};{}".format(*_STAR_DIM_RGB)
-    bright = "38;2;{};{};{}".format(*_STAR_BRIGHT_RGB)
-    assert any(dim in line or bright in line for line in art_lines)
-    # The drop shadow appears as its own darker color on the band.
-    assert any(_SHADOW_CODE in line for line in art_lines)

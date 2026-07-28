@@ -1,78 +1,107 @@
-# Codex Reset Entry Choice Design
+# Codex Full Reset Entry Choice Design
 
 **Date:** 2026-07-28
 
 ## Goal
 
-Do not open the destructive Codex session picker immediately during every
-interactive launcher run. First ask whether the user wants to keep existing
-Codex sessions and memories or enter the reset flow.
+Provide one default-safe keep choice and one explicit hard reset. A confirmed
+reset removes all known local Codex sessions, memories, and conversation traces.
+It does not offer a per-session preserve list.
+
+This replaces the earlier selective-session design. Codex memories are global
+generated state and cannot be reliably partitioned and preserved per selected
+session, so a partial session picker does not satisfy the approved reset
+contract.
 
 ## User Experience
 
-The interactive Codex launcher shows this amber single-choice prompt before
-running the detailed reset catalog scan or listing persisted sessions:
+The interactive Codex launcher shows:
 
 ```text
 ? Reset Codex sessions and memories before launch?
   ▶ Keep all sessions and memories (default)
-    Select sessions to delete and reset all memories
+    Delete all sessions, memories, and conversation traces
 ```
 
-Choosing `Keep all sessions and memories (default)`, including by pressing
-Enter, is an exact no-op. It does not scan the session catalog, show the
-multi-select picker, delete data, or run the former five-day Codex cleanup.
+Enter keeps everything. The destructive option requires a second, default-no
+confirmation:
 
-Choosing `Select sessions to delete and reset all memories` enters the
-existing combined reset flow:
+```text
+Permanently delete ALL Codex sessions, memories, history, logs, snapshots,
+and currently running sessions? The Codex app will be restarted if it is open.
+[y/N]
+```
 
-1. Scan every known Codex home for active and archived logical sessions.
-2. If no persisted sessions exist, report that fact and continue without
-   deleting anything.
-3. Otherwise, show `Select Codex sessions to force-delete`.
-4. Treat an empty selection as an exact no-op.
-5. For a non-empty selection, retain the existing final confirmation.
-6. After confirmation, delete only the selected logical session groups and
-   reset all known Codex memory, history, log, and snapshot targets.
+There is no session catalog or multi-select step. Cancelling either prompt is
+non-destructive.
 
-The option wording deliberately distinguishes the two scopes: sessions are
-selected individually, while memories and related traces are reset globally
-whenever at least one selected session is confirmed.
+## Reset Scope
+
+The reset discovers the default Codex home, active `CODEX_HOME`, Orca managed
+home, safe configured `sqlite_home` / `CODEX_SQLITE_HOME`, configured
+`log_dir`, system/user/profile/trusted-project config layers, current CLI
+overrides, detected running-process CLI overrides and working directories, and
+the documented macOS Codex Desktop log root.
+
+It then:
+
+1. repeatedly discovers and identity-pins detected Codex CLI and app-server
+   runtimes before and after mutation, temporarily restarting an open Desktop
+   app so cached state cannot recreate deleted traces;
+2. removes active and archived rollout directories;
+3. removes state, goals, memory, and log SQLite stores including
+   WAL/SHM/rollback-journal files;
+4. removes memory directories, history, recognized logs, snapshots,
+   visualizations, ambient suggestions, and chat-process state, and surgically
+   clears conversation keys from mixed Desktop global-state files;
+5. clears every Desktop runtime table except automation definitions and
+   app-server feature enablement, then uses SQLite secure deletion, checkpoint,
+   and `VACUUM`; and
+6. rescans all known paths and session indexes before reporting success.
+
+Config, authentication, plugins, skills, automation definitions, and unrelated
+user files remain. Root/intermediate symlinks fail closed; a final recognized
+target symlink is unlinked rather than followed.
 
 ## Implementation Boundary
 
-Keep orchestration in `_run_session_choice_v2`:
+- `_run_session_choice_v2` returns `keep` or `reset_all` for Codex.
+- `_run_codex_reset_v2` invokes `reset_all_codex_data`; it does not require a
+  catalog snapshot, session UUID, or Codex binary.
+- `reset_all_codex_data` owns runtime termination, target discovery, deletion,
+  and post-reset verification.
+- Preflight cataloging remains read-only and is used only for aggregate counts.
+- Claude memory and session choices remain unchanged.
+- The root public README remains untouched because `local_dev/` is internal.
 
-- Add one `select_option` call for interactive Codex launches.
-- Return an empty `CodexResetSelection` immediately for the keep choice.
-- Perform the existing catalog scan, multi-select, and confirmation only for
-  the reset choice.
-- Do not add another memory prompt or change Claude behavior.
-- Do not change `delete_selected_codex_sessions` or its deletion contract.
+## Failure Contract
 
-Update only the focused launcher tests and the Codex startup-choice section in
-`local_dev/README.md`. The public root README remains untouched because
-`local_dev/` is an internal-only launcher.
-
-## Errors and Cancellation
-
-- Ctrl+C at the new prompt keeps the existing launcher-wide cancellation
-  behavior: no reset and no child launch.
-- Catalog scan failures remain non-destructive and launchable after the user
-  explicitly enters the reset flow.
-- The keep path cannot surface catalog errors because it performs no scan.
+A process-inspection failure does not prevent deletion of known targets, but it
+does make the result a failure because termination could not be proven. Any
+surviving runtime, unsafe target, unreadable config, filesystem error, SQLite
+cleanup error, unreadable post-reset catalog, residual target, or residual
+session likewise prevents a success result. A failed reset aborts the new Codex
+launch instead of creating another session on top of an incomplete reset.
 
 ## Tests
 
-Add or update focused tests proving:
+Tests must prove:
 
-- Enter defaults to keeping sessions and memories.
-- The keep choice does not scan or render the session picker.
-- The reset choice scans and then renders the existing picker.
-- The no-session and scan-failure messages occur only after entering the reset
-  flow.
-- A selected and confirmed session still produces the same
-  `CodexResetSelection`.
-- Existing Claude choices and launcher cancellation behavior remain unchanged.
-
-Run the focused launcher tests first, then the complete `local_dev` suite.
+- Enter defaults to keeping everything and does not enter reset work.
+- The destructive choice requires confirmation and never scans or renders a
+  session picker.
+- Every known home loses active, archived, state-only, memory, history, log,
+  snapshot, goal, and desktop thread state.
+- Config, auth, plugins, skills, unrelated SQLite files, and automation
+  definitions survive.
+- CLI and app-server runtimes are terminated; an open Desktop app is
+  temporarily closed and automatically reopened after verification.
+- System, user, profile, trusted-project, environment, current-CLI, and
+  running-process-configured SQLite and log locations are reset without
+  deleting unrelated files.
+- Mixed Desktop global-state files preserve non-conversation app preferences.
+- Symlinked roots, broad/overlapping log roots, unknown Desktop runtime tables,
+  wrong-type file targets, uncheckpointed WAL state, and runtime respawn all
+  fail safely.
+- Post-reset residuals cause failure.
+- Claude behavior and Ctrl+C handling remain unchanged.

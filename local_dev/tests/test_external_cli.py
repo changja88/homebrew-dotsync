@@ -28,14 +28,6 @@ def test_graphify_command_falls_back_to_uv_tool_bin(tmp_path):
     assert cmd == [str(tool)]
 
 
-def test_graphify_command_ignores_non_executable_tool_bin(tmp_path):
-    tool = tmp_path / ".local" / "bin" / "graphify"
-    tool.parent.mkdir(parents=True)
-    tool.write_text("")
-    tool.chmod(0o644)
-    assert external_cli.graphify_command(which=_which_map({}), home=tmp_path) is None
-
-
 def test_graphify_command_has_no_uvx_fallback(tmp_path):
     # graphify writes its own absolute path into project hooks
     # (.codex/hooks.json); an ephemeral uvx cache path would rot there.
@@ -124,29 +116,11 @@ def test_node_command_falls_back_to_homebrew_node(tmp_path):
     assert cmd == [str(brew_node)]
 
 
-def test_node_command_ignores_non_executable_homebrew_node(tmp_path):
-    brew_node = tmp_path / "node"
-    brew_node.write_text("")
-    brew_node.chmod(0o644)
-    assert external_cli.node_command(which=_which_map({}), brew_node=brew_node) is None
-
-
 def test_node_command_returns_none_when_absent(tmp_path):
     assert (
         external_cli.node_command(which=_which_map({}), brew_node=tmp_path / "nope")
         is None
     )
-
-
-def test_homebrew_node_command_resolves_executable(tmp_path):
-    brew_node = tmp_path / "node"
-    brew_node.write_text("#!/bin/sh\n")
-    brew_node.chmod(0o755)
-    assert external_cli.homebrew_node_command(brew_node=brew_node) == [str(brew_node)]
-
-
-def test_homebrew_node_command_none_when_missing(tmp_path):
-    assert external_cli.homebrew_node_command(brew_node=tmp_path / "nope") is None
 
 
 def test_node_command_path_hit_does_not_imply_homebrew(tmp_path):

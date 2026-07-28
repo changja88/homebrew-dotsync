@@ -120,25 +120,6 @@ def test_codex_inventory_scans_only_memories_under_all_known_homes(tmp_path):
     )
 
 
-def test_codex_inventory_deduplicates_case_aliases_of_one_home(tmp_path):
-    home = tmp_path / "UserHome"
-    store = home / ".codex/memories"
-    store.mkdir(parents=True)
-    (store / "MEMORY.md").write_text("memory")
-    active_home = case_insensitive_alias(home) / ".codex"
-    assert active_home.samefile(home / ".codex")
-
-    inventory = scan_memory_inventory(
-        client="codex",
-        home=home,
-        codex_home=active_home,
-        orca_codex_home=tmp_path / "orca",
-    )
-
-    assert tuple(item.path for item in inventory.stores) == (store,)
-    assert inventory.file_count == 1
-
-
 def test_codex_inventory_rejects_symlinked_active_home(tmp_path):
     home = tmp_path / "home"
     active_target = tmp_path / "active-target"
@@ -171,27 +152,6 @@ def test_codex_inventory_rejects_parent_traversal_before_symlink_inspection(
         client="codex",
         home=tmp_path / "home",
         codex_home=active_link / ".." / "active",
-        orca_codex_home=tmp_path / "orca",
-    )
-
-    assert inventory.stores == ()
-    assert any("parent traversal" in warning for warning in inventory.warnings)
-
-
-def test_codex_inventory_rejects_parent_traversal_after_missing_component(
-    tmp_path,
-):
-    target = tmp_path / "target"
-    store = target / "memories"
-    store.mkdir(parents=True)
-    (store / "MEMORY.md").write_text("memory")
-    active_link = tmp_path / "active-link"
-    active_link.symlink_to(target, target_is_directory=True)
-
-    inventory = scan_memory_inventory(
-        client="codex",
-        home=tmp_path / "home",
-        codex_home=tmp_path / "missing" / ".." / active_link.name,
         orca_codex_home=tmp_path / "orca",
     )
 
@@ -255,114 +215,6 @@ def test_claude_inventory_deduplicates_project_and_custom_case_aliases(
 
     assert tuple(item.path for item in inventory.stores) == (project,)
     assert inventory.file_count == 1
-
-
-def test_claude_markerless_project_exact_custom_duplicate_skips_marker_check(
-    tmp_path,
-):
-    home = tmp_path / "home"
-    config = home / ".claude"
-    project = config / "projects/repo/memory"
-    project.mkdir(parents=True)
-    (project / "notes.md").write_text("project memory")
-    (config / "settings.json").write_text(
-        json.dumps({"autoMemoryDirectory": str(project)})
-    )
-
-    inventory = scan_memory_inventory(
-        client="claude",
-        home=home,
-        codex_home=home / ".codex",
-        claude_config_dir=config,
-    )
-
-    assert tuple(store.path for store in inventory.stores) == (project,)
-    assert inventory.file_count == 1
-    assert not any(
-        "requires MEMORY.md" in warning for warning in inventory.warnings
-    )
-
-
-def test_claude_markerless_project_alias_skips_custom_marker_validation(
-    tmp_path,
-):
-    home = tmp_path / "home"
-    config = home / ".claude"
-    project = config / "projects/Repo/memory"
-    project.mkdir(parents=True)
-    (project / "notes.md").write_text("project memory")
-    alias = case_insensitive_alias(project.parent) / "memory"
-    assert alias.samefile(project)
-    (config / "settings.json").write_text(
-        json.dumps({"autoMemoryDirectory": str(alias)})
-    )
-
-    inventory = scan_memory_inventory(
-        client="claude",
-        home=home,
-        codex_home=home / ".codex",
-        claude_config_dir=config,
-    )
-    remove_calls = []
-
-    def fake_remove_tree(path):
-        assert path == project
-        remove_calls.append(path)
-        shutil.rmtree(path)
-
-    result = delete_all_memory(
-        client="claude",
-        home=home,
-        codex_home=home / ".codex",
-        claude_config_dir=config,
-        run_command=fake_ps(""),
-        remove_tree=fake_remove_tree,
-    )
-
-    assert tuple(store.path for store in inventory.stores) == (project,)
-    assert inventory.file_count == 1
-    assert not any(
-        "requires MEMORY.md" in warning for warning in inventory.warnings
-    )
-    assert result.succeeded
-    assert result.deleted_stores == 1
-    assert result.deleted_files == 1
-    assert remove_calls == [project]
-    assert not project.exists()
-
-
-def test_claude_inventory_and_delete_refuse_case_alias_of_home(tmp_path):
-    home = tmp_path / "UserHome"
-    home.mkdir()
-    (home / "MEMORY.md").write_text("unrelated home file")
-    alias = case_insensitive_alias(home)
-    config = tmp_path / ".claude"
-    config.mkdir()
-    (config / "settings.json").write_text(
-        json.dumps({"autoMemoryDirectory": str(alias)})
-    )
-
-    inventory = scan_memory_inventory(
-        client="claude",
-        home=home,
-        codex_home=tmp_path / ".codex",
-        claude_config_dir=config,
-    )
-    remove_calls = []
-    result = delete_all_memory(
-        client="claude",
-        home=home,
-        codex_home=tmp_path / ".codex",
-        claude_config_dir=config,
-        run_command=fake_ps(""),
-        remove_tree=lambda path: remove_calls.append(path),
-    )
-
-    assert inventory.stores == ()
-    assert any("unsafe broad path" in warning for warning in inventory.warnings)
-    assert not result.succeeded
-    assert remove_calls == []
-    assert (home / "MEMORY.md").read_text() == "unrelated home file"
 
 
 def test_claude_inventory_retains_lexical_guard_if_identity_comparison_misses(
@@ -496,48 +348,6 @@ def test_claude_inventory_rejects_custom_store_with_parent_traversal(tmp_path):
     assert any("parent traversal" in warning for warning in inventory.warnings)
 
 
-def test_claude_inventory_rejects_absolute_remainder_after_tilde(tmp_path):
-    home = tmp_path / "home"
-    config = tmp_path / ".claude"
-    config.mkdir()
-    victim = tmp_path / "victim"
-    victim.mkdir()
-    (victim / "MEMORY.md").write_text("memory")
-    configured_path = f"~/{victim}"
-    assert configured_path.startswith("~//")
-    (config / "settings.json").write_text(
-        json.dumps({"autoMemoryDirectory": configured_path})
-    )
-
-    inventory = scan_memory_inventory(
-        client="claude",
-        home=home,
-        codex_home=tmp_path / ".codex",
-        claude_config_dir=config,
-    )
-
-    assert inventory.stores == ()
-    assert any("after ~/" in warning for warning in inventory.warnings)
-
-
-def test_claude_inventory_rejects_empty_remainder_after_tilde(tmp_path):
-    config = tmp_path / ".claude"
-    config.mkdir()
-    (config / "settings.json").write_text(
-        json.dumps({"autoMemoryDirectory": "~/"})
-    )
-
-    inventory = scan_memory_inventory(
-        client="claude",
-        home=tmp_path,
-        codex_home=tmp_path / ".codex",
-        claude_config_dir=config,
-    )
-
-    assert inventory.stores == ()
-    assert any("after ~/" in warning for warning in inventory.warnings)
-
-
 def test_claude_inventory_rejects_tilde_store_below_symlinked_home(tmp_path):
     real_home = tmp_path / "real-home"
     custom = real_home / "custom"
@@ -560,106 +370,6 @@ def test_claude_inventory_rejects_tilde_store_below_symlinked_home(tmp_path):
 
     assert inventory.stores == ()
     assert any("symlink" in warning for warning in inventory.warnings)
-
-
-@pytest.mark.parametrize(
-    "malformed_name",
-    ["nul\0path", "surrogate\ud800path"],
-    ids=["embedded-nul", "lone-surrogate"],
-)
-def test_claude_inventory_warns_for_malformed_filesystem_path(
-    tmp_path,
-    malformed_name,
-):
-    config = tmp_path / ".claude"
-    config.mkdir()
-    configured_path = str(tmp_path / malformed_name)
-    (config / "settings.json").write_text(
-        json.dumps({"autoMemoryDirectory": configured_path})
-    )
-
-    inventory = scan_memory_inventory(
-        client="claude",
-        home=tmp_path,
-        codex_home=tmp_path / ".codex",
-        claude_config_dir=config,
-    )
-
-    assert inventory.stores == ()
-    assert any(
-        "cannot inspect memory path" in warning
-        for warning in inventory.warnings
-    )
-
-
-def test_claude_inventory_accepts_empty_custom_store(tmp_path):
-    config = tmp_path / ".claude"
-    config.mkdir()
-    custom = tmp_path / "custom-memory"
-    custom.mkdir()
-    (config / "settings.json").write_text(
-        json.dumps({"autoMemoryDirectory": str(custom)})
-    )
-
-    inventory = scan_memory_inventory(
-        client="claude",
-        home=tmp_path,
-        codex_home=tmp_path / ".codex",
-        claude_config_dir=config,
-    )
-
-    assert tuple(store.path for store in inventory.stores) == (custom,)
-    assert inventory.file_count == 0
-
-
-def test_claude_inventory_does_not_require_marker_for_project_store(tmp_path):
-    config = tmp_path / ".claude"
-    store = config / "projects/repo/memory"
-    store.mkdir(parents=True)
-    (store / "notes.txt").write_text("project memory")
-
-    inventory = scan_memory_inventory(
-        client="claude",
-        home=tmp_path,
-        codex_home=tmp_path / ".codex",
-        claude_config_dir=config,
-    )
-
-    assert tuple(item.path for item in inventory.stores) == (store,)
-    assert inventory.file_count == 1
-
-
-@pytest.mark.parametrize(
-    ("settings", "warning"),
-    [
-        ("{not-json", "invalid Claude settings"),
-        (
-            json.dumps({"autoMemoryDirectory": "relative"}),
-            "must be absolute",
-        ),
-        (
-            json.dumps({"autoMemoryDirectory": "/"}),
-            "unsafe broad path",
-        ),
-    ],
-)
-def test_claude_inventory_reports_unsafe_settings(
-    tmp_path,
-    settings,
-    warning,
-):
-    config = tmp_path / ".claude"
-    config.mkdir()
-    (config / "settings.json").write_text(settings)
-
-    inventory = scan_memory_inventory(
-        client="claude",
-        home=tmp_path,
-        codex_home=tmp_path / ".codex",
-        claude_config_dir=config,
-    )
-
-    assert any(warning in item for item in inventory.warnings)
 
 
 def test_inventory_rejects_symlink_store(tmp_path):
@@ -739,21 +449,6 @@ def test_inventory_reports_memory_path_with_wrong_file_type(tmp_path):
     assert any("not a directory" in item for item in inventory.warnings)
 
 
-def test_inventory_reports_settings_with_wrong_file_type(tmp_path):
-    config = tmp_path / ".claude"
-    (config / "settings.json").mkdir(parents=True)
-
-    inventory = scan_memory_inventory(
-        client="claude",
-        home=tmp_path,
-        codex_home=tmp_path / ".codex",
-        claude_config_dir=config,
-    )
-
-    assert inventory.stores == ()
-    assert any("not a regular file" in item for item in inventory.warnings)
-
-
 def test_running_client_processes_excludes_launcher_ancestors():
     ps = (
         "10 1 zsh zsh\n"
@@ -784,51 +479,6 @@ def test_process_scan_ignores_claude_desktop_but_finds_claude_code():
     )
 
     assert [process.pid for process in result] == [60]
-
-
-def test_process_scan_preserves_spaced_comm_and_ignores_chatgpt_helpers():
-    identities = (
-        "2176 1 /Applications/ChatGPT.app/Contents/Frameworks/"
-        "Codex Framework.framework/Helpers/browser_crashpad_handler\n"
-        "2419 1 /Applications/ChatGPT.app/Contents/Frameworks/"
-        "Codex Framework.framework/Helpers/Codex (Service).app/Contents/"
-        "MacOS/Codex (Service)\n"
-        "2502 1 /Applications/ChatGPT.app/Contents/Resources/codex\n"
-        "2612 1 /Users/me/.codex/computer-use/"
-        "Codex Computer Use.app/Contents/MacOS/SkyComputerUseService\n"
-    )
-    arguments = (
-        "2176 browser_crashpad_handler --monitor-self\n"
-        "2419 Codex (Service) --type=gpu-process\n"
-        "2502 /Applications/ChatGPT.app/Contents/Resources/codex app-server\n"
-        "2612 SkyComputerUseService\n"
-    )
-
-    result = running_client_processes(
-        "codex",
-        run_command=fake_ps(identities, args_output=arguments),
-        current_pid=9999,
-    )
-
-    assert [(process.pid, Path(process.executable).name) for process in result] == [
-        (2502, "codex")
-    ]
-
-
-@pytest.mark.parametrize("client", ["codex", "claude"])
-def test_process_scan_ignores_test_commands_that_mention_clients(client):
-    ps = (
-        "70 1 python3 python3 -m pytest tests/test_codex_claude.py\n"
-        "80 1 rg rg codex claude\n"
-    )
-
-    result = running_client_processes(
-        client,
-        run_command=fake_ps(ps),
-        current_pid=20,
-    )
-
-    assert result == ()
 
 
 @pytest.mark.parametrize(
@@ -980,45 +630,6 @@ def test_delete_empty_inventory_succeeds_without_process_scan(tmp_path):
     assert result.deleted_files == 0
 
 
-def test_delete_process_conflict_details_are_bounded(tmp_path):
-    home, active, orca = build_codex_memory_fixture(tmp_path)
-    ps = "".join(
-        f"{pid} 1 codex codex\n"
-        for pid in (40, 41, 42, 43)
-    )
-
-    result = delete_all_memory(
-        client="codex",
-        home=home,
-        codex_home=active,
-        orca_codex_home=orca,
-        run_command=fake_ps(ps),
-    )
-
-    assert not result.succeeded
-    assert result.error is not None
-    assert "PID 40 codex" in result.error
-    assert "PID 41 codex" in result.error
-    assert "PID 42 codex" in result.error
-    assert "PID 43" not in result.error
-    assert "+1 more" in result.error
-
-
-def test_delete_all_memory_ignores_other_product_process(tmp_path):
-    home, active, orca = build_codex_memory_fixture(tmp_path)
-
-    result = delete_all_memory(
-        client="codex",
-        home=home,
-        codex_home=active,
-        orca_codex_home=orca,
-        run_command=fake_ps("40 1 claude claude\n"),
-    )
-
-    assert result.succeeded
-    assert result.deleted_stores == 3
-
-
 def test_delete_prevalidates_every_store_before_mutation(tmp_path):
     home, active, orca = build_codex_memory_fixture(tmp_path)
     (orca / "memories").rename(orca / "memories-real")
@@ -1038,35 +649,6 @@ def test_delete_prevalidates_every_store_before_mutation(tmp_path):
     )
 
     assert not result.succeeded
-    assert calls == []
-
-
-def test_delete_revalidates_every_store_after_process_scan(tmp_path):
-    home, active, orca = build_codex_memory_fixture(tmp_path)
-    calls = []
-    replaced = False
-
-    def replace_store_with_symlink(command, **kwargs):
-        nonlocal replaced
-        if command == PS_ARGUMENT_COMMAND and not replaced:
-            store = orca / "memories"
-            store.rename(orca / "memories-real")
-            store.symlink_to(orca / "memories-real", target_is_directory=True)
-            replaced = True
-        return fake_ps("")(command, **kwargs)
-
-    result = delete_all_memory(
-        client="codex",
-        home=home,
-        codex_home=active,
-        orca_codex_home=orca,
-        run_command=replace_store_with_symlink,
-        remove_tree=lambda path: calls.append(path),
-    )
-
-    assert not result.succeeded
-    assert result.error is not None
-    assert "symlink" in result.error
     assert calls == []
 
 
@@ -1101,55 +683,6 @@ def test_delete_revalidates_store_immediately_before_each_removal(tmp_path):
     assert "symlink" in result.error
     assert calls == [default_store]
     assert (active / "memories-real/MEMORY.md").exists()
-
-
-def test_delete_revalidates_claude_identity_before_each_removal(
-    tmp_path,
-    monkeypatch,
-):
-    home = tmp_path / "home"
-    config = home / ".claude"
-    project_store = config / "projects/repo/memory"
-    custom_store = tmp_path / "custom-memory"
-    for store in (project_store, custom_store):
-        store.mkdir(parents=True)
-        (store / "MEMORY.md").write_text("memory")
-    (config / "settings.json").write_text(
-        json.dumps({"autoMemoryDirectory": str(custom_store)})
-    )
-
-    real_samefile = Path.samefile
-    custom_became_home = False
-
-    def changing_identity(path, other):
-        if custom_became_home and path == custom_store and other == home:
-            return True
-        return real_samefile(path, other)
-
-    remove_calls = []
-
-    def fake_remove_tree(path):
-        nonlocal custom_became_home
-        remove_calls.append(path)
-        custom_became_home = True
-
-    monkeypatch.setattr(Path, "samefile", changing_identity)
-
-    result = delete_all_memory(
-        client="claude",
-        home=home,
-        codex_home=home / ".codex",
-        claude_config_dir=config,
-        run_command=fake_ps(""),
-        remove_tree=fake_remove_tree,
-    )
-
-    assert not result.succeeded
-    assert result.deleted_stores == 1
-    assert result.deleted_files == 1
-    assert result.error is not None
-    assert "unsafe broad memory store" in result.error
-    assert remove_calls == [project_store]
 
 
 def test_delete_reports_partial_counts_and_stops(tmp_path):

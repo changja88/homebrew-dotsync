@@ -1,9 +1,16 @@
 # Notification Guard 설계 명세
 
+> ⚠️ **2026-07-25 갱신 — 이 문서는 부분적으로 낡음.** Orca 앱(v1.4.152) 코드를 직접
+> 뜯어 확인한 결과가 `notification-rebuild-evidence.md`에 있다. **먼저 그것을 읽어라.**
+> 특히 불변식 #6이 갱신됐다: subagent 훅뿐 아니라 **agent_id를 달고 오는 도구 훅
+> (`PostToolUse`)까지** 명부를 되살려 진동을 만든다. 대상이 `SubagentStart/Stop` +
+> `PostToolUse`로 확장됐다(`PreToolUse`는 codex request_user_input 경로라 유지).
+>
 > 상태: 승인 대기 (적대 리뷰 1회 반영, v2) · 작성 2026-07-23 ·
 > 2026-07-24 요구사항 확정 개정(v5): #2 폐기, #3 부재 시 공허 충족, #5 재정의 ·
 > 2026-07-24 v6: 요구 3 "구조적 보장" 반증 — 불변식 #6(subagent 훅 비활성) 추가,
-> #3·#6을 user 홈(`~/.codex`)까지 확장 (orca 07-23 업데이트로 전제 2개 붕괴)
+> #3·#6을 user 홈(`~/.codex`)까지 확장 (orca 07-23 업데이트로 전제 2개 붕괴) ·
+> 2026-07-25 v7: Orca 코드 실측 — #6 대상 확장(PostToolUse), evidence 문서로 근거 이관
 
 ## 요구사항 (2026-07-24 사용자 확정)
 

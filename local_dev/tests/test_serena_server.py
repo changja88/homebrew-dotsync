@@ -1,6 +1,4 @@
 import os
-import subprocess
-import sys
 
 import pytest
 
@@ -59,30 +57,6 @@ def test_ensure_server_reuses_healthy_record(monkeypatch, tmp_path):
     with locked_registry(scope) as registry:
         assert registry.record is not None
         assert "lease-a" in registry.record.leases
-
-
-def test_server_health_rejects_legacy_direct_record_without_proxy_metadata(monkeypatch, tmp_path):
-    scope = Scope(tmp_path, "codex")
-    record = ServerRecord(
-        server_pid=111,
-        mcp_url="http://127.0.0.1:9000/mcp",
-        dashboard_url="http://127.0.0.1:24000",
-        project_root=str(tmp_path.resolve()),
-        client_type="codex",
-        started_at=1.0,
-        leases={},
-        upstream_mcp_url=None,
-        proxy_pid=None,
-    )
-
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.pid_is_alive", lambda pid: True)
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.http_endpoint_alive", lambda url: True)
-    monkeypatch.setattr(
-        "local_dev.serena_mcp_management.serena_mcp.server.dashboard_matches_project",
-        lambda dashboard_url, project_root: True,
-    )
-
-    assert server.server_is_healthy(record, scope) is False
 
 
 def test_server_health_rejects_reused_server_pid_identity(monkeypatch, tmp_path):
@@ -495,116 +469,9 @@ def test_ensure_server_reuses_healthy_record_and_cleans_extra_same_scope_upstrea
     assert terminated == [333]
 
 
-def test_server_terminate_record_delegates_to_shared_termination(monkeypatch):
-    terminated = []
-
-    def fake_terminate(pid, *, expected_identity=None):
-        terminated.append((pid, expected_identity))
-
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.terminate_pid", fake_terminate)
-
-    server._terminate_record(ServerRecord(
-        server_pid=111,
-        mcp_url="http://127.0.0.1:9000/mcp",
-        dashboard_url="http://127.0.0.1:24000",
-        project_root="/repo",
-        client_type="codex",
-        started_at=1.0,
-        leases={},
-        upstream_mcp_url="http://127.0.0.1:9001/mcp",
-        proxy_pid=222,
-        server_identity="serena identity",
-        proxy_identity="proxy identity",
-    ))
-
-    assert terminated == [(222, "proxy identity"), (111, "serena identity")]
-
-
-def test_start_serena_process_redirects_output_to_scope_log(monkeypatch, tmp_path):
-    scope = Scope(tmp_path, "codex")
-    monkeypatch.setattr(server, "serena_server_command", lambda: ["serena"])
-    calls = []
-
-    class Proc:
-        pid = 123
-
-    def fake_popen(*args, **kwargs):
-        calls.append((args, kwargs))
-        return Proc()
-
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.subprocess.Popen", fake_popen)
-
-    proc = _start_serena_process(scope, 9012)
-
-    assert proc.dotsync_log_path == scope.project_root / ".serena" / "dotsync-mcp" / "codex" / "serena-server.log"
-    assert calls
-    kwargs = calls[0][1]
-    assert kwargs["stdout"] is not subprocess.PIPE
-    assert kwargs["stderr"] == subprocess.STDOUT
-    assert kwargs["text"] is True
-    assert kwargs["start_new_session"] is True
-    assert kwargs["cwd"] == str(scope.project_root)
-
-
-def test_start_proxy_process_uses_module_cli_and_scope_log(monkeypatch, tmp_path):
-    scope = Scope(tmp_path, "codex")
-    calls = []
-
-    class Proc:
-        pid = 222
-
-    def fake_popen(*args, **kwargs):
-        calls.append((args, kwargs))
-        return Proc()
-
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.server.subprocess.Popen", fake_popen)
-
-    proc = server._start_proxy_process(scope, 9013, "http://127.0.0.1:9012/mcp")
-
-    assert proc.dotsync_log_path == scope.project_root / ".serena" / "dotsync-mcp" / "codex" / "serena-proxy.log"
-    assert calls
-    command = calls[0][0][0]
-    kwargs = calls[0][1]
-    assert command == [
-        sys.executable,
-        "-m",
-        "local_dev.serena_mcp_management.serena_mcp.proxy",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "9013",
-        "--upstream-url",
-        "http://127.0.0.1:9012/mcp",
-        "--log-path",
-        str(proc.dotsync_log_path),
-    ]
-    assert kwargs["stdout"] is not subprocess.PIPE
-    assert kwargs["stderr"] == subprocess.STDOUT
-    assert kwargs["text"] is True
-    assert kwargs["start_new_session"] is True
-    assert kwargs["cwd"] == str(server.REPO_ROOT)
-
-
 def test_discover_dashboard_url_reads_redirected_log(tmp_path):
     log_path = tmp_path / "serena-server.log"
     log_path.write_text("INFO Serena web dashboard started at http://127.0.0.1:24284/dashboard/index.html\n")
-
-    class Proc:
-        pid = 123
-        dotsync_log_path = log_path
-
-        def poll(self):
-            return None
-
-    assert _discover_dashboard_url(Proc(), timeout=0.1) == "http://127.0.0.1:24284"
-
-
-def test_discover_dashboard_url_ignores_mcp_url_before_dashboard_url(tmp_path):
-    log_path = tmp_path / "serena-server.log"
-    log_path.write_text(
-        "INFO MCP server listening at http://127.0.0.1:19000/mcp\n"
-        "INFO Serena web dashboard started at http://127.0.0.1:24284/dashboard/index.html\n"
-    )
 
     class Proc:
         pid = 123

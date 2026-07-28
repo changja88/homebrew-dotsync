@@ -104,8 +104,11 @@ integration / hook), context, grouped agent memory inventory, and one grouped
 global session inventory that contains its cleanup condition and candidate
 counts. After setup prompts (including an optional Initialize/Skip prompt when
 `.serena/project.yml` is absent), the launcher collects independent memory and
-session choices, performs the selected product-scoped actions, and starts the
-scoped Serena MCP server with inline progress rows below the preflight box.
+session choices for Claude. Codex instead first shows a keep/reset choice and
+performs a confirmed product-wide conversation-state reset without a
+per-session preserve list. The launcher performs the selected product-scoped
+actions and starts the scoped Serena MCP server with inline progress rows below
+the preflight box.
 When the agent TUI exits, a summary box reports session duration, cleanup
 result, MCP lifecycle, and any accumulated warnings.
 Non-interactive commands (`codex exec`, `claude -p`, help/version) and Claude
@@ -121,64 +124,102 @@ row before returning exit code `130` without a Python traceback:
 
 ### Startup memory and session choices
 
-Every interactive launch asks both questions below. Claude uses the same exact
-wording with `Claude` substituted for `Codex`:
+#### Codex
+
+Interactive Codex launches have a two-stage combined reset flow and no
+independent memory question. The first choice is default-safe:
 
 ```text
-? Delete Codex auto-memory before launch?
-  ▶ Keep all memory (default)
-    Delete all Codex auto-memory
+? Reset Codex sessions and memories before launch?
+  ▶ Keep all sessions and memories (default)
+    Delete all sessions, memories, and conversation traces
+```
 
-? Delete Codex sessions before launch?
+Keeping sessions and memories is an exact no-op and does not run the former
+five-day Codex cleanup. Choosing the destructive option does not open a session
+picker. It asks for one final confirmation:
+
+```text
+Permanently delete ALL Codex sessions, memories, history, logs, snapshots,
+and currently running sessions? The Codex app will be restarted if it is open.
+[y/N]
+```
+
+A confirmed reset deliberately has no preserve list. The launcher first stops
+detected Codex CLI and app-server runtimes. If Codex Desktop is open, the
+launcher temporarily closes it so cached state cannot recreate deleted traces,
+then reopens it after verification.
+Runtime discovery and identity-pinned termination repeat before and after
+mutation. If any Codex runtime keeps respawning, the reset fails instead of
+reporting a clean state.
+
+The reset covers the default `~/.codex`, the active absolute `$CODEX_HOME`,
+and Orca's managed runtime home at
+`~/Library/Application Support/orca/codex-runtime-home/home`. It also honors
+safe `sqlite_home`, `CODEX_SQLITE_HOME`, and `log_dir` locations from the user
+config, every user profile, `/etc/codex/config.toml`, trusted project config
+layers, current `-c` / `--config` overrides, and detected running Codex
+invocations. `-C` / `--cd` and each running process working directory are used
+when resolving relative paths. The preflight inventory still counts logical
+sessions from rollout JSONL and `state_<n>.sqlite` so the result can report how
+many existed, but deletion does not depend on selecting every ID.
+
+After confirmation the launcher:
+
+1. removes `sessions/` and `archived_sessions/` in every known Codex home;
+2. removes complete SQLite conversation stores and their
+   WAL/SHM/rollback-journal companions: `state_<n>.sqlite`,
+   `goals_<n>.sqlite`, `memories_<n>.sqlite`, and `logs_<n>.sqlite`;
+3. removes generated memory and history:
+   `memories/`, `memories_extensions/`, and `history.jsonl`;
+4. removes recognized logs, snapshots, visualizations, ambient suggestions,
+   and chat-process state, plus the documented Codex Desktop logs under
+   `~/Library/Logs/com.openai.codex/`; external configured log directories
+   retain unrelated files;
+5. surgically removes prompt history, drafts, queued follow-ups, unread thread
+   IDs, permissions, and per-thread UI state from Desktop global-state files
+   while preserving model, project, window, onboarding, and other app settings;
+6. clears Desktop runtime tables from `sqlite/codex-dev.db`, preserves
+   automation definitions and app-server feature enablement, then applies
+   SQLite secure deletion, WAL checkpointing, and `VACUUM`; and
+7. rescans every target and fails the reset if any old session row, rollout,
+   memory, log, snapshot, or desktop thread row remains.
+
+The launcher preserves `config.toml`, `auth.json`, plugins, skills, automation
+definitions, feature enablement, and unrelated user files. A symlink in a
+Codex-home or configured-root path fails closed; a final recognized reset
+target that is itself a symlink is unlinked without following it. A recognized
+file target with the wrong type is preserved and makes the reset fail. A failed
+reset aborts the new Codex launch, so it cannot masquerade as a clean start.
+This hard reset intentionally does not loop over the official per-session
+[`codex delete --force <UUID>`](https://learn.chatgpt.com/docs/developer-commands?surface=cli#cli-codex-delete)
+command: that command deletes one saved session, whereas this option is the
+explicit product-wide reset requested by the user.
+
+#### Claude
+
+Claude keeps the existing two independent questions:
+
+```text
+? Delete Claude auto-memory before launch?
+  ▶ Keep all memory (default)
+    Delete all Claude auto-memory
+
+? Delete Claude sessions before launch?
   ▶ No full deletion — automatic cleanup after 5 days (default)
     Delete all inactive sessions — running sessions are preserved
 ```
 
-The memory default keeps all memory. The session default means no full
-deletion, not no deletion: sessions strictly older than five days still use the
-normal cleanup path. Choosing explicit session deletion removes every safely
-identified inactive session for the selected product regardless of age while
-preserving sessions proven to be running. A Codex launch touches only Codex
-memory and sessions; a Claude launch touches only Claude memory and sessions.
-Memory prompts and action rows use purple, while session prompts and action rows
-use yellow.
+The Claude memory choice covers every direct
+`$CLAUDE_CONFIG_DIR/projects/<project>/memory/` directory (or the equivalent
+paths below `~/.claude/projects` when unset), plus the exact valid custom
+directory configured by `autoMemoryDirectory`. Claude explicit session cleanup
+continues to preserve active/open bundles.
 
-The launcher records both answers before any mutation. Ctrl+C at either question
-therefore leaves memory and sessions unchanged, does not launch a child, prints
-the existing `! cancelled` row, and returns exit code `130` without a traceback.
-There is no separate `Cancel` option. Non-interactive bypass commands show
-neither prompt and never opt into full memory or session deletion.
-
-`Delete all <product> auto-memory` explicitly deletes the selected product's
-complete main auto-memory scope before session cleanup; the launcher never
-deletes memory by age or without this selection:
-
-- **Codex:** the exact `memories/` directory under every known Codex home —
-  the default `~/.codex`, the active absolute `$CODEX_HOME`, and Orca's managed
-  runtime home at
-  `~/Library/Application Support/orca/codex-runtime-home/home` — with duplicate
-  homes collapsed. `memories_extensions/`, sessions, and other Codex state are
-  outside this scope.
-- **Claude:** every direct
-  `$CLAUDE_CONFIG_DIR/projects/<project>/memory/` directory (or the equivalent
-  paths below `~/.claude/projects` when unset), plus the exact valid custom
-  directory configured by `autoMemoryDirectory`. Subagent `agent-memory/`,
-  transcripts, instructions, and other Claude state are outside this scope.
-
-Deletion always rescans and validates the complete scope immediately before
-mutation. A warning-free inventory with zero stores is a successful no-op: no
-process scan is needed, and the launcher continues to the selected session
-policy and agent launch with a `0 stores · 0 files deleted` result. For a
-non-empty inventory, another real native or official Node process for the same
-product blocks explicit memory deletion; ChatGPT/Claude GUI helper processes do
-not. The failure names up to three representative PID/executable pairs and
-summarizes any remainder. If a process conflict, scan, safety validation, or
-filesystem deletion fails, the launcher reports the failure and continues to the
-selected session policy and agent launch. The failed deletion is never reported
-as successful; partial deletion keeps its exact counts and is not automatically
-backed up. Cleanup choices affect cleanup only — after both questions have been
-answered, only an explicit cancellation or a launch/setup failure prevents the
-agent from starting.
+Ctrl+C at any pre-launch prompt leaves state unchanged, does not launch a
+child, prints the existing `! cancelled` row, and returns exit code `130`
+without a traceback. Non-interactive bypass commands show no destructive
+prompt and never opt into the combined Codex reset or full Claude deletion.
 
 `serena project create` (run on Initialize) is **captured, not streamed**: its
 verbose language detection, the interactive language prompts auto-answered via
@@ -237,25 +278,23 @@ table abbreviations:
 ✓ serena mcp  server processes[3] → managed servers[3] · orphaned servers[0] · leases[4] · stale leases[0]
 ```
 
-| Context | Session scope | Default five-day retention | Explicit all-inactive deletion |
+| Context | Session scope | No explicit selection | Explicit deletion |
 |---|---|---|---|
-| `codex` | Logical top-level sessions across `~/.codex`, the active `$CODEX_HOME`, and Orca's managed Codex home. Root/descendant rollouts and hard-linked bridge copies count once; the newest member controls retention. | Open or concurrently changed groups are kept. Eligible roots are deleted source-home first through the official `codex delete --force <UUID>` command in each owning Codex home. JSONL and SQLite are never edited directly. | A fresh all-inactive scan ignores age, preserves every open logical group, revalidates paths and fingerprints, and deletes each inactive group only through official `codex delete --force <UUID>` calls. |
+| `codex` | Logical sessions from rollout JSONL and read-only `state_<n>.sqlite` thread rows, including archived and state-only entries, across `~/.codex`, the active `$CODEX_HOME`, and Orca's managed Codex home. Linked descendants and copies count once for pre-reset reporting. | Exact no-op; no automatic five-day deletion. | One confirmed hard reset stops detected CLI/app-server runtimes, temporarily restarts an open Desktop app, and removes every known session, state, memory, history, log, snapshot, and desktop thread record. There is no per-session preserve list. Config, auth, plugins, skills, app preferences, and automation definitions remain. |
 | `claude` | Top-level session JSONL files for every project under `$CLAUDE_CONFIG_DIR/projects` (or `~/.claude/projects` when unset). Subagent files are counted with their parent. | The child process receives the official execution-only setting `--settings '{"cleanupPeriodDays":5}'`; Claude Code performs its native startup sweep. | A fresh scan builds bounded bundles only for exact valid session UUIDs across the supported transcript, subagent/tool-result, file-history, session-env, tasks, and debug roots. It preserves bundles proven active by validated running-session markers or open files, revalidates the complete manifest, never follows symlinks, and never uses project purge. |
 
-The cutoff is strictly older than `5 * 24h`; a session exactly on the cutoff is
-kept. The five-day rule applies only to sessions: it never deletes Codex or
-Claude auto-memory, and Codex `archived_sessions` remain outside session
-cleanup. Explicit Claude deletion removes only complete, unchanged inactive
-UUID bundles; it leaves memory, settings, credentials, unrelated project files,
-and Claude's session-marker files untouched. After either session choice, the
-normal five-day policy remains configured for the new child. Session counts are
+For Claude, the cutoff is strictly older than `5 * 24h`; a session exactly on
+the cutoff is kept. The five-day rule applies only to Claude sessions and never
+deletes auto-memory. Explicit Claude deletion removes only complete, unchanged
+inactive UUID bundles; it leaves memory, settings, credentials, unrelated
+project files, and Claude's session-marker files untouched. Session counts are
 grouped by data type under one top-level row. Normal preflight rows read:
 
 ```text
 · sessions    codex
-              ├─ groups   58 total · 35 to delete · 23 to keep
-              ├─ records  855 total · 358 to delete · 497 to keep
-              └─ cleanup  inactive longer than 5 days
+              ├─ groups   58 total · 0 to delete · 58 to keep
+              ├─ records  855 total · 0 to delete · 855 to keep
+              └─ cleanup  full reset on confirmation · no automatic deletion
 ```
 
 ```text
@@ -264,13 +303,14 @@ grouped by data type under one top-level row. Normal preflight rows read:
               └─ cleanup  inactive longer than 5 days · native Claude cleanup
 ```
 
-Interactive memory prompt/action rows are purple and session prompt/action rows
-are yellow. The inventory tree keeps its existing detail palette: total segments
-are pink, the cleanup condition is purple, delete segments are yellow, keep
-segments and child labels are mint, and tree glyphs are gray. The final summary
-reports `N sessions deleted` for default Codex retention,
-`native retention 5d . N eligible` for default Claude retention, or
-`N sessions deleted · M running preserved` after explicit session deletion.
+Claude memory prompt/action rows are purple and all session/reset prompt/action
+rows are yellow. The inventory tree keeps its existing detail palette: total
+segments are pink, the cleanup condition is purple, delete segments are yellow,
+keep segments and child labels are mint, and tree glyphs are gray. The final
+summary reports `N sessions deleted · M conversation-state targets reset`
+after a Codex reset, `native retention 5d . N eligible` for default Claude
+retention, or `N sessions deleted · M running preserved` after explicit Claude
+session deletion.
 If explicit cleanup fails after mutation starts, its immediate yellow row keeps
 fully deleted logical sessions separate from completed member/root operations
 inside the incomplete session. It names up to three affected members or paths,

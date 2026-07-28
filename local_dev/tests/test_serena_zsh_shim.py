@@ -53,161 +53,6 @@ def test_render_zsh_shim_defines_graphify_split_helpers():
     assert "_dotsync_agent_graphify_hooks_installed" in text
 
 
-def test_render_zsh_shim_graphify_global_helper_branches_on_client():
-    text = render_zsh_shim(
-        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
-        python_executable=Path("/repo/.venv/bin/python3"),
-        codex_binary=Path("/opt/homebrew/bin/codex"),
-        claude_binary=Path("/opt/homebrew/bin/claude"),
-    )
-
-    # The user-level skill lives under ~/.claude/skills/graphify for claude
-    # and ~/.codex/skills/graphify for codex (graphifyy 0.8.x
-    # `graphify install --platform codex` 실측 경로).
-    assert "$HOME/.claude/skills/graphify" in text
-    assert "$HOME/.codex/skills/graphify" in text
-
-
-def test_render_zsh_shim_graphify_graph_helper_checks_graph_json():
-    text = render_zsh_shim(
-        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
-        python_executable=Path("/repo/.venv/bin/python3"),
-        codex_binary=Path("/opt/homebrew/bin/codex"),
-        claude_binary=Path("/opt/homebrew/bin/claude"),
-    )
-
-    # The graph row reflects whether `graphify` ran in this project root.
-    assert "graphify-out/graph.json" in text
-
-
-def test_render_zsh_shim_graphify_integration_helper_branches_on_client():
-    text = render_zsh_shim(
-        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
-        python_executable=Path("/repo/.venv/bin/python3"),
-        codex_binary=Path("/opt/homebrew/bin/codex"),
-        claude_binary=Path("/opt/homebrew/bin/claude"),
-    )
-
-    # claude integration: CLAUDE.md + .claude/settings.json
-    # codex integration: AGENTS.md + .codex/hooks.json
-    assert "CLAUDE.md" in text
-    assert ".claude/settings.json" in text
-    assert "AGENTS.md" in text
-    assert ".codex/hooks.json" in text
-
-
-def test_render_zsh_shim_graphify_integration_helper_checks_file_content():
-    """File existence alone is too loose — projects with their own CLAUDE.md
-    or .claude/settings.json (unrelated to graphify) get falsely marked as
-    'integration installed'. The check must also confirm graphify-specific
-    content, mirroring the hook-marker pattern used by hooks_installed.
-    """
-    text = render_zsh_shim(
-        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
-        python_executable=Path("/repo/.venv/bin/python3"),
-        codex_binary=Path("/opt/homebrew/bin/codex"),
-        claude_binary=Path("/opt/homebrew/bin/claude"),
-    )
-
-    # The markdown section references `graphify-out`; Codex hook files use
-    # `graphify hook-check`, while Claude settings still mention graphify-out.
-    assert "grep -q" in text
-    assert "graphify-out" in text
-    assert "hook-check" in text
-
-
-@pytest.mark.no_subprocess_block
-def test_zsh_shim_graphify_integration_returns_missing_when_files_lack_graphify(tmp_path):
-    """Empty {} settings.json + dotsync's own CLAUDE.md must NOT be detected
-    as a graphify integration."""
-    shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "CLAUDE.md").write_text("# CLAUDE.md\n\nThis project has nothing to do with graphify.\n")
-    claude_dir = project / ".claude"
-    claude_dir.mkdir()
-    (claude_dir / "settings.json").write_text("{}\n")
-
-    result = subprocess.run(
-        [
-            "zsh",
-            "-fc",
-            (
-                f"source {shim_path}; "
-                f"_dotsync_agent_graphify_integration_installed {project} claude; "
-                "print integration=$?"
-            ),
-        ],
-        env={**os.environ, "HOME": str(tmp_path)},
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    assert "integration=1" in result.stdout
-
-
-@pytest.mark.no_subprocess_block
-def test_zsh_shim_graphify_integration_returns_installed_when_content_present(tmp_path):
-    """When CLAUDE.md has the `## graphify` section AND .claude/settings.json
-    references graphify-out, the integration is genuinely installed."""
-    shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "CLAUDE.md").write_text(
-        "# CLAUDE.md\n\n## graphify\n\nThis project has a graphify knowledge graph at graphify-out/.\n"
-    )
-    claude_dir = project / ".claude"
-    claude_dir.mkdir()
-    (claude_dir / "settings.json").write_text(
-        '{"hooks":{"PreToolUse":[{"hooks":[{"command":"graphify-out/graph.json"}]}]}}\n'
-    )
-
-    result = subprocess.run(
-        [
-            "zsh",
-            "-fc",
-            (
-                f"source {shim_path}; "
-                f"_dotsync_agent_graphify_integration_installed {project} claude; "
-                "print integration=$?"
-            ),
-        ],
-        env={**os.environ, "HOME": str(tmp_path)},
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    assert "integration=0" in result.stdout
-
-
-@pytest.mark.no_subprocess_block
-def test_zsh_shim_graphify_integration_codex_returns_missing_when_files_lack_graphify(tmp_path):
-    shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "AGENTS.md").write_text("# AGENTS.md\n\nUnrelated content.\n")
-    codex_dir = project / ".codex"
-    codex_dir.mkdir()
-    (codex_dir / "hooks.json").write_text("{}\n")
-
-    result = subprocess.run(
-        [
-            "zsh",
-            "-fc",
-            (
-                f"source {shim_path}; "
-                f"_dotsync_agent_graphify_integration_installed {project} codex; "
-                "print integration=$?"
-            ),
-        ],
-        env={**os.environ, "HOME": str(tmp_path)},
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    assert "integration=1" in result.stdout
-
-
 @pytest.mark.no_subprocess_block
 def test_zsh_shim_graphify_integration_codex_returns_installed_when_hook_check_present(tmp_path):
     shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
@@ -241,25 +86,6 @@ def test_zsh_shim_graphify_integration_codex_returns_installed_when_hook_check_p
         check=True,
     )
     assert "integration=0" in result.stdout
-
-
-def test_render_zsh_shim_graphify_hooks_check_uses_project_root():
-    text = render_zsh_shim(
-        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
-        python_executable=Path("/repo/.venv/bin/python3"),
-        codex_binary=Path("/opt/homebrew/bin/codex"),
-        claude_binary=Path("/opt/homebrew/bin/claude"),
-    )
-
-    # The probe must accept the resolved project root (not $PWD) so that the
-    # status reflects the same scope used elsewhere in the preflight.
-    assert '_dotsync_agent_graphify_hooks_installed "$project_root"' in text
-    assert "config core.hooksPath" in text
-    assert 'hooks_dir="$project_root/.git/hooks"' in text
-    assert 'pc="$hooks_dir/post-commit"' in text
-    assert 'pco="$hooks_dir/post-checkout"' in text
-    assert "graphify-hook-start" in text
-    assert "graphify-checkout-hook-start" in text
 
 
 @pytest.mark.no_subprocess_block
@@ -313,21 +139,6 @@ def test_render_zsh_shim_defers_clear_to_launcher_after_codex_cleanup():
     assert codex_body.index('SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"') < codex_body.index('"$SERENA_AGENT_PYTHON" "$SERENA_AGENT_LAUNCHER" "$@"')
 
 
-def test_render_zsh_shim_defers_clear_to_launcher_after_claude_cleanup():
-    text = render_zsh_shim(
-        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
-        python_executable=Path("/repo/.venv/bin/python3"),
-        codex_binary=Path("/opt/homebrew/bin/codex"),
-        claude_binary=Path("/opt/homebrew/bin/claude"),
-    )
-
-    claude_body = text.split("\nclaude() {", 1)[1].split("\ncodex() {", 1)[0]
-
-    assert "printf '\\e[3J\\e[H\\e[2J'" not in claude_body
-    assert 'SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"' in claude_body
-    assert claude_body.index('SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive"') < claude_body.index('"$SERENA_AGENT_PYTHON" "$SERENA_AGENT_LAUNCHER" "$@"')
-
-
 def test_render_zsh_shim_does_not_depend_on_path_wrapper_installation():
     text = render_zsh_shim(
         launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
@@ -357,20 +168,6 @@ def test_render_zsh_shim_marks_missing_serena_project_in_preflight():
     assert "SERENA_AGENT_PREFLIGHT_SERENA_STATUS" in text
     assert 'serena_status="managed"' in text
     assert 'serena_status="missing"' in text
-
-
-def test_zsh_shim_cli_prints_installed_launcher_snippet(monkeypatch, capsys):
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_zsh_shim.shutil.which", lambda name: f"/opt/homebrew/bin/{name}")
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_zsh_shim.sys.executable", "/opt/homebrew/bin/python3.12")
-
-    assert main([]) == 0
-
-    output = capsys.readouterr().out
-    assert 'SERENA_AGENT_LAUNCHER="' in output
-    assert "local_dev/serena_mcp_management/serena_agent_launcher.py" in output
-    assert 'SERENA_AGENT_PYTHON="/opt/homebrew/bin/python3.12"' in output
-    assert "SERENA_REAL_CODEX=/opt/homebrew/bin/codex" in output
-    assert "SERENA_REAL_CLAUDE=/opt/homebrew/bin/claude" in output
 
 
 def test_default_python_executable_prefers_python_312_when_current_is_too_old(monkeypatch, tmp_path):
@@ -570,53 +367,6 @@ def test_uninstall_zshrc_shim_idempotent_when_block_absent(tmp_path):
     # so the operation always leaves a recoverable snapshot.
     assert rc_path.read_text() == original
     assert backup_path.read_text() == original
-
-
-def test_uninstall_zshrc_shim_noop_when_rc_missing(tmp_path):
-    rc_path = tmp_path / ".zshrc"
-    # rc file does not exist; uninstall must not crash and must not create one.
-    backup_path = uninstall_zshrc_shim(rc_path=rc_path)
-
-    assert not rc_path.exists()
-    assert backup_path is None
-
-
-def test_zsh_shim_cli_uninstalls_managed_block(monkeypatch, tmp_path, capsys):
-    rc_path = tmp_path / ".zshrc"
-    rc_path.write_text(
-        "keep\n"
-        "# >>> dotsync serena agent launcher >>>\n"
-        "managed body\n"
-        "# <<< dotsync serena agent launcher <<<\n"
-        "tail\n"
-    )
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_zsh_shim.shutil.which", lambda name: f"/opt/homebrew/bin/{name}")
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_zsh_shim.sys.executable", "/opt/homebrew/bin/python3.12")
-
-    assert main(["--uninstall-zshrc", "--rc-path", str(rc_path)]) == 0
-
-    text = rc_path.read_text()
-    assert "managed body" not in text
-    assert "dotsync serena agent launcher" not in text
-    assert "keep\n" in text
-    assert "tail\n" in text
-    output = capsys.readouterr().out
-    # Confirmation message tells the user what happened so they don't have to
-    # diff their rc file to be sure.
-    assert f"removed Serena zsh shim from {rc_path}" in output
-
-
-def test_zsh_shim_cli_installs_into_selected_rc_path(monkeypatch, tmp_path, capsys):
-    rc_path = tmp_path / ".zshrc"
-    rc_path.write_text("existing\n")
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_zsh_shim.shutil.which", lambda name: f"/opt/homebrew/bin/{name}")
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_zsh_shim.sys.executable", "/opt/homebrew/bin/python3.12")
-
-    assert main(["--install-zshrc", "--rc-path", str(rc_path)]) == 0
-
-    output = capsys.readouterr().out
-    assert f"installed Serena zsh shim into {rc_path}" in output
-    assert "SERENA_AGENT_LAUNCHER" in rc_path.read_text()
 
 
 def test_render_zsh_shim_packs_preflight_status_env_vars():

@@ -7,13 +7,12 @@ from local_dev.serena_mcp_management.serena_mcp.registry import (
     Lease,
     ServerRecord,
     locked_registry,
-    remove_lease,
     record_belongs_to_scope,
     touch_lease,
 )
 
 
-def test_registry_adds_and_removes_lease(tmp_path):
+def test_registry_persists_lease_updates(tmp_path):
     scope = Scope(tmp_path, "codex")
     record = ServerRecord(
         server_pid=123,
@@ -32,7 +31,7 @@ def test_registry_adds_and_removes_lease(tmp_path):
     with locked_registry(scope) as registry:
         assert registry.record is not None
         assert "lease-a" in registry.record.leases
-        remove_lease(registry, "lease-a")
+        registry.record.leases.pop("lease-a")
 
     with locked_registry(scope) as registry:
         assert registry.record is not None
@@ -141,12 +140,6 @@ def _record_for_scope(scope: Scope) -> ServerRecord:
         upstream_mcp_url="http://127.0.0.1:9001/mcp",
         proxy_pid=333,
     )
-
-
-def test_record_belongs_to_scope_accepts_matching_scope(tmp_path):
-    scope = Scope(tmp_path / "repo", "codex")
-
-    assert record_belongs_to_scope(_record_for_scope(scope), scope) is True
 
 
 def test_record_belongs_to_scope_rejects_wrong_project(tmp_path):

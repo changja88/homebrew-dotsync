@@ -9,7 +9,7 @@ from local_dev.serena_mcp_management.session_inventory import (
     ActiveSessionScanError,
     CountStats,
     FileIdentity,
-    scan_inventory,
+    scan_claude_inventory,
     snapshot_active_claude_sessions,
 )
 
@@ -35,10 +35,8 @@ def test_scan_claude_all_inactive_groups_exact_session_bundles(tmp_path):
     memory = _write(config / "projects/-repo/memory/MEMORY.md", "keep")
     settings = _write(config / "settings.json", "{}")
 
-    inventory = scan_inventory(
-        client="claude",
+    inventory = scan_claude_inventory(
         home=tmp_path,
-        codex_home=tmp_path / ".codex",
         policy="all_inactive",
         active_claude_session_ids=frozenset(),
         open_file_identities=frozenset(),
@@ -65,10 +63,8 @@ def test_scan_claude_all_inactive_preserves_marker_or_open_bundle(tmp_path):
     opened = _write(config / "projects/-repo" / f"{SESSION_B}.jsonl")
     opened_stat = opened.stat()
 
-    inventory = scan_inventory(
-        client="claude",
+    inventory = scan_claude_inventory(
         home=tmp_path,
-        codex_home=tmp_path / ".codex",
         policy="all_inactive",
         active_claude_session_ids=frozenset({SESSION_A}),
         open_file_identities=frozenset(
@@ -172,10 +168,8 @@ def test_scan_claude_all_inactive_rejects_bundle_symlink(tmp_path):
     outside = _write(tmp_path / "outside.txt", "keep")
     (bundle / "escape").symlink_to(outside)
 
-    inventory = scan_inventory(
-        client="claude",
+    inventory = scan_claude_inventory(
         home=tmp_path,
-        codex_home=tmp_path / ".codex",
         policy="all_inactive",
         active_claude_session_ids=frozenset(),
         open_file_identities=frozenset(),

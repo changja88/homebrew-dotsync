@@ -110,13 +110,6 @@ def touch_lease(registry: Registry, lease: Lease) -> None:
     registry.record.leases[lease.lease_id] = lease
 
 
-def remove_lease(registry: Registry, lease_id: str) -> None:
-    """Remove a lease if present."""
-
-    if registry.record is not None:
-        registry.record.leases.pop(lease_id, None)
-
-
 def record_belongs_to_scope(record: ServerRecord, scope: Scope) -> bool:
     """Return true when a registry record belongs to the current scope."""
 
@@ -124,23 +117,6 @@ def record_belongs_to_scope(record: ServerRecord, scope: Scope) -> bool:
         record.project_root == str(scope.project_root)
         and record.client_type == scope.client_type
     )
-
-
-def stale_lease_ids(
-    registry: Registry,
-    *,
-    now: float,
-    timeout_seconds: float,
-) -> list[str]:
-    """Return lease ids whose heartbeat is older than the timeout."""
-
-    if registry.record is None:
-        return []
-    return [
-        lease_id
-        for lease_id, lease in registry.record.leases.items()
-        if now - lease.heartbeat_at > timeout_seconds
-    ]
 
 
 def _load_record(path: Path) -> ServerRecord | None:

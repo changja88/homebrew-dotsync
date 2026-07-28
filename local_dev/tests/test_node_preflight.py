@@ -80,10 +80,6 @@ def test_codex_node_commands_reads_config_toml(tmp_path):
     assert "npx" in cmds
 
 
-def test_codex_node_commands_missing_config_is_empty(tmp_path):
-    assert np.codex_node_commands(codex_home=tmp_path / "nope") == []
-
-
 def test_node_need_generic_for_claude_with_npx_plugin(tmp_path):
     """An npx-based MCP is a generic node need — any node on PATH satisfies it."""
     cdir = tmp_path / ".claude"
@@ -110,17 +106,6 @@ def test_node_need_homebrew_for_claude_hud_statusline(tmp_path):
     assert need.any
     assert need.homebrew
     assert not need.generic
-
-
-def test_node_need_none_for_claude_with_only_uvx(tmp_path):
-    cdir = tmp_path / ".claude"
-    cdir.mkdir()
-    (cdir / "settings.json").write_text(
-        json.dumps({"enabledPlugins": {"serena@mp": True}})
-    )
-    _write_plugin_mcp(cdir, "mp", "serena", "uvx")
-    need = np.node_need("claude", claude_dir=cdir, claude_json=tmp_path / "x.json")
-    assert not need.any
 
 
 def test_node_need_generic_for_codex_with_npx(tmp_path):

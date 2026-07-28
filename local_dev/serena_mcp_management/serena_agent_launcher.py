@@ -31,6 +31,11 @@ from local_dev.serena_mcp_management.external_cli import (
     serena_oneshot_command,
     serena_server_command,
 )
+from local_dev.serena_mcp_management.codex_reset import (
+    CodexResetResult,
+    reset_all_codex_data,
+    scan_codex_session_catalog,
+)
 from local_dev.serena_mcp_management.memory_management import (
     MemoryDeleteResult,
     MemoryInventory,
@@ -58,12 +63,12 @@ from local_dev.serena_mcp_management.session_cleanup import (
     CleanupResult,
     claude_retention_args,
     cleanup_claude_inventory,
-    cleanup_codex_inventory,
 )
 from local_dev.serena_mcp_management.session_inventory import (
     AgentInventory,
+    CountStats,
     RETENTION_DAYS,
-    scan_inventory,
+    scan_claude_inventory,
 )
 from local_dev.serena_mcp_management.ui import (
     MINT,
@@ -94,6 +99,8 @@ class LaunchPrepSummary:
     native_eligible: int = 0
     running_preserved: int = 0
     full_cleanup: bool = False
+    codex_reset: bool = False
+    reset_trace_targets: int = 0
     warnings: tuple[str, ...] = ()
 
 
@@ -138,7 +145,37 @@ def _memory_scan_kwargs(client: str) -> _MemoryScanKwargs:
 
 
 def _inventory_for_preflight(client: str, project_root: str) -> AgentInventory:
-    return scan_inventory(**_memory_scan_kwargs(client))
+    if client == "codex":
+        scan_kwargs = _memory_scan_kwargs("codex")
+        catalog = scan_codex_session_catalog(
+            home=scan_kwargs["home"],
+            codex_home=scan_kwargs["codex_home"],
+        )
+        record_total = sum(
+            len(owner.delete_ids)
+            for session in catalog.sessions
+            for owner in session.owners
+        )
+        return AgentInventory(
+            client="codex",
+            sessions=CountStats(
+                total=len(catalog.sessions),
+                to_delete=0,
+                to_keep=len(catalog.sessions),
+            ),
+            records=CountStats(
+                total=record_total,
+                to_delete=0,
+                to_keep=record_total,
+            ),
+            criteria="sessions: all known homes + full reset only",
+            warnings=catalog.warnings,
+        )
+    scan_kwargs = _memory_scan_kwargs("claude")
+    return scan_claude_inventory(
+        home=scan_kwargs["home"],
+        claude_config_dir=scan_kwargs["claude_config_dir"],
+    )
 
 
 def _memory_inventory_for_preflight(client: str) -> MemoryInventory:
@@ -155,6 +192,17 @@ def _sessions_value(inventory: AgentInventory) -> str:
             inventory.sessions.to_delete,
             inventory.sessions.to_keep,
         )
+        if inventory.criteria.endswith("full reset only"):
+            return style_session_tree(
+                client="codex",
+                groups=groups,
+                records=(
+                    records.total,
+                    records.to_delete,
+                    records.to_keep,
+                ),
+                condition="full reset on confirmation · no automatic deletion",
+            )
     else:
         cleanup_note = "native Claude cleanup"
     return style_session_tree(
@@ -296,15 +344,14 @@ def main(argv: list[str] | None = None) -> int:
 def _run_launch_prep_v2(
     *,
     snapshot: InventorySnapshot | None,
-    real_binary: str,
     stream: TextIO | None = None,
 ) -> LaunchPrepSummary:
     """Apply the preflight inventory without scanning the session tree again."""
 
     out = stream if stream is not None else sys.stdout
     client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
-    if client not in {"codex", "claude"}:
-        raise RuntimeError(f"unsupported launcher name: {client}")
+    if client != "claude":
+        raise RuntimeError(f"Claude retention cannot run for {client}")
 
     out.write(
         render_inline_row(
@@ -347,44 +394,19 @@ def _run_launch_prep_v2(
         out.flush()
         return LaunchPrepSummary(warnings=(detail,))
 
-    if client == "claude":
-        eligible = inventory.sessions.to_delete
-        out.write(
-            render_inline_row(
-                "sessions",
-                f"native retention 5d . {eligible} eligible",
-                status="done",
-                accent=AMBER,
-            )
-        )
-        out.flush()
-        return LaunchPrepSummary(
-            native_eligible=eligible,
-            warnings=inventory.warnings,
-        )
-
-    result = cleanup_codex_inventory(
-        inventory,
-        codex_binary=real_binary,
-    )
-    value = f"{result.deleted} sessions deleted"
-    status = "done" if result.succeeded else "warn"
-    warnings = result.warnings
-    if not result.succeeded:
-        value = f"{value} · failed · {result.error}"
-        warnings = (*warnings, result.error or "session cleanup failed")
+    eligible = inventory.sessions.to_delete
     out.write(
         render_inline_row(
             "sessions",
-            value,
-            status=status,
+            f"native retention 5d . {eligible} eligible",
+            status="done",
             accent=AMBER,
         )
     )
     out.flush()
     return LaunchPrepSummary(
-        cleanup_deleted=result.deleted,
-        warnings=warnings,
+        native_eligible=eligible,
+        warnings=inventory.warnings,
     )
 
 
@@ -495,8 +517,15 @@ def _render_summary_v2(
     full_cleanup: bool,
     mcp_lifecycle: str,
     warnings: list[str],
+    codex_reset: bool = False,
+    reset_trace_targets: int = 0,
 ) -> None:
-    if full_cleanup:
+    if codex_reset:
+        sessions_value = (
+            f"{cleanup_deleted} sessions deleted · "
+            f"{reset_trace_targets} conversation-state targets reset"
+        )
+    elif full_cleanup:
         sessions_value = (
             f"{cleanup_deleted} sessions deleted · "
             f"{running_preserved} running preserved"
@@ -568,24 +597,51 @@ def _main_v2(args: list[str]) -> int:
     client_type = infer_client_type(
         os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0])
     )
+    project_root = (
+        _project_root_from_environment()
+        or find_project_root(Path.cwd())
+    )
     memory_choice = _run_memory_choice_v2()
     session_choice = _run_session_choice_v2()
 
-    memory_result = _run_memory_action_v2(
-        choice=memory_choice,
-        client=client_type,
-        stream=out,
+    memory_result = (
+        MemoryDeleteResult()
+        if session_choice in {"keep", "reset_all"}
+        else _run_memory_action_v2(
+            choice=memory_choice,
+            client=client_type,
+            stream=out,
+        )
     )
     if not memory_result.succeeded:
         warnings.append(
             f"memory: {memory_result.error or 'auto-memory deletion failed'}"
         )
 
-    real_binary = find_real_binary(client_type)
-    if interactive and session_choice == "delete_inactive":
+    real_binary: str | None = None
+    if interactive and session_choice == "reset_all":
+        reset_result = _run_codex_reset_v2(
+            stream=out,
+            child_args=tuple(args),
+            working_directory=project_root,
+        )
+        reset_warnings = list(reset_result.warnings)
+        if not reset_result.succeeded:
+            reset_warnings.append(
+                f"sessions: {reset_result.error or 'Codex reset failed'}"
+            )
+        summary_state = LaunchPrepSummary(
+            cleanup_deleted=reset_result.deleted_sessions,
+            full_cleanup=True,
+            codex_reset=True,
+            reset_trace_targets=reset_result.deleted_trace_targets,
+            warnings=tuple(reset_warnings),
+        )
+        if not reset_result.succeeded:
+            return 1
+    elif interactive and session_choice == "delete_inactive":
         cleanup_result = _run_explicit_session_cleanup_v2(
             client=client_type,
-            real_binary=real_binary,
             stream=out,
         )
         if cleanup_result.succeeded:
@@ -600,15 +656,19 @@ def _main_v2(args: list[str]) -> int:
             full_cleanup=True,
             warnings=cleanup_warnings,
         )
+    elif interactive and session_choice == "keep":
+        summary_state = LaunchPrepSummary()
     elif interactive:
         summary_state = _run_launch_prep_v2(
             snapshot=inventory_snapshot,
-            real_binary=real_binary,
         )
     else:
         summary_state = None
     if summary_state is not None:
         warnings.extend(summary_state.warnings)
+
+    if real_binary is None:
+        real_binary = find_real_binary(client_type)
 
     if serena_state in {"skipped", "failed"}:
         warnings.append(f"serena project create {serena_state}")
@@ -630,7 +690,6 @@ def _main_v2(args: list[str]) -> int:
             real_binary=real_binary,
         )
 
-    project_root = _project_root_from_environment() or find_project_root(Path.cwd())
     scope = Scope(project_root, client_type)
     lease_id = str(uuid.uuid4())
     lease = make_launcher_lease(lease_id)
@@ -697,6 +756,10 @@ def _main_v2(args: list[str]) -> int:
             summary_state.running_preserved if summary_state else 0
         )
         full_cleanup = summary_state.full_cleanup if summary_state else False
+        codex_reset = summary_state.codex_reset if summary_state else False
+        reset_trace_targets = (
+            summary_state.reset_trace_targets if summary_state else 0
+        )
         _render_summary_v2(
             stream=out,
             client=client_type,
@@ -707,6 +770,8 @@ def _main_v2(args: list[str]) -> int:
             full_cleanup=full_cleanup,
             mcp_lifecycle=mcp_lifecycle,
             warnings=warnings,
+            codex_reset=codex_reset,
+            reset_trace_targets=reset_trace_targets,
         )
     return rc
 
@@ -1528,6 +1593,9 @@ def _run_memory_choice_v2(
         return "keep"
     out = stream if stream is not None else sys.stdout
     client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
+    if client == "codex":
+        # Codex memory is part of the combined full-reset confirmation.
+        return "keep"
     product = "Codex" if client == "codex" else "Claude"
     choice = select_option(
         f"Delete {product} auto-memory before launch?",
@@ -1552,12 +1620,46 @@ def _run_session_choice_v2(
     *,
     stream: TextIO | None = None,
     input_fn: Callable[[], str] | None = None,
-) -> Literal["retention_5d", "delete_inactive"]:
+) -> Literal["keep", "reset_all", "retention_5d", "delete_inactive"]:
     """Choose the product-wide session policy before launch."""
     if os.environ.get("SERENA_AGENT_INTERACTIVE") != "1":
         return "retention_5d"
     out = stream if stream is not None else sys.stdout
     client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
+    if client == "codex":
+        reset_choice = select_option(
+            "Reset Codex sessions and memories before launch?",
+            options=(
+                SelectOption(
+                    "keep",
+                    "Keep all sessions and memories (default)",
+                ),
+                SelectOption(
+                    "reset",
+                    "Delete all sessions, memories, and conversation traces",
+                ),
+            ),
+            default_index=0,
+            accent=AMBER,
+            stream=out,
+            input_fn=input_fn,
+        )
+        if reset_choice == "keep":
+            return "keep"
+        if reset_choice != "reset":
+            raise RuntimeError(
+                f"unsupported Codex reset choice: {reset_choice}"
+            )
+        confirmed = confirm(
+            "Permanently delete ALL Codex sessions, memories, history, "
+            "logs, snapshots, and currently running sessions? "
+            "The Codex app will be restarted if it is open.",
+            default=False,
+            stream=out,
+            input_fn=input_fn,
+        )
+        return "reset_all" if confirmed else "keep"
+
     product = "Codex" if client == "codex" else "Claude"
     choice = select_option(
         f"Delete {product} sessions before launch?",
@@ -1584,6 +1686,57 @@ def _run_session_choice_v2(
         Literal["retention_5d", "delete_inactive"],
         choice,
     )
+
+
+def _run_codex_reset_v2(
+    *,
+    stream: TextIO | None = None,
+    child_args: tuple[str, ...] = (),
+    working_directory: Path | None = None,
+) -> CodexResetResult:
+    """Apply a confirmed full Codex conversation-state reset."""
+    out = stream if stream is not None else sys.stdout
+    out.write(
+        render_inline_row(
+            "sessions",
+            "force-deleting all sessions, memories, and conversation traces",
+            status="spin",
+            accent=AMBER,
+        )
+    )
+    out.flush()
+    scan_kwargs = _memory_scan_kwargs("codex")
+    try:
+        result = reset_all_codex_data(
+            home=scan_kwargs["home"],
+            codex_home=scan_kwargs["codex_home"],
+            working_directory=working_directory or Path.cwd(),
+            cli_arguments=child_args,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        result = CodexResetResult(
+            error=str(exc) or exc.__class__.__name__,
+        )
+
+    value = (
+        f"{result.deleted_sessions}/{result.discovered_sessions} sessions · "
+        f"{result.deleted_trace_targets} conversation-state targets deleted · "
+        f"{result.terminated_processes} runtimes stopped"
+    )
+    if result.desktop_restarted:
+        value = f"{value} · Codex app restarted"
+    if not result.succeeded:
+        value = f"{value} · failed · {result.error}"
+    out.write(
+        render_inline_row(
+            "sessions",
+            value,
+            status="done" if result.succeeded else "warn",
+            accent=AMBER,
+        )
+    )
+    out.flush()
+    return result
 
 
 def _run_memory_action_v2(
@@ -1637,10 +1790,11 @@ def _run_memory_action_v2(
 def _run_explicit_session_cleanup_v2(
     *,
     client: str,
-    real_binary: str,
     stream: TextIO | None = None,
 ) -> CleanupResult:
-    """Delete all inactive sessions using a fresh product-scoped scan."""
+    """Delete inactive Claude sessions using a fresh product-scoped scan."""
+    if client != "claude":
+        raise RuntimeError(f"Claude session cleanup cannot run for {client}")
     out = stream if stream is not None else sys.stdout
     output_lock = threading.Lock()
     spinner_active = True
@@ -1673,18 +1827,13 @@ def _run_explicit_session_cleanup_v2(
         ticker = None
     try:
         try:
-            inventory = scan_inventory(
-                **_memory_scan_kwargs(client),
+            scan_kwargs = _memory_scan_kwargs("claude")
+            inventory = scan_claude_inventory(
+                home=scan_kwargs["home"],
+                claude_config_dir=scan_kwargs["claude_config_dir"],
                 policy="all_inactive",
             )
-            result = (
-                cleanup_codex_inventory(
-                    inventory,
-                    codex_binary=real_binary,
-                )
-                if client == "codex"
-                else cleanup_claude_inventory(inventory)
-            )
+            result = cleanup_claude_inventory(inventory)
         except (OSError, RuntimeError, ValueError) as exc:
             result = CleanupResult(
                 error=str(exc) or exc.__class__.__name__

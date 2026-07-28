@@ -65,17 +65,6 @@ def lexical_codex_homes(
     return homes, default_home, orca_home
 
 
-def effective_claude_config_dir(
-    *,
-    home: Path,
-    claude_config_dir: Path | None = None,
-) -> Path:
-    return lexical_claude_config_dir(
-        home=home,
-        claude_config_dir=claude_config_dir,
-    ).resolve(strict=False)
-
-
 def lexical_claude_config_dir(
     *,
     home: Path,

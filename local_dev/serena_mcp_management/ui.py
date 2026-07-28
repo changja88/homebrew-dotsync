@@ -280,30 +280,6 @@ def style_spinner(frame: int) -> str:
     return _ansi(PURPLE, glyph)
 
 
-_COUNT_KEYWORDS = sorted(
-    [
-        "memory files reset",
-        "sessions deleted",
-    ],
-    key=len,
-    reverse=True,
-)
-
-
-def style_count(phrase: str) -> str:
-    """Colorize digits (pink) and count keywords (purple) using the huh palette.
-
-    Plain phrase in, ANSI-formatted phrase out. Unmatched substrings pass through.
-    Used by the launcher summary cleanup row.
-    """
-    if not phrase:
-        return phrase
-    result = re.sub(r"\d+", lambda m: _ansi(PINK, m.group(0)), phrase)
-    for kw in _COUNT_KEYWORDS:
-        result = result.replace(kw, _ansi(PURPLE, kw))
-    return result
-
-
 def style_session_tree(
     *,
     client: str,
@@ -743,22 +719,38 @@ def _read_select_arrow(
     """
     block_line_count = len(options) + 1
 
-    def render(initial: bool) -> None:
-        if not initial:
-            # Move cursor back to the start of the prompt block and erase.
-            stream.write(f"\x1b[{block_line_count}A\x1b[J")
+    def option_line(index: int, *, selected_index: int) -> str:
+        option = options[index]
+        if index == selected_index:
+            return (
+                f"    \x1b[{accent}m▶\x1b[0m "
+                f"\x1b[{accent}m{option.label}\x1b[0m"
+            )
+        return f"      \x1b[{GRAY}m{option.label}\x1b[0m"
+
+    def render_initial() -> None:
         stream.write(f"  \x1b[{accent}m?\x1b[0m {question}\n")
-        for index, option in enumerate(options):
-            if index == cursor:
-                stream.write(
-                    f"    \x1b[{accent}m▶\x1b[0m "
-                    f"\x1b[{accent}m{option.label}\x1b[0m\n"
-                )
-            else:
-                stream.write(f"      \x1b[{GRAY}m{option.label}\x1b[0m\n")
+        for index in range(len(options)):
+            stream.write(option_line(index, selected_index=cursor) + "\n")
         stream.flush()
 
-    render(initial=True)
+    def redraw_changed_options(
+        previous_cursor: int,
+        selected_cursor: int,
+    ) -> None:
+        # Keep the terminal cursor below the prompt and replace only the two
+        # option lines whose visual state changed. Erasing the entire block on
+        # every arrow key causes visible full-prompt flicker.
+        for index in sorted({previous_cursor, selected_cursor}):
+            distance_from_bottom = len(options) - index
+            stream.write(
+                f"\x1b[{distance_from_bottom}A\r\x1b[2K"
+                + option_line(index, selected_index=selected_cursor)
+                + f"\x1b[{distance_from_bottom}B\r"
+            )
+        stream.flush()
+
+    render_initial()
     old_attrs = termios.tcgetattr(fd)
     try:
         tty.setcbreak(fd)
@@ -767,17 +759,21 @@ def _read_select_arrow(
             if ch == "\x1b":
                 seq = os.read(fd, 2).decode(errors="replace")
                 if seq == "[A" and cursor > 0:
+                    previous_cursor = cursor
                     cursor -= 1
-                    render(initial=False)
+                    redraw_changed_options(previous_cursor, cursor)
                 elif seq == "[B" and cursor < len(options) - 1:
+                    previous_cursor = cursor
                     cursor += 1
-                    render(initial=False)
+                    redraw_changed_options(previous_cursor, cursor)
             elif ch in ("k", "K") and cursor > 0:
+                previous_cursor = cursor
                 cursor -= 1
-                render(initial=False)
+                redraw_changed_options(previous_cursor, cursor)
             elif ch in ("j", "J") and cursor < len(options) - 1:
+                previous_cursor = cursor
                 cursor += 1
-                render(initial=False)
+                redraw_changed_options(previous_cursor, cursor)
             elif ch in ("\r", "\n"):
                 break
             elif shortcuts is not None and ch.lower() in shortcuts:

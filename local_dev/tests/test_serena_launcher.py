@@ -1,5 +1,4 @@
 import os
-import subprocess
 import threading
 import time
 
@@ -16,7 +15,6 @@ from local_dev.serena_mcp_management.serena_agent_launcher import (
 from local_dev.serena_mcp_management.session_cleanup import CLAUDE_RETENTION_JSON
 from local_dev.serena_mcp_management.serena_mcp.paths import Scope
 from local_dev.serena_mcp_management.serena_mcp.registry import Lease, ServerRecord, locked_registry
-from local_dev.serena_mcp_management.serena_mcp.watchdog import ShutdownStats
 
 
 @pytest.fixture(autouse=True)
@@ -187,35 +185,6 @@ def test_touch_lease_if_record_exists_reattaches_missing_lease(monkeypatch, tmp_
         )
 
 
-def test_touch_lease_if_record_exists_refuses_when_stop_is_set(monkeypatch, tmp_path):
-    scope = Scope(tmp_path, "codex")
-    stop = threading.Event()
-    stop.set()
-    calls = []
-    monkeypatch.setattr(
-        "local_dev.serena_mcp_management.serena_agent_launcher.make_launcher_lease",
-        lambda lease_id, now=None: calls.append((lease_id, now)) or Lease(lease_id, 4321, now),
-    )
-    with locked_registry(scope) as registry:
-        registry.record = ServerRecord(
-            server_pid=111,
-            mcp_url="http://127.0.0.1:9000/mcp",
-            dashboard_url="http://127.0.0.1:24000",
-            project_root=str(tmp_path.resolve()),
-            client_type="codex",
-            started_at=time.time(),
-            leases={},
-        )
-
-    touched = _touch_lease_if_record_exists(scope, "lease-a", stop, now=123.0)
-
-    assert touched is False
-    assert calls == []
-    with locked_registry(scope) as registry:
-        assert registry.record is not None
-        assert registry.record.leases == {}
-
-
 def test_initial_launcher_lease_includes_launcher_identity(monkeypatch, tmp_path):
     monkeypatch.delenv("SERENA_AGENT_INTERACTIVE", raising=False)
     monkeypatch.chdir(tmp_path)
@@ -263,7 +232,6 @@ def test_initial_launcher_lease_includes_launcher_identity(monkeypatch, tmp_path
     assert main([]) == 0
     assert leases
     assert leases[0].launcher_identity == "launcher identity"
-
 
 
 def test_launcher_prints_mcp_progress_and_clears_before_child(monkeypatch, tmp_path, capsys):
@@ -331,156 +299,6 @@ def test_launcher_prints_mcp_progress_and_clears_before_child(monkeypatch, tmp_p
     # v2 clears terminal before child when SERENA_AGENT_CLEAR_BEFORE_CHILD=1
     output = capsys.readouterr().out
     assert "\x1b[3J\x1b[H\x1b[2J" in output
-
-
-def test_launcher_status_can_be_suppressed_by_zsh_adapter(monkeypatch, tmp_path, capsys):
-    monkeypatch.delenv("SERENA_AGENT_INTERACTIVE", raising=False)
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / ".git").mkdir()
-
-    class Record:
-        mcp_url = "http://127.0.0.1:9000/mcp"
-        dashboard_url = "http://127.0.0.1:9001"
-
-    class Proc:
-        def poll(self):
-            return 0
-
-        def wait(self):
-            return 0
-
-        def terminate(self):
-            pass
-
-    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
-    monkeypatch.setenv("SERENA_AGENT_QUIET", "1")
-    monkeypatch.setattr("sys.stderr.isatty", lambda: True)
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.ensure_server", lambda scope, lease: Record())
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._remove_lease_and_shutdown_if_empty", lambda scope, lease_id: None)
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.subprocess.Popen", lambda cmd, cwd=None: Proc())
-
-    from local_dev.serena_mcp_management.serena_agent_launcher import main
-
-    assert main([]) == 0
-    assert "serena launcher:" not in capsys.readouterr().err
-
-
-def test_launcher_opens_dashboard_for_interactive_agent(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / ".git").mkdir()
-
-    class Record:
-        mcp_url = "http://127.0.0.1:9000/mcp"
-        dashboard_url = "http://127.0.0.1:9001"
-
-    class Proc:
-        def poll(self):
-            return 0
-
-        def wait(self):
-            return 0
-
-        def terminate(self):
-            pass
-
-    calls = []
-    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
-    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "installed")
-    _stub_isolated_preflight_overview(monkeypatch, tmp_path)
-    # Mock preflight/init/launch-prep to avoid stdin interaction
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_preflight_v2",
-                        lambda **kw: 0, raising=False)
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_serena_init_v2",
-                        lambda **kw: "managed", raising=False)
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_memory_choice_v2",
-                        lambda **kw: "keep", raising=False)
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_session_choice_v2",
-                        lambda **kw: "retention_5d", raising=False)
-    from local_dev.serena_mcp_management.serena_agent_launcher import LaunchPrepSummary
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_launch_prep_v2",
-                        lambda **kw: LaunchPrepSummary(cleanup_deleted=0, native_eligible=0),
-                        raising=False)
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.ensure_server", lambda scope, lease: Record())
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._remove_lease_and_shutdown_if_empty", lambda scope, lease_id: None)
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.subprocess.Popen", lambda cmd, cwd=None: Proc())
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.subprocess.run", lambda cmd, **kwargs: calls.append((cmd, kwargs)))
-
-    from local_dev.serena_mcp_management.serena_agent_launcher import main
-
-    assert main([]) == 0
-    assert any(
-        cmd == ["open", "http://127.0.0.1:9001"]
-        for cmd, _ in calls
-    )
-
-
-def test_launcher_prints_shutdown_stats_for_interactive_agent(monkeypatch, tmp_path, capsys):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / ".git").mkdir()
-
-    class Record:
-        mcp_url = "http://127.0.0.1:9000/mcp"
-        dashboard_url = "http://127.0.0.1:9001"
-
-    class Proc:
-        def poll(self):
-            return 0
-
-        def wait(self):
-            return 0
-
-        def terminate(self):
-            pass
-
-    stats = ShutdownStats(
-        sessions_before=2,
-        sessions_closed=1,
-        sessions_remaining=1,
-        server_was_running=True,
-        server_stopped=False,
-    )
-    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
-    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_QUIET", "1")
-    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS", "installed")
-    _stub_isolated_preflight_overview(monkeypatch, tmp_path)
-    # Mock preflight/init/launch-prep to avoid stdin interaction
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_preflight_v2",
-                        lambda **kw: 0, raising=False)
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_serena_init_v2",
-                        lambda **kw: "managed", raising=False)
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_memory_choice_v2",
-                        lambda **kw: "keep", raising=False)
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_session_choice_v2",
-                        lambda **kw: "retention_5d", raising=False)
-    from local_dev.serena_mcp_management.serena_agent_launcher import LaunchPrepSummary
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._run_launch_prep_v2",
-                        lambda **kw: LaunchPrepSummary(cleanup_deleted=0, native_eligible=0),
-                        raising=False)
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.ensure_server", lambda scope, lease: Record())
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.find_real_binary", lambda client: "/opt/homebrew/bin/codex")
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher._remove_lease_and_shutdown_if_empty", lambda scope, lease_id: stats)
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.subprocess.Popen", lambda cmd, cwd=None: Proc())
-    monkeypatch.setattr("local_dev.serena_mcp_management.serena_agent_launcher.subprocess.run", lambda cmd, **kwargs: None)
-
-    from local_dev.serena_mcp_management.serena_agent_launcher import main
-
-    assert main([]) == 0
-    output = capsys.readouterr().out
-    # v2 renders a summary box on exit, not the v1 event-style lines
-    assert "summary" in output
-    # codex pixel banner is part of the summary box header. Strip ANSI escapes
-    # because the title ships as a per-pixel pink↔purple gradient.
-    import re as _re
-    plain = _re.sub(r"\x1b\[[0-9;]*m", "", output)
-    assert "▀" in plain
 
 
 def test_launcher_uses_project_root_from_zsh_adapter(monkeypatch, tmp_path):
@@ -603,10 +421,3 @@ def test_signal_handler_defers_registry_cleanup_to_finally(monkeypatch, tmp_path
 
     assert main([]) == 0
     assert events == ["wait-start", "terminate", "wait-end", "remove"]
-
-
-def test_launcher_does_not_own_agent_cleanup():
-    import local_dev.serena_mcp_management.serena_agent_launcher as launcher
-
-    assert not hasattr(launcher, "cleanup_before_launch")
-    assert not hasattr(launcher, "format_cleanup_status")

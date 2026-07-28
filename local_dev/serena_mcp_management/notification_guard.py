@@ -128,9 +128,17 @@ _GUARD_COMMENT = (
     '(가짜 "Codex needs input" 알림의 원인)만 끈다.'
 )
 _SUBAGENT_COMMENT = (
-    "# [notification guard] 서브에이전트 완료 알림 금지(요구 3) — orca가 "
-    "SubagentStop을 working→done 전이로 되살릴 수 있어 subagent 훅 전달을 끈다."
+    "# [notification guard] 서브에이전트 알림 금지(요구 3) — orca는 agent_id가 붙은 이벤트면 "
+    "무엇이든 서브에이전트 명부를 되살리고, 그러면 done이 working으로 되돌아가 다음 done에서 "
+    "알림이 한 번 더 나간다. 서브에이전트의 도구 호출마다 PreToolUse/PostToolUse가 agent_id를 "
+    "달고 오므로 subagent 훅만 끄는 것으로는 부족하다."
 )
+# 끄는 대상 = orca 패널 상태를 되살리면서 알림 가치는 없는 훅.
+# PreToolUse는 **끄지 않는다** — codex의 request_user_input(0.145+)이 자동 허용이라
+# "사람 답을 기다리는 중" 신호가 오직 PreToolUse로만 전달된다(orca가 이걸 waiting으로 매핑).
+# 끄면 요구 1("입력 필요 시 알림")이 깨진다.
+# PostToolUse는 어떤 경우에도 waiting/done을 만들지 않으므로 끄는 데 알림 손실이 없다.
+_ROSTER_REVIVE_EVENTS = ("SubagentStart", "SubagentStop", "PostToolUse")
 _CAMEL_BOUNDARY = re.compile(r"(?<!^)(?=[A-Z])")
 
 
@@ -246,8 +254,9 @@ def guard_codex_target(target: CodexTarget) -> list[GuardAction]:
     try:
         keys = permission_request_state_keys(target.hooks_json)
         subagent_keys = [
-            *hook_state_keys(target.hooks_json, "SubagentStart"),
-            *hook_state_keys(target.hooks_json, "SubagentStop"),
+            key
+            for event in _ROSTER_REVIVE_EVENTS
+            for key in hook_state_keys(target.hooks_json, event)
         ]
     except Exception as exc:
         actions.append(GuardAction(
@@ -276,8 +285,7 @@ def guard_codex_target(target: CodexTarget) -> list[GuardAction]:
     if not keys:
         return actions
     cfg = tomllib.loads(target.config.read_text())
-    reviewer = cfg.get("approvals_reviewer")
-    if reviewer in AUTOMATIC_REVIEWERS:
+    if cfg.get("approvals_reviewer") in AUTOMATIC_REVIEWERS:
         outcome = apply_text_repair(
             target.config, lambda text: repair_hooks_state(text, keys), tomllib.loads
         )

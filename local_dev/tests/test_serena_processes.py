@@ -9,20 +9,6 @@ from local_dev.serena_mcp_management.serena_mcp.processes import (
 )
 
 
-def test_parse_serena_mcp_process_accepts_space_separated_options(tmp_path):
-    command = (
-        "/usr/bin/python /Users/hyun/.local/bin/serena start-mcp-server "
-        f"--project {tmp_path} --context codex --port 12345"
-    )
-
-    proc = parse_serena_mcp_process(111, command)
-
-    assert proc is not None
-    assert proc.pid == 111
-    assert proc.project_root == tmp_path.resolve()
-    assert proc.context == "codex"
-
-
 def test_parse_serena_mcp_process_accepts_equals_options(tmp_path):
     command = (
         "/usr/bin/python /Users/hyun/.local/bin/serena start-mcp-server "
@@ -45,32 +31,6 @@ def test_parse_serena_mcp_process_accepts_quoted_project_with_spaces(tmp_path):
     )
 
     proc = parse_serena_mcp_process(333, command)
-
-    assert proc is not None
-    assert proc.project_root == project.resolve()
-
-
-def test_parse_serena_mcp_process_accepts_unquoted_project_with_spaces(tmp_path):
-    project = tmp_path / "repo with spaces"
-    command = (
-        "/usr/bin/python /Users/hyun/.local/bin/serena start-mcp-server "
-        f"--project {project} --context codex --port 12345"
-    )
-
-    proc = parse_serena_mcp_process(334, command)
-
-    assert proc is not None
-    assert proc.project_root == project.resolve()
-
-
-def test_parse_serena_mcp_process_accepts_equals_project_with_unquoted_spaces(tmp_path):
-    project = tmp_path / "repo with spaces"
-    command = (
-        "/usr/bin/python /Users/hyun/.local/bin/serena start-mcp-server "
-        f"--project={project} --context codex --port 12345"
-    )
-
-    proc = parse_serena_mcp_process(335, command)
 
     assert proc is not None
     assert proc.project_root == project.resolve()

@@ -78,22 +78,6 @@ def launcher_process_matches(lease: Lease) -> bool:
     return process_identity(lease.launcher_pid) == lease.launcher_identity
 
 
-def shutdown_if_no_leases(scope: Scope) -> bool:
-    """Stop the server only if there are no leases; do not prune leases."""
-
-    with locked_registry(scope) as registry:
-        if registry.record is None:
-            return False
-        if not record_belongs_to_scope(registry.record, scope):
-            registry.record = None
-            return False
-        if registry.record.leases:
-            return True
-        _terminate_record(registry.record)
-        registry.record = None
-        return False
-
-
 def release_lease_and_shutdown_if_empty(scope: Scope, lease_id: str) -> ShutdownStats:
     """Release one launcher lease and stop the scoped server when it is unused."""
 

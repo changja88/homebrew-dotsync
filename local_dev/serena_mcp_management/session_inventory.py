@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal
 
-from .agent_paths import canonical_codex_homes
 from .memory_management import ClientProcess, running_client_processes
 
 
@@ -22,7 +21,7 @@ SessionPolicy = Literal["retention_5d", "all_inactive"]
 
 
 class ActiveSessionScanError(RuntimeError):
-    """Raised when open Codex rollout files cannot be identified safely."""
+    """Raised when active or open Claude sessions cannot be identified safely."""
 
 
 @dataclass(frozen=True)
@@ -46,29 +45,6 @@ class FileFingerprint:
 
 
 @dataclass(frozen=True)
-class CodexSessionFile:
-    session_id: str
-    parent_id: str | None
-    path: Path
-    codex_home: Path
-    fingerprint: FileFingerprint
-
-
-@dataclass(frozen=True)
-class OwnerDeletePlan:
-    codex_home: Path
-    local_delete_ids: tuple[str, ...]
-    is_orca: bool
-
-
-@dataclass(frozen=True)
-class CodexCleanupTarget:
-    root_id: str
-    files: tuple[CodexSessionFile, ...]
-    owners: tuple[OwnerDeletePlan, ...]
-
-
-@dataclass(frozen=True)
 class ClaudeSessionPath:
     path: Path
     fingerprint: FileFingerprint
@@ -89,7 +65,6 @@ class AgentInventory:
     criteria: str
     policy: SessionPolicy = "retention_5d"
     records: CountStats | None = None
-    codex_targets: tuple[CodexCleanupTarget, ...] = ()
     claude_targets: tuple[ClaudeCleanupTarget, ...] = ()
     active_sessions: int = 0
     scanned_paths: tuple[Path, ...] = ()
@@ -161,10 +136,6 @@ def _fingerprint_from_stat(stat_result: os.stat_result) -> FileFingerprint:
         size=stat_result.st_size,
         mtime_ns=stat_result.st_mtime_ns,
     )
-
-
-def _fingerprint(path: Path) -> FileFingerprint:
-    return _fingerprint_from_stat(path.stat())
 
 
 def snapshot_claude_manifest(
@@ -297,296 +268,6 @@ def _normalized_uuid(value: object) -> str | None:
         return str(uuid.UUID(value))
     except ValueError:
         return None
-
-
-def _find_parent_thread_id(value: object) -> str | None:
-    if isinstance(value, dict):
-        parent = _normalized_uuid(value.get("parent_thread_id"))
-        if parent is not None:
-            return parent
-        for child in value.values():
-            parent = _find_parent_thread_id(child)
-            if parent is not None:
-                return parent
-    elif isinstance(value, list):
-        for child in value:
-            parent = _find_parent_thread_id(child)
-            if parent is not None:
-                return parent
-    return None
-
-
-def _read_codex_session_files(
-    homes: tuple[Path, ...],
-) -> tuple[list[CodexSessionFile], tuple[Path, ...], list[str], int]:
-    files: list[CodexSessionFile] = []
-    scanned_paths: list[Path] = []
-    warnings: list[str] = []
-    malformed_count = 0
-
-    for codex_home in homes:
-        sessions_dir = codex_home / "sessions"
-        if not sessions_dir.is_dir():
-            continue
-        for path in sorted(sessions_dir.rglob("*.jsonl")):
-            if not path.is_file():
-                continue
-            scanned_paths.append(path)
-            try:
-                with path.open(encoding="utf-8") as session_file:
-                    first_line = session_file.readline()
-                row = json.loads(first_line)
-                payload = row.get("payload")
-                if row.get("type") != "session_meta" or not isinstance(payload, dict):
-                    raise ValueError("first row is not session_meta")
-                session_id = _normalized_uuid(payload.get("id"))
-                if session_id is None:
-                    raise ValueError("session UUID is missing or invalid")
-                files.append(
-                    CodexSessionFile(
-                        session_id=session_id,
-                        parent_id=_find_parent_thread_id(payload),
-                        path=path,
-                        codex_home=codex_home,
-                        fingerprint=_fingerprint(path),
-                    )
-                )
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-                malformed_count += 1
-                warnings.append(f"malformed session metadata: {path.name}: {exc}")
-
-    return files, tuple(scanned_paths), warnings, malformed_count
-
-
-def _group_codex_files(
-    files: list[CodexSessionFile],
-    warnings: list[str],
-) -> tuple[dict[str, list[str]], dict[str, str | None], set[str]]:
-    files_by_id: dict[str, list[CodexSessionFile]] = {}
-    ids_by_identity: dict[FileIdentity, set[str]] = {}
-    for session_file in files:
-        files_by_id.setdefault(session_file.session_id, []).append(session_file)
-        ids_by_identity.setdefault(session_file.fingerprint.identity, set()).add(
-            session_file.session_id
-        )
-
-    invalid: set[str] = set()
-    parents: dict[str, str | None] = {}
-    for session_id, copies in files_by_id.items():
-        copy_parents = {copy.parent_id for copy in copies}
-        if len(copy_parents) != 1:
-            invalid.add(session_id)
-            warnings.append(f"conflicting parent for session {session_id}")
-            continue
-        parents[session_id] = next(iter(copy_parents))
-
-    for identity_ids in ids_by_identity.values():
-        if len(identity_ids) <= 1:
-            continue
-        invalid.update(identity_ids)
-        warnings.append(
-            "conflicting session UUIDs share one file identity: "
-            + ", ".join(sorted(identity_ids))
-        )
-
-    roots: dict[str, str] = {}
-
-    def resolve_root(session_id: str) -> str | None:
-        trail: list[str] = []
-        positions: dict[str, int] = {}
-        current = session_id
-        while True:
-            if current in roots:
-                root = roots[current]
-                for item in trail:
-                    roots[item] = root
-                return root
-            if current in invalid:
-                invalid.update(trail)
-                return None
-            if current in positions:
-                cycle = trail[positions[current] :]
-                invalid.update(trail)
-                warnings.append("parent cycle: " + " -> ".join(cycle + [current]))
-                return None
-            positions[current] = len(trail)
-            trail.append(current)
-            parent = parents.get(current)
-            if parent is None:
-                for item in trail:
-                    roots[item] = current
-                return current
-            if parent not in files_by_id:
-                for item in trail:
-                    roots[item] = parent
-                return parent
-            current = parent
-
-    for session_id in sorted(files_by_id):
-        resolve_root(session_id)
-
-    groups: dict[str, list[str]] = {}
-    for session_id, root_id in roots.items():
-        if session_id in invalid:
-            continue
-        groups.setdefault(root_id, []).append(session_id)
-    for members in groups.values():
-        members.sort()
-    return groups, parents, invalid
-
-
-def _owner_delete_plans(
-    *,
-    group_ids: list[str],
-    files_by_id: dict[str, list[CodexSessionFile]],
-    parents: dict[str, str | None],
-    homes: tuple[Path, ...],
-    default_home: Path,
-    orca_home: Path,
-) -> tuple[OwnerDeletePlan, ...]:
-    plans: list[OwnerDeletePlan] = []
-    group_id_set = set(group_ids)
-    for codex_home in homes:
-        local_ids = {
-            session_id
-            for session_id in group_ids
-            if any(
-                session_file.codex_home == codex_home
-                for session_file in files_by_id[session_id]
-            )
-        }
-        if not local_ids:
-            continue
-
-        def group_depth(session_id: str) -> int:
-            depth = 0
-            current = session_id
-            while True:
-                parent = parents.get(current)
-                if parent is None or parent not in group_id_set:
-                    return depth
-                depth += 1
-                current = parent
-
-        local_delete_ids = tuple(
-            sorted(
-                local_ids,
-                key=lambda session_id: (-group_depth(session_id), session_id),
-            )
-        )
-        plans.append(
-            OwnerDeletePlan(
-                codex_home=codex_home,
-                local_delete_ids=local_delete_ids,
-                is_orca=codex_home == orca_home and codex_home != default_home,
-            )
-        )
-    return tuple(plans)
-
-
-def _scan_codex_inventory(
-    *,
-    home: Path,
-    codex_home: Path,
-    orca_codex_home: Path | None,
-    now: float,
-    policy: SessionPolicy,
-    open_file_identities: frozenset[FileIdentity] | None,
-) -> AgentInventory:
-    homes, default_home, orca_home = canonical_codex_homes(
-        home=home,
-        codex_home=codex_home,
-        orca_codex_home=orca_codex_home,
-    )
-    session_dirs = tuple(codex_home / "sessions" for codex_home in homes)
-    files, scanned_paths, warnings, malformed_count = _read_codex_session_files(
-        homes
-    )
-
-    if open_file_identities is None:
-        try:
-            open_ids = snapshot_open_rollouts(session_dirs)
-        except ActiveSessionScanError as exc:
-            warnings.append(f"active session scan unavailable: {exc}")
-            open_ids = frozenset(
-                session_file.fingerprint.identity for session_file in files
-            )
-    else:
-        open_ids = open_file_identities
-
-    files_by_id: dict[str, list[CodexSessionFile]] = {}
-    for session_file in files:
-        files_by_id.setdefault(session_file.session_id, []).append(session_file)
-    groups, parents, invalid = _group_codex_files(files, warnings)
-    cutoff_ns = int((now - RETENTION_SECONDS) * 1_000_000_000)
-    targets: list[CodexCleanupTarget] = []
-    active_sessions = 0
-
-    for root_id, group_ids in sorted(groups.items()):
-        group_files = tuple(
-            sorted(
-                (
-                    session_file
-                    for session_id in group_ids
-                    for session_file in files_by_id[session_id]
-                ),
-                key=lambda session_file: str(session_file.path),
-            )
-        )
-        if (
-            policy == "retention_5d"
-            and max(item.fingerprint.mtime_ns for item in group_files)
-            >= cutoff_ns
-        ):
-            continue
-        if any(item.fingerprint.identity in open_ids for item in group_files):
-            if policy == "all_inactive":
-                active_sessions += 1
-            continue
-        targets.append(
-            CodexCleanupTarget(
-                root_id=root_id,
-                files=group_files,
-                owners=_owner_delete_plans(
-                    group_ids=group_ids,
-                    files_by_id=files_by_id,
-                    parents=parents,
-                    homes=homes,
-                    default_home=default_home,
-                    orca_home=orca_home,
-                ),
-            )
-        )
-
-    total = len(groups) + len(invalid) + malformed_count
-    delete_count = len(targets)
-    record_total = len(scanned_paths)
-    records_to_delete = sum(len(target.files) for target in targets)
-    criteria = (
-        "sessions: all known homes + all inactive; running preserved"
-        if policy == "all_inactive"
-        else "sessions: all known homes + inactive longer than 5d"
-    )
-    return AgentInventory(
-        client="codex",
-        sessions=CountStats(
-            total=total,
-            to_delete=delete_count,
-            to_keep=total - delete_count,
-        ),
-        criteria=criteria,
-        policy=policy,
-        records=CountStats(
-            total=record_total,
-            to_delete=records_to_delete,
-            to_keep=record_total - records_to_delete,
-        ),
-        codex_targets=tuple(targets),
-        active_sessions=active_sessions,
-        scanned_paths=scanned_paths,
-        session_dirs=session_dirs,
-        warnings=tuple(warnings),
-    )
 
 
 def _canonical_uuid(value: str) -> str | None:
@@ -879,38 +560,23 @@ def _scan_claude_inventory(
     )
 
 
-def scan_inventory(
+def scan_claude_inventory(
     *,
-    client: str,
     home: Path,
-    codex_home: Path,
     claude_config_dir: Path | None = None,
-    orca_codex_home: Path | None = None,
     now: float | None = None,
     policy: SessionPolicy = "retention_5d",
     open_file_identities: frozenset[FileIdentity] | None = None,
     active_claude_session_ids: frozenset[str] | None = None,
 ) -> AgentInventory:
-    """Build one immutable inventory snapshot for preflight and cleanup."""
+    """Build one immutable Claude session snapshot for preflight and cleanup."""
     if policy not in {"retention_5d", "all_inactive"}:
         raise ValueError(f"unsupported session policy: {policy}")
-    scan_time = time.time() if now is None else now
-    if client == "claude":
-        return _scan_claude_inventory(
-            home=home,
-            claude_config_dir=claude_config_dir,
-            now=scan_time,
-            policy=policy,
-            open_file_identities=open_file_identities,
-            active_claude_session_ids=active_claude_session_ids,
-        )
-    if client == "codex":
-        return _scan_codex_inventory(
-            home=home,
-            codex_home=codex_home,
-            orca_codex_home=orca_codex_home,
-            now=scan_time,
-            policy=policy,
-            open_file_identities=open_file_identities,
-        )
-    raise ValueError(f"unsupported client: {client}")
+    return _scan_claude_inventory(
+        home=home,
+        claude_config_dir=claude_config_dir,
+        now=time.time() if now is None else now,
+        policy=policy,
+        open_file_identities=open_file_identities,
+        active_claude_session_ids=active_claude_session_ids,
+    )
