@@ -90,6 +90,7 @@ docs/superpowers/
 .serena/
 .codex/
 .superpowers/
+graphify-out/
 
 # --- dotsync's own dogfooding (keep developer's local sync state out of git)
 dotsync.toml
