@@ -44,6 +44,12 @@ Codex가 `workspace-write` 샌드박스 경계를 벗어나려 할 때 매번 �
 - 동기화 원본: `~/Desktop/dotsync_config/codex/config.toml`
 - 현재 실행 설정: `~/.codex/config.toml`
 
+이 설정은 런처 전용 임시 override가 아니라 Codex 홈의 기본값이다. 따라서
+런처로 여는 대화형 세션뿐 아니라 같은 Codex 홈을 읽는 직접 실행과
+`codex exec`에도 `auto_review`가 적용된다. 호출별 `-c` override로 다시
+`user`를 선택하는 동작과 그때의 Orca 승인 알림 복구는 이번 범위에 포함하지
+않는다.
+
 두 파일의 설명 주석도 `auto_review`의 실제 의미와 비용을 반영한다. 자동
 검토가 추가 모델 호출을 사용한다는 점, 샌드박스 경계를 확장하지 않는다는
 점, `approval_policy = "never"`에서는 검토 요청 자체가 없다는 점을 명시한다.
