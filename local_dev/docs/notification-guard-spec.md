@@ -88,7 +88,7 @@ interactive tty + 인자 allowlist(무인자, `resume`/`fork`/`-c`/`--continue`/
 |---|---|---|---|
 | 1 | codex config들의 최상위 `notify` | 정확히 `[]` | 수리 (제거한 내용을 로그에 남김) |
 | 2 | ~~codex `[tui] notification_condition`~~ | **폐기 (2026-07-24)** — 벨 채널 설정은 사용자 관리(요구사항 4). 가드는 읽지도 고치지도 않는다 | — |
-| 3 | codex config들의 `[hooks.state."<홈>/hooks.json:permission_request:<g>:<h>"]` | `enabled = false` | 수리 (줄 삽입, 엔트리 없으면 생성) |
+| 3 | codex config들의 `[hooks.state."<홈>/hooks.json:permission_request:<g>:<h>"]` | `enabled = false` (`approvals_reviewer`가 `"auto_review"` 또는 legacy `"guardian_subagent"`일 때) | 수리 (줄 삽입, 엔트리 없으면 생성) |
 | 4 | `~/.claude/settings.json`의 `preferredNotifChannel` | `"notifications_disabled"` | 수리 |
 | 5 | orca-data.json의 `notifications.enabled` / `agentTaskComplete` / `suppressWhenFocused` | `true` / `true` / `false` | **경고만** (수리 안 함). `terminalBell`은 점검 대상 아님 |
 | 6 | codex config들의 `[hooks.state."<홈>/hooks.json:subagent_start:<g>:<h>"]`와 `…:subagent_stop:<g>:<h>` | `enabled = false` (**무조건** — `approvals_reviewer` 무관) | 수리 (줄 삽입, 엔트리 없으면 생성) |
@@ -140,11 +140,11 @@ glob으로 발견한다.
 
 ### 조건부 규칙
 
-- **#3은 그 config의 `approvals_reviewer`가 `"guardian_subagent"`일 때만
-  적용한다.** 값이 `"user"` 등이면 가드는 #3을 수리하지 않는다 — 승인이
-  실제로 사용자에게 오는 구성에서는 PermissionRequest 훅이 진짜 "입력 필요"
-  신호다. 이때 기존 `enabled = false`가 남아 있으면 경고 행으로만 알린다
-  (자동 삭제 금지 — 사용자가 직접 지운다).
+- **#3은 그 config의 `approvals_reviewer`가 `"auto_review"` 또는 legacy
+  `"guardian_subagent"`일 때만 적용한다.** 값이 `"user"` 등이면 가드는 #3을
+  수리하지 않는다 — 승인이 실제로 사용자에게 오는 구성에서는 PermissionRequest
+  훅이 진짜 "입력 필요" 신호다. 이때 기존 `enabled = false`가 남아 있으면 경고
+  행으로만 알린다 (자동 삭제 금지 — 사용자가 직접 지운다).
 - **#6은 무조건 적용한다** — 요구 3이 "어떤 경우에도 알림 금지"이므로
   `approvals_reviewer` 값과 무관하다. 서브에이전트의 진짜 "입력 필요"
   신호는 subagent 훅이 아니라 `agent_id`가 딸린 PreToolUse(AskUserQuestion)

@@ -397,6 +397,42 @@ class TestOrcaToggles:
 
 
 class TestGuardCodexTarget:
+    def test_auto_review_disables_permission_request_hook(
+        self, fake_home: Path
+    ) -> None:
+        managed = (
+            fake_home
+            / "Library"
+            / "Application Support"
+            / "orca"
+            / "codex-runtime-home"
+            / "home"
+        )
+        key = f"{managed}/hooks.json:permission_request:0:0"
+        config = managed / "config.toml"
+        text = clean_managed_config(managed).replace(
+            '"guardian_subagent"', '"auto_review"'
+        )
+        text = text.replace(
+            f'[hooks.state."{key}"]\n'
+            'trusted_hash = "sha256:e460"\n'
+            "enabled = false\n",
+            f'[hooks.state."{key}"]\n'
+            'trusted_hash = "sha256:e460"\n',
+        )
+        config.write_text(text)
+
+        actions = guard_codex_target(
+            CodexTarget(config=config, hooks_json=managed / "hooks.json")
+        )
+
+        state = tomllib.loads(config.read_text())["hooks"]["state"]
+        assert state[key]["enabled"] is False
+        assert any(
+            action.kind == "repair" and "permission_request" in action.message
+            for action in actions
+        )
+
     def test_reviewer_user_skips_hooks_repair_but_warns_on_leftover(
         self, fake_home: Path
     ) -> None:

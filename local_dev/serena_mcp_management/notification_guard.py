@@ -122,9 +122,9 @@ def repair_notify(text: str) -> tuple[str, str | None]:
     return "".join(out), removed
 
 
-GUARDIAN_REVIEWER = "guardian_subagent"
+AUTOMATIC_REVIEWERS = frozenset({"auto_review", "guardian_subagent"})
 _GUARD_COMMENT = (
-    "# [notification guard] guardian_subagent가 승인을 자동 처리하므로 이 훅"
+    "# [notification guard] 자동 검토자가 승인을 처리하므로 이 훅"
     '(가짜 "Codex needs input" 알림의 원인)만 끈다.'
 )
 _SUBAGENT_COMMENT = (
@@ -276,7 +276,8 @@ def guard_codex_target(target: CodexTarget) -> list[GuardAction]:
     if not keys:
         return actions
     cfg = tomllib.loads(target.config.read_text())
-    if cfg.get("approvals_reviewer") == GUARDIAN_REVIEWER:
+    reviewer = cfg.get("approvals_reviewer")
+    if reviewer in AUTOMATIC_REVIEWERS:
         outcome = apply_text_repair(
             target.config, lambda text: repair_hooks_state(text, keys), tomllib.loads
         )
@@ -296,7 +297,7 @@ def guard_codex_target(target: CodexTarget) -> list[GuardAction]:
         if any((state.get(k) or {}).get("enabled") is False for k in keys):
             actions.append(GuardAction(
                 "warn",
-                "approvals_reviewer가 guardian이 아닌데 permission_request 훅이 꺼져 있음 —"
+                "사용자 승인 모드인데 permission_request 훅이 꺼져 있음 —"
                 f" 진짜 승인 알림이 오지 않습니다 ({_short(target.config)})",
                 target.config,
             ))

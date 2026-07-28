@@ -69,8 +69,8 @@ launcher는 매 관리 launch 시작 시 알림 설정 불변식을 점검하고
 자동 수리한다 (`notification_guard.py`, 설계: `docs/notification-guard-spec.md`).
 알림 정책: **입력 필요·메인 작업 완료 시에만, 포커스 무관 항상** — 서브에이전트
 완료 알림 금지, 벨(terminal bell) 계열 설정은 사용자 관리라 가드가 관여하지 않는다.
-대상: codex `notify = []`·permission_request 훅 비활성(guardian_subagent 구성일
-때만)·**subagent_start/subagent_stop 훅 비활성(무조건 — 서브에이전트 완료 알림
+대상: codex `notify = []`·permission_request 훅 비활성(auto_review 및 legacy
+guardian_subagent 자동 검토 구성)·**subagent_start/subagent_stop 훅 비활성(무조건 — 서브에이전트 완료 알림
 금지의 실질 보장 장치, hooks.json이 없는 홈은 공허 충족으로 조용히 통과)**,
 claude 알림 채널, orca 알림 토글(`enabled`·`agentTaskComplete` ON,
 `suppressWhenFocused` OFF — 경고만). codex hooks 점검은 orca 관리 홈뿐 아니라
