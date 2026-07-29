@@ -123,6 +123,78 @@ def test_zsh_shim_graphify_hooks_check_respects_core_hooks_path(tmp_path):
     assert "hooks=0" in result.stdout
 
 
+@pytest.mark.no_subprocess_block
+def test_zsh_shim_graphify_hooks_check_resolves_linked_worktree_common_dir(
+    tmp_path,
+):
+    shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(
+        tmp_path
+    )
+    repository = tmp_path / "repository"
+    worktree = tmp_path / "worktree"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "-C", str(repository), "init"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "worktree",
+            "add",
+            "--detach",
+            str(worktree),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    hooks_dir = repository / ".git" / "hooks"
+    (hooks_dir / "post-commit").write_text(
+        "#!/bin/sh\n# graphify-hook-start\n"
+    )
+    (hooks_dir / "post-checkout").write_text(
+        "#!/bin/sh\n# graphify-checkout-hook-start\n"
+    )
+
+    result = subprocess.run(
+        [
+            "zsh",
+            "-fc",
+            (
+                f"source {shim_path}; "
+                f"_dotsync_agent_graphify_hooks_installed {worktree}; "
+                "print hooks=$?"
+            ),
+        ],
+        env={**os.environ, "HOME": str(tmp_path)},
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert "hooks=0" in result.stdout
+
+
 def test_render_zsh_shim_defers_clear_to_launcher_after_codex_cleanup():
     text = render_zsh_shim(
         launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
