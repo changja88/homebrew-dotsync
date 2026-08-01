@@ -10,10 +10,20 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .agent_paths import lexical_claude_config_dir
-from .memory_management import scan_memory_inventory
+from .memory_management import (
+    ClientProcess,
+    running_client_processes,
+    scan_memory_inventory,
+)
+from .serena_mcp.health import pid_is_alive, process_identity
+from .serena_mcp.termination import terminate_pid
 
 
 RunCommand = Callable[..., subprocess.CompletedProcess[str]]
+ProcessScanner = Callable[..., tuple[ClientProcess, ...]]
+IdentityReader = Callable[[int], str | None]
+ProcessTerminator = Callable[..., None]
+ProcessAlive = Callable[[int], bool]
 
 _SUPPLEMENTAL_DIRECTORY_NAMES = (
     "agent-memory",
@@ -56,6 +66,19 @@ class _GlobalConfigSnapshot:
     path: Path
     existed: bool
     non_project_values: dict[str, object]
+
+
+@dataclass(frozen=True)
+class _PinnedRuntime:
+    process: ClientProcess
+    identity: str
+
+
+@dataclass(frozen=True)
+class _RuntimeTermination:
+    terminated: int = 0
+    warnings: tuple[str, ...] = ()
+    error: str | None = None
 
 
 def _config_root_error(config_dir: Path, *, home: Path) -> str | None:
@@ -130,6 +153,156 @@ def _snapshot_global_config(
             },
         ),
         None,
+    )
+
+
+def _terminate_claude_runtimes(
+    *,
+    real_claude_binary: str,
+    environment: dict[str, str],
+    run_command: RunCommand,
+    process_scanner: ProcessScanner = running_client_processes,
+    identity_reader: IdentityReader = process_identity,
+    process_terminator: ProcessTerminator = terminate_pid,
+    process_alive: ProcessAlive = pid_is_alive,
+) -> _RuntimeTermination:
+    warnings: list[str] = []
+    daemon_command = [real_claude_binary, "daemon", "stop", "--any"]
+    try:
+        daemon_result = run_command(
+            daemon_command,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=environment,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        warnings.append(f"could not stop Claude daemon: {exc}")
+    else:
+        if daemon_result.returncode != 0:
+            detail = (daemon_result.stderr or "").strip() or (
+                f"exit {daemon_result.returncode}"
+            )
+            warnings.append(f"could not stop Claude daemon: {detail}")
+
+    terminated = 0
+    for _ in range(4):
+        try:
+            processes = process_scanner(
+                "claude",
+                run_command=run_command,
+                current_pid=os.getpid(),
+            )
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            return _RuntimeTermination(
+                terminated=terminated,
+                warnings=tuple(warnings),
+                error=f"cannot inspect running Claude processes: {exc}",
+            )
+        if not processes:
+            return _RuntimeTermination(
+                terminated=terminated,
+                warnings=tuple(warnings),
+            )
+
+        pinned: list[_PinnedRuntime] = []
+        for process in processes:
+            try:
+                identity = identity_reader(process.pid)
+            except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+                return _RuntimeTermination(
+                    terminated=terminated,
+                    warnings=tuple(warnings),
+                    error=(
+                        "cannot inspect Claude process identity for PID "
+                        f"{process.pid}: {exc}"
+                    ),
+                )
+            if identity is None:
+                return _RuntimeTermination(
+                    terminated=terminated,
+                    warnings=tuple(warnings),
+                    error=(
+                        "cannot pin Claude process identity for PID "
+                        f"{process.pid}"
+                    ),
+                )
+            pinned.append(_PinnedRuntime(process, identity))
+
+        try:
+            current_processes = process_scanner(
+                "claude",
+                run_command=run_command,
+                current_pid=os.getpid(),
+            )
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            return _RuntimeTermination(
+                terminated=terminated,
+                warnings=tuple(warnings),
+                error=f"cannot revalidate Claude processes: {exc}",
+            )
+        current_by_pid = {process.pid: process for process in current_processes}
+        for runtime in pinned:
+            pid = runtime.process.pid
+            if pid not in current_by_pid:
+                continue
+            try:
+                current_identity = identity_reader(pid)
+            except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+                return _RuntimeTermination(
+                    terminated=terminated,
+                    warnings=tuple(warnings),
+                    error=(
+                        "cannot revalidate Claude process identity for PID "
+                        f"{pid}: {exc}"
+                    ),
+                )
+            if current_identity != runtime.identity:
+                return _RuntimeTermination(
+                    terminated=terminated,
+                    warnings=tuple(warnings),
+                    error=(
+                        f"Claude process {pid} identity changed before "
+                        "termination"
+                    ),
+                )
+            try:
+                process_terminator(
+                    pid,
+                    expected_identity=runtime.identity,
+                )
+            except OSError as exc:
+                return _RuntimeTermination(
+                    terminated=terminated,
+                    warnings=tuple(warnings),
+                    error=f"cannot terminate Claude process {pid}: {exc}",
+                )
+            try:
+                still_alive = process_alive(pid)
+            except (OSError, RuntimeError) as exc:
+                return _RuntimeTermination(
+                    terminated=terminated,
+                    warnings=tuple(warnings),
+                    error=(
+                        "cannot verify Claude process liveness for PID "
+                        f"{pid}: {exc}"
+                    ),
+                )
+            if still_alive:
+                return _RuntimeTermination(
+                    terminated=terminated,
+                    warnings=tuple(warnings),
+                    error=(
+                        f"Claude process {pid} is still running after "
+                        "termination"
+                    ),
+                )
+            terminated += 1
+
+    return _RuntimeTermination(
+        terminated=terminated,
+        warnings=tuple(warnings),
+        error="Claude processes kept respawning during reset quiescence check",
     )
 
 

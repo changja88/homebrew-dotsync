@@ -4,6 +4,7 @@ import json
 import subprocess
 
 from local_dev.serena_mcp_management import claude_reset
+from local_dev.serena_mcp_management.memory_management import ClientProcess
 
 
 class CommandRecorder:
@@ -139,3 +140,158 @@ def test_broad_claude_config_root_fails_before_capability_probe(tmp_path):
     assert result.succeeded is False
     assert "too broad" in (result.error or "")
     assert recorder.calls == []
+
+
+def test_runtime_quiescence_stops_daemon_then_identity_pinned_cli():
+    events: list[str] = []
+    process = ClientProcess(
+        pid=4242,
+        ppid=1,
+        executable="/opt/homebrew/bin/claude",
+        command="/opt/homebrew/bin/claude",
+    )
+    scans = iter(((process,), (process,), ()))
+
+    def run_command(command, **kwargs):
+        assert command == ["/real/claude", "daemon", "stop", "--any"]
+        assert kwargs["env"] == {"CLAUDE_CONFIG_DIR": "/tmp/claude"}
+        events.append("daemon")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def process_scanner(*args, **kwargs):
+        assert args == ("claude",)
+        events.append("scan")
+        return next(scans)
+
+    termination = claude_reset._terminate_claude_runtimes(
+        real_claude_binary="/real/claude",
+        environment={"CLAUDE_CONFIG_DIR": "/tmp/claude"},
+        run_command=run_command,
+        process_scanner=process_scanner,
+        identity_reader=lambda pid: "start-1",
+        process_terminator=lambda pid, **kwargs: events.append(
+            f"terminate:{pid}:{kwargs['expected_identity']}"
+        ),
+        process_alive=lambda pid: False,
+    )
+
+    assert termination.error is None
+    assert termination.terminated == 1
+    assert termination.warnings == ()
+    assert events[0] == "daemon"
+    assert events.count("scan") == 3
+    assert "terminate:4242:start-1" in events
+
+
+def test_runtime_quiescence_reports_process_identity_inspection_error():
+    process = ClientProcess(
+        pid=4242,
+        ppid=1,
+        executable="/opt/homebrew/bin/claude",
+        command="/opt/homebrew/bin/claude",
+    )
+
+    def identity_reader(pid):
+        raise OSError("ps unavailable")
+
+    termination = claude_reset._terminate_claude_runtimes(
+        real_claude_binary="/real/claude",
+        environment={},
+        run_command=lambda command, **kwargs: subprocess.CompletedProcess(
+            command,
+            0,
+            "",
+            "",
+        ),
+        process_scanner=lambda *args, **kwargs: (process,),
+        identity_reader=identity_reader,
+        process_terminator=lambda *args, **kwargs: None,
+        process_alive=lambda pid: False,
+    )
+
+    assert termination.error is not None
+    assert "identity" in (termination.error or "")
+    assert "ps unavailable" in (termination.error or "")
+
+
+def test_runtime_quiescence_reports_post_termination_liveness_error():
+    process = ClientProcess(
+        pid=4242,
+        ppid=1,
+        executable="/opt/homebrew/bin/claude",
+        command="/opt/homebrew/bin/claude",
+    )
+    scans = iter(((process,), (process,)))
+
+    def process_alive(pid):
+        raise OSError("kill probe unavailable")
+
+    termination = claude_reset._terminate_claude_runtimes(
+        real_claude_binary="/real/claude",
+        environment={},
+        run_command=lambda command, **kwargs: subprocess.CompletedProcess(
+            command,
+            0,
+            "",
+            "",
+        ),
+        process_scanner=lambda *args, **kwargs: next(scans),
+        identity_reader=lambda pid: "start-1",
+        process_terminator=lambda *args, **kwargs: None,
+        process_alive=process_alive,
+    )
+
+    assert termination.error is not None
+    assert "liveness" in termination.error
+    assert "kill probe unavailable" in termination.error
+
+
+def test_runtime_quiescence_rejects_four_consecutive_respawns():
+    process = ClientProcess(
+        pid=4242,
+        ppid=1,
+        executable="/opt/homebrew/bin/claude",
+        command="/opt/homebrew/bin/claude",
+    )
+
+    termination = claude_reset._terminate_claude_runtimes(
+        real_claude_binary="/real/claude",
+        environment={},
+        run_command=lambda command, **kwargs: subprocess.CompletedProcess(
+            command,
+            0,
+            "",
+            "",
+        ),
+        process_scanner=lambda *args, **kwargs: (process,),
+        identity_reader=lambda pid: "start-1",
+        process_terminator=lambda *args, **kwargs: None,
+        process_alive=lambda pid: False,
+    )
+
+    assert termination.terminated == 4
+    assert termination.error is not None
+    assert "respawning" in termination.error
+
+
+def test_runtime_quiescence_keeps_daemon_failure_as_warning_when_scan_is_empty():
+    termination = claude_reset._terminate_claude_runtimes(
+        real_claude_binary="/real/claude",
+        environment={},
+        run_command=lambda command, **kwargs: subprocess.CompletedProcess(
+            command,
+            1,
+            "",
+            "daemon unavailable",
+        ),
+        process_scanner=lambda *args, **kwargs: (),
+        identity_reader=lambda pid: "unused",
+        process_terminator=lambda *args, **kwargs: None,
+        process_alive=lambda pid: False,
+    )
+
+    assert termination.error is None
+    assert termination.terminated == 0
+    assert termination.warnings == (
+        "could not stop Claude daemon: daemon unavailable",
+    )
