@@ -5,9 +5,10 @@
 ## Goal
 
 Give the interactive Claude launcher the same default-safe choice as Codex:
-keep every local session and memory, or explicitly delete every locally
-persisted Claude Code conversation, session, auto-memory store, and generated
-conversation trace before starting a new Claude process.
+keep every local session and memory, or explicitly delete every discoverable
+Claude Code conversation, session, auto-memory store, and generated
+conversation trace in the active local application-data scope before starting
+a new Claude process.
 
 The reset preserves user-scope authored configuration. In particular, it never
 edits or removes `settings.json`, and it leaves the `autoMemoryDirectory`
@@ -69,8 +70,8 @@ defaults.
 The destructive choice requires a second default-no confirmation:
 
 ```text
-Permanently delete ALL local Claude Code sessions, memories, history, plans,
-caches, snapshots, and currently running CLI sessions? [y/N]
+Permanently delete all known local Claude Code sessions, memories, history,
+generated traces, and currently running CLI sessions? [y/N]
 ```
 
 Cancelling either prompt changes nothing. A failed or incomplete reset aborts
@@ -134,25 +135,59 @@ directory, or one of their ancestors, and a non-empty custom store must contain
 the expected `MEMORY.md` marker.
 
 Project- or local-scope `.claude/settings*.json` files are user-authored
-repository configuration and are not traversed or modified by this product-wide
-application-data reset. Default project auto-memory under
-`$CLAUDE_CONFIG_DIR/projects/*/memory` is covered by the official purge. A
-custom memory directory configured only in project/local settings is outside
-the automatically discoverable user-scope contract and must be reported as a
-documented limitation rather than found by recursively scanning repositories.
+repository configuration and are never modified by this product-wide
+application-data reset. Current official documentation says
+`autoMemoryDirectory` is not accepted from those scopes. Default project
+auto-memory under `$CLAUDE_CONFIG_DIR/projects/*/memory` is covered by the
+official purge.
+
+Managed policy has higher precedence and can set `autoMemoryDirectory`. The
+launcher checks file-based macOS managed settings, `managed-settings.d` JSON
+drop-ins, the `com.anthropic.claudecode` managed-preferences domain, and the
+recognized `$CLAUDE_CONFIG_DIR/remote-settings.json` server-policy cache. A
+managed `autoMemoryDirectory` or dynamic `policyHelper` makes reset fail closed
+because this user-scope tool cannot safely prove the effective external memory
+root. The same check runs before mutation, immediately after the official
+purge, and before final success, covering cache updates while the external
+command and supplemental verification execute. Explicit `--settings`
+invocations already bypass the interactive reset flow.
+
+`plansDirectory` is different from `autoMemoryDirectory`: it is relative to a
+project root, can be configured at project/local scope, and the destination can
+legitimately contain versioned user files. Claude keeps no complete central
+ledger of historical custom plan paths. Deleting such a directory wholesale or
+searching every repository would cross the preservation boundary. Reset
+therefore fails before mutation when `plansDirectory` is found in user or
+managed settings, the current launch project, or project roots discoverable
+from the pre-purge mixed global JSON and its recognized backups. For linked
+worktrees, discovery expands each git path to both the current worktree root and
+the git common/main checkout root because Claude can read settings from both.
+The default application-data `plans/` directory remains part of the
+supplemental allowlist.
 
 ### Explicitly preserved data
 
 The reset does not remove or edit:
 
-- `$CLAUDE_CONFIG_DIR/settings.json` or any `settings*.json` file;
+- `$CLAUDE_CONFIG_DIR/settings.json`;
 - the `autoMemoryDirectory` configuration value;
 - authentication and account state;
 - user-scope plugins, skills, commands, hooks, agents, and MCP configuration;
 - policy, managed, and remote settings or caches;
-- `$CLAUDE_CONFIG_DIR/backups/`;
+- `$CLAUDE_CONFIG_DIR/backups/` files and their non-project top-level values;
+  only generated `projects` mappings are removed because they can retain
+  `lastSessionId` and session statistics;
 - usage/statistics caches such as `stats-cache.json`; or
 - any repository `.claude/` directory.
+
+Before mutation the launcher creates descriptor-anchored content manifests for
+the named user-authored/high-value roots in this list: credentials, plugins,
+skills, commands, hooks, agents, rules, output styles, themes, workflows,
+keybindings, `CLAUDE.md`, MCP files, and `stats-cache.json`. Their existence and
+content must match after the official purge and at final verification;
+`remote-settings.json` and `policy-limits.json` are included. The mixed global
+JSON, user `settings.json`, and recognized backups retain their separate
+semantic/byte-level invariants described above.
 
 `~/.claude.json` is a mixed state file. The official purge may remove its
 generated project entries as documented, but the launcher does not delete the
@@ -198,14 +233,20 @@ the already-verified Codex reset.
 
 All targets are discovered and validated before the first destructive step.
 The active Claude config root must be absolute, must not be a broad directory,
-and must not contain a symlink component. Supplemental targets are constructed
+must not be a shared/system/temp or shallow volume root, and must not contain a
+symlink component. Supplemental targets are constructed
 only by joining fixed allowlisted names to that root; arbitrary directory names
 found on disk are never treated as reset targets.
 
 For a recognized final target, a symlink is unlinked without following it. A
 symlink in the config root or any intermediate component fails closed. Regular
-files are accepted only for allowlisted cache entries documented as files;
-wrong-type targets cause a failure rather than a recursive guess.
+files at a supplemental directory target are the wrong type and cause a failure
+rather than a recursive guess.
+Recursive directory deletion opens every ancestor and target with
+`O_DIRECTORY|O_NOFOLLOW`, pins device/inode identity, operates through
+directory-relative file descriptors, and revalidates the namespace before and
+after mutation. A concurrent ancestor rename or symlink swap therefore fails
+instead of redirecting deletion.
 
 There is no honest filesystem transaction spanning the Claude CLI and several
 directories. A failure after the official purge can therefore leave a partial
@@ -288,11 +329,18 @@ Focused tests must prove:
 - Claude Desktop is never selected by the process matcher;
 - official targets and every supplemental allowlisted generated target are
   gone after success;
-- user settings, `autoMemoryDirectory`, auth, plugins, backups, statistics,
-  and unrelated files survive unchanged;
+- user settings, `autoMemoryDirectory`, auth, plugins, statistics, unrelated
+  files, and non-project backup values survive unchanged;
+- named preserved user-data roots are content-manifested before mutation and
+  reverified after the purge and before success;
 - the custom memory directory contents are removed without editing its setting;
 - broad, relative, parent-traversing, symlinked, markerless, unreadable, and
   wrong-type targets fail safely;
+- static, dynamic-helper, macOS-managed, and cached server-managed memory
+  redirects fail closed and are checked after the official purge and before
+  final success;
+- a discoverable custom `plansDirectory` fails before mutation rather than
+  risking repository-file deletion or claiming a complete plan reset;
 - purge failure, partial filesystem failure, settings mutation, and residual
   state all return failure and prevent child launch;
 - default and custom config layouts preserve the original environment-variable
@@ -312,7 +360,11 @@ Focused tests must prove:
   post-reset checks protect known state, while the explicit allowlist avoids
   deleting a new user-authored directory by guesswork. The allowlist must be
   reviewed when Claude's application-data documentation changes.
-- A custom `autoMemoryDirectory` configured only in a repository's project or
-  local settings is not recursively discovered across the user's filesystem.
+- A historical repository-relative custom plan path can outlive every central
+  project entry after its setting is removed. Without a path ledger created at
+  write time, the launcher cannot safely discover that orphan by scanning the
+  machine. The success contract is therefore limited to the active config's
+  default plan store; any currently discoverable custom `plansDirectory`
+  blocks reset before mutation.
 - Claude Desktop, VS Code, web, remote, and account-side conversation history
   are outside the active Claude Code CLI config-directory boundary.

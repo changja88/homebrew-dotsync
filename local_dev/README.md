@@ -103,12 +103,11 @@ machine-wide Serena MCP inventory, Graphify status (4 rows: global / graph /
 integration / hook), context, grouped agent memory inventory, and one grouped
 global session inventory that contains its cleanup condition and candidate
 counts. After setup prompts (including an optional Initialize/Skip prompt when
-`.serena/project.yml` is absent), the launcher collects independent memory and
-session choices for Claude. Codex instead first shows a keep/reset choice and
-performs a confirmed product-wide conversation-state reset without a
-per-session preserve list. The launcher performs the selected product-scoped
-actions and starts the scoped Serena MCP server with inline progress rows below
-the preflight box.
+`.serena/project.yml` is absent), the launcher shows the same default-safe
+keep/reset choice for Claude and Codex. A confirmed reset is product-wide and
+has no per-session preserve list. The launcher performs the selected
+product-scoped action and starts the scoped Serena MCP server with inline
+progress rows below the preflight box.
 When the agent TUI exits, a summary box reports session duration, cleanup
 result, MCP lifecycle, and any accumulated warnings.
 Non-interactive commands (`codex exec`, `claude -p`, help/version) and Claude
@@ -198,28 +197,102 @@ explicit product-wide reset requested by the user.
 
 #### Claude
 
-Claude keeps the existing two independent questions:
+Interactive Claude launches use the same combined, default-safe choice:
 
 ```text
-? Delete Claude auto-memory before launch?
-  ▶ Keep all memory (default)
-    Delete all Claude auto-memory
-
-? Delete Claude sessions before launch?
-  ▶ No full deletion — automatic cleanup after 5 days (default)
-    Delete all inactive sessions — running sessions are preserved
+? Reset Claude sessions and memories before launch?
+  ▶ Keep all sessions and memories (default)
+    Delete all sessions, memories, and conversation traces
 ```
 
-The Claude memory choice covers every direct
-`$CLAUDE_CONFIG_DIR/projects/<project>/memory/` directory (or the equivalent
-paths below `~/.claude/projects` when unset), plus the exact valid custom
-directory configured by `autoMemoryDirectory`. Claude explicit session cleanup
-continues to preserve active/open bundles.
+Keeping state is an exact launcher-level no-op. The launcher no longer injects
+`cleanupPeriodDays: 5`; Claude follows the user's own settings and native
+defaults. The destructive choice requires a second default-no confirmation:
+
+```text
+Permanently delete all known local Claude Code sessions, memories, history,
+generated traces, and currently running CLI sessions? [y/N]
+```
+
+After confirming, the launcher capability-probes the real Claude binary for
+`project purge --all --yes`, stops the Claude Code daemon and remaining local
+CLI/background processes, and invokes that official command. Per the official
+[Claude directory documentation](https://code.claude.com/docs/en/claude-directory),
+the purge owns project transcripts and default auto-memory, tasks, debug logs,
+file history, prompt history, and generated project entries in Claude's mixed
+global JSON. The command does not cover every generated trace needed by this
+launcher's stricter reset contract, so a successful official purge is followed
+by deletion of this fixed allowlist beneath the active config directory:
+
+```text
+agent-memory/  plans/       paste-cache/       image-cache/
+session-env/   shell-snapshots/  sessions/     feedback-bundles/
+todos/         logs/
+```
+
+The reset also removes the generated memory store at the exact valid path named
+by the user-scope `autoMemoryDirectory` setting. It never rewrites that setting:
+`$CLAUDE_CONFIG_DIR/settings.json` must remain byte-for-byte unchanged. Default
+project memory under `projects/*/memory` is handled by the official purge.
+
+User-scope authored configuration remains: settings, authentication, plugins,
+skills, commands, hooks, agents, MCP configuration, policies, managed/remote
+settings, the non-project values and unrelated files in `backups/`, and
+usage/statistics caches. Repository `.claude/`
+directories are not traversed. Claude's mixed global JSON is preserved except
+for the official purge's generated `projects` entries; all pre-existing
+non-project top-level values must still match after reset. A user-scope custom
+memory path is validated against broad paths, traversal, and symlink components
+before deletion. Shared/system/temp roots and shallow volume roots are rejected;
+recursive deletion pins every ancestor and target by file descriptor and inode
+so a concurrent rename or symlink swap cannot redirect it. Claude does not
+accept `autoMemoryDirectory` from project or
+local settings. It can accept a higher-precedence managed policy, so the
+launcher inspects file-based managed settings, managed drop-ins, the macOS
+managed-preferences domain, and the recognized
+`$CLAUDE_CONFIG_DIR/remote-settings.json` server-policy cache. If any source
+defines `autoMemoryDirectory` or a dynamic `policyHelper`, the reset fails
+closed because the effective external memory root cannot be proven safely. The
+policy check runs before mutation, immediately after the official purge, and
+again before reporting success in case server policy changes while the command
+runs. Invocations with an explicit `--settings` override continue to bypass
+this interactive reset flow.
+
+Claude's `plansDirectory` can redirect generated plans to a repository-relative
+path that may also contain user files, and historical custom locations have no
+complete central index. The launcher therefore fails before mutation when this
+setting is found in user or managed settings, the current repository, or a
+project root still discoverable from current/global backup metadata. It never
+guesses at or recursively searches repositories. For linked worktrees it also
+checks the current worktree top level and the git common/main checkout because
+Claude can read settings from both. The normal default
+`$CLAUDE_CONFIG_DIR/plans/` store is deleted by the fixed allowlist above.
+
+`backups/` contains Claude-generated migration snapshots of the mixed global
+configuration, not conversation bodies or auto-memory. The backup files remain,
+but the reset removes only their generated `projects` mappings because those
+can retain `lastSessionId` and session statistics. Authentication, preferences,
+and every other top-level backup value are preserved.
+
+Before mutation the launcher also records content manifests for named
+user-authored roots and high-value local state, including credentials, plugins,
+skills, commands, hooks, agents, rules, themes, workflows, keybindings,
+`CLAUDE.md`, MCP files, and `stats-cache.json`. The same manifests must match
+after the official purge and at final verification; recognized remote/policy
+caches are covered as well. Reads and recursive deletes are descriptor-anchored
+and reject concurrent inode or content changes.
+
+The reset applies only to local Claude Code CLI state in the active
+`CLAUDE_CONFIG_DIR`. It does not close Claude Desktop and does not claim to
+erase Claude.ai, web, Desktop, VS Code, or remote-session history. Any missing
+purge capability, unsafe path, process that cannot be stopped, non-zero purge,
+changed setting, unsupported custom plan store, or residual state fails closed
+and aborts the new Claude launch.
 
 Ctrl+C at any pre-launch prompt leaves state unchanged, does not launch a
 child, prints the existing `! cancelled` row, and returns exit code `130`
 without a traceback. Non-interactive bypass commands show no destructive
-prompt and never opt into the combined Codex reset or full Claude deletion.
+prompt and never opt into either product's full reset.
 
 `serena project create` (run on Initialize) is **captured, not streamed**: its
 verbose language detection, the interactive language prompts auto-answered via
@@ -281,14 +354,10 @@ table abbreviations:
 | Context | Session scope | No explicit selection | Explicit deletion |
 |---|---|---|---|
 | `codex` | Logical sessions from rollout JSONL and read-only `state_<n>.sqlite` thread rows, including archived and state-only entries, across `~/.codex`, the active `$CODEX_HOME`, and Orca's managed Codex home. Linked descendants and copies count once for pre-reset reporting. | Exact no-op; no automatic five-day deletion. | One confirmed hard reset stops detected CLI/app-server runtimes, temporarily restarts an open Desktop app, and removes every known session, state, memory, history, log, snapshot, and desktop thread record. There is no per-session preserve list. Config, auth, plugins, skills, app preferences, and automation definitions remain. |
-| `claude` | Top-level session JSONL files for every project under `$CLAUDE_CONFIG_DIR/projects` (or `~/.claude/projects` when unset). Subagent files are counted with their parent. | The child process receives the official execution-only setting `--settings '{"cleanupPeriodDays":5}'`; Claude Code performs its native startup sweep. | A fresh scan builds bounded bundles only for exact valid session UUIDs across the supported transcript, subagent/tool-result, file-history, session-env, tasks, and debug roots. It preserves bundles proven active by validated running-session markers or open files, revalidates the complete manifest, never follows symlinks, and never uses project purge. |
+| `claude` | Top-level session JSONL files for every project under `$CLAUDE_CONFIG_DIR/projects` (or `~/.claude/projects` when unset). Subagent files are counted with their parent for pre-reset reporting. | Exact launcher-level no-op; no injected retention setting or automatic launcher deletion. | One confirmed reset stops local Claude Code CLI/daemon runtimes, runs official `project purge --all --yes`, removes fixed supplemental generated-data targets, sanitized backup `projects` mappings, and the validated user-scope custom memory store, then verifies no state remains. Settings, `autoMemoryDirectory`, auth, plugins, skills, commands, hooks, agents, MCP config, policies, non-project backup values, and repository `.claude/` data remain. A managed memory redirect fails closed before mutation. |
 
-For Claude, the cutoff is strictly older than `5 * 24h`; a session exactly on
-the cutoff is kept. The five-day rule applies only to Claude sessions and never
-deletes auto-memory. Explicit Claude deletion removes only complete, unchanged
-inactive UUID bundles; it leaves memory, settings, credentials, unrelated
-project files, and Claude's session-marker files untouched. Session counts are
-grouped by data type under one top-level row. Normal preflight rows read:
+Session counts are grouped by data type under one top-level row. Normal
+preflight rows read:
 
 ```text
 · sessions    codex
@@ -299,24 +368,18 @@ grouped by data type under one top-level row. Normal preflight rows read:
 
 ```text
 · sessions    claude
-              ├─ records  108 total · 75 to delete · 33 to keep
-              └─ cleanup  inactive longer than 5 days · native Claude cleanup
+              ├─ records  108 total · 0 to delete · 108 to keep
+              └─ cleanup  full reset on confirmation · no automatic deletion
 ```
 
-Claude memory prompt/action rows are purple and all session/reset prompt/action
-rows are yellow. The inventory tree keeps its existing detail palette: total
-segments are pink, the cleanup condition is purple, delete segments are yellow,
-keep segments and child labels are mint, and tree glyphs are gray. The final
-summary reports `N sessions deleted · M conversation-state targets reset`
-after a Codex reset, `native retention 5d . N eligible` for default Claude
-retention, or `N sessions deleted · M running preserved` after explicit Claude
-session deletion.
-If explicit cleanup fails after mutation starts, its immediate yellow row keeps
-fully deleted logical sessions separate from completed member/root operations
-inside the incomplete session. It names up to three affected members or paths,
-adds `+N more` for any remainder, prints the exact failure, and continues to
-launch without claiming rollback. A strict inventory failure likewise shows up
-to three concrete path/reason warnings plus a remainder count before launch.
+Session/reset prompt and action rows are yellow. The inventory tree keeps its
+existing detail palette: total segments are pink, the cleanup condition is
+purple, delete segments are yellow, keep segments and child labels are mint,
+and tree glyphs are gray. The final summary reports
+`N sessions deleted · M conversation-state targets reset` after either product's
+reset, or `sessions and memories kept` when no reset was confirmed. A failed or
+partially completed reset reports its exact error and aborts the child launch;
+there is no claim of rollback across the official CLI and filesystem deletion.
 
 ## Workflow
 

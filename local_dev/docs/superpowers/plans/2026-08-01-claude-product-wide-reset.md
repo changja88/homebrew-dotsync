@@ -29,8 +29,15 @@
   and repository `.claude/`/`.mcp.json` files.
 - Delete the custom auto-memory store but never rewrite its
   `autoMemoryDirectory` setting.
+- Fail before mutation when a custom `plansDirectory` is found in user,
+  managed, current-project, or otherwise discoverable project settings; never
+  recursively search repositories or delete a repo-relative directory by
+  guesswork.
 - Preserve `backups/`, usage/statistics caches, policy caches, and repository
   `.claude/` directories.
+- Snapshot and reverify content manifests for credentials and named
+  user-authored/high-value roots such as plugins, skills, commands, agents,
+  rules, themes, workflows, MCP files, and statistics.
 - Never follow a symlink. Reject a symlinked root/intermediate component; unlink
   only a final allowlisted target symlink.
 - Prevalidate all discoverable paths before mutation. Report a later partial
@@ -622,15 +629,18 @@ git commit -m "docs(local_dev): document Claude product-wide reset"
 | Let Keep inject five-day retention | **Rejected** | Remove `cleanupPeriodDays: 5` from scoped and bare launches. |
 | Purge while old CLI/daemon workers can rewrite state | **Rejected** | Daemon stop, identity-pinned termination, respawn loop, final scan. |
 | Kill by PID without identity revalidation | **Rejected** | PID plus process start time is required before signaling. |
-| Follow a symlink to external data | **Rejected** | Intermediate links fail; final allowlisted link is unlinked only. |
-| Search every repository for project settings | **Rejected** | It is unbounded and can delete repo-authored data; document the limitation. |
+| Follow or race-swap a symlink to external data | **Rejected** | Shared roots and intermediate links fail; descriptor/inode-pinned deletion unlinks a final allowlisted link only. |
+| Use `/tmp`, `/var`, or a shallow volume root as config/memory | **Rejected** | Treat shared/system/temp and shallow volume roots as unsafe before any mutation. |
+| Search every repository for project settings | **Rejected** | Claude does not accept `autoMemoryDirectory` from project/local settings. Inspect only current/known project settings for `plansDirectory`; do not scan arbitrary repositories. |
+| Ignore higher-precedence managed memory policy | **Rejected** | Inspect documented local macOS managed sources and the recognized `remote-settings.json` server-policy cache before mutation, after the official purge, and before success; fail closed when the effective external root cannot be proven safely. |
+| Delete a custom repository-relative `plansDirectory` wholesale | **Rejected** | It may contain user/versioned files and historical paths lack a complete central index. Detect current/discoverable settings and fail before mutation; delete only the default app-data `plans/` store. |
 | Trust zero purge exit as success | **Rejected** | Verify official, supplemental, memory, process, and settings state independently. |
 | Export default `~/.claude` as a new custom config value | **Rejected** | Preserve the environment variable's original set/unset state and verify the corresponding global JSON path. |
 | Hide a partial reset and continue launch | **Rejected** | Return partial counts plus error and abort child launch. |
 | Hard-code a minimum Claude version | **Rejected** | Probe flags on the actual binary used. |
 | Claim Desktop/web/account erasure | **Rejected** | UI/docs explicitly say local Claude Code CLI only. |
 | Refactor mature Codex reset for reuse | **Rejected for this change** | Reuse lifecycle primitives only; retain Codex implementation/tests. |
-| Delete backups/statistics because they are in config root | **Rejected** | They are outside conversation/session/memory scope and are preserved. |
+| Delete backups/statistics wholesale because they are in config root | **Rejected** | Preserve statistics and non-project backup values; surgically remove backup `projects` mappings that retain session identifiers/statistics. |
 
 ### Residual risks accepted after review
 
@@ -639,11 +649,16 @@ git commit -m "docs(local_dev): document Claude product-wide reset"
    visible and prevents launch.
 2. Future Claude versions can add generated locations. The strict allowlist is
    intentionally conservative and must track official application-data docs.
-3. A custom memory path set only in project/local settings is not discovered
-   product-wide because safe exhaustive repository discovery would expand the
-   deletion scope.
+3. A server policy update can race any local operation. The launcher checks the
+   recognized remote-policy cache before mutation, immediately after the
+   official purge, and before final success; a later update after the child
+   starts is governed by Claude Code itself.
 4. Account, Desktop, VS Code, web, and remote histories are independent stores
    outside this launcher feature.
+5. Historical custom `plansDirectory` locations removed from all current
+   settings and project metadata cannot be reconstructed safely. Discoverable
+   custom plan settings fail closed; success covers the active config's default
+   app-data plan store without searching arbitrary repositories.
 
 No unresolved contradiction remains inside the stated local Claude Code CLI
-scope. These four residual risks must stay visible in implementation docs.
+scope. These residual risks must stay visible in implementation docs.
