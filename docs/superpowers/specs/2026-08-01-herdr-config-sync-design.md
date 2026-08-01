@@ -27,9 +27,11 @@ comparison, symlink rejection, destination-directory creation, and the local
 backup performed before apply.
 
 Register `HerdrApp` in `APP_CLASSES`. The existing derived registry behavior
-then exposes Herdr to app selection, automatic local detection, `--all`,
-configuration validation, and app construction without Herdr-specific CLI
-branches.
+then exposes Herdr to app selection, automatic local detection, configuration
+validation, and app construction without Herdr-specific CLI branches. Once
+Herdr is selected in `dotsync.toml`, the existing `--all` path includes it in
+backup and apply. Registration does not silently add Herdr to an existing
+user's tracked-app list.
 
 ## Data flow and failure behavior
 
@@ -64,12 +66,15 @@ with filesystem-isolated fixtures.
 Update the English and Korean README sections in parity: the product summary,
 picker example, tracked-app summary, and supported-app list will include
 Herdr. State that Herdr sync covers only `~/.config/herdr/config.toml` and
-excludes session/runtime state.
+excludes session/runtime state. Existing users enable it with `dotsync apps`
+or by replacing the tracked list with `dotsync config apps ...`; their saved
+selection is not migrated automatically.
 
 ## Out of scope
 
 - Herdr-specific sync methods
 - `herdr server reload-config`
 - Session, pane, workspace, plugin-registry, log, socket, or lock-file sync
+- Automatic mutation of existing `dotsync.toml` tracked-app selections
 - New dependencies, network access, version bumps, or Homebrew formula changes
 - Any change under `local_dev/`
