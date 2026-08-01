@@ -1,6 +1,5 @@
 import io
 import re
-import threading
 from pathlib import Path
 from unittest import mock
 
@@ -521,24 +520,26 @@ def test_v2_start_mcp_with_spinner_raises_on_failure(monkeypatch):
     assert "server unhealthy" in text or "preparing" in text
 
 
-def test_v2_render_summary_box_includes_duration_and_full_session_cleanup():
+def test_v2_render_summary_box_includes_duration_and_conversation_reset():
     out = io.StringIO()
     summary = launcher._render_summary_v2(
         stream=out,
         client="codex",
         duration_seconds=125.0,
         cleanup_deleted=2,
-        native_eligible=0,
-        running_preserved=1,
-        full_cleanup=True,
         mcp_lifecycle="stopped",
         warnings=[],
+        conversation_reset=True,
+        reset_trace_targets=6,
     )
     assert summary is None  # writes to stream, no return
     text = out.getvalue()
     assert "summary" in text
     assert "2m 5s" in _strip_ansi(text) or "125" in _strip_ansi(text)
-    assert "2 sessions deleted · 1 running preserved" in _strip_ansi(text)
+    assert (
+        "2 sessions deleted · 6 conversation-state targets reset"
+        in _strip_ansi(text)
+    )
     assert "sessions" in _strip_ansi(text)
     assert f"\x1b[{launcher.AMBER}m" in text
     assert "memory" not in _strip_ansi(text)
@@ -552,9 +553,6 @@ def test_v2_render_summary_includes_warnings():
         client="claude",
         duration_seconds=10.0,
         cleanup_deleted=0,
-        native_eligible=4,
-        running_preserved=0,
-        full_cleanup=False,
         mcp_lifecycle="kept",
         warnings=["serena project create skipped"],
     )
@@ -626,7 +624,7 @@ def test_v2_main_returns_child_exit_code(monkeypatch, tmp_path):
     assert rc == 0
 
 
-def test_codex_cleanup_defaults_to_keep_before_reset_scan(monkeypatch):
+def test_codex_reset_defaults_to_keep_before_reset_scan(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
 
@@ -639,20 +637,13 @@ def test_codex_cleanup_defaults_to_keep_before_reset_scan(monkeypatch):
         unexpected_scan,
     )
 
-    memory_out = io.StringIO()
     session_out = io.StringIO()
-    memory = launcher._run_memory_choice_v2(
-        stream=memory_out,
-        input_fn=lambda: "",
-    )
     sessions = launcher._run_session_choice_v2(
         stream=session_out,
         input_fn=lambda: "",
     )
 
-    assert memory == "keep"
     assert sessions == "keep"
-    assert memory_out.getvalue() == ""
     plain = _strip_ansi(session_out.getvalue())
     assert "Reset Codex sessions and memories before launch?" in plain
     assert "Keep all sessions and memories (default)" in plain
@@ -818,18 +809,12 @@ def test_claude_reset_rejects_explicit_empty_config_dir_without_backend_call(
 def test_claude_cleanup_defaults_to_combined_keep(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "claude")
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    memory_out = io.StringIO()
     session_out = io.StringIO()
 
-    assert launcher._run_memory_choice_v2(
-        stream=memory_out,
-        input_fn=lambda: "",
-    ) == "keep"
     assert launcher._run_session_choice_v2(
         stream=session_out,
         input_fn=lambda: "",
     ) == "keep"
-    assert memory_out.getvalue() == ""
     plain = _strip_ansi(session_out.getvalue())
     assert "Reset Claude sessions and memories before launch?" in plain
     assert "Keep all sessions and memories (default)" in plain
@@ -857,60 +842,14 @@ def test_claude_reset_choice_requires_local_cli_confirmation(monkeypatch):
     assert "Codex" not in plain
 
 
-def test_cleanup_choices_bypass_prompts_when_non_interactive(monkeypatch):
+def test_session_choice_bypasses_prompt_when_non_interactive(monkeypatch):
     monkeypatch.delenv("SERENA_AGENT_INTERACTIVE", raising=False)
-    memory_out = io.StringIO()
     session_out = io.StringIO()
 
-    assert launcher._run_memory_choice_v2(stream=memory_out) == "keep"
     assert launcher._run_session_choice_v2(
         stream=session_out
     ) == "keep"
-    assert memory_out.getvalue() == ""
     assert session_out.getvalue() == ""
-
-
-def test_memory_delete_action_uses_purple_rows(monkeypatch, tmp_path):
-    from local_dev.serena_mcp_management.memory_management import MemoryDeleteResult
-
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
-    monkeypatch.setattr(
-        launcher,
-        "delete_all_memory",
-        lambda **kwargs: MemoryDeleteResult(
-            deleted_stores=2,
-            deleted_files=17,
-        ),
-    )
-    out = io.StringIO()
-
-    result = launcher._run_memory_action_v2(
-        choice="delete",
-        client="codex",
-        stream=out,
-    )
-
-    assert result.succeeded
-    assert "2 stores · 17 files deleted" in _strip_ansi(out.getvalue())
-    assert out.getvalue().count(f"\x1b[{launcher.PURPLE}m") >= 2
-
-
-def test_memory_keep_action_is_silent_and_does_not_access_stores(monkeypatch):
-    monkeypatch.setattr(
-        launcher,
-        "delete_all_memory",
-        lambda **kwargs: pytest.fail("keep must not access memory stores"),
-    )
-    out = io.StringIO()
-
-    result = launcher._run_memory_action_v2(
-        choice="keep",
-        client="codex",
-        stream=out,
-    )
-
-    assert result.succeeded
-    assert out.getvalue() == ""
 
 
 def _run_main_for_cleanup_choices(
@@ -918,23 +857,12 @@ def _run_main_for_cleanup_choices(
     tmp_path,
     *,
     client="codex",
-    memory_choice,
     session_choice,
-    deletion_succeeds=True,
-    deletion_error="unsafe memory store",
-    deleted_stores=2,
-    deleted_files=17,
-    delete_exception=None,
     session_choice_exception=None,
-    explicit_cleanup_result=None,
-    explicit_cleanup_inventory=None,
     call_public_main=False,
     serena_state="skipped",
     captured_summary_warnings=None,
 ):
-    from local_dev.serena_mcp_management.memory_management import MemoryDeleteResult
-    from local_dev.serena_mcp_management.session_cleanup import CleanupResult
-
     monkeypatch.setenv("SERENA_AGENT_CLIENT", client)
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
@@ -967,78 +895,23 @@ def _run_main_for_cleanup_choices(
         call_log.append("serena-init")
         return serena_state
 
-    def fake_memory_choice(**kwargs):
-        call_log.append("memory-choice")
-        return memory_choice
-
     def fake_session_choice(**kwargs):
         call_log.append("session-choice")
         if session_choice_exception is not None:
             raise session_choice_exception
         return session_choice
 
-    def fake_delete_all_memory(**kwargs):
-        call_log.append("memory-delete")
-        if delete_exception is not None:
-            raise delete_exception
-        if deletion_succeeds:
-            return MemoryDeleteResult(
-                deleted_stores=deleted_stores,
-                deleted_files=deleted_files,
-            )
-        return MemoryDeleteResult(
-            deleted_stores=deleted_stores,
-            deleted_files=deleted_files,
-            error=deletion_error,
-        )
-
     monkeypatch.setattr(launcher, "_render_preflight_overview_v2", fake_overview)
     monkeypatch.setattr(launcher, "_run_serena_cli_install_v2", lambda **kwargs: None)
     monkeypatch.setattr(launcher, "_run_preflight_v2", fake_preflight, raising=False)
     monkeypatch.setattr(launcher, "_run_serena_init_v2", fake_serena_init, raising=False)
-    monkeypatch.setattr(launcher, "_run_memory_choice_v2", fake_memory_choice,
-                        raising=False)
     monkeypatch.setattr(launcher, "_run_session_choice_v2", fake_session_choice,
-                        raising=False)
-    monkeypatch.setattr(launcher, "delete_all_memory", fake_delete_all_memory,
                         raising=False)
     monkeypatch.setattr(
         launcher,
         "find_real_binary",
         lambda client: "/usr/bin/true",
     )
-    monkeypatch.setattr(
-        launcher,
-        "_run_launch_prep_v2",
-        lambda **kwargs: call_log.append("session-retention")
-        or launcher.LaunchPrepSummary(),
-    )
-    if explicit_cleanup_inventory is None:
-        monkeypatch.setattr(
-            launcher,
-            "_run_explicit_session_cleanup_v2",
-            lambda **kwargs: call_log.append("session-delete-inactive")
-            or (
-                explicit_cleanup_result
-                if explicit_cleanup_result is not None
-                else CleanupResult()
-            ),
-            raising=False,
-        )
-    else:
-        run_explicit_cleanup = launcher._run_explicit_session_cleanup_v2
-        monkeypatch.setattr(
-            launcher,
-            "scan_claude_inventory",
-            lambda **kwargs: explicit_cleanup_inventory,
-        )
-        monkeypatch.setattr(
-            launcher,
-            "_run_explicit_session_cleanup_v2",
-            lambda **kwargs: call_log.append("session-delete-inactive")
-            or run_explicit_cleanup(**kwargs),
-            raising=False,
-        )
     monkeypatch.setattr(
         launcher,
         "_launch_bare_child",
@@ -1112,21 +985,16 @@ def test_v2_main_claude_keep_runs_no_cleanup(monkeypatch, tmp_path):
         monkeypatch,
         tmp_path,
         client="claude",
-        memory_choice="keep",
         session_choice="keep",
     )
 
     assert rc == 0
-    assert call_log[:5] == [
+    assert call_log[:4] == [
         "overview",
         "serena-init",
         "setup",
-        "memory-choice",
         "session-choice",
     ]
-    assert "memory-delete" not in call_log
-    assert "session-retention" not in call_log
-    assert "session-delete-inactive" not in call_log
     assert call_log[-1] == "launch"
 
 
@@ -1153,7 +1021,6 @@ def test_v2_main_claude_reset_all_uses_claude_backend(monkeypatch, tmp_path):
         monkeypatch,
         tmp_path,
         client="claude",
-        memory_choice="keep",
         session_choice="reset_all",
     )
 
@@ -1164,9 +1031,6 @@ def test_v2_main_claude_reset_all_uses_claude_backend(monkeypatch, tmp_path):
             "project_root": tmp_path,
         }
     ]
-    assert "memory-delete" not in call_log
-    assert "session-retention" not in call_log
-    assert "session-delete-inactive" not in call_log
     assert call_log[-1] == "launch"
 
 
@@ -1194,27 +1058,21 @@ def test_v2_main_claude_reset_failure_aborts_before_launch(
         monkeypatch,
         tmp_path,
         client="claude",
-        memory_choice="keep",
         session_choice="reset_all",
     )
 
     assert rc == 1
     assert "launch" not in call_log
-    assert "memory-delete" not in call_log
 
 
 def test_v2_main_codex_keep_runs_no_cleanup(monkeypatch, tmp_path):
     rc, call_log = _run_main_for_cleanup_choices(
         monkeypatch,
         tmp_path,
-        memory_choice="delete",
         session_choice="keep",
     )
 
     assert rc == 0
-    assert "memory-delete" not in call_log
-    assert "session-retention" not in call_log
-    assert "session-delete-inactive" not in call_log
     assert call_log[-1] == "launch"
 
 
@@ -1237,7 +1095,6 @@ def test_v2_main_codex_reset_all_uses_combined_reset(
     rc, call_log = _run_main_for_cleanup_choices(
         monkeypatch,
         tmp_path,
-        memory_choice="delete",
         session_choice="reset_all",
     )
 
@@ -1250,9 +1107,6 @@ def test_v2_main_codex_reset_all_uses_combined_reset(
     }
     assert reset_calls[0]["child_args"] == ()
     assert reset_calls[0]["working_directory"] == tmp_path
-    assert "memory-delete" not in call_log
-    assert "session-retention" not in call_log
-    assert "session-delete-inactive" not in call_log
     assert call_log[-1] == "launch"
 
 
@@ -1274,17 +1128,14 @@ def test_v2_main_codex_reset_failure_aborts_before_launch(
     rc, call_log = _run_main_for_cleanup_choices(
         monkeypatch,
         tmp_path,
-        memory_choice="keep",
         session_choice="reset_all",
     )
 
     assert rc == 1
     assert "launch" not in call_log
-    assert "session-retention" not in call_log
-    assert "session-delete-inactive" not in call_log
 
 
-def test_v2_main_session_choice_ctrl_c_precedes_memory_delete(
+def test_v2_main_session_choice_ctrl_c_aborts_before_launch(
     monkeypatch,
     tmp_path,
 ):
@@ -1292,7 +1143,6 @@ def test_v2_main_session_choice_ctrl_c_precedes_memory_delete(
         monkeypatch,
         tmp_path,
         client="claude",
-        memory_choice="delete",
         session_choice="keep",
         session_choice_exception=KeyboardInterrupt(),
         call_public_main=True,
@@ -1300,261 +1150,7 @@ def test_v2_main_session_choice_ctrl_c_precedes_memory_delete(
 
     assert rc == 130
     assert call_log[-1] == "session-choice"
-    assert "memory-delete" not in call_log
     assert "launch" not in call_log
-
-
-def test_explicit_session_cleanup_animates_until_result(monkeypatch):
-    out = io.StringIO()
-
-    class FakeSpinnerTicker:
-        def __init__(self, *, on_tick, interval):
-            assert interval == 0.1
-            self._on_tick = on_tick
-
-        def start(self):
-            self._on_tick(1)
-            self._on_tick(2)
-
-        def stop(self):
-            out.write("<ticker-stopped>")
-
-    monkeypatch.setattr(launcher, "SpinnerTicker", FakeSpinnerTicker)
-    monkeypatch.setattr(
-        launcher,
-        "scan_claude_inventory",
-        lambda **kwargs: _inventory_snapshot(
-            client="claude",
-            total=1,
-            to_delete=1,
-            to_keep=0,
-        ).inventory,
-    )
-    monkeypatch.setattr(
-        launcher,
-        "cleanup_claude_inventory",
-        lambda inventory: launcher.CleanupResult(deleted=1),
-    )
-
-    result = launcher._run_explicit_session_cleanup_v2(
-        client="claude",
-        stream=out,
-    )
-
-    text = _strip_ansi(out.getvalue())
-    assert result.succeeded
-    assert "\r  ⠙ sessions" in text
-    assert "\r  ⠹ sessions" in text
-    assert text.index("<ticker-stopped>") < text.index("✓ sessions")
-
-
-@pytest.mark.parametrize("failure_site", ("scan", "cleanup"))
-def test_explicit_session_cleanup_stops_spinner_before_error_result(
-    monkeypatch,
-    failure_site,
-):
-    out = io.StringIO()
-
-    class FakeSpinnerTicker:
-        def __init__(self, *, on_tick, interval):
-            self._on_tick = on_tick
-
-        def start(self):
-            self._on_tick(1)
-
-        def stop(self):
-            out.write("<ticker-stopped>")
-
-    def raise_scan_error(**kwargs):
-        raise RuntimeError("injected scan failure")
-
-    def raise_cleanup_error(inventory):
-        raise RuntimeError("injected cleanup failure")
-
-    monkeypatch.setattr(launcher, "SpinnerTicker", FakeSpinnerTicker)
-    if failure_site == "scan":
-        monkeypatch.setattr(
-            launcher,
-            "scan_claude_inventory",
-            raise_scan_error,
-        )
-        expected_error = "injected scan failure"
-    else:
-        monkeypatch.setattr(
-            launcher,
-            "scan_claude_inventory",
-            lambda **kwargs: _inventory_snapshot(
-                client="claude",
-                total=1,
-                to_delete=1,
-                to_keep=0,
-            ).inventory,
-        )
-        monkeypatch.setattr(
-            launcher,
-            "cleanup_claude_inventory",
-            raise_cleanup_error,
-        )
-        expected_error = "injected cleanup failure"
-
-    result = launcher._run_explicit_session_cleanup_v2(
-        client="claude",
-        stream=out,
-    )
-
-    text = _strip_ansi(out.getvalue())
-    assert not result.succeeded
-    assert result.error == expected_error
-    assert text.index("<ticker-stopped>") < text.index("! sessions")
-
-
-def test_explicit_session_cleanup_waits_for_inflight_tick_before_final_row(
-    monkeypatch,
-):
-    tick_write_started = threading.Event()
-    release_tick_write = threading.Event()
-    final_write_during_tick = threading.Event()
-    ticker_threads = []
-
-    class BlockingStream:
-        def __init__(self):
-            self.ticker_thread = None
-
-        def write(self, value):
-            if threading.current_thread() is self.ticker_thread:
-                tick_write_started.set()
-                assert release_tick_write.wait(timeout=1)
-            elif tick_write_started.is_set() and not release_tick_write.is_set():
-                final_write_during_tick.set()
-
-        def flush(self):
-            pass
-
-    class FakeSpinnerTicker:
-        def __init__(self, *, on_tick, interval):
-            self._on_tick = on_tick
-
-        def start(self):
-            thread = threading.Thread(target=self._on_tick, args=(1,))
-            ticker_threads.append(thread)
-            stream.ticker_thread = thread
-            thread.start()
-
-        def stop(self):
-            pass
-
-    stream = BlockingStream()
-    monkeypatch.setattr(launcher, "SpinnerTicker", FakeSpinnerTicker)
-    monkeypatch.setattr(
-        launcher,
-        "scan_claude_inventory",
-        lambda **kwargs: _inventory_snapshot(
-            client="claude",
-            total=1,
-            to_delete=1,
-            to_keep=0,
-        ).inventory,
-    )
-    monkeypatch.setattr(
-        launcher,
-        "cleanup_claude_inventory",
-        lambda inventory: launcher.CleanupResult(deleted=1),
-    )
-
-    worker = threading.Thread(
-        target=launcher._run_explicit_session_cleanup_v2,
-        kwargs={
-            "client": "claude",
-            "stream": stream,
-        },
-    )
-    worker.start()
-    try:
-        assert tick_write_started.wait(timeout=1)
-        assert not final_write_during_tick.wait(timeout=0.1)
-    finally:
-        release_tick_write.set()
-        if ticker_threads:
-            ticker_threads[0].join(timeout=1)
-        worker.join(timeout=1)
-
-    assert not ticker_threads[0].is_alive()
-    assert not worker.is_alive()
-
-
-def test_explicit_session_cleanup_reports_bounded_partial_mutation(
-    monkeypatch,
-):
-    inventory = AgentInventory(
-        client="claude",
-        policy="all_inactive",
-        sessions=CountStats(total=1, to_delete=1, to_keep=0),
-        criteria="all inactive",
-    )
-    monkeypatch.setattr(
-        launcher,
-        "scan_claude_inventory",
-        lambda **kwargs: inventory,
-    )
-    monkeypatch.setattr(
-        launcher,
-        "cleanup_claude_inventory",
-        lambda inventory: launcher.CleanupResult(
-            deleted=0,
-            partial_mutations=4,
-            partial_mutation_details=(
-                "Claude root child-a in /claude-a",
-                "Claude root child-b in /claude-b",
-                "Claude root child-c in /claude-c",
-            ),
-            error="injected parent failure",
-        ),
-    )
-    out = io.StringIO()
-
-    result = launcher._run_explicit_session_cleanup_v2(
-        client="claude",
-        stream=out,
-    )
-
-    text = _strip_ansi(out.getvalue())
-    assert not result.succeeded
-    assert "0 sessions fully deleted" in text
-    assert "partial mutation: 4 operations completed" in text
-    assert "Claude root child-a in /claude-a" in text
-    assert "Claude root child-b in /claude-b" in text
-    assert "Claude root child-c in /claude-c" in text
-    assert "+1 more" in text
-    assert "injected parent failure" in text
-
-
-def test_explicit_session_cleanup_uses_claude_cleanup(
-    monkeypatch,
-):
-    inventory = AgentInventory(
-        client="claude",
-        policy="all_inactive",
-        sessions=CountStats(total=0),
-        criteria="all inactive",
-    )
-    monkeypatch.setattr(
-        launcher,
-        "scan_claude_inventory",
-        lambda **kwargs: inventory,
-    )
-    monkeypatch.setattr(
-        launcher,
-        "cleanup_claude_inventory",
-        lambda value: launcher.CleanupResult(),
-        raising=False,
-    )
-
-    result = launcher._run_explicit_session_cleanup_v2(
-        client="claude",
-        stream=io.StringIO(),
-    )
-
-    assert result.succeeded
 
 
 def test_v2_preflight_groups_memory_inventory_in_one_row(monkeypatch):
@@ -1771,8 +1367,6 @@ def test_v2_main_clears_terminal_before_child_when_serena_skipped(monkeypatch, t
                         lambda **kw: 0, raising=False)
     monkeypatch.setattr(launcher, "_run_serena_init_v2",
                         lambda **kw: "skipped", raising=False)
-    monkeypatch.setattr(launcher, "_run_memory_choice_v2",
-                        lambda **kw: "keep", raising=False)
     monkeypatch.setattr(launcher, "_run_session_choice_v2",
                         lambda **kw: "keep", raising=False)
     monkeypatch.setattr(launcher, "find_real_binary",
@@ -1868,19 +1462,6 @@ def test_v2_preflight_graphify_hook_prompt_defaults_to_yes(monkeypatch):
     assert "[Y/n]" in out.getvalue()
 
 
-def test_v2_memory_choice_defaults_to_keep(monkeypatch):
-    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
-    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    out = io.StringIO()
-    answers = iter([""])  # bare Enter
-    result = launcher._run_memory_choice_v2(
-        stream=out,
-        input_fn=lambda: next(answers),
-    )
-    assert result == "keep"
-    assert out.getvalue() == ""
-
-
 # --- External CLI resolution for prompt actions ------------------------------
 #
 # serena/graphify는 PATH에 없을 수 있다 (serena는 uvx로만 돌고, graphify는
@@ -1957,21 +1538,12 @@ def test_v2_main_keep_launches_bare_when_serena_cli_missing(
                         lambda **kw: "declined", raising=False)
     monkeypatch.setattr(launcher, "_run_preflight_v2",
                         lambda **kw: 0, raising=False)
-    monkeypatch.setattr(launcher, "_run_memory_choice_v2",
-                        lambda **kw: "keep", raising=False)
     monkeypatch.setattr(launcher, "_run_session_choice_v2",
                         lambda **kw: "keep", raising=False)
     monkeypatch.setattr(launcher, "serena_server_command",
                         lambda: None, raising=False)
     monkeypatch.setattr(launcher, "find_real_binary",
                         lambda client: "/usr/bin/true", raising=False)
-    prep_calls = []
-    monkeypatch.setattr(
-        launcher,
-        "_run_launch_prep_v2",
-        lambda **kwargs: prep_calls.append(kwargs) or launcher.LaunchPrepSummary(),
-        raising=False,
-    )
     monkeypatch.setattr(launcher, "_start_mcp_with_spinner",
                         lambda **kw: pytest.fail("scoped server must not start"),
                         raising=False)
@@ -1992,7 +1564,6 @@ def test_v2_main_keep_launches_bare_when_serena_cli_missing(
 
     rc = launcher._main_v2([])
     assert rc == 0
-    assert prep_calls == []
     assert run_calls == [["/usr/bin/true"]]
     out = _strip_ansi(capsys.readouterr().out)
     assert "serena CLI" in out
@@ -2112,8 +1683,6 @@ def test_v2_main_runs_serena_cli_phase_before_init(monkeypatch, tmp_path):
                         raising=False)
     monkeypatch.setattr(launcher, "_run_preflight_v2",
                         lambda **kw: 0, raising=False)
-    monkeypatch.setattr(launcher, "_run_memory_choice_v2",
-                        lambda **kw: "keep", raising=False)
     monkeypatch.setattr(launcher, "_run_session_choice_v2",
                         lambda **kw: "keep", raising=False)
     monkeypatch.setattr(launcher, "find_real_binary",

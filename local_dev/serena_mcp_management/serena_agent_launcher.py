@@ -41,9 +41,7 @@ from local_dev.serena_mcp_management.claude_reset import (
     reset_all_claude_data,
 )
 from local_dev.serena_mcp_management.memory_management import (
-    MemoryDeleteResult,
     MemoryInventory,
-    delete_all_memory,
     scan_memory_inventory,
 )
 from local_dev.serena_mcp_management.node_preflight import (
@@ -62,10 +60,6 @@ from local_dev.serena_mcp_management.serena_mcp.watchdog import (
     ShutdownStats,
     make_launcher_lease,
     release_lease_and_shutdown_if_empty,
-)
-from local_dev.serena_mcp_management.session_cleanup import (
-    CleanupResult,
-    cleanup_claude_inventory,
 )
 from local_dev.serena_mcp_management.session_inventory import (
     AgentInventory,
@@ -99,9 +93,6 @@ class LaunchPrepSummary:
     """Summary of the v2 launch-prep phase."""
 
     cleanup_deleted: int = 0
-    native_eligible: int = 0
-    running_preserved: int = 0
-    full_cleanup: bool = False
     conversation_reset: bool = False
     reset_trace_targets: int = 0
     warnings: tuple[str, ...] = ()
@@ -359,75 +350,6 @@ def main(argv: list[str] | None = None) -> int:
         return 130
 
 
-def _run_launch_prep_v2(
-    *,
-    snapshot: InventorySnapshot | None,
-    stream: TextIO | None = None,
-) -> LaunchPrepSummary:
-    """Apply the preflight inventory without scanning the session tree again."""
-
-    out = stream if stream is not None else sys.stdout
-    client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
-    if client != "claude":
-        raise RuntimeError(f"Claude retention cannot run for {client}")
-
-    out.write(
-        render_inline_row(
-            "sessions",
-            f"applying {client} 5-day retention",
-            status="spin",
-            accent=AMBER,
-        )
-    )
-    out.flush()
-
-    if snapshot is None or snapshot.inventory is None:
-        detail = (
-            snapshot.error if snapshot is not None else None
-        ) or "inventory unavailable"
-        out.write(
-            render_inline_row(
-                "sessions",
-                f"skipped · {detail}",
-                status="warn",
-                accent=AMBER,
-            )
-        )
-        out.flush()
-        return LaunchPrepSummary(warnings=(detail,))
-
-    inventory = snapshot.inventory
-    if inventory.client != client:
-        detail = (
-            f"inventory client mismatch: expected {client}, got {inventory.client}"
-        )
-        out.write(
-            render_inline_row(
-                "sessions",
-                f"skipped · {detail}",
-                status="warn",
-                accent=AMBER,
-            )
-        )
-        out.flush()
-        return LaunchPrepSummary(warnings=(detail,))
-
-    eligible = inventory.sessions.to_delete
-    out.write(
-        render_inline_row(
-            "sessions",
-            f"native retention 5d . {eligible} eligible",
-            status="done",
-            accent=AMBER,
-        )
-    )
-    out.flush()
-    return LaunchPrepSummary(
-        native_eligible=eligible,
-        warnings=inventory.warnings,
-    )
-
-
 def _notification_guard_summary(actions) -> tuple[str, str]:
     """가드 결과 액션들을 (박스 값 문자열, 아이템 status)로 요약한다."""
     if actions is None:
@@ -530,9 +452,6 @@ def _render_summary_v2(
     client: str,
     duration_seconds: float,
     cleanup_deleted: int,
-    native_eligible: int,
-    running_preserved: int,
-    full_cleanup: bool,
     mcp_lifecycle: str,
     warnings: list[str],
     conversation_reset: bool = False,
@@ -542,11 +461,6 @@ def _render_summary_v2(
         sessions_value = (
             f"{cleanup_deleted} sessions deleted · "
             f"{reset_trace_targets} conversation-state targets reset"
-        )
-    elif full_cleanup:
-        sessions_value = (
-            f"{cleanup_deleted} sessions deleted · "
-            f"{running_preserved} running preserved"
         )
     else:
         sessions_value = "sessions and memories kept"
@@ -616,7 +530,6 @@ def _main_v2(args: list[str]) -> int:
         _project_root_from_environment()
         or find_project_root(Path.cwd())
     )
-    _run_memory_choice_v2()
     session_choice = _run_session_choice_v2()
 
     real_binary: str | None = None
@@ -644,7 +557,6 @@ def _main_v2(args: list[str]) -> int:
             )
         summary_state = LaunchPrepSummary(
             cleanup_deleted=reset_result.deleted_sessions,
-            full_cleanup=True,
             conversation_reset=True,
             reset_trace_targets=reset_trace_targets,
             warnings=tuple(reset_warnings),
@@ -742,11 +654,6 @@ def _main_v2(args: list[str]) -> int:
         else:
             mcp_lifecycle = "none"
         cleanup_deleted = summary_state.cleanup_deleted if summary_state else 0
-        native_eligible = summary_state.native_eligible if summary_state else 0
-        running_preserved = (
-            summary_state.running_preserved if summary_state else 0
-        )
-        full_cleanup = summary_state.full_cleanup if summary_state else False
         conversation_reset = (
             summary_state.conversation_reset if summary_state else False
         )
@@ -758,9 +665,6 @@ def _main_v2(args: list[str]) -> int:
             client=client_type,
             duration_seconds=time.time() - started_at,
             cleanup_deleted=cleanup_deleted,
-            native_eligible=native_eligible,
-            running_preserved=running_preserved,
-            full_cleanup=full_cleanup,
             mcp_lifecycle=mcp_lifecycle,
             warnings=warnings,
             conversation_reset=conversation_reset,
@@ -1576,16 +1480,6 @@ def _render_preflight_overview_v2(
     return snapshot
 
 
-def _run_memory_choice_v2(
-    *,
-    stream: TextIO | None = None,
-    input_fn: Callable[[], str] | None = None,
-) -> Literal["keep", "delete"]:
-    """Choose the product-wide auto-memory policy before launch."""
-    # Memory deletion is part of each product's combined reset confirmation.
-    return "keep"
-
-
 def _run_session_choice_v2(
     *,
     stream: TextIO | None = None,
@@ -1736,152 +1630,6 @@ def _run_claude_reset_v2(
         )
     )
     out.flush()
-    return result
-
-
-def _run_memory_action_v2(
-    *,
-    choice: Literal["keep", "delete"],
-    client: str,
-    stream: TextIO | None = None,
-) -> MemoryDeleteResult:
-    """Apply an explicit auto-memory deletion choice."""
-    if choice == "keep":
-        return MemoryDeleteResult()
-    if choice != "delete":
-        raise RuntimeError(f"unsupported memory choice: {choice}")
-
-    out = stream if stream is not None else sys.stdout
-    out.write(
-        render_inline_row(
-            "memory",
-            f"deleting all {client} auto-memory",
-            status="spin",
-            accent=PURPLE,
-        )
-    )
-    out.flush()
-    try:
-        result = delete_all_memory(**_memory_scan_kwargs(client))
-    except (OSError, RuntimeError, ValueError) as exc:
-        result = MemoryDeleteResult(
-            error=str(exc) or exc.__class__.__name__,
-        )
-
-    value = (
-        f"{result.deleted_stores} stores · "
-        f"{result.deleted_files} files deleted"
-    )
-    status = "done" if result.succeeded else "warn"
-    if not result.succeeded:
-        value = f"delete failed · {value} · {result.error}"
-    out.write(
-        render_inline_row(
-            "memory",
-            value,
-            status=status,
-            accent=PURPLE,
-        )
-    )
-    out.flush()
-    return result
-
-
-def _run_explicit_session_cleanup_v2(
-    *,
-    client: str,
-    stream: TextIO | None = None,
-) -> CleanupResult:
-    """Delete inactive Claude sessions using a fresh product-scoped scan."""
-    if client != "claude":
-        raise RuntimeError(f"Claude session cleanup cannot run for {client}")
-    out = stream if stream is not None else sys.stdout
-    output_lock = threading.Lock()
-    spinner_active = True
-    progress_value = (
-        f"deleting inactive {client} sessions · running preserved"
-    )
-
-    def on_tick(frame: int) -> None:
-        row = render_inline_row(
-            "sessions",
-            progress_value,
-            status="spin",
-            accent=AMBER,
-            spin_frame=frame,
-        ).removesuffix("\n")
-        with output_lock:
-            if not spinner_active:
-                return
-            out.write(f"\r{row}\x1b[K")
-            out.flush()
-
-    on_tick(0)
-    ticker = None
-    ticker_started = False
-    try:
-        ticker = SpinnerTicker(on_tick=on_tick, interval=0.1)
-        ticker.start()
-        ticker_started = True
-    except Exception:
-        ticker = None
-    try:
-        try:
-            scan_kwargs = _memory_scan_kwargs("claude")
-            inventory = scan_claude_inventory(
-                home=scan_kwargs["home"],
-                claude_config_dir=scan_kwargs["claude_config_dir"],
-                policy="all_inactive",
-            )
-            result = cleanup_claude_inventory(inventory)
-        except (OSError, RuntimeError, ValueError) as exc:
-            result = CleanupResult(
-                error=str(exc) or exc.__class__.__name__
-            )
-    finally:
-        if ticker_started and ticker is not None:
-            try:
-                ticker.stop()
-            except Exception:
-                pass
-
-    status = "done" if result.succeeded else "warn"
-    deleted_label = "sessions deleted"
-    if not result.succeeded:
-        deleted_label = "sessions fully deleted"
-    value = (
-        f"{result.deleted} {deleted_label} · "
-        f"{result.preserved_running} running preserved"
-    )
-    if result.partial_mutations:
-        operation_label = (
-            "operation" if result.partial_mutations == 1 else "operations"
-        )
-        details = result.partial_mutation_details[:3]
-        detail_value = "; ".join(details)
-        remainder = result.partial_mutations - len(details)
-        if remainder > 0:
-            detail_value = f"{detail_value}; +{remainder} more"
-        value = (
-            f"{value} · partial mutation: {result.partial_mutations} "
-            f"{operation_label} completed"
-        )
-        if detail_value:
-            value = f"{value} ({detail_value})"
-    if not result.succeeded:
-        value = f"{value} · failed · {result.error}"
-    with output_lock:
-        spinner_active = False
-        out.write("\r\x1b[K")
-        out.write(
-            render_inline_row(
-                "sessions",
-                value,
-                status=status,
-                accent=AMBER,
-            )
-        )
-        out.flush()
     return result
 
 
