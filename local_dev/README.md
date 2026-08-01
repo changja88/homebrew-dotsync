@@ -235,13 +235,16 @@ by the user-scope `autoMemoryDirectory` setting. It never rewrites that setting:
 `$CLAUDE_CONFIG_DIR/settings.json` must remain byte-for-byte unchanged. Default
 project memory under `projects/*/memory` is handled by the official purge.
 
-User-scope authored configuration remains: settings, authentication, plugins,
-skills, commands, hooks, agents, MCP configuration, policies, managed/remote
-settings, the non-project values and unrelated files in `backups/`, and
-usage/statistics caches. Repository `.claude/`
+User-scope authored configuration remains: settings, authentication, plugin
+enablement/configuration and persistent `plugins/data/`, skills, commands,
+hooks, agents, MCP configuration, policies, managed/remote settings, the
+non-project values and unrelated files in `backups/`, and usage/statistics
+caches. Claude-managed plugin caches, marketplace clones, and registry metadata
+may refresh while the real CLI runs. Repository `.claude/`
 directories are not traversed. Claude's mixed global JSON is preserved except
-for the official purge's generated `projects` entries; all pre-existing
-non-project top-level values must still match after reset. A user-scope custom
+for the official purge's generated `projects` entries and the volatile
+`cachedGrowthBookFeaturesAt` timestamp; all other pre-existing non-project
+top-level values must still match after reset. A user-scope custom
 memory path is validated against broad paths, traversal, and symlink components
 before deletion. Shared/system/temp roots and shallow volume roots are rejected;
 recursive deletion pins every ancestor and target by file descriptor and inode
@@ -269,18 +272,20 @@ Claude can read settings from both. The normal default
 `$CLAUDE_CONFIG_DIR/plans/` store is deleted by the fixed allowlist above.
 
 `backups/` contains Claude-generated migration snapshots of the mixed global
-configuration, not conversation bodies or auto-memory. The backup files remain,
-but the reset removes only their generated `projects` mappings because those
-can retain `lastSessionId` and session statistics. Authentication, preferences,
-and every other top-level backup value are preserved.
+configuration, not conversation bodies or auto-memory. Claude keeps at most
+five and may rotate an old recognized backup out while a command runs. The
+reset tolerates that documented rotation, preserves non-project values in every
+surviving pre-existing backup, and removes generated `projects` mappings from
+all recognized backups present afterward because those mappings can retain
+`lastSessionId` and session statistics.
 
 Before mutation the launcher also records content manifests for named
-user-authored roots and high-value local state, including credentials, plugins,
-skills, commands, hooks, agents, rules, themes, workflows, keybindings,
-`CLAUDE.md`, MCP files, and `stats-cache.json`. The same manifests must match
-after the official purge and at final verification; recognized remote/policy
-caches are covered as well. Reads and recursive deletes are descriptor-anchored
-and reject concurrent inode or content changes.
+user-authored roots and high-value local state, including credentials,
+`plugins/data/`, skills, commands, hooks, agents, rules, themes, workflows,
+keybindings, `CLAUDE.md`, MCP files, and `stats-cache.json`. The same manifests
+must match after the official purge and at final verification; recognized
+remote/policy caches are covered as well. Reads and recursive deletes are
+descriptor-anchored and reject concurrent inode or content changes.
 
 The reset applies only to local Claude Code CLI state in the active
 `CLAUDE_CONFIG_DIR`. It does not close Claude Desktop and does not claim to

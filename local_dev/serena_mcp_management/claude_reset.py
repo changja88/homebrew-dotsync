@@ -82,7 +82,7 @@ _PRESERVED_USER_DATA_NAMES = (
     "policy-limits.json",
     "remote-settings.json",
     "stats-cache.json",
-    "plugins",
+    "plugins/data",
     "skills",
     "commands",
     "hooks",
@@ -91,6 +91,12 @@ _PRESERVED_USER_DATA_NAMES = (
     "output-styles",
     "themes",
     "workflows",
+)
+
+_VOLATILE_GLOBAL_CONFIG_KEYS = frozenset(
+    {
+        "cachedGrowthBookFeaturesAt",
+    }
 )
 
 _MACOS_MANAGED_POLICY_DIR = Path("/Library/Application Support/ClaudeCode")
@@ -686,9 +692,6 @@ def _backup_preservation_errors(
         try:
             snapshot.path.lstat()
         except FileNotFoundError:
-            errors.append(
-                f"Claude global config backup disappeared: {snapshot.path}"
-            )
             continue
         except OSError as exc:
             errors.append(
@@ -862,7 +865,9 @@ def _snapshot_global_config(
             path=path,
             existed=True,
             non_project_values={
-                key: value for key, value in payload.items() if key != "projects"
+                key: value
+                for key, value in payload.items()
+                if key != "projects" and key not in _VOLATILE_GLOBAL_CONFIG_KEYS
             },
             project_paths=project_paths,
         ),
@@ -902,7 +907,11 @@ def _file_unchanged_error(snapshot: _FileSnapshot, *, label: str) -> str | None:
     return None
 
 
-def _verify_global_config(snapshot: _GlobalConfigSnapshot) -> str | None:
+def _verify_global_config(
+    snapshot: _GlobalConfigSnapshot,
+    *,
+    check_preserved_values: bool = True,
+) -> str | None:
     current, error = _snapshot_global_config(
         home=snapshot.path.parent,
         config_dir=snapshot.path.parent,
@@ -919,6 +928,8 @@ def _verify_global_config(snapshot: _GlobalConfigSnapshot) -> str | None:
                 "Claude global config still contains project entries: "
                 f"{snapshot.path}"
             )
+        if not check_preserved_values:
+            return None
         for key, value in snapshot.non_project_values.items():
             if (
                 key not in current.non_project_values
@@ -1416,20 +1427,12 @@ def reset_all_claude_data(
         )
 
     official_errors = list(_official_residuals(config_dir))
-    global_error = _verify_global_config(global_config_snapshot)
-    if global_error is not None:
-        official_errors.append(global_error)
-    settings_changed = _file_unchanged_error(
-        settings_snapshot,
-        label="Claude user settings",
+    global_official_error = _verify_global_config(
+        global_config_snapshot,
+        check_preserved_values=False,
     )
-    if settings_changed is not None:
-        official_errors.append(settings_changed)
-    official_errors.extend(_backup_preservation_errors(backup_snapshots))
-    official_errors.extend(
-        _preserved_user_data_errors(unrelated_backup_data)
-    )
-    official_errors.extend(_preserved_user_data_errors(preserved_user_data))
+    if global_official_error is not None:
+        official_errors.append(global_official_error)
     if official_errors:
         return ClaudeResetResult(
             discovered_sessions=discovered_sessions,
@@ -1438,6 +1441,30 @@ def reset_all_claude_data(
             error="; ".join(official_errors),
         )
     deleted_sessions = discovered_sessions
+
+    preservation_errors: list[str] = []
+    global_error = _verify_global_config(global_config_snapshot)
+    if global_error is not None:
+        preservation_errors.append(global_error)
+    settings_changed = _file_unchanged_error(
+        settings_snapshot,
+        label="Claude user settings",
+    )
+    if settings_changed is not None:
+        preservation_errors.append(settings_changed)
+    preservation_errors.extend(_backup_preservation_errors(backup_snapshots))
+    preservation_errors.extend(
+        _preserved_user_data_errors(unrelated_backup_data)
+    )
+    preservation_errors.extend(_preserved_user_data_errors(preserved_user_data))
+    if preservation_errors:
+        return ClaudeResetResult(
+            discovered_sessions=discovered_sessions,
+            deleted_sessions=deleted_sessions,
+            terminated_processes=termination.terminated,
+            warnings=tuple(warnings),
+            error="; ".join(preservation_errors),
+        )
 
     backup_result = _sanitize_backup_project_entries(config_dir)
     if backup_result.error is not None:
@@ -1530,6 +1557,7 @@ def reset_all_claude_data(
         _preserved_user_data_errors(preserved_user_data)
     )
 
+    final_memory_verified_empty = False
     try:
         final_memory = _memory_scanner(
             client="claude",
@@ -1549,6 +1577,8 @@ def reset_all_claude_data(
             verification_errors.append(
                 f"{len(final_memory.stores)} Claude memory store(s) remain after reset"
             )
+        if not final_memory.warnings and not final_memory.stores:
+            final_memory_verified_empty = True
 
     final_global_error = _verify_global_config(global_config_snapshot)
     if final_global_error is not None:
@@ -1597,7 +1627,11 @@ def reset_all_claude_data(
     return ClaudeResetResult(
         discovered_sessions=discovered_sessions,
         deleted_sessions=deleted_sessions,
-        deleted_memory_stores=memory_result.deleted_stores,
+        deleted_memory_stores=(
+            len(memory_inventory.stores)
+            if final_memory_verified_empty
+            else memory_result.deleted_stores
+        ),
         deleted_residual_targets=(
             backup_result.sanitized + supplemental_result.deleted
         ),

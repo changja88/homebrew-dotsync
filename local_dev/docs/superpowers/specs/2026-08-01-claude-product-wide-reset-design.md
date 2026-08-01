@@ -172,7 +172,9 @@ The reset does not remove or edit:
 - `$CLAUDE_CONFIG_DIR/settings.json`;
 - the `autoMemoryDirectory` configuration value;
 - authentication and account state;
-- user-scope plugins, skills, commands, hooks, agents, and MCP configuration;
+- user-scope plugin enablement/configuration, skills, commands, hooks, agents,
+  and MCP configuration;
+- persistent plugin data under `$CLAUDE_CONFIG_DIR/plugins/data/`;
 - policy, managed, and remote settings or caches;
 - `$CLAUDE_CONFIG_DIR/backups/` files and their non-project top-level values;
   only generated `projects` mappings are removed because they can retain
@@ -181,10 +183,13 @@ The reset does not remove or edit:
 - any repository `.claude/` directory.
 
 Before mutation the launcher creates descriptor-anchored content manifests for
-the named user-authored/high-value roots in this list: credentials, plugins,
-skills, commands, hooks, agents, rules, output styles, themes, workflows,
-keybindings, `CLAUDE.md`, MCP files, and `stats-cache.json`. Their existence and
-content must match after the official purge and at final verification;
+the named user-authored/high-value roots in this list: credentials,
+`plugins/data/`, skills, commands, hooks, agents, rules, output styles, themes,
+workflows, keybindings, `CLAUDE.md`, MCP files, and `stats-cache.json`. Their
+existence and content must match after the official purge and at final
+verification. User-scope plugin enablement and configuration are covered by the
+byte-identical `settings.json`; Claude-managed plugin caches, marketplace
+clones, and registry metadata may refresh while a Claude command runs.
 `remote-settings.json` and `policy-limits.json` are included. The mixed global
 JSON, user `settings.json`, and recognized backups retain their separate
 semantic/byte-level invariants described above.
@@ -197,13 +202,24 @@ Those deleted project entries can include project trust, history, and
 project-entry MCP data. That is accepted because the requested preservation
 boundary is user scope. Repository-owned `.claude/settings*.json` and
 `.mcp.json` files remain untouched, and pre-existing non-project top-level
-values in the mixed global JSON must survive verification.
+values in the mixed global JSON must survive verification, except for the
+observed Claude-managed `cachedGrowthBookFeaturesAt` timestamp, which may
+advance when the real CLI starts.
 
 For a custom `CLAUDE_CONFIG_DIR`, the equivalent mixed file is
 `$CLAUDE_CONFIG_DIR/.claude.json`. Before mutation the launcher snapshots all
-pre-existing non-`projects` top-level values. Verification requires the
-`projects` mapping to be absent or empty and every snapshotted non-project value
-to remain equal; Claude may add new product-owned metadata keys.
+pre-existing non-`projects` top-level values except
+`cachedGrowthBookFeaturesAt`. Verification requires the `projects` mapping to
+be absent or empty and every other snapshotted non-project value to remain
+equal; Claude may add new product-owned metadata keys.
+
+Claude documents recognized `.claude.json.backup.*` files as a rotating set of
+at most five migration snapshots. A pre-snapshotted recognized backup may
+therefore disappear while the real CLI runs. Every surviving pre-existing
+backup must retain its non-project values, and every recognized backup present
+after purge, including a newly rotated-in file, has its generated `projects`
+mapping removed and is verified clean. Unrecognized files under `backups/`
+remain content-manifested and may not change.
 
 ## Runtime Quiescence
 
@@ -262,10 +278,16 @@ After deletion, an independent rescan must prove:
 - no discovered user-scope custom auto-memory store remains; and
 - `settings.json` is byte-for-byte unchanged from its pre-reset snapshot; and
 - the mixed global JSON has no project entries and preserves all pre-existing
-  non-project top-level values.
+  non-project top-level values except the recognized volatile GrowthBook cache
+  timestamp.
 
 Any unreadable path, unsafe target, non-zero purge exit, residual state,
-settings change, or failed verification makes the result unsuccessful.
+settings change, or failed verification makes the result unsuccessful. Once
+official target verification proves the purge completed, later preservation
+or supplemental failures retain the completed official session count instead
+of reporting `0/N`. A successful final empty-memory rescan reports every
+preflight-discovered memory store, including default stores removed by the
+official purge.
 
 ## Implementation Boundary
 
@@ -329,8 +351,11 @@ Focused tests must prove:
 - Claude Desktop is never selected by the process matcher;
 - official targets and every supplemental allowlisted generated target are
   gone after success;
-- user settings, `autoMemoryDirectory`, auth, plugins, statistics, unrelated
-  files, and non-project backup values survive unchanged;
+- user settings, `autoMemoryDirectory`, auth, plugin persistent data,
+  statistics, unrelated files, and non-project values in surviving recognized
+  backups survive unchanged;
+- Claude-managed plugin cache/marketplace refresh, the volatile GrowthBook
+  timestamp, and recognized backup rotation do not block the reset;
 - named preserved user-data roots are content-manifested before mutation and
   reverified after the purge and before success;
 - the custom memory directory contents are removed without editing its setting;

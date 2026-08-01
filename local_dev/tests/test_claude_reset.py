@@ -854,10 +854,14 @@ def test_backup_sanitizer_rejects_recognized_symlink(tmp_path):
     assert outside.read_text(encoding="utf-8") == '{"projects":{"/outside":{}}}'
 
 
-@pytest.mark.parametrize("purge_action", ("mutate", "delete"))
+@pytest.mark.parametrize(
+    ("purge_action", "should_succeed"),
+    (("mutate", False), ("delete", True)),
+)
 def test_official_purge_cannot_change_preserved_backup_values(
     tmp_path,
     purge_action,
+    should_succeed,
 ):
     config_dir = tmp_path / ".claude-custom"
     backups = config_dir / "backups"
@@ -921,11 +925,12 @@ def test_official_purge_cannot_change_preserved_backup_values(
         _memory_deleter=lambda **kwargs: claude_reset.MemoryDeleteResult(),
     )
 
-    assert result.succeeded is False
-    assert "backup" in (result.error or "")
-    assert "changed" in (result.error or "") or "disappeared" in (
-        result.error or ""
-    )
+    assert result.succeeded is should_succeed
+    if should_succeed:
+        assert result.error is None
+    else:
+        assert "backup" in (result.error or "")
+        assert "changed" in (result.error or "")
 
 
 def test_official_purge_cannot_change_unrelated_backup_data(tmp_path):
@@ -1143,6 +1148,173 @@ def test_full_reset_runs_official_purge_then_deletes_residual_state(tmp_path):
         for command, kwargs in calls
         if command[0] == "/real/claude"
     )
+
+
+def test_full_reset_tolerates_claude_managed_runtime_mutations(tmp_path):
+    config_dir = tmp_path / ".claude-custom"
+    config_dir.mkdir()
+    settings_bytes = json.dumps(
+        {
+            "enabledPlugins": {"formatter@example": True},
+            "theme": "dark",
+        },
+        separators=(",", ":"),
+    ).encode()
+    (config_dir / "settings.json").write_bytes(settings_bytes)
+    global_config = config_dir / ".claude.json"
+    global_config.write_text(
+        json.dumps(
+            {
+                "cachedGrowthBookFeaturesAt": 1,
+                "oauthAccount": {"accountUuid": "user-1"},
+                "theme": "dark",
+                "projects": {"/repo": {"lastSessionId": "session-1"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    for name in claude_reset._OFFICIAL_DIRECTORY_NAMES:
+        generated = config_dir / name
+        generated.mkdir()
+        (generated / "trace.txt").write_text(name, encoding="utf-8")
+    (config_dir / "history.jsonl").write_text("prompt", encoding="utf-8")
+    for name in ("paste-cache", "session-env"):
+        generated = config_dir / name
+        generated.mkdir()
+        (generated / "trace.txt").write_text(name, encoding="utf-8")
+
+    plugin_cache = config_dir / "plugins/cache/example"
+    plugin_cache.mkdir(parents=True)
+    cached_plugin = plugin_cache / "plugin.json"
+    cached_plugin.write_text("old cache", encoding="utf-8")
+    plugin_data = config_dir / "plugins/data/example/state.json"
+    plugin_data.parent.mkdir(parents=True)
+    plugin_data.write_text("persistent user data", encoding="utf-8")
+
+    backups = config_dir / "backups"
+    backups.mkdir()
+    rotated_backup = backups / ".claude.json.backup.1"
+    rotated_backup.write_text(
+        json.dumps(
+            {
+                "oauthAccount": {"accountUuid": "user-1"},
+                "theme": "dark",
+                "projects": {"/repo": {"lastSessionId": "session-1"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    replacement_backup = backups / ".claude.json.backup.2"
+
+    def run_command(command, **kwargs):
+        if command[-3:] == ["project", "purge", "--help"]:
+            cached_plugin.write_text("refreshed cache", encoding="utf-8")
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "Options: --all --yes",
+                "",
+            )
+        if command[-4:] == ["project", "purge", "--all", "--yes"]:
+            for name in claude_reset._OFFICIAL_DIRECTORY_NAMES:
+                shutil.rmtree(config_dir / name)
+            (config_dir / "history.jsonl").unlink()
+            global_config.write_text(
+                json.dumps(
+                    {
+                        "cachedGrowthBookFeaturesAt": 2,
+                        "oauthAccount": {"accountUuid": "user-1"},
+                        "theme": "dark",
+                        "projects": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            rotated_backup.unlink()
+            replacement_backup.write_text(
+                json.dumps(
+                    {
+                        "cachedGrowthBookFeaturesAt": 2,
+                        "oauthAccount": {"accountUuid": "user-1"},
+                        "theme": "dark",
+                        "projects": {
+                            "/repo": {"lastSessionId": "session-1"}
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    result = claude_reset.reset_all_claude_data(
+        home=tmp_path,
+        claude_config_dir=config_dir,
+        real_claude_binary="/real/claude",
+        run_command=run_command,
+        _process_scanner=lambda *args, **kwargs: (),
+        _session_scanner=lambda **kwargs: SimpleNamespace(
+            sessions=SimpleNamespace(total=5),
+            warnings=(),
+        ),
+        _managed_policy_checker=lambda **kwargs: None,
+        _memory_deleter=lambda **kwargs: claude_reset.MemoryDeleteResult(),
+    )
+
+    assert result.succeeded is True
+    assert result.deleted_sessions == 5
+    assert result.deleted_memory_stores == 0
+    assert result.deleted_residual_targets == 3
+    assert (config_dir / "settings.json").read_bytes() == settings_bytes
+    assert plugin_data.read_text(encoding="utf-8") == "persistent user data"
+    assert cached_plugin.read_text(encoding="utf-8") == "refreshed cache"
+    assert not (config_dir / "paste-cache").exists()
+    assert not (config_dir / "session-env").exists()
+    assert json.loads(replacement_backup.read_text(encoding="utf-8")) == {
+        "cachedGrowthBookFeaturesAt": 2,
+        "oauthAccount": {"accountUuid": "user-1"},
+        "theme": "dark",
+    }
+
+
+def test_full_reset_rejects_plugin_persistent_data_mutation(tmp_path):
+    config_dir = tmp_path / ".claude-custom"
+    plugin_data = config_dir / "plugins/data/example/state.json"
+    plugin_data.parent.mkdir(parents=True)
+    plugin_data.write_text("keep", encoding="utf-8")
+    (config_dir / ".claude.json").write_text(
+        json.dumps({"projects": {}}),
+        encoding="utf-8",
+    )
+
+    def run_command(command, **kwargs):
+        if command[-3:] == ["project", "purge", "--help"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "Options: --all --yes",
+                "",
+            )
+        if command[-4:] == ["project", "purge", "--all", "--yes"]:
+            plugin_data.write_text("changed", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    result = claude_reset.reset_all_claude_data(
+        home=tmp_path,
+        claude_config_dir=config_dir,
+        real_claude_binary="/real/claude",
+        run_command=run_command,
+        _process_scanner=lambda *args, **kwargs: (),
+        _session_scanner=lambda **kwargs: SimpleNamespace(
+            sessions=SimpleNamespace(total=0),
+            warnings=(),
+        ),
+        _managed_policy_checker=lambda **kwargs: None,
+        _memory_deleter=lambda **kwargs: claude_reset.MemoryDeleteResult(),
+    )
+
+    assert result.succeeded is False
+    assert "plugins/data" in (result.error or "")
 
 
 def test_full_reset_reports_memory_backend_exception(tmp_path):
@@ -1498,7 +1670,9 @@ def test_zero_exit_with_official_residual_is_failure(tmp_path):
     assert residual.read_text(encoding="utf-8") == "conversation"
 
 
-def test_official_purge_settings_mutation_is_failure(tmp_path):
+def test_completed_session_count_survives_settings_preservation_failure(
+    tmp_path,
+):
     config_dir = tmp_path / ".claude-custom"
     config_dir.mkdir()
     settings = config_dir / "settings.json"
@@ -1527,13 +1701,79 @@ def test_official_purge_settings_mutation_is_failure(tmp_path):
         run_command=run_command,
         _process_scanner=lambda *args, **kwargs: (),
         _session_scanner=lambda **kwargs: SimpleNamespace(
-            sessions=SimpleNamespace(total=0),
+            sessions=SimpleNamespace(total=4),
             warnings=(),
         ),
     )
 
     assert result.succeeded is False
     assert "settings changed" in (result.error or "")
+    assert result.discovered_sessions == 4
+    assert result.deleted_sessions == 4
+
+
+def test_full_reset_reports_all_deleted_memory_stores(tmp_path):
+    config_dir = tmp_path / ".claude-custom"
+    config_dir.mkdir()
+    (config_dir / ".claude.json").write_text(
+        json.dumps({"projects": {}}),
+        encoding="utf-8",
+    )
+    scans = 0
+
+    def memory_scanner(**kwargs):
+        nonlocal scans
+        scans += 1
+        if scans == 1:
+            stores = (
+                MemoryStore(
+                    path=config_dir / "projects/repo-one/memory",
+                    source="claude-project",
+                    file_count=3,
+                ),
+                MemoryStore(
+                    path=config_dir / "projects/repo-two/memory",
+                    source="claude-project",
+                    file_count=2,
+                ),
+            )
+            return claude_reset.MemoryInventory(
+                client="claude",
+                stores=stores,
+                file_count=5,
+                scope="test",
+            )
+        return claude_reset.MemoryInventory(
+            client="claude",
+            stores=(),
+            file_count=0,
+            scope="test",
+        )
+
+    def run_command(command, **kwargs):
+        stdout = (
+            "Options: --all --yes"
+            if command[-3:] == ["project", "purge", "--help"]
+            else ""
+        )
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    result = claude_reset.reset_all_claude_data(
+        home=tmp_path,
+        claude_config_dir=config_dir,
+        real_claude_binary="/real/claude",
+        run_command=run_command,
+        _process_scanner=lambda *args, **kwargs: (),
+        _session_scanner=lambda **kwargs: SimpleNamespace(
+            sessions=SimpleNamespace(total=0),
+            warnings=(),
+        ),
+        _memory_scanner=memory_scanner,
+        _memory_deleter=lambda **kwargs: claude_reset.MemoryDeleteResult(),
+    )
+
+    assert result.succeeded is True
+    assert result.deleted_memory_stores == 2
 
 
 def test_final_process_respawn_makes_reset_fail(tmp_path):
