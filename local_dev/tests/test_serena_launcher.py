@@ -12,7 +12,6 @@ from local_dev.serena_mcp_management.serena_agent_launcher import (
     find_real_binary,
     infer_client_type,
 )
-from local_dev.serena_mcp_management.session_cleanup import CLAUDE_RETENTION_JSON
 from local_dev.serena_mcp_management.serena_mcp.paths import Scope
 from local_dev.serena_mcp_management.serena_mcp.registry import Lease, ServerRecord, locked_registry
 
@@ -112,7 +111,7 @@ def test_build_claude_command_uses_temp_mcp_config():
     assert cmd[1].startswith("--mcp-config=")
     config_path = cmd[1].split("=", 1)[1]
     assert os.path.exists(config_path)
-    assert cmd[2:] == ["--settings", CLAUDE_RETENTION_JSON, "--help"]
+    assert cmd[2:] == ["--help"]
     cleanup()
     assert not os.path.exists(config_path)
 
@@ -126,16 +125,25 @@ def test_build_claude_command_does_not_swallow_positional_args():
     )
 
     assert cmd[1].startswith("--mcp-config=")
-    assert cmd[2:] == [
-        "--settings",
-        CLAUDE_RETENTION_JSON,
-        "mcp",
-        "list",
-    ]
+    assert cmd[2:] == ["mcp", "list"]
     cleanup()
 
 
-def test_bare_claude_launch_arms_native_retention(monkeypatch):
+def test_build_claude_command_preserves_user_settings_argument():
+    settings = '{"cleanupPeriodDays":30}'
+    cmd, cleanup = build_child_command(
+        client_type="claude",
+        real_binary="/opt/homebrew/bin/claude",
+        mcp_url="http://127.0.0.1:9000/mcp",
+        child_args=["--settings", settings, "--help"],
+    )
+
+    assert cmd[1].startswith("--mcp-config=")
+    assert cmd[2:] == ["--settings", settings, "--help"]
+    cleanup()
+
+
+def test_bare_claude_launch_preserves_arguments_without_retention_override(monkeypatch):
     calls = []
 
     class Result:
@@ -149,9 +157,7 @@ def test_bare_claude_launch_arms_native_retention(monkeypatch):
     assert _launch_bare_child(
         ["-c"], client_type="claude", real_binary="/fake/claude"
     ) == 0
-    assert calls == [
-        ["/fake/claude", "--settings", CLAUDE_RETENTION_JSON, "-c"]
-    ]
+    assert calls == [["/fake/claude", "-c"]]
 
 
 def test_touch_lease_if_record_exists_reattaches_missing_lease(monkeypatch, tmp_path):

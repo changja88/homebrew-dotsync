@@ -23,7 +23,6 @@ from local_dev.serena_mcp_management.session_inventory import (
 )
 
 
-CLAUDE_RETENTION_JSON = '{"cleanupPeriodDays":5}'
 _CLOSE_ON_EXEC = getattr(os, "O_CLOEXEC", 0)
 _DIRECTORY_OPEN_FLAGS = (
     os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | _CLOSE_ON_EXEC
@@ -88,12 +87,6 @@ class _QuarantineEvidence:
     name: str
     identity: FileIdentity | None
     path: Path
-
-
-def claude_retention_args(args: list[str]) -> list[str]:
-    if any(arg == "--settings" or arg.startswith("--settings=") for arg in args):
-        return list(args)
-    return ["--settings", CLAUDE_RETENTION_JSON, *args]
 
 
 def _manifest_below_root(
