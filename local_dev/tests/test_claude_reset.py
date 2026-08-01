@@ -1533,6 +1533,55 @@ def test_memory_inventory_must_match_snapshotted_settings_path(tmp_path):
     assert raced_sentinel.read_text(encoding="utf-8") == "must survive"
 
 
+def test_official_purge_no_matching_state_continues_supplemental_cleanup(
+    tmp_path,
+):
+    config_dir = tmp_path / ".claude-custom"
+    plans = config_dir / "plans"
+    plans.mkdir(parents=True)
+    sentinel = plans / "stale-plan.md"
+    sentinel.write_text("stale", encoding="utf-8")
+    (config_dir / ".claude.json").write_text(
+        json.dumps({"projects": {}}),
+        encoding="utf-8",
+    )
+
+    def run_command(command, **kwargs):
+        if command[-3:] == ["project", "purge", "--help"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "Options: --all --yes",
+                "",
+            )
+        if command[-4:] == ["project", "purge", "--all", "--yes"]:
+            return subprocess.CompletedProcess(
+                command,
+                1,
+                "",
+                "No Claude Code project state found under test config.",
+            )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    result = claude_reset.reset_all_claude_data(
+        home=tmp_path,
+        claude_config_dir=config_dir,
+        real_claude_binary="/real/claude",
+        run_command=run_command,
+        _process_scanner=lambda *args, **kwargs: (),
+        _session_scanner=lambda **kwargs: SimpleNamespace(
+            sessions=SimpleNamespace(total=1),
+            warnings=(),
+        ),
+        _managed_policy_checker=lambda **kwargs: None,
+    )
+
+    assert result.succeeded is True, result.error
+    assert result.deleted_sessions == 1
+    assert result.deleted_residual_targets == 1
+    assert not plans.exists()
+
+
 def test_official_purge_failure_prevents_supplemental_deletion(tmp_path):
     config_dir = tmp_path / ".claude-custom"
     plans = config_dir / "plans"
@@ -1652,7 +1701,8 @@ def test_memory_preflight_exception_fails_before_capability_probe(tmp_path):
     assert recorder.calls == []
 
 
-def test_zero_exit_with_official_residual_is_failure(tmp_path):
+@pytest.mark.parametrize("purge_returncode", (0, 1))
+def test_official_purge_residual_is_failure(tmp_path, purge_returncode):
     config_dir = tmp_path / ".claude-custom"
     residual = config_dir / "projects/repo/session.jsonl"
     residual.parent.mkdir(parents=True)
@@ -1663,12 +1713,25 @@ def test_zero_exit_with_official_residual_is_failure(tmp_path):
     )
 
     def run_command(command, **kwargs):
-        stdout = (
-            "Options: --all --yes"
-            if command[-3:] == ["project", "purge", "--help"]
-            else ""
-        )
-        return subprocess.CompletedProcess(command, 0, stdout, "")
+        if command[-3:] == ["project", "purge", "--help"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "Options: --all --yes",
+                "",
+            )
+        if command[-4:] == ["project", "purge", "--all", "--yes"]:
+            return subprocess.CompletedProcess(
+                command,
+                purge_returncode,
+                "",
+                (
+                    "No Claude Code project state found under test config."
+                    if purge_returncode == 1
+                    else ""
+                ),
+            )
+        return subprocess.CompletedProcess(command, 0, "", "")
 
     result = claude_reset.reset_all_claude_data(
         home=tmp_path,

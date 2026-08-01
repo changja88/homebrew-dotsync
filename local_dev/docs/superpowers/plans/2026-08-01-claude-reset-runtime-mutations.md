@@ -156,3 +156,23 @@ make -C local_dev install-shim
 ```
 
 Verify that only `local_dev/`, its runtime mirror, and the managed zsh launcher block are affected; the public `dotsync` package remains untouched.
+
+### Task 5: Make an already-empty official purge idempotent
+
+**Files:**
+- Modify: `local_dev/serena_mcp_management/claude_reset.py`
+- Modify: `local_dev/tests/test_claude_reset.py`
+- Modify: `local_dev/README.md`
+- Modify: `local_dev/docs/superpowers/specs/2026-08-01-claude-product-wide-reset-design.md`
+
+- [x] **Step 1: Reproduce the documented no-match exit**
+
+Return exit status `1` from `project purge --all --yes` while official state is already empty and a supplemental target remains. Verify RED because the launcher aborts before supplemental cleanup.
+
+- [x] **Step 2: Gate the no-match result on the official postcondition**
+
+Let only the documented no-match exit advance to official residual verification. Continue only when official directories and the current global project mapping are empty. Keep all other non-zero exits fatal.
+
+- [x] **Step 3: Pressure-test the fail-closed boundary**
+
+Verify that an official residual fails before memory or supplemental deletion for both exit `0` and exit `1`, while the already-empty exit-`1` case completes the supplemental reset.

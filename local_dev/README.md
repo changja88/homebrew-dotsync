@@ -220,9 +220,13 @@ CLI/background processes, and invokes that official command. Per the official
 [Claude directory documentation](https://code.claude.com/docs/en/claude-directory),
 the purge owns project transcripts and default auto-memory, tasks, debug logs,
 file history, prompt history, and generated project entries in Claude's mixed
-global JSON. The command does not cover every generated trace needed by this
-launcher's stricter reset contract, so a successful official purge is followed
-by deletion of this fixed allowlist beneath the active config directory:
+global JSON. Claude documents exit status `1` when no project state matches.
+The launcher treats only that exit code as an idempotent no-op, and only after
+the official directories and global project mapping independently verify
+empty. The command does not cover every generated trace needed by this
+launcher's stricter reset contract, so a verified official postcondition is
+followed by deletion of this fixed allowlist beneath the active config
+directory:
 
 ```text
 agent-memory/  plans/       paste-cache/       image-cache/
@@ -292,9 +296,10 @@ descriptor-anchored and reject concurrent inode or content changes.
 The reset applies only to local Claude Code CLI state in the active
 `CLAUDE_CONFIG_DIR`. It does not close Claude Desktop and does not claim to
 erase Claude.ai, web, Desktop, VS Code, or remote-session history. Any missing
-purge capability, unsafe path, process that cannot be stopped, non-zero purge,
-changed setting, unsupported custom plan store, or residual state fails closed
-and aborts the new Claude launch.
+purge capability, unsafe path, process that cannot be stopped, unexpected
+non-zero purge, changed setting, unsupported custom plan store, or residual
+state fails closed and aborts the new Claude launch. The documented no-match
+exit status also fails if any official state remains.
 
 Ctrl+C at any pre-launch prompt leaves state unchanged, does not launch a
 child, prints the existing `! cancelled` row, and returns exit code `130`

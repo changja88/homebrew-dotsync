@@ -109,9 +109,17 @@ path and then newly exporting it is forbidden because Claude treats an explicit
 custom config directory differently, including the location of its mixed
 global JSON file.
 
+Claude documents exit status `1` when no state matches the purge target. Reset
+is idempotent, so that specific exit code advances to the same official-state
+postcondition checks as exit `0`. It is accepted only when the official target
+roots and current global `projects` mapping independently verify empty. Any
+other non-zero exit fails immediately; exit `1` with residual official state
+fails before memory or supplemental deletion.
+
 ### Supplemental generated-data targets
 
-After the official purge succeeds, the launcher removes only this explicit
+After the official purge returns `0`, or its documented no-match exit verifies
+the official state already empty, the launcher removes only this explicit
 allowlist beneath the validated active `CLAUDE_CONFIG_DIR`:
 
 - `agent-memory/`;
@@ -283,13 +291,14 @@ After deletion, an independent rescan must prove:
   non-project top-level values except the four recognized volatile
   experiment/feature-flag cache keys.
 
-Any unreadable path, unsafe target, non-zero purge exit, residual state,
-settings change, or failed verification makes the result unsuccessful. Once
-official target verification proves the purge completed, later preservation
-or supplemental failures retain the completed official session count instead
-of reporting `0/N`. A successful final empty-memory rescan reports every
-preflight-discovered memory store, including default stores removed by the
-official purge.
+Any unreadable path, unsafe target, unexpected non-zero purge exit, residual
+state, settings change, or failed verification makes the result unsuccessful.
+The documented no-match exit is successful only when official-state
+verification is already clean. Once official target verification proves the
+purge completed, later preservation or supplemental failures retain the
+completed official session count instead of reporting `0/N`. A successful
+final empty-memory rescan reports every preflight-discovered memory store,
+including default stores removed by the official purge.
 
 ## Implementation Boundary
 
@@ -346,8 +355,9 @@ Focused tests must prove:
 
 - missing official purge capability fails before process or filesystem
   mutation;
-- the exact real-binary command is `project purge --all --yes` and a non-zero
-  exit aborts supplemental deletion;
+- the exact real-binary command is `project purge --all --yes`, documented
+  no-match exit `1` continues only when official state verifies empty, and all
+  other non-zero exits abort supplemental deletion;
 - daemon stop is attempted, remaining CLI processes are identity-pinned,
   terminated, rescanned, and respawn is rejected;
 - Claude Desktop is never selected by the process matcher;

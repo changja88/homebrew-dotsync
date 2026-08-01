@@ -102,6 +102,8 @@ _VOLATILE_GLOBAL_CONFIG_KEYS = frozenset(
     }
 )
 
+_PURGE_NO_MATCH_EXIT_CODE = 1
+
 _MACOS_MANAGED_POLICY_DIR = Path("/Library/Application Support/ClaudeCode")
 
 
@@ -1391,16 +1393,20 @@ def reset_all_claude_data(
             warnings=tuple(warnings),
             error=f"Claude project purge failed: {exc}",
         )
+    purge_no_match_error: str | None = None
     if purge_result.returncode != 0:
         detail = (purge_result.stderr or "").strip() or (
             f"exit {purge_result.returncode}"
         )
-        return ClaudeResetResult(
-            discovered_sessions=discovered_sessions,
-            terminated_processes=termination.terminated,
-            warnings=tuple(warnings),
-            error=f"Claude project purge failed: {detail}",
-        )
+        purge_error = f"Claude project purge failed: {detail}"
+        if purge_result.returncode != _PURGE_NO_MATCH_EXIT_CODE:
+            return ClaudeResetResult(
+                discovered_sessions=discovered_sessions,
+                terminated_processes=termination.terminated,
+                warnings=tuple(warnings),
+                error=purge_error,
+            )
+        purge_no_match_error = purge_error
 
     try:
         managed_policy_error = _managed_policy_checker(config_dir=config_dir)
@@ -1437,6 +1443,8 @@ def reset_all_claude_data(
     if global_official_error is not None:
         official_errors.append(global_official_error)
     if official_errors:
+        if purge_no_match_error is not None:
+            official_errors.insert(0, purge_no_match_error)
         return ClaudeResetResult(
             discovered_sessions=discovered_sessions,
             terminated_processes=termination.terminated,
