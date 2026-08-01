@@ -95,6 +95,9 @@ _PRESERVED_USER_DATA_NAMES = (
 
 _VOLATILE_GLOBAL_CONFIG_KEYS = frozenset(
     {
+        "cachedExperimentData",
+        "cachedExperimentFeatures",
+        "cachedGrowthBookFeatures",
         "cachedGrowthBookFeaturesAt",
     }
 )

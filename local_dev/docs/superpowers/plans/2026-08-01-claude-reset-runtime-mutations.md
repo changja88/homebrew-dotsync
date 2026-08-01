@@ -29,7 +29,7 @@
 
 - [x] **Step 1: Write a failing end-to-end unit test**
 
-Create a realistic fake Claude run in which `project purge --help` refreshes `plugins/cache/`, and `project purge --all --yes` changes `cachedGrowthBookFeaturesAt`, rotates one recognized backup, creates a replacement backup containing `projects`, and removes official targets. Assert reset success, unchanged settings and `plugins/data/`, sanitized current backups, deleted supplemental targets, and truthful counts.
+Create a realistic fake Claude run in which `project purge --help` refreshes `plugins/cache/`, and `project purge --all --yes` changes the observed `cachedExperimentData`, `cachedExperimentFeatures`, `cachedGrowthBookFeatures`, and `cachedGrowthBookFeaturesAt` cache values, rotates one recognized backup, creates a replacement backup containing `projects`, and removes official targets. Assert reset success, unchanged settings and `plugins/data/`, sanitized current backups, deleted supplemental targets, and truthful counts.
 
 - [x] **Step 2: Write focused preservation tests**
 
@@ -55,9 +55,9 @@ Expected: failures caused by the current global-key, whole-plugin-tree, backup-d
 - Consumes: `_GlobalConfigSnapshot`, `_BackupSnapshot`, `_PreservedPathSnapshot`
 - Produces: semantic global config verification, rotation-tolerant backup verification, and selective plugin persistent-data protection.
 
-- [x] **Step 1: Exclude the observed volatile global cache key**
+- [x] **Step 1: Exclude the observed volatile global cache keys**
 
-Do not include `cachedGrowthBookFeaturesAt` in the preserved non-project snapshot. Continue comparing every other pre-existing non-project value and continue rejecting residual `projects` entries.
+Do not include `cachedExperimentData`, `cachedExperimentFeatures`, `cachedGrowthBookFeatures`, or `cachedGrowthBookFeaturesAt` in the preserved non-project snapshot. Continue comparing every other pre-existing non-project value and continue rejecting residual `projects` entries.
 
 - [x] **Step 2: Preserve plugin persistent data instead of mutable cache trees**
 

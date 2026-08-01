@@ -1165,6 +1165,9 @@ def test_full_reset_tolerates_claude_managed_runtime_mutations(tmp_path):
     global_config.write_text(
         json.dumps(
             {
+                "cachedExperimentData": {"experiment-a": "control"},
+                "cachedExperimentFeatures": {"experiment-a": False},
+                "cachedGrowthBookFeatures": {"feature-a": False},
                 "cachedGrowthBookFeaturesAt": 1,
                 "oauthAccount": {"accountUuid": "user-1"},
                 "theme": "dark",
@@ -1223,6 +1226,13 @@ def test_full_reset_tolerates_claude_managed_runtime_mutations(tmp_path):
             global_config.write_text(
                 json.dumps(
                     {
+                        "cachedExperimentData": {
+                            "experiment-a": "treatment"
+                        },
+                        "cachedExperimentFeatures": {
+                            "experiment-a": True
+                        },
+                        "cachedGrowthBookFeatures": {"feature-a": True},
                         "cachedGrowthBookFeaturesAt": 2,
                         "oauthAccount": {"accountUuid": "user-1"},
                         "theme": "dark",
@@ -1235,6 +1245,13 @@ def test_full_reset_tolerates_claude_managed_runtime_mutations(tmp_path):
             replacement_backup.write_text(
                 json.dumps(
                     {
+                        "cachedExperimentData": {
+                            "experiment-a": "treatment"
+                        },
+                        "cachedExperimentFeatures": {
+                            "experiment-a": True
+                        },
+                        "cachedGrowthBookFeatures": {"feature-a": True},
                         "cachedGrowthBookFeaturesAt": 2,
                         "oauthAccount": {"accountUuid": "user-1"},
                         "theme": "dark",
@@ -1261,7 +1278,7 @@ def test_full_reset_tolerates_claude_managed_runtime_mutations(tmp_path):
         _memory_deleter=lambda **kwargs: claude_reset.MemoryDeleteResult(),
     )
 
-    assert result.succeeded is True
+    assert result.succeeded is True, result.error
     assert result.deleted_sessions == 5
     assert result.deleted_memory_stores == 0
     assert result.deleted_residual_targets == 3
@@ -1271,6 +1288,9 @@ def test_full_reset_tolerates_claude_managed_runtime_mutations(tmp_path):
     assert not (config_dir / "paste-cache").exists()
     assert not (config_dir / "session-env").exists()
     assert json.loads(replacement_backup.read_text(encoding="utf-8")) == {
+        "cachedExperimentData": {"experiment-a": "treatment"},
+        "cachedExperimentFeatures": {"experiment-a": True},
+        "cachedGrowthBookFeatures": {"feature-a": True},
         "cachedGrowthBookFeaturesAt": 2,
         "oauthAccount": {"accountUuid": "user-1"},
         "theme": "dark",

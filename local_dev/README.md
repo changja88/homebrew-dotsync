@@ -243,8 +243,10 @@ caches. Claude-managed plugin caches, marketplace clones, and registry metadata
 may refresh while the real CLI runs. Repository `.claude/`
 directories are not traversed. Claude's mixed global JSON is preserved except
 for the official purge's generated `projects` entries and the volatile
-`cachedGrowthBookFeaturesAt` timestamp; all other pre-existing non-project
-top-level values must still match after reset. A user-scope custom
+experiment/feature-flag caches (`cachedExperimentData`,
+`cachedExperimentFeatures`, `cachedGrowthBookFeatures`, and
+`cachedGrowthBookFeaturesAt`); all other pre-existing non-project top-level
+values must still match after reset. A user-scope custom
 memory path is validated against broad paths, traversal, and symlink components
 before deletion. Shared/system/temp roots and shallow volume roots are rejected;
 recursive deletion pins every ancestor and target by file descriptor and inode

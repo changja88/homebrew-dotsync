@@ -203,15 +203,17 @@ project-entry MCP data. That is accepted because the requested preservation
 boundary is user scope. Repository-owned `.claude/settings*.json` and
 `.mcp.json` files remain untouched, and pre-existing non-project top-level
 values in the mixed global JSON must survive verification, except for the
-observed Claude-managed `cachedGrowthBookFeaturesAt` timestamp, which may
-advance when the real CLI starts.
+observed Claude-managed experiment/feature-flag caches
+(`cachedExperimentData`, `cachedExperimentFeatures`,
+`cachedGrowthBookFeatures`, and `cachedGrowthBookFeaturesAt`), which may
+refresh when the real CLI starts.
 
 For a custom `CLAUDE_CONFIG_DIR`, the equivalent mixed file is
 `$CLAUDE_CONFIG_DIR/.claude.json`. Before mutation the launcher snapshots all
-pre-existing non-`projects` top-level values except
-`cachedGrowthBookFeaturesAt`. Verification requires the `projects` mapping to
-be absent or empty and every other snapshotted non-project value to remain
-equal; Claude may add new product-owned metadata keys.
+pre-existing non-`projects` top-level values except those four volatile cache
+keys. Verification requires the `projects` mapping to be absent or empty and
+every other snapshotted non-project value to remain equal; Claude may add new
+product-owned metadata keys.
 
 Claude documents recognized `.claude.json.backup.*` files as a rotating set of
 at most five migration snapshots. A pre-snapshotted recognized backup may
@@ -278,8 +280,8 @@ After deletion, an independent rescan must prove:
 - no discovered user-scope custom auto-memory store remains; and
 - `settings.json` is byte-for-byte unchanged from its pre-reset snapshot; and
 - the mixed global JSON has no project entries and preserves all pre-existing
-  non-project top-level values except the recognized volatile GrowthBook cache
-  timestamp.
+  non-project top-level values except the four recognized volatile
+  experiment/feature-flag cache keys.
 
 Any unreadable path, unsafe target, non-zero purge exit, residual state,
 settings change, or failed verification makes the result unsuccessful. Once
@@ -354,8 +356,9 @@ Focused tests must prove:
 - user settings, `autoMemoryDirectory`, auth, plugin persistent data,
   statistics, unrelated files, and non-project values in surviving recognized
   backups survive unchanged;
-- Claude-managed plugin cache/marketplace refresh, the volatile GrowthBook
-  timestamp, and recognized backup rotation do not block the reset;
+- Claude-managed plugin cache/marketplace refresh, the volatile
+  experiment/feature-flag caches, and recognized backup rotation do not block
+  the reset;
 - named preserved user-data roots are content-manifested before mutation and
   reverified after the purge and before success;
 - the custom memory directory contents are removed without editing its setting;
