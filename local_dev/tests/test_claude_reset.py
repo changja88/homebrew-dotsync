@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 
 from local_dev.serena_mcp_management import claude_reset
 from local_dev.serena_mcp_management.memory_management import ClientProcess
@@ -295,3 +296,118 @@ def test_runtime_quiescence_keeps_daemon_failure_as_warning_when_scan_is_empty()
     assert termination.warnings == (
         "could not stop Claude daemon: daemon unavailable",
     )
+
+
+def test_supplemental_cleanup_deletes_only_allowlisted_generated_directories(
+    tmp_path,
+):
+    config_dir = tmp_path / ".claude"
+    config_dir.mkdir()
+    for name in claude_reset._SUPPLEMENTAL_DIRECTORY_NAMES:
+        target = config_dir / name
+        target.mkdir()
+        (target / "trace.txt").write_text(name, encoding="utf-8")
+    for name in ("backups", "plugins", "skills", "unrelated"):
+        target = config_dir / name
+        target.mkdir()
+        (target / "keep.txt").write_text(name, encoding="utf-8")
+    stats = config_dir / "stats-cache.json"
+    stats.write_text("{}", encoding="utf-8")
+
+    targets = claude_reset._discover_supplemental_targets(config_dir)
+    result = claude_reset._delete_supplemental_targets(targets)
+
+    assert result.error is None
+    assert result.deleted == len(claude_reset._SUPPLEMENTAL_DIRECTORY_NAMES)
+    assert all(not (config_dir / name).exists() for name in claude_reset._SUPPLEMENTAL_DIRECTORY_NAMES)
+    assert all(
+        (config_dir / name / "keep.txt").read_text(encoding="utf-8") == name
+        for name in ("backups", "plugins", "skills", "unrelated")
+    )
+    assert stats.read_text(encoding="utf-8") == "{}"
+
+
+def test_supplemental_cleanup_unlinks_final_symlink_without_following_it(
+    tmp_path,
+):
+    config_dir = tmp_path / ".claude"
+    config_dir.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "keep.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    linked_target = config_dir / "plans"
+    linked_target.symlink_to(outside, target_is_directory=True)
+
+    result = claude_reset._delete_supplemental_targets(
+        claude_reset._discover_supplemental_targets(config_dir)
+    )
+
+    assert result.error is None
+    assert result.deleted == 1
+    assert not linked_target.exists()
+    assert not linked_target.is_symlink()
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
+def test_supplemental_cleanup_rejects_symlinked_config_root(tmp_path):
+    outside_config = tmp_path / "outside-config"
+    generated = outside_config / "plans"
+    generated.mkdir(parents=True)
+    sentinel = generated / "keep.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    config_link = tmp_path / ".claude"
+    config_link.symlink_to(outside_config, target_is_directory=True)
+
+    result = claude_reset._delete_supplemental_targets(
+        claude_reset._discover_supplemental_targets(config_link)
+    )
+
+    assert result.error is not None
+    assert "symlink" in result.error
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
+def test_supplemental_cleanup_prevalidates_all_targets_before_deletion(tmp_path):
+    config_dir = tmp_path / ".claude"
+    first = config_dir / "agent-memory"
+    first.mkdir(parents=True)
+    sentinel = first / "keep.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    wrong_type = config_dir / "plans"
+    wrong_type.write_text("not a directory", encoding="utf-8")
+
+    result = claude_reset._delete_supplemental_targets(
+        claude_reset._discover_supplemental_targets(config_dir)
+    )
+
+    assert result.deleted == 0
+    assert result.error is not None
+    assert str(wrong_type) in result.error
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+
+
+def test_supplemental_cleanup_reports_partial_delete_failure(tmp_path):
+    config_dir = tmp_path / ".claude"
+    first = config_dir / "agent-memory"
+    second = config_dir / "plans"
+    first.mkdir(parents=True)
+    second.mkdir()
+    removed: list[Path] = []
+
+    def remove_tree(path):
+        if path == second:
+            raise OSError("read only")
+        removed.append(path)
+        path.rmdir()
+
+    result = claude_reset._delete_supplemental_targets(
+        claude_reset._discover_supplemental_targets(config_dir),
+        remove_tree=remove_tree,
+    )
+
+    assert result.deleted == 1
+    assert result.error is not None
+    assert "read only" in result.error
+    assert removed == [first]
+    assert second.is_dir()

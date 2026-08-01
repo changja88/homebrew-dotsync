@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 from collections.abc import Callable
@@ -81,11 +82,106 @@ class _RuntimeTermination:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class _SupplementalTarget:
+    path: Path
+    allowed_root: Path
+
+
+@dataclass(frozen=True)
+class _SupplementalDeletion:
+    deleted: int = 0
+    error: str | None = None
+
+
 def _config_root_error(config_dir: Path, *, home: Path) -> str | None:
     broad_paths = {Path("/"), home.absolute(), *home.absolute().parents}
     if config_dir in broad_paths:
         return f"Claude config path is unsafe and too broad: {config_dir}"
     return None
+
+
+def _discover_supplemental_targets(
+    config_dir: Path,
+) -> tuple[_SupplementalTarget, ...]:
+    return tuple(
+        _SupplementalTarget(
+            path=config_dir / name,
+            allowed_root=config_dir,
+        )
+        for name in _SUPPLEMENTAL_DIRECTORY_NAMES
+    )
+
+
+def _has_symlink_component(path: Path) -> bool:
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        try:
+            mode = current.lstat().st_mode
+        except FileNotFoundError:
+            return False
+        if stat.S_ISLNK(mode):
+            return True
+    return False
+
+
+def _supplemental_target_kind(
+    target: _SupplementalTarget,
+) -> tuple[str | None, str | None]:
+    if (
+        target.path.parent != target.allowed_root
+        or target.path.name not in _SUPPLEMENTAL_DIRECTORY_NAMES
+    ):
+        return None, f"invalid Claude supplemental target: {target.path}"
+    try:
+        if _has_symlink_component(target.allowed_root):
+            return (
+                None,
+                f"Claude supplemental root contains a symlink: {target.allowed_root}",
+            )
+        mode = target.path.lstat().st_mode
+    except FileNotFoundError:
+        return "missing", None
+    except OSError as exc:
+        return None, f"cannot inspect Claude supplemental target {target.path}: {exc}"
+    if stat.S_ISDIR(mode):
+        return "directory", None
+    if stat.S_ISLNK(mode):
+        return "symlink", None
+    return None, f"Claude supplemental target is not a directory: {target.path}"
+
+
+def _delete_supplemental_targets(
+    targets: tuple[_SupplementalTarget, ...],
+    *,
+    remove_tree: Callable[[Path], None] = shutil.rmtree,
+    unlink_path: Callable[[Path], None] = os.unlink,
+) -> _SupplementalDeletion:
+    for target in targets:
+        _, error = _supplemental_target_kind(target)
+        if error is not None:
+            return _SupplementalDeletion(error=error)
+
+    deleted = 0
+    for target in targets:
+        kind, error = _supplemental_target_kind(target)
+        if error is not None:
+            return _SupplementalDeletion(deleted=deleted, error=error)
+        if kind == "missing":
+            continue
+        try:
+            if kind == "symlink":
+                unlink_path(target.path)
+            else:
+                remove_tree(target.path)
+        except OSError as exc:
+            return _SupplementalDeletion(
+                deleted=deleted,
+                error=f"cannot delete Claude supplemental target {target.path}: {exc}",
+            )
+        deleted += 1
+    return _SupplementalDeletion(deleted=deleted)
 
 
 def _probe_purge_capability(
