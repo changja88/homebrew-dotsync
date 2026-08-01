@@ -515,17 +515,15 @@ def scan_codex_session_catalog(
     *,
     home: Path,
     codex_home: Path,
-    orca_codex_home: Path | None = None,
     _validated_homes: tuple[Path, ...] | None = None,
 ) -> CodexSessionCatalog:
     """List every persisted Codex logical session, including archived ones."""
     warnings: list[str] = []
     user_home = home.absolute()
     if _validated_homes is None:
-        discovered_homes, _, _ = canonical_codex_homes(
+        discovered_homes, _ = canonical_codex_homes(
             home=home,
             codex_home=codex_home,
-            orca_codex_home=orca_codex_home,
         )
         homes = tuple(
             candidate
@@ -1759,7 +1757,6 @@ def reset_all_codex_data(
     *,
     home: Path,
     codex_home: Path,
-    orca_codex_home: Path | None = None,
     working_directory: Path | None = None,
     environment: Mapping[str, str] | None = None,
     cli_arguments: tuple[str, ...] = (),
@@ -1778,10 +1775,9 @@ def reset_all_codex_data(
     terminated_processes = runtime_termination.terminated
     desktop_was_running = runtime_termination.desktop_was_running
 
-    base_homes, _, _ = lexical_codex_homes(
+    base_homes, _ = lexical_codex_homes(
         home=home,
         codex_home=codex_home,
-        orca_codex_home=orca_codex_home,
     )
     discovered_homes = list(base_homes)
     for invocation in runtime_invocations:
@@ -1819,7 +1815,6 @@ def reset_all_codex_data(
         before_catalog = scan_codex_session_catalog(
             home=home,
             codex_home=codex_home,
-            orca_codex_home=orca_codex_home,
             _validated_homes=homes,
         )
     except (OSError, RuntimeError, ValueError) as exc:
@@ -1971,7 +1966,6 @@ def reset_all_codex_data(
         after_catalog = scan_codex_session_catalog(
             home=home,
             codex_home=codex_home,
-            orca_codex_home=orca_codex_home,
             _validated_homes=homes,
         )
     except (OSError, RuntimeError, ValueError) as exc:

@@ -6,20 +6,18 @@ from local_dev.serena_mcp_management.agent_paths import (
 )
 
 
-def test_canonical_codex_homes_deduplicates_default_active_and_orca(tmp_path):
+def test_canonical_codex_homes_deduplicates_default_and_active(tmp_path):
     home = tmp_path / "home"
     default = home / ".codex"
-    orca = home / "Library/Application Support/orca/codex-runtime-home/home"
+    active = home / "active-codex"
 
-    homes, default_home, orca_home = canonical_codex_homes(
+    homes, default_home = canonical_codex_homes(
         home=home,
-        codex_home=default,
-        orca_codex_home=orca,
+        codex_home=active,
     )
 
-    assert homes == (default.resolve(), orca.resolve())
+    assert homes == (default.resolve(), active.resolve())
     assert default_home == default.resolve()
-    assert orca_home == orca.resolve()
 
 
 def test_path_identity_uses_samefile_for_existing_aliases(tmp_path, monkeypatch):

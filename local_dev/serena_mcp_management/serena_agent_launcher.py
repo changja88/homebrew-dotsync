@@ -1,7 +1,6 @@
 """Launch Codex or Claude with a scoped Serena MCP server."""
 from __future__ import annotations
 
-import io
 import json
 import os
 import re
@@ -49,7 +48,6 @@ from local_dev.serena_mcp_management.node_preflight import (
     NodeNeed,
     node_need,
 )
-from local_dev.serena_mcp_management.notification_guard import run_notification_guard
 from local_dev.serena_mcp_management.serena_mcp.diagnostics import snapshot_global_lifecycle
 from local_dev.serena_mcp_management.serena_mcp.paths import Scope, find_project_root
 from local_dev.serena_mcp_management.serena_mcp.registry import locked_registry, touch_lease
@@ -350,46 +348,6 @@ def main(argv: list[str] | None = None) -> int:
         return 130
 
 
-def _notification_guard_summary(actions) -> tuple[str, str]:
-    """가드 결과 액션들을 (박스 값 문자열, 아이템 status)로 요약한다."""
-    if actions is None:
-        return "check failed — launch continues", "warn"
-    if not actions:
-        return "clean", "done"
-    repaired = sum(1 for action in actions if action.kind == "repair")
-    warned = len(actions) - repaired
-    parts = []
-    if repaired:
-        parts.append(f"{repaired} repaired")
-    if warned:
-        parts.append(f"{warned} warning" + ("s" if warned > 1 else ""))
-    return " · ".join(parts), ("warn" if warned else "done")
-
-
-def _run_notification_guard_capture(*, interactive: bool) -> tuple[Item | None, str]:
-    """알림 불변식 가드를 실행한다.
-
-    interactive면 결과를 preflight 박스에 넣을 ``notif guard`` Item과, 박스
-    아래에 이어 출력할 상세 텍스트(수리/경고 행)를 함께 반환한다. 비대화식이면
-    가드에 그대로 위임(silent-when-clean)하고 ``(None, "")``을 반환한다.
-    어떤 실패도 launch를 막지 않는다.
-    """
-    if not interactive:
-        try:
-            run_notification_guard(stream=sys.stdout)
-        except Exception:
-            pass
-        return None, ""
-    detail = io.StringIO()
-    try:
-        actions = run_notification_guard(stream=detail)
-    except Exception:
-        actions = None
-    value, status = _notification_guard_summary(actions)
-    item = Item(id="notif-guard", label="notif guard", value=value, status=status)
-    return item, (detail.getvalue() if actions else "")
-
-
 def _start_mcp_with_spinner(
     *,
     scope,
@@ -504,16 +462,8 @@ def _main_v2(args: list[str]) -> int:
     interactive = os.environ.get("SERENA_AGENT_INTERACTIVE") == "1"
     out = sys.stdout
 
-    # 알림 설정 불변식 가드 — 외부 writer가 되돌린 설정을 launch마다 수렴시킨다.
-    # (spec: local_dev/docs/notification-guard-spec.md) interactive면 결과가
-    # preflight 박스 안 'notif guard' 행으로, 비대화식이면 조용히 처리된다.
-    guard_item, guard_detail = _run_notification_guard_capture(interactive=interactive)
-
     if interactive:
-        _render_preflight_overview_v2(guard_item=guard_item)
-        if guard_detail:
-            out.write(guard_detail)
-            out.flush()
+        _render_preflight_overview_v2()
         _run_serena_cli_install_v2()
 
     serena_state = _run_serena_init_v2() if interactive else "managed"
@@ -762,12 +712,8 @@ def _capture_inventory_snapshot(
 
 def _preflight_box(
     snapshot: InventorySnapshot | None = None,
-    guard_item: Item | None = None,
 ) -> BoxModel:
-    """Build a BoxModel for the v2 preflight phase.
-
-    ``guard_item``이 주어지면 notification guard 결과 행을 박스 맨 위에 넣는다.
-    """
+    """Build a BoxModel for the v2 preflight phase."""
     client = os.environ.get("SERENA_AGENT_CLIENT", "codex")
     project_root = os.environ.get("SERENA_AGENT_PROJECT_ROOT", "")
     serena_status = os.environ.get("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
@@ -900,8 +846,6 @@ def _preflight_box(
             status=sessions_item_status,
         ),
     ]
-    if guard_item is not None:
-        items.insert(0, guard_item)
     return BoxModel(phase="preflight", title=client, items=items)
 
 
@@ -1466,7 +1410,6 @@ def _run_preflight_v2(
 def _render_preflight_overview_v2(
     *,
     stream: TextIO | None = None,
-    guard_item: Item | None = None,
 ) -> InventorySnapshot | None:
     """Draw the workspace overview and return its single inventory snapshot."""
 
@@ -1476,7 +1419,7 @@ def _render_preflight_overview_v2(
     project_root = os.environ.get("SERENA_AGENT_PROJECT_ROOT", "")
     snapshot = _capture_inventory_snapshot(client, project_root)
     out = stream if stream is not None else sys.stdout
-    BoxRenderer(stream=out).draw(_preflight_box(snapshot, guard_item=guard_item))
+    BoxRenderer(stream=out).draw(_preflight_box(snapshot))
     return snapshot
 
 

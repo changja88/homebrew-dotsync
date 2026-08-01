@@ -883,7 +883,7 @@ def _run_main_for_cleanup_choices(
         to_keep=1,
     )
 
-    def fake_overview(*, stream=None, guard_item=None):
+    def fake_overview(*, stream=None):
         call_log.append("overview")
         return snapshot
 
@@ -1533,7 +1533,7 @@ def test_v2_main_keep_launches_bare_when_serena_cli_missing(
         to_keep=1,
     )
     monkeypatch.setattr(launcher, "_render_preflight_overview_v2",
-                        lambda *, stream=None, guard_item=None: snapshot, raising=False)
+                        lambda *, stream=None: snapshot, raising=False)
     monkeypatch.setattr(launcher, "_run_serena_cli_install_v2",
                         lambda **kw: "declined", raising=False)
     monkeypatch.setattr(launcher, "_run_preflight_v2",
@@ -1674,7 +1674,7 @@ def test_v2_main_runs_serena_cli_phase_before_init(monkeypatch, tmp_path):
 
     order = []
     monkeypatch.setattr(launcher, "_render_preflight_overview_v2",
-                        lambda *, stream=None, guard_item=None: None, raising=False)
+                        lambda *, stream=None: None, raising=False)
     monkeypatch.setattr(launcher, "_run_serena_cli_install_v2",
                         lambda **kw: order.append("cli") or "present",
                         raising=False)
@@ -1752,86 +1752,3 @@ def test_v2_preflight_skips_graphify_actions_when_cli_declined(monkeypatch):
     )
     assert rc == 0
     assert "skipping graphify setup" in _strip_ansi(out.getvalue())
-
-
-def test_main_v2_runs_notification_guard_before_launch(monkeypatch, tmp_path):
-    """가드는 interactive 여부와 무관하게 _main_v2 진입 즉시 1회 호출된다."""
-    from local_dev.serena_mcp_management import serena_agent_launcher as launcher
-
-    calls: list[bool] = []
-    monkeypatch.setattr(
-        launcher, "run_notification_guard",
-        lambda *, stream=None: calls.append(True) or [],
-    )
-    # 가드 직후 단계에서 의도적으로 중단시켜 나머지 flow를 실행하지 않는다
-    monkeypatch.setattr(
-        launcher, "infer_client_type",
-        lambda *a, **k: (_ for _ in ()).throw(SystemExit(99)),
-    )
-    monkeypatch.delenv("SERENA_AGENT_INTERACTIVE", raising=False)
-    with pytest.raises(SystemExit):
-        launcher._main_v2([])
-    assert calls == [True]
-
-
-class TestNotificationGuardBoxItem:
-    def _actions(self, *kinds: str):
-        from local_dev.serena_mcp_management.notification_guard import GuardAction
-        return [GuardAction(kind, f"msg-{i}") for i, kind in enumerate(kinds)]
-
-    def test_interactive_clean_returns_done_item(self, monkeypatch):
-        monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-        monkeypatch.setattr(launcher, "run_notification_guard", lambda *, stream=None: [])
-        item, detail = launcher._run_notification_guard_capture(interactive=True)
-        assert item is not None
-        assert (item.id, item.label, item.value, item.status) == (
-            "notif-guard", "notif guard", "clean", "done",
-        )
-        assert detail == ""
-
-    def test_interactive_actions_summarized_with_detail_returned(self, monkeypatch):
-        def fake_guard(*, stream=None):
-            stream.write("DETAIL-LINE\n")
-            return self._actions("repair", "warn")
-
-        monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-        monkeypatch.setattr(launcher, "run_notification_guard", fake_guard)
-        item, detail = launcher._run_notification_guard_capture(interactive=True)
-        assert item.value == "1 repaired · 1 warning"
-        assert item.status == "warn"          # 경고가 하나라도 있으면 warn
-        assert detail == "DETAIL-LINE\n"      # 상세는 박스 아래 출력용으로 반환
-
-
-    def test_interactive_guard_crash_is_warn_item(self, monkeypatch):
-        def boom(*, stream=None):
-            raise RuntimeError("boom")
-
-        monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-        monkeypatch.setattr(launcher, "run_notification_guard", boom)
-        item, detail = launcher._run_notification_guard_capture(interactive=True)
-        assert item.status == "warn"
-        assert "failed" in item.value
-        assert detail == ""
-
-    def test_non_interactive_delegates_silently(self, monkeypatch):
-        calls = []
-        monkeypatch.delenv("SERENA_AGENT_INTERACTIVE", raising=False)
-        monkeypatch.setattr(
-            launcher, "run_notification_guard",
-            lambda *, stream=None: calls.append(stream) or [],
-        )
-        item, detail = launcher._run_notification_guard_capture(interactive=False)
-        assert (item, detail) == (None, "")
-        assert len(calls) == 1          # 가드는 여전히 조용히 1회 실행됨
-
-    def test_preflight_box_places_guard_item_first(self, monkeypatch):
-        from local_dev.serena_mcp_management.ui import Item
-        monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
-        monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
-        monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
-        _set_graphify_env(monkeypatch)
-        guard_item = Item(id="notif-guard", label="notif guard", value="clean", status="done")
-        box = launcher._preflight_box(guard_item=guard_item)
-        assert box.items[0].id == "notif-guard"
-        # 주입 안 하면 박스에 없다
-        assert all(i.id != "notif-guard" for i in launcher._preflight_box().items)

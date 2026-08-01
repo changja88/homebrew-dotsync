@@ -63,24 +63,6 @@ Graphify preflight paths follow graphifyy 0.8.x behavior: the codex
 user-level skill lives at `~/.codex/skills/graphify` (claude:
 `~/.claude/skills/graphify`).
 
-## Notification guard
-
-launcher는 매 관리 launch 시작 시 알림 설정 불변식을 점검하고 드리프트를
-자동 수리한다 (`notification_guard.py`, 설계: `docs/notification-guard-spec.md`).
-알림 정책: **입력 필요·메인 작업 완료 시에만, 포커스 무관 항상** — 서브에이전트
-완료 알림 금지, 벨(terminal bell) 계열 설정은 사용자 관리라 가드가 관여하지 않는다.
-대상: codex `notify = []`·permission_request 훅 비활성(auto_review 및 legacy
-guardian_subagent 자동 검토 구성)·**subagent_start/subagent_stop 훅 비활성(무조건 — 서브에이전트 완료 알림
-금지의 실질 보장 장치, hooks.json이 없는 홈은 공허 충족으로 조용히 통과)**,
-claude 알림 채널, orca 알림 토글(`enabled`·`agentTaskComplete` ON,
-`suppressWhenFocused` OFF — 경고만). codex hooks 점검은 orca 관리 홈뿐 아니라
-**user 홈(`~/.codex`)에도 적용**된다 — orca 07-23 업데이트 후 codex 패널이
-user 홈으로 실행되고 `~/.codex/hooks.json`이 설치되기 때문.
-정상이면 출력이 없고, 수리/경고 시에만 `notif guard` 행이 표시된다.
-비대화식 호출(`codex exec` 등)과 orca **worktree 패널**(`bash -lc … exec codex`
-형태로 zsh shim을 우회)은 launcher를 거치지 않으므로 가드 실행 시점 밖이다 —
-가드는 interactive launch 때마다 전체 config를 수렴시켜 이를 보완한다.
-
 ## Serena MCP Management
 
 `serena_mcp_management/` contains the local Serena MCP launcher, zsh shim
@@ -152,9 +134,8 @@ Runtime discovery and identity-pinned termination repeat before and after
 mutation. If any Codex runtime keeps respawning, the reset fails instead of
 reporting a clean state.
 
-The reset covers the default `~/.codex`, the active absolute `$CODEX_HOME`,
-and Orca's managed runtime home at
-`~/Library/Application Support/orca/codex-runtime-home/home`. It also honors
+The reset covers the default `~/.codex` and the active absolute `$CODEX_HOME`.
+It also honors
 safe `sqlite_home`, `CODEX_SQLITE_HOME`, and `log_dir` locations from the user
 config, every user profile, `/etc/codex/config.toml`, trusted project config
 layers, current `-c` / `--config` overrides, and detected running Codex
@@ -365,7 +346,7 @@ table abbreviations:
 
 | Context | Session scope | No explicit selection | Explicit deletion |
 |---|---|---|---|
-| `codex` | Logical sessions from rollout JSONL and read-only `state_<n>.sqlite` thread rows, including archived and state-only entries, across `~/.codex`, the active `$CODEX_HOME`, and Orca's managed Codex home. Linked descendants and copies count once for pre-reset reporting. | Exact no-op; no automatic five-day deletion. | One confirmed hard reset stops detected CLI/app-server runtimes, temporarily restarts an open Desktop app, and removes every known session, state, memory, history, log, snapshot, and desktop thread record. There is no per-session preserve list. Config, auth, plugins, skills, app preferences, and automation definitions remain. |
+| `codex` | Logical sessions from rollout JSONL and read-only `state_<n>.sqlite` thread rows across `~/.codex` and the active `$CODEX_HOME`, including archived and state-only entries. Linked descendants and copies count once for pre-reset reporting. | Exact no-op; no automatic five-day deletion. | One confirmed hard reset stops detected CLI/app-server runtimes, temporarily restarts an open Desktop app, and removes every known session, state, memory, history, log, snapshot, and desktop thread record. There is no per-session preserve list. Config, auth, plugins, skills, app preferences, and automation definitions remain. |
 | `claude` | Top-level session JSONL files for every project under `$CLAUDE_CONFIG_DIR/projects` (or `~/.claude/projects` when unset). Subagent files are counted with their parent for pre-reset reporting. | Exact launcher-level no-op; no injected retention setting or automatic launcher deletion. | One confirmed reset stops local Claude Code CLI/daemon runtimes, runs official `project purge --all --yes`, removes fixed supplemental generated-data targets, sanitized backup `projects` mappings, and the validated user-scope custom memory store, then verifies no state remains. Settings, `autoMemoryDirectory`, auth, plugins, skills, commands, hooks, agents, MCP config, policies, non-project backup values, and repository `.claude/` data remain. A managed memory redirect fails closed before mutation. |
 
 Session counts are grouped by data type under one top-level row. Normal

@@ -164,7 +164,6 @@ def delete_all_memory(
     home: Path,
     codex_home: Path,
     claude_config_dir: Path | None = None,
-    orca_codex_home: Path | None = None,
     run_command: RunCommand = subprocess.run,
     remove_tree: RemoveTree = delete_directory_tree,
     inventory: MemoryInventory | None = None,
@@ -175,7 +174,6 @@ def delete_all_memory(
             home=home,
             codex_home=codex_home,
             claude_config_dir=claude_config_dir,
-            orca_codex_home=orca_codex_home,
         )
     elif inventory.client != client:
         return MemoryDeleteResult(
@@ -355,13 +353,11 @@ def scan_memory_inventory(
     home: Path,
     codex_home: Path,
     claude_config_dir: Path | None = None,
-    orca_codex_home: Path | None = None,
 ) -> MemoryInventory:
     if client == "codex":
         return _scan_codex_memory(
             home=home,
             codex_home=codex_home,
-            orca_codex_home=orca_codex_home,
         )
     if client == "claude":
         return _scan_claude_memory(
@@ -375,12 +371,10 @@ def _scan_codex_memory(
     *,
     home: Path,
     codex_home: Path,
-    orca_codex_home: Path | None,
 ) -> MemoryInventory:
-    homes, _, _ = lexical_codex_homes(
+    homes, _ = lexical_codex_homes(
         home=home,
         codex_home=codex_home,
-        orca_codex_home=orca_codex_home,
     )
     warnings: list[str] = []
     discovered_stores: list[MemoryStore] = []

@@ -67,12 +67,11 @@ def fake_ps(output, *, args_output=None, returncode=0):
 def build_codex_memory_fixture(tmp_path):
     home = tmp_path / "home"
     active = tmp_path / "active-codex"
-    orca = tmp_path / "orca-codex"
-    for root in (home / ".codex", active, orca):
+    for root in (home / ".codex", active):
         store = root / "memories"
         store.mkdir(parents=True)
         (store / "MEMORY.md").write_text("memory")
-    return home, active, orca
+    return home, active
 
 
 def case_insensitive_alias(path):
@@ -89,11 +88,9 @@ def case_insensitive_alias(path):
 def test_codex_inventory_scans_only_memories_under_all_known_homes(tmp_path):
     home = tmp_path / "home"
     active = tmp_path / "active-codex"
-    orca = tmp_path / "orca-codex"
     for root, text in (
         (home / ".codex", "default"),
         (active, "active"),
-        (orca, "orca"),
     ):
         (root / "memories").mkdir(parents=True)
         (root / "memories/MEMORY.md").write_text(text)
@@ -104,15 +101,13 @@ def test_codex_inventory_scans_only_memories_under_all_known_homes(tmp_path):
         client="codex",
         home=home,
         codex_home=active,
-        orca_codex_home=orca,
     )
 
     assert {store.path for store in inventory.stores} == {
         home / ".codex/memories",
         active / "memories",
-        orca / "memories",
     }
-    assert inventory.file_count == 3
+    assert inventory.file_count == 2
     assert inventory.scope == "all known Codex homes"
     assert all(
         "memories_extensions" not in str(store.path)
@@ -133,7 +128,6 @@ def test_codex_inventory_rejects_symlinked_active_home(tmp_path):
         client="codex",
         home=home,
         codex_home=active_link,
-        orca_codex_home=tmp_path / "orca",
     )
 
     assert inventory.stores == ()
@@ -152,7 +146,6 @@ def test_codex_inventory_rejects_parent_traversal_before_symlink_inspection(
         client="codex",
         home=tmp_path / "home",
         codex_home=active_link / ".." / "active",
-        orca_codex_home=tmp_path / "orca",
     )
 
     assert inventory.stores == ()
@@ -541,7 +534,7 @@ def test_process_scan_finds_official_node_client_wrappers(
 
 
 def test_delete_all_memory_removes_only_validated_stores(tmp_path):
-    home, active, orca = build_codex_memory_fixture(tmp_path)
+    home, active = build_codex_memory_fixture(tmp_path)
     sibling = active / "sessions/keep.jsonl"
     sibling.parent.mkdir(parents=True)
     sibling.write_text("keep")
@@ -550,17 +543,15 @@ def test_delete_all_memory_removes_only_validated_stores(tmp_path):
         client="codex",
         home=home,
         codex_home=active,
-        orca_codex_home=orca,
         run_command=fake_ps(""),
     )
 
     assert result.succeeded
-    assert result.deleted_stores == 3
-    assert result.deleted_files == 3
+    assert result.deleted_stores == 2
+    assert result.deleted_files == 2
     assert sibling.read_text() == "keep"
     assert not (home / ".codex/memories").exists()
     assert not (active / "memories").exists()
-    assert not (orca / "memories").exists()
 
 
 def test_delete_all_claude_memory_removes_project_and_custom_stores_only(
@@ -627,13 +618,12 @@ def test_delete_all_claude_memory_removes_project_and_custom_stores_only(
 
 
 def test_delete_all_memory_refuses_running_same_product(tmp_path):
-    home, active, orca = build_codex_memory_fixture(tmp_path)
+    home, active = build_codex_memory_fixture(tmp_path)
 
     result = delete_all_memory(
         client="codex",
         home=home,
         codex_home=active,
-        orca_codex_home=orca,
         run_command=fake_ps("40 1 codex codex\n"),
     )
 
@@ -662,10 +652,10 @@ def test_delete_empty_inventory_succeeds_without_process_scan(tmp_path):
 
 
 def test_delete_prevalidates_every_store_before_mutation(tmp_path):
-    home, active, orca = build_codex_memory_fixture(tmp_path)
-    (orca / "memories").rename(orca / "memories-real")
-    (orca / "memories").symlink_to(
-        orca / "memories-real",
+    home, active = build_codex_memory_fixture(tmp_path)
+    (active / "memories").rename(active / "memories-real")
+    (active / "memories").symlink_to(
+        active / "memories-real",
         target_is_directory=True,
     )
     calls = []
@@ -674,7 +664,6 @@ def test_delete_prevalidates_every_store_before_mutation(tmp_path):
         client="codex",
         home=home,
         codex_home=active,
-        orca_codex_home=orca,
         run_command=fake_ps(""),
         remove_tree=lambda path: calls.append(path),
     )
@@ -684,7 +673,7 @@ def test_delete_prevalidates_every_store_before_mutation(tmp_path):
 
 
 def test_delete_revalidates_store_immediately_before_each_removal(tmp_path):
-    home, active, orca = build_codex_memory_fixture(tmp_path)
+    home, active = build_codex_memory_fixture(tmp_path)
     default_store = home / ".codex/memories"
     active_store = active / "memories"
     calls = []
@@ -702,7 +691,6 @@ def test_delete_revalidates_store_immediately_before_each_removal(tmp_path):
         client="codex",
         home=home,
         codex_home=active,
-        orca_codex_home=orca,
         run_command=fake_ps(""),
         remove_tree=replace_next_store,
     )
@@ -717,7 +705,7 @@ def test_delete_revalidates_store_immediately_before_each_removal(tmp_path):
 
 
 def test_delete_reports_partial_counts_and_stops(tmp_path):
-    home, active, orca = build_codex_memory_fixture(tmp_path)
+    home, active = build_codex_memory_fixture(tmp_path)
     calls = []
 
     def fail_second(path):
@@ -730,7 +718,6 @@ def test_delete_reports_partial_counts_and_stops(tmp_path):
         client="codex",
         home=home,
         codex_home=active,
-        orca_codex_home=orca,
         run_command=fake_ps(""),
         remove_tree=fail_second,
     )
@@ -744,7 +731,7 @@ def test_delete_reports_partial_counts_and_stops(tmp_path):
 
 
 def test_delete_refuses_when_process_scan_fails(tmp_path):
-    home, active, orca = build_codex_memory_fixture(tmp_path)
+    home, active = build_codex_memory_fixture(tmp_path)
     calls = []
 
     def unavailable_ps(command, **kwargs):
@@ -754,7 +741,6 @@ def test_delete_refuses_when_process_scan_fails(tmp_path):
         client="codex",
         home=home,
         codex_home=active,
-        orca_codex_home=orca,
         run_command=unavailable_ps,
         remove_tree=lambda path: calls.append(path),
     )

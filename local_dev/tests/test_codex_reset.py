@@ -157,7 +157,6 @@ def test_catalog_lists_active_and_archived_roots_and_groups_descendants(tmp_path
     catalog = scan_codex_session_catalog(
         home=tmp_path,
         codex_home=codex_home,
-        orca_codex_home=tmp_path / "orca",
     )
 
     assert [session.root_id for session in catalog.sessions] == [ROOT_A, ROOT_B]
@@ -209,7 +208,6 @@ def test_catalog_merges_state_threads_and_lists_state_only_guardian(
     catalog = scan_codex_session_catalog(
         home=tmp_path,
         codex_home=codex_home,
-        orca_codex_home=tmp_path / "orca",
     )
 
     by_root = {session.root_id: session for session in catalog.sessions}
@@ -234,7 +232,6 @@ def test_catalog_rejects_incompatible_state_database(tmp_path):
         scan_codex_session_catalog(
             home=tmp_path,
             codex_home=codex_home,
-            orca_codex_home=tmp_path / "orca",
         )
 
 
@@ -250,7 +247,6 @@ def test_catalog_rejects_symlinked_state_database(tmp_path):
         scan_codex_session_catalog(
             home=tmp_path,
             codex_home=codex_home,
-            orca_codex_home=tmp_path / "orca",
         )
 
 
@@ -258,7 +254,6 @@ def test_catalog_excludes_an_unsafe_broad_active_codex_home(tmp_path):
     catalog = scan_codex_session_catalog(
         home=tmp_path,
         codex_home=Path("/"),
-        orca_codex_home=tmp_path / "orca",
     )
 
     assert Path("/") not in catalog.homes
@@ -275,7 +270,7 @@ def test_full_reset_removes_every_codex_session_and_trace_but_keeps_config(
     deletion while leaving state-only threads or desktop thread metadata.
     """
     codex_home = tmp_path / ".codex"
-    orca_home = tmp_path / "orca"
+    active_home = tmp_path / "active-codex"
     _write_rollout(
         codex_home / "sessions/2026/07/28/root-a.jsonl",
         ROOT_A,
@@ -285,7 +280,7 @@ def test_full_reset_removes_every_codex_session_and_trace_but_keeps_config(
         ROOT_B,
     )
     _write_rollout(
-        orca_home / "sessions/2026/07/28/guardian.jsonl",
+        active_home / "sessions/2026/07/28/guardian.jsonl",
         GUARDIAN,
     )
     _write_state_db(
@@ -296,11 +291,11 @@ def test_full_reset_removes_every_codex_session_and_trace_but_keeps_config(
         ],
     )
     _write_state_db(
-        orca_home,
+        active_home,
         [(GUARDIAN, "/old", "guardian", "guardian", "", 80, None, 0)],
     )
 
-    for store_home in (codex_home, orca_home):
+    for store_home in (codex_home, active_home):
         (store_home / "memories").mkdir(parents=True)
         (store_home / "memories/MEMORY.md").write_text("memory")
         (store_home / "memories_extensions/chronicle").mkdir(parents=True)
@@ -467,14 +462,13 @@ def test_full_reset_removes_every_codex_session_and_trace_but_keeps_config(
 
     result = codex_reset_module.reset_all_codex_data(
         home=tmp_path,
-        codex_home=codex_home,
-        orca_codex_home=orca_home,
+        codex_home=active_home,
     )
 
     assert result.succeeded
     assert result.discovered_sessions == 3
     assert result.deleted_sessions == 3
-    for store_home in (codex_home, orca_home):
+    for store_home in (codex_home, active_home):
         for removed_name in (
             "sessions",
             "archived_sessions",
@@ -627,7 +621,6 @@ def test_full_reset_terminates_codex_runtimes_including_desktop_app(
     result = codex_reset_module.reset_all_codex_data(
         home=tmp_path,
         codex_home=tmp_path / ".codex",
-        orca_codex_home=tmp_path / "orca",
     )
 
     assert result.succeeded
@@ -686,7 +679,6 @@ def test_full_reset_fails_if_desktop_cannot_reopen(
     result = codex_reset_module.reset_all_codex_data(
         home=tmp_path,
         codex_home=tmp_path / ".codex",
-        orca_codex_home=tmp_path / "orca",
     )
 
     assert result.succeeded is False
@@ -733,7 +725,6 @@ def test_full_reset_does_not_signal_a_reused_pid(
     result = codex_reset_module.reset_all_codex_data(
         home=tmp_path,
         codex_home=tmp_path / ".codex",
-        orca_codex_home=tmp_path / "orca",
     )
 
     assert result.succeeded is False
@@ -777,7 +768,6 @@ def test_full_reset_fails_if_codex_runtime_respawns_during_mutation(
     result = codex_reset_module.reset_all_codex_data(
         home=tmp_path,
         codex_home=tmp_path / ".codex",
-        orca_codex_home=tmp_path / "orca",
     )
 
     assert result.succeeded is False
@@ -815,7 +805,6 @@ def test_full_reset_clears_unknown_desktop_thread_tables(
     result = codex_reset_module.reset_all_codex_data(
         home=tmp_path,
         codex_home=codex_home,
-        orca_codex_home=tmp_path / "orca",
     )
 
     assert result.succeeded
@@ -867,7 +856,6 @@ def test_full_reset_fails_when_desktop_sqlite_wal_is_still_open(
         result = codex_reset_module.reset_all_codex_data(
             home=tmp_path,
             codex_home=codex_home,
-            orca_codex_home=tmp_path / "orca",
         )
 
         assert result.succeeded is False
@@ -922,7 +910,6 @@ def test_full_reset_fails_when_a_codex_runtime_survives_termination(
     result = codex_reset_module.reset_all_codex_data(
         home=tmp_path,
         codex_home=tmp_path / ".codex",
-        orca_codex_home=tmp_path / "orca",
     )
 
     assert result.succeeded is False
@@ -948,7 +935,6 @@ def test_full_reset_deletes_known_data_but_fails_when_process_scan_is_unknown(
     result = codex_reset_module.reset_all_codex_data(
         home=tmp_path,
         codex_home=codex_home,
-        orca_codex_home=tmp_path / "orca",
     )
 
     assert rollout.exists() is False
@@ -973,7 +959,6 @@ def test_full_reset_fails_when_a_codex_config_cannot_be_parsed(
     result = codex_reset_module.reset_all_codex_data(
         home=tmp_path,
         codex_home=codex_home,
-        orca_codex_home=tmp_path / "orca",
     )
 
     assert result.succeeded is False
@@ -999,7 +984,6 @@ def test_full_reset_rejects_symlinked_codex_home_without_following_it(
     result = codex_reset_module.reset_all_codex_data(
         home=tmp_path,
         codex_home=linked_home,
-        orca_codex_home=tmp_path / "orca",
     )
 
     assert result.succeeded is False
@@ -1041,7 +1025,6 @@ def test_full_reset_preserves_wrong_type_targets_and_fails(
     result = codex_reset_module.reset_all_codex_data(
         home=tmp_path,
         codex_home=codex_home,
-        orca_codex_home=tmp_path / "orca",
     )
 
     assert result.succeeded is False
@@ -1073,7 +1056,6 @@ def test_full_reset_rejects_log_dir_that_overlaps_codex_home(
     result = codex_reset_module.reset_all_codex_data(
         home=tmp_path,
         codex_home=codex_home,
-        orca_codex_home=tmp_path / "orca",
     )
 
     assert result.succeeded is False
@@ -1104,7 +1086,6 @@ def test_full_reset_rejects_log_dir_inside_preserved_plugin_tree(
     result = codex_reset_module.reset_all_codex_data(
         home=tmp_path,
         codex_home=codex_home,
-        orca_codex_home=tmp_path / "orca",
     )
 
     assert result.succeeded is False
@@ -1146,7 +1127,6 @@ def test_full_reset_clears_configured_sqlite_and_log_locations(
     result = codex_reset_module.reset_all_codex_data(
         home=tmp_path,
         codex_home=codex_home,
-        orca_codex_home=tmp_path / "orca",
     )
 
     assert result.succeeded
@@ -1187,7 +1167,6 @@ def test_full_reset_clears_cli_override_state_locations(
     result = codex_reset_module.reset_all_codex_data(
         home=tmp_path,
         codex_home=codex_home,
-        orca_codex_home=tmp_path / "orca",
         working_directory=launch_directory,
         cli_arguments=(
             "-C",
@@ -1234,7 +1213,6 @@ def test_full_reset_clears_system_config_state_locations(
     result = codex_reset_module.reset_all_codex_data(
         home=tmp_path,
         codex_home=codex_home,
-        orca_codex_home=tmp_path / "orca",
         system_config_path=system_config,
     )
 
@@ -1271,7 +1249,6 @@ def test_full_reset_clears_locations_from_every_codex_profile(
     result = codex_reset_module.reset_all_codex_data(
         home=tmp_path,
         codex_home=codex_home,
-        orca_codex_home=tmp_path / "orca",
     )
 
     assert result.succeeded
@@ -1318,7 +1295,6 @@ def test_full_reset_clears_trusted_project_config_state_locations(
     result = codex_reset_module.reset_all_codex_data(
         home=tmp_path,
         codex_home=codex_home,
-        orca_codex_home=tmp_path / "orca",
         working_directory=working_directory,
     )
 
@@ -1360,7 +1336,6 @@ def test_full_reset_ignores_untrusted_project_config_state_locations(
     result = codex_reset_module.reset_all_codex_data(
         home=tmp_path,
         codex_home=codex_home,
-        orca_codex_home=tmp_path / "orca",
         working_directory=project_root,
     )
 
