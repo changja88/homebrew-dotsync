@@ -23,6 +23,15 @@ def test_build_app_returns_instance(tmp_path):
     assert app.name == "zsh"
 
 
+def test_build_app_returns_herdr_instance(tmp_path):
+    cfg = Config(dir=tmp_path, apps=["herdr"])
+
+    app = build_app("herdr", cfg)
+
+    assert type(app).__name__ == "HerdrApp"
+    assert app.name == "herdr"
+
+
 def test_build_app_unknown_raises(tmp_path):
     cfg = Config(dir=tmp_path, apps=[])
     with pytest.raises(KeyError):
@@ -51,6 +60,11 @@ def test_detect_present_returns_only_locally_installed(fake_home, monkeypatch):
     # codex: present
     (fake_home / ".codex").mkdir()
     (fake_home / ".codex" / "config.toml").write_text("model = 'x'\n")
+    # herdr: present
+    (fake_home / ".config" / "herdr").mkdir(parents=True)
+    (fake_home / ".config" / "herdr" / "config.toml").write_text(
+        "onboarding = false\n"
+    )
     # ghostty: absent (no config dir)
     # bettertouchtool: absent (point APP_PATH to nowhere)
     monkeypatch.setattr(
@@ -61,6 +75,7 @@ def test_detect_present_returns_only_locally_installed(fake_home, monkeypatch):
     assert "zsh" in detected
     assert "claude" in detected
     assert "codex" in detected
+    assert "herdr" in detected
     assert "ghostty" not in detected
     assert "bettertouchtool" not in detected
 

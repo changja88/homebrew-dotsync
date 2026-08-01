@@ -3,6 +3,7 @@ non-source side. Regression net for Phase 4's default sync_from/sync_to."""
 
 from pathlib import Path
 from dotsync.apps.codex import CodexApp
+from dotsync.apps.herdr import HerdrApp
 from dotsync.apps.ghostty import GhosttyApp
 from dotsync.apps.zsh import ZshApp
 
@@ -19,6 +20,43 @@ def _ghostty_local(home: Path) -> Path:
 
 def _codex_dir(home: Path) -> Path:
     return home / ".codex"
+
+
+def _herdr_dir(home: Path) -> Path:
+    return home / ".config" / "herdr"
+
+
+def test_herdr_from_then_to_does_not_change_local(fake_home, tmp_path):
+    local_dir = _herdr_dir(fake_home)
+    local_dir.mkdir(parents=True)
+    local = local_dir / "config.toml"
+    local.write_text('[theme]\nname = "nord"\n')
+    target = tmp_path / "sync"
+    target.mkdir()
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    HerdrApp().sync_from(target)
+    HerdrApp().sync_to(target, backup)
+
+    assert local.read_text() == '[theme]\nname = "nord"\n'
+
+
+def test_herdr_to_then_from_does_not_change_stored(fake_home, tmp_path):
+    target = tmp_path / "sync"
+    (target / "herdr").mkdir(parents=True)
+    stored = target / "herdr" / "config.toml"
+    stored.write_text("onboarding = false\n")
+    local_dir = _herdr_dir(fake_home)
+    local_dir.mkdir(parents=True)
+    (local_dir / "config.toml").write_text("OLD\n")
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    HerdrApp().sync_to(target, backup)
+    HerdrApp().sync_from(target)
+
+    assert stored.read_text() == "onboarding = false\n"
 
 
 def test_ghostty_from_then_to_does_not_change_local(fake_home, tmp_path):
