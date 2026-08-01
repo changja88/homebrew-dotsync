@@ -253,6 +253,37 @@ def test_claude_inventory_retains_lexical_guard_if_identity_comparison_misses(
     assert remove_calls == []
 
 
+@pytest.mark.parametrize(
+    "custom_path",
+    (
+        Path("/tmp"),
+        Path("/private/tmp"),
+        Path("/var"),
+        Path("/private/var"),
+        Path("/Volumes/external"),
+    ),
+)
+def test_claude_inventory_rejects_shared_or_shallow_custom_memory_root(
+    custom_path,
+    tmp_path,
+):
+    config = tmp_path / ".claude"
+    config.mkdir()
+    (config / "settings.json").write_text(
+        json.dumps({"autoMemoryDirectory": str(custom_path)})
+    )
+
+    inventory = scan_memory_inventory(
+        client="claude",
+        home=tmp_path,
+        codex_home=tmp_path / ".codex",
+        claude_config_dir=config,
+    )
+
+    assert inventory.stores == ()
+    assert inventory.warnings
+
+
 def test_claude_inventory_fails_closed_if_identity_inspection_fails(
     tmp_path,
     monkeypatch,
@@ -539,7 +570,7 @@ def test_delete_all_claude_memory_removes_project_and_custom_stores_only(
     config = home / ".claude"
     project_root = config / "projects/repo"
     project_store = project_root / "memory"
-    custom_store = tmp_path / "custom-memory"
+    custom_store = home / "custom-memory"
     for store in (project_store, custom_store):
         store.mkdir(parents=True)
         (store / "MEMORY.md").write_text("memory")

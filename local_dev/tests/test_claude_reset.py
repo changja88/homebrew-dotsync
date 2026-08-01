@@ -6,8 +6,13 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from local_dev.serena_mcp_management import claude_reset
-from local_dev.serena_mcp_management.memory_management import ClientProcess
+from local_dev.serena_mcp_management.memory_management import (
+    ClientProcess,
+    MemoryStore,
+)
 
 
 class CommandRecorder:
@@ -131,6 +136,138 @@ def test_capability_probe_preserves_custom_config_environment(tmp_path):
     )
 
 
+def test_managed_auto_memory_policy_fails_closed_before_mutation(tmp_path):
+    config_dir = tmp_path / ".claude-custom"
+    config_dir.mkdir()
+    custom_memory = tmp_path / "user-memory"
+    custom_memory.mkdir()
+    (custom_memory / "MEMORY.md").write_text("keep", encoding="utf-8")
+    settings = config_dir / "settings.json"
+    settings_bytes = json.dumps(
+        {"autoMemoryDirectory": str(custom_memory), "theme": "dark"}
+    ).encode()
+    settings.write_bytes(settings_bytes)
+    recorder = CommandRecorder(
+        {
+            ("/real/claude", "project", "purge", "--help"): (
+                0,
+                "Options: --all --yes",
+                "",
+            ),
+        }
+    )
+
+    result = claude_reset.reset_all_claude_data(
+        home=tmp_path,
+        claude_config_dir=config_dir,
+        real_claude_binary="/real/claude",
+        run_command=recorder,
+        _managed_policy_checker=lambda **kwargs: (
+            "managed autoMemoryDirectory is active and cannot be reset safely"
+        ),
+    )
+
+    assert result.succeeded is False
+    assert "managed autoMemoryDirectory" in (result.error or "")
+    assert recorder.calls == []
+    assert settings.read_bytes() == settings_bytes
+    assert (custom_memory / "MEMORY.md").read_text(encoding="utf-8") == "keep"
+
+
+def test_file_managed_auto_memory_policy_is_detected(tmp_path):
+    policy_dir = tmp_path / "ClaudeCode"
+    drop_ins = policy_dir / "managed-settings.d"
+    drop_ins.mkdir(parents=True)
+    (policy_dir / "managed-settings.json").write_text(
+        json.dumps({"theme": "dark"}),
+        encoding="utf-8",
+    )
+    (drop_ins / "20-memory.json").write_text(
+        json.dumps({"autoMemoryDirectory": "~/managed-memory"}),
+        encoding="utf-8",
+    )
+
+    error = claude_reset._managed_auto_memory_policy_error(
+        policy_dir=policy_dir,
+        defaults_reader=lambda: {},
+    )
+
+    assert error is not None
+    assert "managed autoMemoryDirectory" in error
+
+
+def test_dynamic_policy_helper_fails_closed_even_without_static_memory_path(tmp_path):
+    policy_dir = tmp_path / "ClaudeCode"
+    policy_dir.mkdir()
+    (policy_dir / "managed-settings.json").write_text(
+        json.dumps({"policyHelper": {"path": "/managed/policy-helper"}}),
+        encoding="utf-8",
+    )
+
+    error = claude_reset._managed_auto_memory_policy_error(
+        policy_dir=policy_dir,
+        defaults_reader=lambda: {},
+    )
+
+    assert error is not None
+    assert "policyHelper" in error
+
+
+def test_server_managed_settings_cache_memory_redirect_is_detected(tmp_path):
+    config_dir = tmp_path / ".claude-custom"
+    config_dir.mkdir()
+    (config_dir / "remote-settings.json").write_text(
+        json.dumps(
+            {
+                "settings": {
+                    "autoMemoryDirectory": "~/server-managed-memory",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    error = claude_reset._managed_auto_memory_policy_error(
+        config_dir=config_dir,
+        policy_dir=tmp_path / "missing-policy-dir",
+        defaults_reader=lambda: {},
+    )
+
+    assert error is not None
+    assert "server-managed" in error
+    assert "autoMemoryDirectory" in error
+
+
+def test_server_managed_settings_cache_wrong_type_fails_closed(tmp_path):
+    config_dir = tmp_path / ".claude-custom"
+    config_dir.mkdir()
+    (config_dir / "remote-settings.json").mkdir()
+
+    with pytest.raises(RuntimeError, match="server-managed"):
+        claude_reset._managed_auto_memory_policy_error(
+            config_dir=config_dir,
+            policy_dir=tmp_path / "missing-policy-dir",
+            defaults_reader=lambda: {},
+        )
+
+
+def test_managed_plans_directory_fails_closed(tmp_path):
+    policy_dir = tmp_path / "ClaudeCode"
+    policy_dir.mkdir()
+    (policy_dir / "managed-settings.json").write_text(
+        json.dumps({"plansDirectory": "./managed-plans"}),
+        encoding="utf-8",
+    )
+
+    error = claude_reset._managed_auto_memory_policy_error(
+        policy_dir=policy_dir,
+        defaults_reader=lambda: {},
+    )
+
+    assert error is not None
+    assert "plansDirectory" in error
+
+
 def test_broad_claude_config_root_fails_before_capability_probe(tmp_path):
     recorder = CommandRecorder(
         {
@@ -152,6 +289,253 @@ def test_broad_claude_config_root_fails_before_capability_probe(tmp_path):
     assert result.succeeded is False
     assert "too broad" in (result.error or "")
     assert recorder.calls == []
+
+
+def test_user_plans_directory_fails_before_capability_probe(tmp_path):
+    config_dir = tmp_path / ".claude-custom"
+    config_dir.mkdir()
+    settings = config_dir / "settings.json"
+    settings.write_text(
+        json.dumps({"plansDirectory": "./plans"}),
+        encoding="utf-8",
+    )
+    project_plans = tmp_path / "repo/plans"
+    project_plans.mkdir(parents=True)
+    sentinel = project_plans / "keep.md"
+    sentinel.write_text("plan", encoding="utf-8")
+    recorder = CommandRecorder(
+        {
+            ("/real/claude", "project", "purge", "--help"): (
+                0,
+                "Options: --all --yes",
+                "",
+            ),
+        }
+    )
+
+    result = claude_reset.reset_all_claude_data(
+        home=tmp_path,
+        claude_config_dir=config_dir,
+        real_claude_binary="/real/claude",
+        run_command=recorder,
+        _managed_policy_checker=lambda **kwargs: None,
+    )
+
+    assert result.succeeded is False
+    assert "plansDirectory" in (result.error or "")
+    assert recorder.calls == []
+    assert sentinel.read_text(encoding="utf-8") == "plan"
+
+
+def test_current_project_plans_directory_fails_before_capability_probe(tmp_path):
+    config_dir = tmp_path / ".claude-custom"
+    config_dir.mkdir()
+    project = tmp_path / "repo"
+    project_settings = project / ".claude/settings.local.json"
+    project_settings.parent.mkdir(parents=True)
+    project_settings.write_text(
+        json.dumps({"plansDirectory": "./plans"}),
+        encoding="utf-8",
+    )
+    (config_dir / ".claude.json").write_text(
+        json.dumps({"projects": {}}),
+        encoding="utf-8",
+    )
+    recorder = CommandRecorder(
+        {
+            ("/real/claude", "project", "purge", "--help"): (
+                0,
+                "Options: --all --yes",
+                "",
+            ),
+        }
+    )
+
+    result = claude_reset.reset_all_claude_data(
+        home=tmp_path,
+        claude_config_dir=config_dir,
+        real_claude_binary="/real/claude",
+        run_command=recorder,
+        current_project_root=project,
+        _managed_policy_checker=lambda **kwargs: None,
+    )
+
+    assert result.succeeded is False
+    assert "plansDirectory" in (result.error or "")
+    assert str(project_settings) in (result.error or "")
+    assert recorder.calls == []
+
+
+@pytest.mark.parametrize("settings_checkout", ("worktree", "main"))
+def test_linked_worktree_checkout_plans_directory_fails_preflight(
+    tmp_path,
+    settings_checkout,
+):
+    config_dir = tmp_path / ".claude-custom"
+    config_dir.mkdir()
+    worktree_root = tmp_path / "worktree"
+    current_project = worktree_root / "nested-project"
+    current_project.mkdir(parents=True)
+    main_checkout = tmp_path / "main-checkout"
+    settings_root = (
+        worktree_root if settings_checkout == "worktree" else main_checkout
+    )
+    checkout_settings = settings_root / ".claude/settings.local.json"
+    checkout_settings.parent.mkdir(parents=True)
+    checkout_settings.write_text(
+        json.dumps({"plansDirectory": "./plans"}),
+        encoding="utf-8",
+    )
+    recorder = CommandRecorder(
+        {
+            ("/real/claude", "project", "purge", "--help"): (
+                0,
+                "Options: --all --yes",
+                "",
+            ),
+        }
+    )
+
+    result = claude_reset.reset_all_claude_data(
+        home=tmp_path,
+        claude_config_dir=config_dir,
+        real_claude_binary="/real/claude",
+        current_project_root=current_project,
+        run_command=recorder,
+        _managed_policy_checker=lambda **kwargs: None,
+        _git_checkout_roots_resolver=lambda project: (
+            (worktree_root, main_checkout),
+            None,
+        ),
+    )
+
+    assert result.succeeded is False
+    assert "plansDirectory" in (result.error or "")
+    assert str(checkout_settings) in (result.error or "")
+    assert recorder.calls == []
+
+
+def test_git_root_resolution_failure_with_marker_fails_closed(
+    monkeypatch,
+    tmp_path,
+):
+    project = tmp_path / "repo/nested"
+    project.mkdir(parents=True)
+    (tmp_path / "repo/.git").write_text("gitdir: unavailable", encoding="utf-8")
+    monkeypatch.setattr(
+        claude_reset.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            128,
+            "",
+            "dubious ownership",
+        ),
+    )
+
+    roots, error = claude_reset._git_checkout_roots(project)
+
+    assert roots == ()
+    assert error is not None
+    assert "dubious ownership" in error
+
+
+@pytest.mark.parametrize("change_phase", ("purge", "memory"))
+def test_current_project_plans_directory_added_during_reset_fails(
+    tmp_path,
+    change_phase,
+):
+    config_dir = tmp_path / ".claude-custom"
+    config_dir.mkdir()
+    (config_dir / ".claude.json").write_text(
+        json.dumps({"projects": {}}),
+        encoding="utf-8",
+    )
+    project = tmp_path / "repo"
+    project.mkdir()
+    project_settings = project / ".claude/settings.local.json"
+
+    def add_plans_directory() -> None:
+        project_settings.parent.mkdir(exist_ok=True)
+        project_settings.write_text(
+            json.dumps({"plansDirectory": "./plans"}),
+            encoding="utf-8",
+        )
+
+    def run_command(command, **kwargs):
+        if command[-3:] == ["project", "purge", "--help"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "Options: --all --yes",
+                "",
+            )
+        if (
+            change_phase == "purge"
+            and command[-4:] == ["project", "purge", "--all", "--yes"]
+        ):
+            add_plans_directory()
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    def memory_deleter(**kwargs):
+        if change_phase == "memory":
+            add_plans_directory()
+        return claude_reset.MemoryDeleteResult()
+
+    result = claude_reset.reset_all_claude_data(
+        home=tmp_path,
+        claude_config_dir=config_dir,
+        real_claude_binary="/real/claude",
+        current_project_root=project,
+        run_command=run_command,
+        _process_scanner=lambda *args, **kwargs: (),
+        _session_scanner=lambda **kwargs: SimpleNamespace(
+            sessions=SimpleNamespace(total=0),
+            warnings=(),
+        ),
+        _managed_policy_checker=lambda **kwargs: None,
+        _memory_deleter=memory_deleter,
+    )
+
+    assert result.succeeded is False
+    assert "plansDirectory" in (result.error or "")
+
+
+@pytest.mark.parametrize(
+    "config_dir",
+    (
+        Path("/tmp"),
+        Path("/private/tmp"),
+        Path("/var"),
+        Path("/private/var"),
+        Path("/Volumes/external"),
+    ),
+)
+def test_shared_or_shallow_claude_config_root_is_rejected(config_dir, tmp_path):
+    assert claude_reset._config_root_error(config_dir, home=tmp_path) is not None
+
+
+def test_claude_config_root_rejects_wrong_type_and_symlink(tmp_path):
+    wrong_type = tmp_path / "config-file"
+    wrong_type.write_text("not a directory", encoding="utf-8")
+    real_config = tmp_path / "real-config"
+    real_config.mkdir()
+    linked_config = tmp_path / "linked-config"
+    linked_config.symlink_to(real_config, target_is_directory=True)
+
+    wrong_type_error = claude_reset._config_root_error(
+        wrong_type,
+        home=tmp_path,
+    )
+    symlink_error = claude_reset._config_root_error(
+        linked_config,
+        home=tmp_path,
+    )
+
+    assert wrong_type_error is not None
+    assert "directory" in wrong_type_error
+    assert symlink_error is not None
+    assert "symlink" in symlink_error
 
 
 def test_runtime_quiescence_stops_daemon_then_identity_pinned_cli():
@@ -424,6 +808,225 @@ def test_supplemental_cleanup_reports_partial_delete_failure(tmp_path):
     assert second.is_dir()
 
 
+def test_backup_sanitizer_removes_only_generated_project_entries(tmp_path):
+    config_dir = tmp_path / ".claude"
+    backups = config_dir / "backups"
+    backups.mkdir(parents=True)
+    backup = backups / ".claude.json.backup.1"
+    backup.write_text(
+        json.dumps(
+            {
+                "oauthAccount": {"accountUuid": "user-1"},
+                "theme": "dark",
+                "projects": {"/repo": {"lastSessionId": "session-1"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    unrelated = backups / "notes.txt"
+    unrelated.write_text("keep", encoding="utf-8")
+
+    result = claude_reset._sanitize_backup_project_entries(config_dir)
+
+    assert result.error is None
+    assert result.sanitized == 1
+    assert json.loads(backup.read_text(encoding="utf-8")) == {
+        "oauthAccount": {"accountUuid": "user-1"},
+        "theme": "dark",
+    }
+    assert unrelated.read_text(encoding="utf-8") == "keep"
+    assert claude_reset._backup_project_residuals(config_dir) == ()
+
+
+def test_backup_sanitizer_rejects_recognized_symlink(tmp_path):
+    config_dir = tmp_path / ".claude"
+    backups = config_dir / "backups"
+    backups.mkdir(parents=True)
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"projects":{"/outside":{}}}', encoding="utf-8")
+    linked_backup = backups / ".claude.json.backup.1"
+    linked_backup.symlink_to(outside)
+
+    result = claude_reset._sanitize_backup_project_entries(config_dir)
+
+    assert result.error is not None
+    assert "symlink" in result.error
+    assert outside.read_text(encoding="utf-8") == '{"projects":{"/outside":{}}}'
+
+
+@pytest.mark.parametrize("purge_action", ("mutate", "delete"))
+def test_official_purge_cannot_change_preserved_backup_values(
+    tmp_path,
+    purge_action,
+):
+    config_dir = tmp_path / ".claude-custom"
+    backups = config_dir / "backups"
+    backups.mkdir(parents=True)
+    backup = backups / ".claude.json.backup.1"
+    backup.write_text(
+        json.dumps(
+            {
+                "oauthAccount": {"accountUuid": "user-1"},
+                "theme": "dark",
+                "projects": {"/repo": {"lastSessionId": "session-1"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    global_config = config_dir / ".claude.json"
+    global_config.write_text(
+        json.dumps({"projects": {"/repo": {}}}),
+        encoding="utf-8",
+    )
+
+    def run_command(command, **kwargs):
+        if command[-3:] == ["project", "purge", "--help"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "Options: --all --yes",
+                "",
+            )
+        if command[-4:] == ["project", "purge", "--all", "--yes"]:
+            global_config.write_text(
+                json.dumps({"projects": {}}),
+                encoding="utf-8",
+            )
+            if purge_action == "delete":
+                backup.unlink()
+            else:
+                backup.write_text(
+                    json.dumps(
+                        {
+                            "oauthAccount": {"accountUuid": "changed"},
+                            "theme": "dark",
+                            "projects": {},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    result = claude_reset.reset_all_claude_data(
+        home=tmp_path,
+        claude_config_dir=config_dir,
+        real_claude_binary="/real/claude",
+        run_command=run_command,
+        _process_scanner=lambda *args, **kwargs: (),
+        _session_scanner=lambda **kwargs: SimpleNamespace(
+            sessions=SimpleNamespace(total=0),
+            warnings=(),
+        ),
+        _managed_policy_checker=lambda **kwargs: None,
+        _memory_deleter=lambda **kwargs: claude_reset.MemoryDeleteResult(),
+    )
+
+    assert result.succeeded is False
+    assert "backup" in (result.error or "")
+    assert "changed" in (result.error or "") or "disappeared" in (
+        result.error or ""
+    )
+
+
+def test_official_purge_cannot_change_unrelated_backup_data(tmp_path):
+    config_dir = tmp_path / ".claude-custom"
+    backups = config_dir / "backups"
+    backups.mkdir(parents=True)
+    notes = backups / "notes.txt"
+    notes.write_text("keep", encoding="utf-8")
+    (config_dir / ".claude.json").write_text(
+        json.dumps({"projects": {}}),
+        encoding="utf-8",
+    )
+
+    def run_command(command, **kwargs):
+        if command[-3:] == ["project", "purge", "--help"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "Options: --all --yes",
+                "",
+            )
+        if command[-4:] == ["project", "purge", "--all", "--yes"]:
+            notes.write_text("changed", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    result = claude_reset.reset_all_claude_data(
+        home=tmp_path,
+        claude_config_dir=config_dir,
+        real_claude_binary="/real/claude",
+        run_command=run_command,
+        _process_scanner=lambda *args, **kwargs: (),
+        _session_scanner=lambda **kwargs: SimpleNamespace(
+            sessions=SimpleNamespace(total=0),
+            warnings=(),
+        ),
+        _managed_policy_checker=lambda **kwargs: None,
+        _memory_deleter=lambda **kwargs: claude_reset.MemoryDeleteResult(),
+    )
+
+    assert result.succeeded is False
+    assert "preserved Claude user data changed" in (result.error or "")
+
+
+@pytest.mark.parametrize(
+    "preserved_target",
+    (
+        "skills",
+        ".credentials.json",
+        "remote-settings.json",
+        "policy-limits.json",
+    ),
+)
+def test_official_purge_cannot_change_preserved_user_scope_data(
+    tmp_path,
+    preserved_target,
+):
+    config_dir = tmp_path / ".claude-custom"
+    config_dir.mkdir()
+    (config_dir / ".claude.json").write_text(
+        json.dumps({"projects": {}}),
+        encoding="utf-8",
+    )
+    target = config_dir / preserved_target
+    if preserved_target == "skills":
+        target.mkdir()
+        target = target / "personal.md"
+    target.write_text("user-authored", encoding="utf-8")
+
+    def run_command(command, **kwargs):
+        if command[-3:] == ["project", "purge", "--help"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                "Options: --all --yes",
+                "",
+            )
+        if command[-4:] == ["project", "purge", "--all", "--yes"]:
+            if preserved_target in {"skills", "policy-limits.json"}:
+                target.write_text("changed", encoding="utf-8")
+            else:
+                target.unlink()
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    result = claude_reset.reset_all_claude_data(
+        home=tmp_path,
+        claude_config_dir=config_dir,
+        real_claude_binary="/real/claude",
+        run_command=run_command,
+        _process_scanner=lambda *args, **kwargs: (),
+        _session_scanner=lambda **kwargs: SimpleNamespace(
+            sessions=SimpleNamespace(total=0),
+            warnings=(),
+        ),
+        _managed_policy_checker=lambda **kwargs: None,
+        _memory_deleter=lambda **kwargs: claude_reset.MemoryDeleteResult(),
+    )
+
+    assert result.succeeded is False
+    assert "preserved Claude user data" in (result.error or "")
+
+
 def test_full_reset_runs_official_purge_then_deletes_residual_state(tmp_path):
     config_dir = tmp_path / ".claude-custom"
     config_dir.mkdir()
@@ -461,6 +1064,17 @@ def test_full_reset_runs_official_purge_then_deletes_residual_state(tmp_path):
         preserved = config_dir / name
         preserved.mkdir()
         (preserved / "keep.txt").write_text(name, encoding="utf-8")
+    backup_config = config_dir / "backups/.claude.json.backup.1"
+    backup_config.write_text(
+        json.dumps(
+            {
+                "oauthAccount": {"accountUuid": "user-1"},
+                "theme": "dark",
+                "projects": {"/repo": {"lastSessionId": "session-1"}},
+            }
+        ),
+        encoding="utf-8",
+    )
 
     calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
 
@@ -506,7 +1120,7 @@ def test_full_reset_runs_official_purge_then_deletes_residual_state(tmp_path):
     assert result.deleted_memory_stores == 1
     assert result.deleted_residual_targets == len(
         claude_reset._SUPPLEMENTAL_DIRECTORY_NAMES
-    )
+    ) + 1
     assert result.terminated_processes == 0
     assert (config_dir / "settings.json").read_bytes() == settings_bytes
     assert not custom_memory.exists()
@@ -514,6 +1128,10 @@ def test_full_reset_runs_official_purge_then_deletes_residual_state(tmp_path):
         (config_dir / name / "keep.txt").read_text(encoding="utf-8") == name
         for name in ("backups", "plugins", "skills")
     )
+    assert json.loads(backup_config.read_text(encoding="utf-8")) == {
+        "oauthAccount": {"accountUuid": "user-1"},
+        "theme": "dark",
+    }
     claude_commands = [call for call, _ in calls if call[0] == "/real/claude"]
     assert claude_commands == [
         ("/real/claude", "project", "purge", "--help"),
@@ -562,6 +1180,165 @@ def test_full_reset_reports_memory_backend_exception(tmp_path):
 
     assert result.succeeded is False
     assert "memory volume unavailable" in (result.error or "")
+
+
+def test_full_reset_rechecks_managed_policy_before_final_success(tmp_path):
+    config_dir = tmp_path / ".claude-custom"
+    config_dir.mkdir()
+    (config_dir / "settings.json").write_text("{}", encoding="utf-8")
+    (config_dir / ".claude.json").write_text(
+        json.dumps({"projects": {}}),
+        encoding="utf-8",
+    )
+    policy_checks = 0
+    memory_delete_called = False
+
+    def managed_policy_checker(**kwargs):
+        nonlocal policy_checks
+        assert kwargs["config_dir"] == config_dir
+        policy_checks += 1
+        if policy_checks == 3:
+            return "Claude server-managed autoMemoryDirectory appeared"
+        return None
+
+    def memory_deleter(**kwargs):
+        nonlocal memory_delete_called
+        memory_delete_called = True
+        return claude_reset.MemoryDeleteResult()
+
+    def run_command(command, **kwargs):
+        stdout = (
+            "Options: --all --yes"
+            if command[-3:] == ["project", "purge", "--help"]
+            else ""
+        )
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    result = claude_reset.reset_all_claude_data(
+        home=tmp_path,
+        claude_config_dir=config_dir,
+        real_claude_binary="/real/claude",
+        run_command=run_command,
+        _process_scanner=lambda *args, **kwargs: (),
+        _session_scanner=lambda **kwargs: SimpleNamespace(
+            sessions=SimpleNamespace(total=0),
+            warnings=(),
+        ),
+        _managed_policy_checker=managed_policy_checker,
+        _memory_deleter=memory_deleter,
+    )
+
+    assert result.succeeded is False
+    assert "server-managed" in (result.error or "")
+    assert policy_checks == 3
+    assert memory_delete_called is True
+
+
+def test_full_reset_never_deletes_memory_path_changed_after_preflight(tmp_path):
+    config_dir = tmp_path / ".claude-custom"
+    config_dir.mkdir()
+    original_memory = tmp_path / "original-memory"
+    original_memory.mkdir()
+    (original_memory / "MEMORY.md").write_text("original", encoding="utf-8")
+    changed_memory = tmp_path / "changed-memory"
+    changed_memory.mkdir()
+    changed_sentinel = changed_memory / "MEMORY.md"
+    changed_sentinel.write_text("must survive", encoding="utf-8")
+    settings = config_dir / "settings.json"
+    settings.write_text(
+        json.dumps({"autoMemoryDirectory": str(original_memory)}),
+        encoding="utf-8",
+    )
+    (config_dir / ".claude.json").write_text(
+        json.dumps({"projects": {}}),
+        encoding="utf-8",
+    )
+
+    def run_command(command, **kwargs):
+        stdout = (
+            "Options: --all --yes"
+            if command[-3:] == ["project", "purge", "--help"]
+            else ""
+        )
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    def memory_deleter(**kwargs):
+        settings.write_text(
+            json.dumps({"autoMemoryDirectory": str(changed_memory)}),
+            encoding="utf-8",
+        )
+        return claude_reset.delete_all_memory(**kwargs)
+
+    result = claude_reset.reset_all_claude_data(
+        home=tmp_path,
+        claude_config_dir=config_dir,
+        real_claude_binary="/real/claude",
+        run_command=run_command,
+        _process_scanner=lambda *args, **kwargs: (),
+        _session_scanner=lambda **kwargs: SimpleNamespace(
+            sessions=SimpleNamespace(total=0),
+            warnings=(),
+        ),
+        _managed_policy_checker=lambda **kwargs: None,
+        _memory_deleter=memory_deleter,
+    )
+
+    assert result.succeeded is False
+    assert "settings changed" in (result.error or "")
+    assert not original_memory.exists()
+    assert changed_sentinel.read_text(encoding="utf-8") == "must survive"
+
+
+def test_memory_inventory_must_match_snapshotted_settings_path(tmp_path):
+    config_dir = tmp_path / ".claude-custom"
+    config_dir.mkdir()
+    approved_memory = tmp_path / "approved-memory"
+    approved_memory.mkdir()
+    approved_sentinel = approved_memory / "MEMORY.md"
+    approved_sentinel.write_text("approved", encoding="utf-8")
+    raced_memory = tmp_path / "raced-memory"
+    raced_memory.mkdir()
+    raced_sentinel = raced_memory / "MEMORY.md"
+    raced_sentinel.write_text("must survive", encoding="utf-8")
+    (config_dir / "settings.json").write_text(
+        json.dumps({"autoMemoryDirectory": str(approved_memory)}),
+        encoding="utf-8",
+    )
+    recorder = CommandRecorder(
+        {
+            ("/real/claude", "project", "purge", "--help"): (
+                0,
+                "Options: --all --yes",
+                "",
+            ),
+        }
+    )
+
+    result = claude_reset.reset_all_claude_data(
+        home=tmp_path,
+        claude_config_dir=config_dir,
+        real_claude_binary="/real/claude",
+        run_command=recorder,
+        _managed_policy_checker=lambda **kwargs: None,
+        _memory_scanner=lambda **kwargs: claude_reset.MemoryInventory(
+            client="claude",
+            stores=(
+                MemoryStore(
+                    path=raced_memory,
+                    source="claude-settings",
+                    file_count=1,
+                ),
+            ),
+            file_count=1,
+            scope="test",
+        ),
+    )
+
+    assert result.succeeded is False
+    assert "changed during preflight" in (result.error or "")
+    assert recorder.calls == []
+    assert approved_sentinel.read_text(encoding="utf-8") == "approved"
+    assert raced_sentinel.read_text(encoding="utf-8") == "must survive"
 
 
 def test_official_purge_failure_prevents_supplemental_deletion(tmp_path):
@@ -772,7 +1549,47 @@ def test_final_process_respawn_makes_reset_fail(tmp_path):
         executable="/opt/homebrew/bin/claude",
         command="/opt/homebrew/bin/claude",
     )
-    scans = iter(((), (process,)))
+    scans = iter(((), (process,), (process,)))
+
+    def run_command(command, **kwargs):
+        stdout = (
+            "Options: --all --yes"
+            if command[-3:] == ["project", "purge", "--help"]
+            else ""
+        )
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    result = claude_reset.reset_all_claude_data(
+        home=tmp_path,
+        claude_config_dir=config_dir,
+        real_claude_binary="/real/claude",
+        run_command=run_command,
+        _process_scanner=lambda *args, **kwargs: next(scans),
+        _session_scanner=lambda **kwargs: SimpleNamespace(
+            sessions=SimpleNamespace(total=0),
+            warnings=(),
+        ),
+        _memory_deleter=lambda **kwargs: claude_reset.MemoryDeleteResult(),
+    )
+
+    assert result.succeeded is False
+    assert "1 Claude process" in (result.error or "")
+
+
+def test_process_start_after_state_verification_makes_reset_fail(tmp_path):
+    config_dir = tmp_path / ".claude-custom"
+    config_dir.mkdir()
+    (config_dir / ".claude.json").write_text(
+        json.dumps({"projects": {}}),
+        encoding="utf-8",
+    )
+    process = ClientProcess(
+        pid=6161,
+        ppid=1,
+        executable="/opt/homebrew/bin/claude",
+        command="/opt/homebrew/bin/claude",
+    )
+    scans = iter(((), (), (process,)))
 
     def run_command(command, **kwargs):
         stdout = (

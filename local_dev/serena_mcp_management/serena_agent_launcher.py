@@ -136,6 +136,8 @@ def _codex_home_from_env() -> Path:
 def _memory_scan_kwargs(client: str) -> _MemoryScanKwargs:
     codex_home = Path.home() / ".codex" if client == "claude" else _codex_home_from_env()
     claude_config_value = os.environ.get("CLAUDE_CONFIG_DIR")
+    if claude_config_value == "":
+        raise ValueError("CLAUDE_CONFIG_DIR must not be empty")
     claude_config_dir = (
         Path(claude_config_value).expanduser() if claude_config_value else None
     )
@@ -627,7 +629,10 @@ def _main_v2(args: list[str]) -> int:
             )
             reset_trace_targets = reset_result.deleted_trace_targets
         else:
-            reset_result = _run_claude_reset_v2(stream=out)
+            reset_result = _run_claude_reset_v2(
+                stream=out,
+                project_root=project_root,
+            )
             reset_trace_targets = (
                 reset_result.deleted_memory_stores
                 + reset_result.deleted_residual_targets
@@ -1626,9 +1631,8 @@ def _run_session_choice_v2(
         )
         return "reset_all" if confirmed else "keep"
     confirmed = confirm(
-        "Permanently delete ALL local Claude Code sessions, memories, "
-        "history, plans, caches, snapshots, and currently running CLI "
-        "sessions?",
+        "Permanently delete all known local Claude Code sessions, memories, "
+        "history, generated traces, and currently running CLI sessions?",
         default=False,
         stream=out,
         input_fn=input_fn,
@@ -1690,25 +1694,27 @@ def _run_codex_reset_v2(
 def _run_claude_reset_v2(
     *,
     stream: TextIO | None = None,
+    project_root: Path | None = None,
 ) -> ClaudeResetResult:
     """Apply a confirmed full local Claude Code conversation-state reset."""
     out = stream if stream is not None else sys.stdout
     out.write(
         render_inline_row(
             "sessions",
-            "deleting all local sessions, memories, and conversation traces",
+            "deleting all known local sessions, memories, and conversation traces",
             status="spin",
             accent=AMBER,
         )
     )
     out.flush()
-    scan_kwargs = _memory_scan_kwargs("claude")
     try:
+        scan_kwargs = _memory_scan_kwargs("claude")
         real_binary = find_real_binary("claude")
         result = reset_all_claude_data(
             home=scan_kwargs["home"],
             claude_config_dir=scan_kwargs["claude_config_dir"],
             real_claude_binary=real_binary,
+            current_project_root=project_root,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         result = ClaudeResetResult(error=str(exc) or exc.__class__.__name__)

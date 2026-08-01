@@ -8,6 +8,22 @@ ORCA_CODEX_HOME = Path(
     "Library/Application Support/orca/codex-runtime-home/home"
 )
 
+_UNSAFE_SHARED_STORAGE_PREFIXES = (
+    Path("/tmp"),
+    Path("/private/tmp"),
+    Path("/var"),
+    Path("/private/var"),
+    Path("/Users/Shared"),
+    Path("/System"),
+    Path("/Library"),
+    Path("/Applications"),
+    Path("/usr"),
+    Path("/bin"),
+    Path("/sbin"),
+    Path("/etc"),
+    Path("/dev"),
+)
+
 
 def paths_refer_to_same_file(first: Path, second: Path) -> bool:
     """Compare existing paths by identity and missing paths lexically."""
@@ -74,6 +90,21 @@ def lexical_claude_config_dir(
     if not candidate.is_absolute():
         raise ValueError("claude_config_dir must be absolute")
     return _absolute_without_resolving(candidate)
+
+
+def is_unsafe_shared_storage_root(path: Path, *, home: Path) -> bool:
+    """Reject shared/system roots while allowing dedicated user-owned leaves."""
+
+    candidate = _absolute_without_resolving(path)
+    user_home = _absolute_without_resolving(home)
+    if user_home in candidate.parents:
+        return False
+    if len(candidate.parts) <= 3:
+        return True
+    return any(
+        prefix == candidate or prefix in candidate.parents
+        for prefix in _UNSAFE_SHARED_STORAGE_PREFIXES
+    )
 
 
 def _absolute_without_resolving(path: Path) -> Path:

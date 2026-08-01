@@ -776,7 +776,11 @@ def test_claude_reset_action_uses_official_purge_backend(monkeypatch, tmp_path):
     )
     out = io.StringIO()
 
-    result = launcher._run_claude_reset_v2(stream=out)
+    project_root = tmp_path / "repo"
+    result = launcher._run_claude_reset_v2(
+        stream=out,
+        project_root=project_root,
+    )
 
     assert result.succeeded
     assert calls == [
@@ -784,6 +788,7 @@ def test_claude_reset_action_uses_official_purge_backend(monkeypatch, tmp_path):
             "home": Path.home(),
             "claude_config_dir": config_dir,
             "real_claude_binary": "/real/claude",
+            "current_project_root": project_root,
         }
     ]
     plain = _strip_ansi(out.getvalue())
@@ -791,6 +796,23 @@ def test_claude_reset_action_uses_official_purge_backend(monkeypatch, tmp_path):
     assert "1 memory stores deleted" in plain
     assert "7 conversation-state targets deleted" in plain
     assert "2 runtimes stopped" in plain
+
+
+def test_claude_reset_rejects_explicit_empty_config_dir_without_backend_call(
+    monkeypatch,
+):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "")
+    monkeypatch.setattr(
+        launcher,
+        "reset_all_claude_data",
+        lambda **kwargs: pytest.fail("reset backend must not run"),
+    )
+    out = io.StringIO()
+
+    result = launcher._run_claude_reset_v2(stream=out)
+
+    assert result.succeeded is False
+    assert "CLAUDE_CONFIG_DIR must not be empty" in (result.error or "")
 
 
 def test_claude_cleanup_defaults_to_combined_keep(monkeypatch):
@@ -1136,7 +1158,12 @@ def test_v2_main_claude_reset_all_uses_claude_backend(monkeypatch, tmp_path):
     )
 
     assert rc == 0
-    assert reset_calls == [{"stream": mock.ANY}]
+    assert reset_calls == [
+        {
+            "stream": mock.ANY,
+            "project_root": tmp_path,
+        }
+    ]
     assert "memory-delete" not in call_log
     assert "session-retention" not in call_log
     assert "session-delete-inactive" not in call_log

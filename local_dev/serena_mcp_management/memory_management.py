@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import os
 import shlex
-import shutil
 import stat
 import subprocess
 from dataclasses import dataclass
@@ -12,9 +11,15 @@ from pathlib import Path
 from typing import Callable
 
 from .agent_paths import (
+    is_unsafe_shared_storage_root,
     lexical_claude_config_dir,
     lexical_codex_homes,
     paths_refer_to_same_file,
+)
+from .safe_delete import (
+    SafeDeleteError,
+    delete_directory_tree,
+    read_json_file_no_follow,
 )
 
 
@@ -161,15 +166,24 @@ def delete_all_memory(
     claude_config_dir: Path | None = None,
     orca_codex_home: Path | None = None,
     run_command: RunCommand = subprocess.run,
-    remove_tree: RemoveTree = shutil.rmtree,
+    remove_tree: RemoveTree = delete_directory_tree,
+    inventory: MemoryInventory | None = None,
 ) -> MemoryDeleteResult:
-    inventory = scan_memory_inventory(
-        client=client,
-        home=home,
-        codex_home=codex_home,
-        claude_config_dir=claude_config_dir,
-        orca_codex_home=orca_codex_home,
-    )
+    if inventory is None:
+        inventory = scan_memory_inventory(
+            client=client,
+            home=home,
+            codex_home=codex_home,
+            claude_config_dir=claude_config_dir,
+            orca_codex_home=orca_codex_home,
+        )
+    elif inventory.client != client:
+        return MemoryDeleteResult(
+            error=(
+                "memory inventory client mismatch: "
+                f"expected {client}, got {inventory.client}"
+            )
+        )
     if inventory.warnings:
         return MemoryDeleteResult(
             error="memory scan unsafe: " + "; ".join(inventory.warnings)
@@ -220,7 +234,7 @@ def delete_all_memory(
             )
         try:
             remove_tree(store.path)
-        except OSError as exc:
+        except (OSError, SafeDeleteError) as exc:
             return MemoryDeleteResult(
                 deleted_stores=deleted_stores,
                 deleted_files=deleted_files,
@@ -512,11 +526,29 @@ def _configured_memory_path(
         return None
 
     try:
-        with settings_path.open(encoding="utf-8") as settings_file:
-            settings = json.load(settings_file)
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        settings = read_json_file_no_follow(settings_path)
+    except SafeDeleteError as exc:
         warnings.append(f"invalid Claude settings {settings_path}: {exc}")
         return None
+
+    return configured_memory_path_from_document(
+        settings,
+        home=home,
+        config_dir=config_dir,
+        warnings=warnings,
+        settings_path=settings_path,
+    )
+
+
+def configured_memory_path_from_document(
+    settings: object,
+    *,
+    home: Path,
+    config_dir: Path,
+    warnings: list[str],
+    settings_path: Path,
+) -> Path | None:
+    """Resolve a custom memory root from one already-pinned settings value."""
 
     if not isinstance(settings, dict):
         warnings.append(
@@ -581,7 +613,7 @@ def _is_unsafe_broad_path(
             )
         )
     )
-    if path in unsafe_paths:
+    if path in unsafe_paths or is_unsafe_shared_storage_root(path, home=home):
         return True
     try:
         return any(
@@ -604,6 +636,15 @@ def _inspect_store(
     if kind == "missing":
         return None
     if kind != "directory":
+        return None
+
+    try:
+        owner = path.stat(follow_symlinks=False).st_uid
+    except OSError as exc:
+        warnings.append(f"cannot inspect memory store ownership {path}: {exc}")
+        return None
+    if owner != os.geteuid():
+        warnings.append(f"memory store is not owned by this user: {path}")
         return None
 
     if source == "claude-settings" and not _valid_configured_store(
