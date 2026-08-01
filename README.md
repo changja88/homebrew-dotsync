@@ -10,7 +10,7 @@ A CLI that consolidates your macOS app configs into **one folder of your choice*
 
 ### Purpose
 
-dotsync consolidates your macOS app configs (Claude Code, Codex CLI, Ghostty, BetterTouchTool, zsh) into **one folder of your choice** and keeps it in two-way sync with the apps. That folder can be anywhere — a fresh directory like `~/my-configs`, or a folder you already track in git or sync via iCloud Drive. Tool (dotsync) and data (the folder) are separated, so setting up a new Mac is just a matter of bringing the folder along.
+dotsync consolidates your macOS app configs (Claude Code, Codex CLI, Herdr, Ghostty, BetterTouchTool, zsh) into **one folder of your choice** and keeps it in two-way sync with the apps. That folder can be anywhere — a fresh directory like `~/my-configs`, or a folder you already track in git or sync via iCloud Drive. Tool (dotsync) and data (the folder) are separated, so setting up a new Mac is just a matter of bringing the folder along.
 
 ### Install
 
@@ -55,11 +55,12 @@ dotsync init
 #
 #   ▸ [x] claude              installed
 #     [x] codex               installed
+#     [x] herdr               installed
 #     [x] ghostty             installed
 #     [x] bettertouchtool     installed · 2 presets
 #     [x] zsh                 installed
 #
-# ✔ tracked: claude · codex · ghostty · bettertouchtool · zsh
+# ✔ tracked: claude · codex · herdr · ghostty · bettertouchtool · zsh
 # ✔ BetterTouchTool presets = Master_bt, Mini_bt   (auto-detected)
 # ✔ config saved → /Users/you/Desktop/dotsync_config/dotsync.toml
 ```
@@ -211,6 +212,8 @@ If `plugins.toml` is invalid, `dotsync apply codex --dry-run` shows an unknown `
 
 dotsync intentionally excludes dynamic local Serena MCP URLs from Codex config sync. Serena ports are per-project runtime state, so a copied `127.0.0.1:<port>` URL is treated as machine-local state rather than user-authored config.
 
+**Herdr sync tracks only `~/.config/herdr/config.toml`.** Session and runtime state such as `session*.json`, plugin registry state, logs, sockets, and lock files are intentionally excluded. Existing dotsync users can enable Herdr with `dotsync apps` (or include `herdr` when replacing the list with `dotsync config apps ...`); existing tracked-app selections are never changed automatically.
+
 **BetterTouchTool must be running** for `backup` / `apply` / `status` — dotsync drives BTT via `osascript`. If BTT isn't running, `status` reports `unknown` and `backup` / `apply` raise an error. Preset names are treated as literal BTT names; empty names, path separators, quotes, and control characters are rejected before any AppleScript is generated.
 
 #### 4. Check sync state (per-file sha256 diff)
@@ -265,7 +268,7 @@ Picker keys:
 In non-TTY environments (CI, piped stdin) it automatically falls back to
 sequential per-app y/n prompts.
 
-Supported apps: `claude`, `codex`, `ghostty`, `bettertouchtool`, `zsh`
+Supported apps: `claude`, `codex`, `herdr`, `ghostty`, `bettertouchtool`, `zsh`
 
 ### Adding a new app
 
@@ -279,7 +282,7 @@ Help: `dotsync --help`, `dotsync <command> --help`. All output respects `NO_COLO
 
 ### 목적
 
-dotsync는 macOS의 앱 설정(Claude Code, Codex CLI, Ghostty, BetterTouchTool, zsh)을 **사용자가 지정한 단일 폴더**에 모아서 양방향으로 동기화한다. 그 폴더는 어디든 OK — 새 폴더(`~/my-configs`)일 수도 있고, 이미 git이나 iCloud Drive로 관리 중인 폴더일 수도 있다. 도구(dotsync)와 데이터(폴더)를 분리해서, 새 Mac 셋업도 폴더만 옮겨오면 끝난다.
+dotsync는 macOS의 앱 설정(Claude Code, Codex CLI, Herdr, Ghostty, BetterTouchTool, zsh)을 **사용자가 지정한 단일 폴더**에 모아서 양방향으로 동기화한다. 그 폴더는 어디든 OK — 새 폴더(`~/my-configs`)일 수도 있고, 이미 git이나 iCloud Drive로 관리 중인 폴더일 수도 있다. 도구(dotsync)와 데이터(폴더)를 분리해서, 새 Mac 셋업도 폴더만 옮겨오면 끝난다.
 
 ### 설치
 
@@ -321,11 +324,12 @@ dotsync init
 #
 #   ▸ [x] claude              installed
 #     [x] codex               installed
+#     [x] herdr               installed
 #     [x] ghostty             installed
 #     [x] bettertouchtool     installed · 2 presets
 #     [x] zsh                 installed
 #
-# ✔ tracked: claude · codex · ghostty · bettertouchtool · zsh
+# ✔ tracked: claude · codex · herdr · ghostty · bettertouchtool · zsh
 # ✔ BetterTouchTool presets = Master_bt, Mini_bt   (auto-detected)
 # ✔ config saved → /Users/you/Desktop/dotsync_config/dotsync.toml
 ```
@@ -475,6 +479,8 @@ Schema:
 
 dotsync 는 Codex 설정을 sync 할 때 동적 로컬 Serena MCP URL 을 의도적으로 제외한다. Serena 포트는 프로젝트별 runtime state 이므로, 복사된 `127.0.0.1:<port>` URL 은 사용자가 작성한 설정이 아니라 머신 로컬 상태로 취급한다.
 
+**Herdr sync는 `~/.config/herdr/config.toml`만 추적한다.** `session*.json`, plugin registry state, log, socket, lock 파일 같은 session/runtime 상태는 의도적으로 제외한다. 기존 dotsync 사용자는 `dotsync apps`에서 Herdr를 켜거나 `dotsync config apps ...`로 목록을 교체할 때 `herdr`를 포함하면 된다. 기존 추적 앱 선택은 자동으로 바꾸지 않는다.
+
 **BetterTouchTool 은 실행 중이어야 한다.** `backup` / `apply` / `status` 모두 `osascript` 으로 BTT 를 제어하기 때문. BTT 가 꺼져 있으면 `status` 는 `unknown`, `backup` / `apply` 는 에러로 멈춘다. preset 이름은 BTT 이름 그대로 취급되며, 빈 이름, 경로 구분자, 따옴표, 제어문자는 AppleScript 생성 전에 거부된다.
 
 #### 4. 동기화 상태 확인 (파일별 sha256 비교)
@@ -528,7 +534,7 @@ picker 키 안내:
 
 CI나 파이프 같은 비-TTY 환경에서는 자동으로 앱별 y/n 프롬프트로 fallback 한다.
 
-지원 앱: `claude`, `codex`, `ghostty`, `bettertouchtool`, `zsh`
+지원 앱: `claude`, `codex`, `herdr`, `ghostty`, `bettertouchtool`, `zsh`
 
 ### 새 앱 추가
 
