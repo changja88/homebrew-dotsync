@@ -74,6 +74,7 @@ def test_init_yes_no_apps_and_no_detected_errors(
     fake_home, tmp_path, monkeypatch, capsys
 ):
     _no_btt(monkeypatch, fake_home)
+    monkeypatch.setenv("PATH", "")
     target = tmp_path / "configs"
     rc = main(["init", "--dir", str(target), "--yes"])
     assert rc != 0
@@ -135,6 +136,7 @@ def test_init_interactive_picker_keeps_detected_on_bare_enter(
     (fake_home / ".claude").mkdir()
     (fake_home / ".claude" / "settings.json").write_text("{}")
     _no_btt(monkeypatch, fake_home)
+    monkeypatch.setenv("PATH", "")
 
     target = tmp_path / "i"
     # folder + 6 picker fallback answers (sorted: bettertouchtool, claude,

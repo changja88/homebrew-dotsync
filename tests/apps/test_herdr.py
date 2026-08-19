@@ -63,10 +63,24 @@ def test_is_present_locally_true_when_config_exists(fake_home):
     assert HerdrApp.is_present_locally() is True
 
 
-def test_is_present_locally_false_when_only_runtime_state_exists(fake_home):
+def test_is_present_locally_true_when_executable_is_on_path(fake_home, monkeypatch):
+    bin_dir = fake_home / "bin"
+    bin_dir.mkdir()
+    executable = bin_dir / "herdr"
+    executable.write_text("#!/bin/sh\n")
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    assert HerdrApp.is_present_locally() is True
+
+
+def test_is_present_locally_false_when_only_runtime_state_exists(
+    fake_home, monkeypatch
+):
     local_dir = _herdr_dir(fake_home)
     local_dir.mkdir(parents=True)
     (local_dir / "session.json").write_text("{}\n")
+    monkeypatch.setenv("PATH", "")
 
     assert HerdrApp.is_present_locally() is False
 
