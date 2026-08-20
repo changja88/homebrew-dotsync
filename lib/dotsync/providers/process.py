@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import errno
 import json
 import os
@@ -784,7 +785,7 @@ class PtySession:
     ) -> str:
         selector = self._require_selector()
         current = self._decoded_output()
-        if predicate(current):
+        if current is not None and predicate(current):
             return current
         deadline = time.monotonic() + timeout
         while True:
@@ -827,7 +828,7 @@ class PtySession:
                 )
             self._output.extend(chunk)
             current = self._decoded_output()
-            if predicate(current):
+            if current is not None and predicate(current):
                 return current
 
     def terminate(self) -> None:
@@ -849,8 +850,23 @@ class PtySession:
             except OSError:
                 pass
 
-    def _decoded_output(self) -> str:
-        return self._output.decode("utf-8", errors="replace")
+    def _decoded_output(self) -> str | None:
+        raw_output = bytes(self._output)
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="strict")
+        decoded: str | None = None
+        try:
+            decoded = decoder.decode(raw_output, final=False)
+        except UnicodeError:
+            raw_output = b""
+            self._output.clear()
+        if decoded is None:
+            self.terminate()
+            raise self._pty_error(
+                "pty_output_invalid", "produced invalid output"
+            )
+        if decoder.getstate()[0]:
+            return None
+        return decoded
 
     def _wait_for_exit(self) -> None:
         process = self._require_process()

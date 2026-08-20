@@ -43,8 +43,12 @@ _CLI_VERSION_OUTPUT = re.compile(
     r"^\s*(?P<version>\d{1,6}\.\d{1,6}\.\d{1,6})"
     r"(?:\s+\(Claude Code\))?\s*$"
 )
-_PERCENTAGE = re.compile(
-    r"(?<![\d.])(?P<value>\d{1,3}(?:\.\d{1,3})?)(?![\d.])\s*%"
+_USAGE_ROWS = (
+    re.compile(
+        r"^(?P<value>\d{1,3}(?:\.\d{1,3})?)%\s+used$",
+        re.IGNORECASE,
+    ),
+    re.compile(r"^(?P<value>\d{1,3}(?:\.\d{1,3})?)%\s*사용$"),
 )
 _ENGLISH_RESET = re.compile(
     r"^Resets\s+in\s+"
@@ -141,12 +145,15 @@ class TerminalScreen:
             raise _terminal_error(
                 "terminal_output_invalid", "The terminal output was invalid."
             )
+        added_bytes: int | None = None
         try:
             added_bytes = len(value.encode("utf-8", errors="strict"))
         except UnicodeError:
+            value = ""
+        if added_bytes is None:
             raise _terminal_error(
                 "terminal_output_invalid", "The terminal output was invalid."
-            ) from None
+            )
         if self._input_bytes + added_bytes > _MAX_TERMINAL_OUTPUT_BYTES:
             raise _terminal_error(
                 "terminal_output_limit",
@@ -217,11 +224,25 @@ class TerminalScreen:
             raise _terminal_error(
                 "terminal_output_invalid", "The terminal output was invalid."
             )
+        if parameters and any(not value for value in parameters.split(";")):
+            raise _terminal_error(
+                "terminal_output_invalid", "The terminal output was invalid."
+            )
         self._apply_csi(source[index], parameters)
         return index + 1
 
     def _apply_csi(self, operation: str, parameters: str) -> None:
         values = self._csi_values(parameters)
+        if operation in {"A", "B", "C", "D", "E", "F", "G"}:
+            self._require_csi_shape(values, {0, 1})
+        elif operation in {"H", "f"}:
+            self._require_csi_shape(values, {0, 2})
+        elif operation in {"J", "K", "m"}:
+            self._require_csi_shape(values, {0, 1})
+        else:
+            raise _terminal_error(
+                "terminal_output_invalid", "The terminal output was invalid."
+            )
         first = values[0] if values else 0
         amount = first or 1
         if operation == "A":
@@ -246,21 +267,35 @@ class TerminalScreen:
             self._row = min(self._height - 1, max(0, row))
             self._column = min(self._width - 1, max(0, column))
         elif operation == "J":
+            if first not in {0, 2}:
+                raise _terminal_error(
+                    "terminal_output_invalid", "The terminal output was invalid."
+                )
             self._erase_display(first)
         elif operation == "K":
+            if first not in {0, 2}:
+                raise _terminal_error(
+                    "terminal_output_invalid", "The terminal output was invalid."
+                )
             self._erase_line(first)
         elif operation == "m":
-            return
-        else:
-            raise _terminal_error(
-                "terminal_output_invalid", "The terminal output was invalid."
-            )
+            if first not in {0, 1, 31}:
+                raise _terminal_error(
+                    "terminal_output_invalid", "The terminal output was invalid."
+                )
 
     @staticmethod
     def _csi_values(parameters: str) -> list[int]:
         if not parameters:
             return []
         return [int(value) if value else 0 for value in parameters.split(";")]
+
+    @staticmethod
+    def _require_csi_shape(values: list[int], allowed_counts: set[int]) -> None:
+        if len(values) not in allowed_counts:
+            raise _terminal_error(
+                "terminal_output_invalid", "The terminal output was invalid."
+            )
 
     def _erase_line(self, mode: int) -> None:
         if mode == 0:
@@ -276,7 +311,7 @@ class TerminalScreen:
         self._rows[self._row][start:end] = [" "] * (end - start)
 
     def _erase_display(self, mode: int) -> None:
-        if mode in {2, 3}:
+        if mode == 2:
             for row in self._rows:
                 row[:] = [" "] * self._width
             return
@@ -318,16 +353,23 @@ def parse_claude_usage(
     observed_at: str,
 ) -> UsageSnapshot:
     """Parse one synthetic/redacted Claude 2.1.x usage screen safely."""
+    snapshot: UsageSnapshot | None = None
+    failed = False
+    terminal_text: str | None = None
+    screen: TerminalScreen | None = None
     try:
         version = _parse_numeric_version(provider_version)
         strategy = _usage_strategy(version)
-        if not isinstance(terminal_bytes, bytes):
+        if (
+            not isinstance(terminal_bytes, bytes)
+            or len(terminal_bytes) > _MAX_TERMINAL_OUTPUT_BYTES
+        ):
             raise _usage_error()
         terminal_text = terminal_bytes.decode("utf-8", errors="strict")
         screen = TerminalScreen(width=160, height=60)
         screen.feed(terminal_text)
         windows = strategy(screen.text(), observed_at)
-        return UsageSnapshot(
+        snapshot = UsageSnapshot(
             account_id=account_id,
             provider="claude",
             windows=windows,
@@ -336,9 +378,15 @@ def parse_claude_usage(
             provider_version=provider_version,
         )
     except ProviderError:
-        raise _usage_error() from None
+        failed = True
     except (OverflowError, TypeError, UnicodeError, ValueError):
-        raise _usage_error() from None
+        failed = True
+    terminal_bytes = b""
+    terminal_text = None
+    screen = None
+    if failed or snapshot is None:
+        raise _usage_error()
+    return snapshot
 
 
 def _parse_numeric_version(value: str) -> tuple[int, int, int]:
@@ -383,23 +431,18 @@ def _parse_v2_1_usage(text: str, observed_at: str) -> tuple[UsageWindow, ...]:
     for position, (start, name) in enumerate(labels):
         end = labels[position + 1][0] if position + 1 < len(labels) else len(lines)
         block = lines[start:end]
-        percentages = [
-            match.group("value")
-            for line in block
-            for match in _PERCENTAGE.finditer(line)
-        ]
-        reset_values = [
-            value
-            for line in block
-            if (value := _relative_reset(line, observed_at)) is not None
-        ]
-        if len(percentages) != 1 or len(reset_values) != 1:
+        if len(block) < 3:
             raise _usage_error()
-        percentage = float(percentages[0])
+        percentage = _usage_percentage(block[1])
+        reset_value = _relative_reset(block[2], observed_at)
+        if percentage is None or reset_value is None:
+            raise _usage_error()
+        if any("%" in line for line in block[2:]):
+            raise _usage_error()
         limit_id, label, duration = _WINDOW_METADATA[name]
         if not 0.0 <= percentage <= 100.0:
             raise _usage_error()
-        if _minutes_between(observed_at, reset_values[0]) > duration:
+        if _minutes_between(observed_at, reset_value) > duration:
             raise _usage_error()
         parsed[name] = UsageWindow(
             name=name,
@@ -407,12 +450,20 @@ def _parse_v2_1_usage(text: str, observed_at: str) -> tuple[UsageWindow, ...]:
             label=label,
             used_percent=percentage,
             duration_minutes=duration,
-            resets_at=reset_values[0],
+            resets_at=reset_value,
         )
 
     return tuple(
         parsed[name] for name in ("five_hour", "seven_day") if name in parsed
     )
+
+
+def _usage_percentage(line: str) -> float | None:
+    matches = [pattern.fullmatch(line) for pattern in _USAGE_ROWS]
+    values = [match.group("value") for match in matches if match is not None]
+    if len(values) != 1:
+        return None
+    return float(values[0])
 
 
 def _relative_reset(line: str, observed_at: str) -> str | None:
@@ -482,6 +533,7 @@ class ClaudeUsageProvider:
         executable_resolver: ExecutableResolver = resolve_executable,
         checked_runner: CheckedRunner = run_checked,
         clock: Callable[[], datetime] | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
         command_timeout: float = _COMMAND_TIMEOUT_SECONDS,
         login_timeout: float = _LOGIN_TIMEOUT_SECONDS,
         refresh_timeout: float = _REFRESH_TIMEOUT_SECONDS,
@@ -491,6 +543,7 @@ class ClaudeUsageProvider:
         self._executable_resolver = executable_resolver
         self._checked_runner = checked_runner
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._monotonic = monotonic
         self._command_timeout = command_timeout
         self._login_timeout = login_timeout
         self._refresh_timeout = refresh_timeout
@@ -502,12 +555,16 @@ class ClaudeUsageProvider:
         *,
         cancel_event: threading.Event | None = None,
     ) -> ProviderIdentity:
+        _raise_if_login_cancelled(cancel_event)
         identity: ProviderIdentity | None = None
         failure: ProviderError | None = None
         try:
             invocation = self._prepare_invocation(account)
+            _raise_if_login_cancelled(cancel_event)
             self._read_version(invocation)
+            _raise_if_login_cancelled(cancel_event)
             report(LoginProgress("starting"))
+            _raise_if_login_cancelled(cancel_event)
             session = self._pty_factory(
                 [invocation.executable, "auth", "login"],
                 env=invocation.environment,
@@ -545,13 +602,22 @@ class ClaudeUsageProvider:
         *,
         cancel_event: threading.Event | None = None,
     ) -> UsageSnapshot:
+        deadline = self._monotonic() + self._refresh_timeout
         snapshot: UsageSnapshot | None = None
         failure: ProviderError | None = None
         try:
             invocation = self._prepare_invocation(account)
-            provider_version = self._read_version(invocation)
+            version_timeout = min(
+                self._command_timeout,
+                self._remaining(deadline),
+            )
+            provider_version = self._read_version(
+                invocation,
+                timeout=version_timeout,
+            )
+            self._remaining(deadline)
             observed_at = self._observed_at()
-            deadline = time.monotonic() + self._refresh_timeout
+            self._remaining(deadline)
             session = self._pty_factory(
                 [invocation.executable],
                 env=invocation.environment,
@@ -560,7 +626,7 @@ class ClaudeUsageProvider:
             with session:
                 output = session.read_until(
                     _input_or_reauthentication_ready,
-                    _remaining(deadline),
+                    self._remaining(deadline),
                     cancel_event,
                 )
                 if _has_reauthentication_marker(output):
@@ -568,7 +634,7 @@ class ClaudeUsageProvider:
                 session.write_line("/usage")
                 output = session.read_until(
                     _usage_or_reauthentication_ready,
-                    _remaining(deadline),
+                    self._remaining(deadline),
                     cancel_event,
                 )
                 if _has_reauthentication_marker(output):
@@ -638,12 +704,17 @@ class ClaudeUsageProvider:
         except (OSError, UnsafePrivatePath, ValueError):
             raise _unsafe_account_path_error() from None
 
-    def _read_version(self, invocation: _ClaudeInvocation) -> str:
+    def _read_version(
+        self,
+        invocation: _ClaudeInvocation,
+        *,
+        timeout: float | None = None,
+    ) -> str:
         completed = self._checked_runner(
             [invocation.executable, "--version"],
             env=invocation.environment,
             cwd=invocation.cwd,
-            timeout=self._command_timeout,
+            timeout=self._command_timeout if timeout is None else timeout,
         )
         output = completed.stdout
         if not isinstance(output, str):
@@ -732,10 +803,22 @@ class ClaudeUsageProvider:
             return ProviderError(
                 "refresh_timeout", "Claude usage refresh timed out."
             )
+        if error.code == "process_timeout" and operation == "refresh":
+            return ProviderError(
+                "refresh_timeout", "Claude usage refresh timed out."
+            )
         return ProviderError(
             "provider_unavailable",
             f"Claude {operation} is unavailable.",
         )
+
+    def _remaining(self, deadline: float) -> float:
+        remaining = deadline - self._monotonic()
+        if remaining <= 0:
+            raise ProviderError(
+                "refresh_timeout", "Claude usage refresh timed out."
+            )
+        return remaining
 
 
 def _identity_field(value: dict[str, Any], key: str) -> str | None:
@@ -759,6 +842,13 @@ def _contains_marker(output: str, markers: tuple[str, ...]) -> bool:
         return False
     normalized = output.casefold()
     return any(marker.casefold() in normalized for marker in markers)
+
+
+def _raise_if_login_cancelled(
+    cancel_event: threading.Event | None,
+) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise ProviderError("login_cancelled", "Claude login was cancelled.")
 
 
 def _login_wait_complete(output: str) -> bool:
@@ -789,10 +879,3 @@ def _usage_or_reauthentication_ready(output: str) -> bool:
     has_footer = _contains_marker(text, _USAGE_FOOTER_MARKERS)
     has_header = _contains_marker(text, _USAGE_HEADER_MARKERS)
     return has_footer and has_header and "%" in text
-
-
-def _remaining(deadline: float) -> float:
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        raise ProviderError("pty_timeout", "PTY process timed out.")
-    return remaining

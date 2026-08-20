@@ -186,6 +186,18 @@ elif mode == "descendant-stall":
 elif mode == "oversized":
     os.write(1, b"sentinel-pty-output-secret" + (b"x" * (2 * 1024 * 1024)))
     time.sleep(10)
+elif mode == "invalid-utf8-valid-screen":
+    os.write(
+        1,
+        b"Usage\r\n5-hour limit\r\n37% used\r\n"
+        b"sentinel-pty-invalid-secret\xff\r\nPress Esc to go back\r\n",
+    )
+    time.sleep(10)
+elif mode == "split-utf8":
+    os.write(1, b"\xed")
+    time.sleep(0.05)
+    os.write(1, b"\x95\x9cREADY")
+    time.sleep(10)
 elif mode == "exit":
     print("sentinel-pty-exit-secret", flush=True)
     raise SystemExit(11)
@@ -1336,6 +1348,43 @@ def test_pty_session_enforces_total_output_ceiling_without_output_leak(tmp_path)
 
     assert error.value.code == "pty_output_limit"
     assert "sentinel-pty-output-secret" not in error.value.safe_message
+    _assert_process_stopped(pid_file)
+
+
+def test_pty_session_rejects_invalid_utf8_before_semantic_predicate(tmp_path):
+    command, pid_file = _pty_command(tmp_path, "invalid-utf8-valid-screen")
+
+    with PtySession(
+        command,
+        env={"PATH": os.environ.get("PATH", "")},
+        cwd=tmp_path,
+    ) as session:
+        with pytest.raises(ProviderError) as captured:
+            session.read_until(
+                lambda value: "Press Esc to go back" in value,
+                2.0,
+            )
+
+    rendered = "".join(traceback.format_exception(captured.value))
+    assert captured.value.code == "pty_output_invalid"
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert session._output == bytearray()
+    assert "sentinel-pty-invalid-secret" not in rendered
+    _assert_process_stopped(pid_file)
+
+
+def test_pty_session_waits_for_split_valid_utf8_sequence(tmp_path):
+    command, pid_file = _pty_command(tmp_path, "split-utf8")
+
+    with PtySession(
+        command,
+        env={"PATH": os.environ.get("PATH", "")},
+        cwd=tmp_path,
+    ) as session:
+        output = session.read_until(lambda value: "한READY" in value, 2.0)
+
+    assert "한READY" in output
     _assert_process_stopped(pid_file)
 
 

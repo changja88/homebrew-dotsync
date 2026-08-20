@@ -1,6 +1,7 @@
 import json
 import subprocess
 import threading
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -19,6 +20,29 @@ from dotsync.providers.claude import (
 
 ACCOUNT_ID = "00000000-0000-4000-8000-000000000005"
 OBSERVED_AT = "2026-08-21T12:00:00Z"
+MAX_TERMINAL_BYTES = 2 * 1024 * 1024
+
+
+class DecodeGuard(bytes):
+    def __new__(cls, value, calls):
+        instance = super().__new__(cls, value)
+        instance.calls = calls
+        return instance
+
+    def decode(self, *args, **kwargs):
+        self.calls.append("decode")
+        raise AssertionError("oversized terminal bytes must not be decoded")
+
+
+class FakeMonotonic:
+    def __init__(self, value=100.0):
+        self.value = value
+
+    def __call__(self):
+        return self.value
+
+    def advance(self, seconds):
+        self.value += seconds
 
 
 class FakeCheckedRunner:
@@ -34,6 +58,7 @@ class FakeCheckedRunner:
         )
         self.calls = []
         self.failures = {}
+        self.after_call = None
 
     def __call__(self, argv, *, env, cwd, timeout):
         arguments = tuple(str(value) for value in argv[1:])
@@ -45,6 +70,8 @@ class FakeCheckedRunner:
                 "timeout": timeout,
             }
         )
+        if self.after_call is not None:
+            self.after_call(arguments)
         failure = self.failures.get(arguments)
         if failure is not None:
             raise failure
@@ -60,9 +87,12 @@ class FakeExecutableResolver:
     def __init__(self):
         self.calls = []
         self.error = None
+        self.after_call = None
 
     def __call__(self, command, *, path=None):
         self.calls.append((command, path))
+        if self.after_call is not None:
+            self.after_call()
         if self.error is not None:
             raise self.error
         return Path("/fixture/bin/claude")
@@ -167,6 +197,22 @@ def fixture_bytes(name: str) -> bytes:
     return (Path(__file__).with_name("fixtures") / name).read_bytes()
 
 
+def bytes_at_terminal_limit(unit: bytes) -> bytes:
+    fixture = fixture_bytes("claude_usage_v2_1_215.ansi")
+    filler_size = MAX_TERMINAL_BYTES - len(fixture)
+    repetitions, remainder = divmod(filler_size, len(unit))
+    return unit * repetitions + b"x" * remainder + fixture
+
+
+def assert_safe_error_drops_raw_value(error: ProviderError, raw_value) -> None:
+    rendered = "".join(traceback.format_exception(error))
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert raw_value not in error.args
+    assert all(value is not raw_value for value in vars(error).values())
+    assert "LEAK_INVALID_UTF8_MARKER" not in rendered
+
+
 def test_terminal_screen_applies_cursor_motion_and_erases_lines():
     screen = TerminalScreen(width=100, height=40)
 
@@ -195,6 +241,99 @@ def test_terminal_screen_has_bounded_memory():
         screen.feed("x" * (2 * 1024 * 1024 + 1))
 
     assert error.value.code == "terminal_output_limit"
+
+
+def test_terminal_screen_invalid_encoding_drops_buffer_bearing_exception_state():
+    raw_output = "LEAK_INVALID_UTF8_MARKER\ud800"
+    screen = TerminalScreen(width=100, height=40)
+
+    with pytest.raises(ProviderError) as captured:
+        screen.feed(raw_output)
+
+    assert captured.value.code == "terminal_output_invalid"
+    assert_safe_error_drops_raw_value(captured.value, raw_output)
+
+
+def test_parse_invalid_utf8_drops_buffer_bearing_exception_state():
+    terminal_bytes = b"LEAK_INVALID_UTF8_MARKER\xff"
+
+    with pytest.raises(ProviderError) as captured:
+        parse_claude_usage(
+            account_id=ACCOUNT_ID,
+            provider_version="2.1.215",
+            terminal_bytes=terminal_bytes,
+            observed_at=OBSERVED_AT,
+        )
+
+    assert captured.value.code == "unsupported_usage_layout"
+    assert_safe_error_drops_raw_value(captured.value, terminal_bytes)
+
+
+@pytest.mark.parametrize(
+    "unit",
+    [
+        pytest.param(b"x", id="ascii"),
+        pytest.param("한".encode("utf-8"), id="multibyte"),
+    ],
+)
+def test_parse_accepts_exact_terminal_byte_limit(unit):
+    terminal_bytes = bytes_at_terminal_limit(unit)
+    assert len(terminal_bytes) == MAX_TERMINAL_BYTES
+
+    snapshot = parse_claude_usage(
+        account_id=ACCOUNT_ID,
+        provider_version="2.1.215",
+        terminal_bytes=terminal_bytes,
+        observed_at=OBSERVED_AT,
+    )
+
+    assert snapshot.windows[0].used_percent == 37.0
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(b"x" * (MAX_TERMINAL_BYTES + 1), id="ascii"),
+        pytest.param(
+            "한".encode("utf-8") * ((MAX_TERMINAL_BYTES // 3) + 1),
+            id="multibyte",
+        ),
+    ],
+)
+def test_parse_rejects_oversized_terminal_bytes_before_decode(payload):
+    calls = []
+    guarded = DecodeGuard(payload, calls)
+    assert len(guarded) > MAX_TERMINAL_BYTES
+
+    with pytest.raises(ProviderError) as captured:
+        parse_claude_usage(
+            account_id=ACCOUNT_ID,
+            provider_version="2.1.215",
+            terminal_bytes=guarded,
+            observed_at=OBSERVED_AT,
+        )
+
+    assert captured.value.code == "unsupported_usage_layout"
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "sequence",
+    [
+        pytest.param("\x1b[1;999A", id="cursor-motion-extra-parameter"),
+        pytest.param("\x1b[3J", id="unsupported-erase-display-mode"),
+        pytest.param("\x1b[1;2;3H", id="cursor-position-extra-parameter"),
+        pytest.param("\x1b[2;1K", id="erase-line-extra-parameter"),
+        pytest.param("\x1b[31;1m", id="unsupported-sgr-shape"),
+    ],
+)
+def test_terminal_screen_rejects_unsupported_csi_parameter_shapes(sequence):
+    screen = TerminalScreen(width=100, height=40)
+
+    with pytest.raises(ProviderError) as captured:
+        screen.feed(sequence)
+
+    assert captured.value.code == "terminal_output_invalid"
 
 
 def test_parse_current_claude_usage_layout():
@@ -313,6 +452,43 @@ def test_present_but_partial_optional_window_rejects_the_layout():
     assert error.value.code == "unsupported_usage_layout"
 
 
+@pytest.mark.parametrize(
+    "usage_rows",
+    [
+        pytest.param(
+            "5-hour limit\r\n63% remaining\r\nResets in 2 hours\r\n",
+            id="remaining-not-used",
+        ),
+        pytest.param(
+            "5-hour limit\r\nSave 63% today\r\nResets in 2 hours\r\n",
+            id="unrelated-discount",
+        ),
+        pytest.param(
+            "5-hour limit\r\nPlan note\r\n63% used\r\nResets in 2 hours\r\n",
+            id="non-adjacent-usage-row",
+        ),
+        pytest.param(
+            "5-hour limit\r\nUsed: 63%\r\nResets in 2 hours\r\n",
+            id="changed-english-semantics",
+        ),
+        pytest.param(
+            "5시간 한도\r\n63% 남음\r\n2시간 후 재설정\r\n",
+            id="changed-korean-semantics",
+        ),
+    ],
+)
+def test_parser_rejects_non_usage_or_non_adjacent_percentages(usage_rows):
+    with pytest.raises(ProviderError) as captured:
+        parse_claude_usage(
+            account_id=ACCOUNT_ID,
+            provider_version="2.1.215",
+            terminal_bytes=usage_rows.encode("utf-8"),
+            observed_at=OBSERVED_AT,
+        )
+
+    assert captured.value.code == "unsupported_usage_layout"
+
+
 def test_truncated_terminal_escape_rejects_an_otherwise_valid_layout():
     terminal_bytes = fixture_bytes("claude_usage_v2_1_215.ansi") + b"\x1b["
 
@@ -385,13 +561,12 @@ def test_login_uses_official_scoped_cli_and_reads_safe_status_identity(
     assert session.terminated
 
 
-def test_login_cancellation_is_safe_and_terminates_pty(
+def test_login_cancellation_during_pty_is_safe_and_terminates_pty(
     provider, account, pty_factory
 ):
     unsafe_output = "LEAK_EMAIL_MARKER LEAK_CALLBACK_MARKER LEAK_TOKEN_MARKER"
     pty_factory.queue(ProviderError("pty_cancelled", unsafe_output))
     cancel_event = threading.Event()
-    cancel_event.set()
 
     with pytest.raises(ProviderError) as error:
         provider.login(account, lambda progress: None, cancel_event=cancel_event)
@@ -401,6 +576,62 @@ def test_login_cancellation_is_safe_and_terminates_pty(
     assert error.value.__cause__ is None
     assert error.value.__context__ is None
     assert pty_factory.instances[0].terminated
+
+
+def test_pre_cancelled_login_runs_no_resolver_version_or_pty(
+    provider, account, resolver, runner, pty_factory
+):
+    cancel_event = threading.Event()
+    cancel_event.set()
+    pty_factory.queue(ProviderError("pty_cancelled", "must-not-launch"))
+
+    with pytest.raises(ProviderError) as captured:
+        provider.login(
+            account,
+            lambda progress: None,
+            cancel_event=cancel_event,
+        )
+
+    assert captured.value.code == "login_cancelled"
+    assert resolver.calls == []
+    assert runner.calls == []
+    assert pty_factory.instances == []
+
+
+def test_login_cancelled_after_version_does_not_construct_pty(
+    provider, account, runner, pty_factory
+):
+    cancel_event = threading.Event()
+    runner.after_call = lambda arguments: cancel_event.set()
+    pty_factory.queue(ProviderError("pty_cancelled", "must-not-launch"))
+
+    with pytest.raises(ProviderError) as captured:
+        provider.login(
+            account,
+            lambda progress: None,
+            cancel_event=cancel_event,
+        )
+
+    assert captured.value.code == "login_cancelled"
+    assert [call["argv"][1:] for call in runner.calls] == [("--version",)]
+    assert pty_factory.instances == []
+
+
+def test_login_cancelled_by_start_progress_does_not_construct_pty(
+    provider, account, pty_factory
+):
+    cancel_event = threading.Event()
+    pty_factory.queue(ProviderError("pty_cancelled", "must-not-launch"))
+
+    def report(progress):
+        if progress.state == "starting":
+            cancel_event.set()
+
+    with pytest.raises(ProviderError) as captured:
+        provider.login(account, report, cancel_event=cancel_event)
+
+    assert captured.value.code == "login_cancelled"
+    assert pty_factory.instances == []
 
 
 def test_login_status_exit_one_maps_to_reauthentication(
@@ -442,6 +673,77 @@ def test_refresh_uses_official_interactive_usage_and_45_second_deadline(
     assert len(session.read_timeouts) == 2
     assert all(0 < timeout <= 45.0 for timeout in session.read_timeouts)
     assert session.terminated
+
+
+def test_refresh_version_time_is_deducted_from_both_pty_waits(
+    paths, account, runner, resolver, pty_factory
+):
+    monotonic = FakeMonotonic()
+    runner.after_call = lambda arguments: monotonic.advance(12.0)
+    pty_factory.queue(
+        "Claude Code\r\n❯",
+        fixture_bytes("claude_usage_v2_1_215.ansi").decode("utf-8"),
+    )
+    provider = ClaudeUsageProvider(
+        paths,
+        checked_runner=runner,
+        executable_resolver=resolver,
+        pty_factory=pty_factory,
+        clock=lambda: datetime(2026, 8, 21, 12, 0, tzinfo=timezone.utc),
+        monotonic=monotonic,
+    )
+
+    provider.refresh_usage(account)
+
+    assert runner.calls[0]["timeout"] == 15.0
+    assert pty_factory.instances[0].read_timeouts == [33.0, 33.0]
+
+
+def test_refresh_expired_preparation_budget_maps_timeout_before_version_or_pty(
+    paths, account, runner, resolver, pty_factory
+):
+    monotonic = FakeMonotonic()
+    resolver.after_call = lambda: monotonic.advance(46.0)
+    pty_factory.queue("must-not-launch")
+    provider = ClaudeUsageProvider(
+        paths,
+        checked_runner=runner,
+        executable_resolver=resolver,
+        pty_factory=pty_factory,
+        clock=lambda: datetime(2026, 8, 21, 12, 0, tzinfo=timezone.utc),
+        monotonic=monotonic,
+    )
+
+    with pytest.raises(ProviderError) as captured:
+        provider.refresh_usage(account)
+
+    assert captured.value.code == "refresh_timeout"
+    assert len(resolver.calls) == 1
+    assert runner.calls == []
+    assert pty_factory.instances == []
+
+
+def test_refresh_expired_version_budget_maps_timeout_without_pty(
+    paths, account, runner, resolver, pty_factory
+):
+    monotonic = FakeMonotonic()
+    runner.after_call = lambda arguments: monotonic.advance(46.0)
+    pty_factory.queue("must-not-launch")
+    provider = ClaudeUsageProvider(
+        paths,
+        checked_runner=runner,
+        executable_resolver=resolver,
+        pty_factory=pty_factory,
+        clock=lambda: datetime(2026, 8, 21, 12, 0, tzinfo=timezone.utc),
+        monotonic=monotonic,
+    )
+
+    with pytest.raises(ProviderError) as captured:
+        provider.refresh_usage(account)
+
+    assert captured.value.code == "refresh_timeout"
+    assert runner.calls[0]["timeout"] == 15.0
+    assert pty_factory.instances == []
 
 
 def test_refresh_rejects_unsupported_version_before_pty_creation(
