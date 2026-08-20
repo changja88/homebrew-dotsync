@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import asdict, dataclass
 
 from dotsync.app_paths import AppPaths
@@ -24,10 +23,14 @@ class AppStateStore:
         self._root = paths.root
 
     def load(self) -> AppState:
-        if not os.path.lexists(self._path):
+        try:
+            data = read_private_json(self._path, root=self._root)
+        except FileNotFoundError:
             return AppState()
-        data = read_private_json(self._path, root=self._root)
-        if data.get("schema_version") != 1:
+        if not isinstance(data, dict):
+            raise AppStateError("unsupported app state schema")
+        schema_version = data.get("schema_version")
+        if type(schema_version) is not int or schema_version != 1:
             raise AppStateError("unsupported app state schema")
         return AppState(sync_dir=data.get("sync_dir"))
 

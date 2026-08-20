@@ -25,6 +25,19 @@ def test_ensure_private_dir_creates_private_ancestor_chain(tmp_path):
     assert stat.S_IMODE((tmp_path / "private").stat().st_mode) == 0o700
 
 
+def test_ensure_private_dir_secures_existing_managed_ancestors(tmp_path):
+    root = tmp_path / "private"
+    existing = root / "accounts"
+    existing.mkdir(parents=True)
+    existing.chmod(0o755)
+
+    ensure_private_dir(existing / "claude" / "account", root=root)
+
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
+    assert stat.S_IMODE(existing.stat().st_mode) == 0o700
+    assert stat.S_IMODE((existing / "claude").stat().st_mode) == 0o700
+
+
 def test_ensure_private_dir_rejects_symlink_parent(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -62,6 +75,34 @@ def test_atomic_write_json_rejects_symlink_target(tmp_path):
         atomic_write_json(target, {"schema_version": 1}, root=tmp_path)
 
     assert json.loads(outside.read_text()) == {"keep": True}
+
+
+def test_atomic_write_json_keeps_mutation_in_open_parent_after_path_is_replaced(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "private"
+    outside = tmp_path / "outside"
+    moved = tmp_path / "moved-private"
+    root.mkdir()
+    outside.mkdir()
+    real_replace = os.replace
+
+    def replace_after_parent_swap(source, target, *, src_dir_fd=None, dst_dir_fd=None):
+        root.rename(moved)
+        root.symlink_to(outside, target_is_directory=True)
+        real_replace(
+            source,
+            target,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
+
+    monkeypatch.setattr(os, "replace", replace_after_parent_swap)
+
+    atomic_write_json(root / "state.json", {"schema_version": 1}, root=root)
+
+    assert not (outside / "state.json").exists()
+    assert json.loads((moved / "state.json").read_text()) == {"schema_version": 1}
 
 
 def test_read_private_json_rejects_symlink_target(tmp_path):
@@ -104,3 +145,35 @@ def test_remove_private_tree_removes_regular_tree_only_below_allowed_root(tmp_pa
 def test_remove_private_tree_requires_strict_descendant_of_allowed_root(tmp_path):
     with pytest.raises(UnsafePrivatePath, match="strict descendant"):
         remove_private_tree(tmp_path, allowed_root=tmp_path)
+
+
+def test_remove_private_tree_does_not_follow_parent_swapped_after_scan(
+    tmp_path, monkeypatch
+):
+    allowed_root = tmp_path / "accounts"
+    root = allowed_root / "account"
+    home = root / "home"
+    moved_home = root / "moved-home"
+    outside = tmp_path / "outside"
+    home.mkdir(parents=True)
+    outside.mkdir()
+    (home / "config.json").write_text('{"private": true}')
+    outside_config = outside / "config.json"
+    outside_config.write_text('{"outside": true}')
+    real_unlink = os.unlink
+    swapped = False
+
+    def unlink_after_parent_swap(path, *, dir_fd=None):
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            home.rename(moved_home)
+            home.symlink_to(outside, target_is_directory=True)
+        real_unlink(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "unlink", unlink_after_parent_swap)
+
+    with pytest.raises(OSError):
+        remove_private_tree(root, allowed_root=allowed_root)
+
+    assert json.loads(outside_config.read_text()) == {"outside": True}
