@@ -332,6 +332,22 @@ checkout. Automatic code updates then happen only through the primary
 checkout's hooks; document, paper, and image changes still require an explicit
 agent-side `/graphify --update`.
 
+Only after that project-level Graphify opt-in, preflight runs
+`graphify --version`. Versions below `0.9.14` are warned because `0.9.14` is
+the first official release with linked-worktree-safe hooks. The latest stable
+release is read from PyPI at most once every 24 hours (cached under
+`$XDG_CACHE_HOME/dotsync/graphify-version.json`, or `~/.cache/dotsync/`), and a
+newer release produces a default-No `Upgrade Graphify now?` prompt. Accepting
+runs the official `uv tool upgrade graphifyy` flow and verifies the installed
+version again before reporting success. The same consent also refreshes any
+already-installed user skill, project integration, and hooks so they stay in
+sync with the new CLI. A linked worktree refreshes only the user skill and
+prints the exact integration/hook commands to run from the primary checkout;
+the linked worktree itself remains query-only. Missing components still follow
+the existing setup prompts. An unavailable network/version probe is
+best-effort and never blocks launch; projects that decline initial Graphify
+setup do not run the local or remote version checks at all.
+
 An early preflight step checks the **Node.js runtime** — it runs *before* the
 graphify section so the graphify CLI being unavailable (which early-returns that
 section) can't skip it; node and graphify are independent concerns.

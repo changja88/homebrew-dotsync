@@ -242,7 +242,7 @@ _dotsync_agent_graphify_hooks_installed() {
   [[ -f "$pc" && -f "$pco" ]] || return 1
   grep -q "graphify-hook-start" "$pc" 2>/dev/null || return 1
   grep -q "graphify-checkout-hook-start" "$pco" 2>/dev/null || return 1
-  # Graphify 0.9.44+ deliberately skips automatic rebuilds in linked
+  # Graphify 0.9.14+ deliberately skips automatic rebuilds in linked
   # worktrees. Marker-only legacy hooks still rebuild a rogue worktree-local
   # graph, so treat them as outdated and let the launcher offer a refresh.
   _dotsync_agent_graphify_hook_worktree_safe \

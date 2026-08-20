@@ -81,6 +81,14 @@ def graphify_install_command(*, which: WhichFn = shutil.which) -> list[str] | No
     return [uv, "tool", "install", "graphifyy"]
 
 
+def graphify_upgrade_command(*, which: WhichFn = shutil.which) -> list[str] | None:
+    """`uv tool upgrade` argv for the persistent graphify installation."""
+    uv = which("uv")
+    if uv is None:
+        return None
+    return [uv, "tool", "upgrade", "graphifyy"]
+
+
 def homebrew_node_command(*, brew_node: Path | None = None) -> list[str] | None:
     """Resolve node at the homebrew path the claude-hud statusLine hardcodes.
 

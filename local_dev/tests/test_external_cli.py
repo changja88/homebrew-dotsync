@@ -98,9 +98,17 @@ def test_graphify_install_command_uses_uv_tool():
     assert cmd == ["/opt/homebrew/bin/uv", "tool", "install", "graphifyy"]
 
 
+def test_graphify_upgrade_command_uses_uv_tool_upgrade():
+    cmd = external_cli.graphify_upgrade_command(
+        which=_which_map({"uv": "/opt/homebrew/bin/uv"})
+    )
+    assert cmd == ["/opt/homebrew/bin/uv", "tool", "upgrade", "graphifyy"]
+
+
 def test_install_commands_require_uv():
     assert external_cli.serena_install_command(which=_which_map({})) is None
     assert external_cli.graphify_install_command(which=_which_map({})) is None
+    assert external_cli.graphify_upgrade_command(which=_which_map({})) is None
 
 
 def test_node_command_prefers_path_hit():

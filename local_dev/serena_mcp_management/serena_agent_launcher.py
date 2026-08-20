@@ -23,6 +23,7 @@ if str(_REPO_ROOT) not in sys.path:
 from local_dev.serena_mcp_management.external_cli import (
     graphify_command,
     graphify_install_command,
+    graphify_upgrade_command,
     homebrew_node_command,
     node_command,
     node_install_command,
@@ -42,6 +43,12 @@ from local_dev.serena_mcp_management.claude_reset import (
 from local_dev.serena_mcp_management.memory_management import (
     MemoryInventory,
     scan_memory_inventory,
+)
+from local_dev.serena_mcp_management.graphify_version import (
+    MINIMUM_VERSION as GRAPHIFY_MINIMUM_VERSION,
+    installed_version as inspect_graphify_version,
+    latest_version as latest_graphify_version,
+    version_key as graphify_version_key,
 )
 from local_dev.serena_mcp_management.node_preflight import (
     HOMEBREW_NODE_PATH,
@@ -1025,14 +1032,21 @@ def _run_tool_install_streaming(
     """
     out = stream if stream is not None else sys.stdout
     launch = popen_fn if popen_fn is not None else subprocess.Popen
-    proc = launch(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    try:
+        proc = launch(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError as exc:
+        out.write(render_inline_row(
+            label, f"could not start: {exc}", status="warn"
+        ))
+        out.flush()
+        return 127
     captured: list[str] = []
     state = {"frame": 0, "value": "installing…"}
     write_lock = threading.Lock()
@@ -1184,6 +1198,116 @@ def _run_graphify_cli_install_v2(
     out.write(render_inline_row("graphify cli", message, status="warn"))
     out.flush()
     return "failed"
+
+
+def _run_graphify_version_check_v2(
+    *,
+    stream: TextIO | None = None,
+    input_fn: Callable[[], str] | None = None,
+) -> str:
+    """Check the installed Graphify version for an opted-in project."""
+    installed = _graphify_installed_version()
+    installed_key = graphify_version_key(installed)
+    if installed is None or installed_key is None:
+        return "unknown"
+    out = stream if stream is not None else sys.stdout
+    minimum_key = graphify_version_key(GRAPHIFY_MINIMUM_VERSION)
+    assert minimum_key is not None
+    below_minimum = installed_key < minimum_key
+    if below_minimum:
+        out.write(render_inline_row(
+            "graphify version",
+            f"{installed} is below minimum {GRAPHIFY_MINIMUM_VERSION} for "
+            "linked-worktree-safe hooks",
+            status="warn",
+        ))
+        out.flush()
+
+    latest = _graphify_latest_version()
+    latest_key = graphify_version_key(latest)
+    if latest is None or latest_key is None:
+        return "unsupported" if below_minimum else "unknown"
+    if latest_key <= installed_key:
+        return "unsupported" if below_minimum else "current"
+
+    if graphify_upgrade_command() is None:
+        out.write(render_inline_row(
+            "graphify version",
+            f"update available: {installed} → {latest} . uv not found; "
+            "upgrade graphifyy manually",
+            status="warn",
+        ))
+        out.flush()
+        return "unavailable"
+
+    if not confirm(
+        f"Graphify update available: {installed} → {latest}. "
+        "Upgrade Graphify now? Existing installed Graphify components "
+        "will also be refreshed.",
+        default=False,
+        stream=out,
+        input_fn=input_fn,
+    ):
+        return "declined"
+    rc = _graphify_cli_upgrade(stream=out)
+    if rc != 0:
+        out.write(render_inline_row(
+            "graphify version", f"upgrade failed (exit {rc})", status="warn"
+        ))
+        out.flush()
+        return "failed"
+    upgraded = _graphify_installed_version()
+    if upgraded is None:
+        out.write(render_inline_row(
+            "graphify version",
+            "upgrade finished but the installed version is unavailable",
+            status="warn",
+        ))
+        out.flush()
+        return "failed"
+    upgraded_key = graphify_version_key(upgraded)
+    if upgraded_key is None:
+        return "failed"
+    if upgraded_key <= installed_key:
+        out.write(render_inline_row(
+            "graphify version",
+            f"upgrade finished but version is still {upgraded}",
+            status="warn",
+        ))
+        out.flush()
+        return "failed"
+    out.write(render_inline_row(
+        "graphify version", f"updated to {upgraded}", status="done"
+    ))
+    out.flush()
+    return "upgraded"
+
+
+def _graphify_installed_version() -> str | None:
+    """Return the installed Graphify version when it can be inspected."""
+    return inspect_graphify_version(graphify_command())
+
+
+def _graphify_latest_version(
+    *,
+    cache_path: Path | None = None,
+    now: float | None = None,
+    fetch_version: Callable[[], str | None] | None = None,
+) -> str | None:
+    """Return the latest Graphify version with a 24-hour user cache."""
+    return latest_graphify_version(
+        cache_path=cache_path,
+        now=now,
+        fetch_version=fetch_version,
+    )
+
+
+def _graphify_cli_upgrade(*, stream: TextIO | None = None) -> int:
+    """Upgrade the persistent Graphify tool installation."""
+    cmd = graphify_upgrade_command()
+    if cmd is None:
+        return 2
+    return _run_tool_install_streaming(cmd, label="graphify cli", stream=stream)
 
 
 def _is_git_repo(project_root: Path) -> bool:
@@ -1444,6 +1568,74 @@ def _run_node_runtime_check_v2(
     out.flush()
 
 
+def _refresh_graphify_after_upgrade_v2(
+    *,
+    client: str,
+    project_root: Path,
+    linked_worktree: bool,
+    global_status: str,
+    integration_status: str,
+    hook_status: str,
+    install_global: Callable[[str], int],
+    install_integration: Callable[[Path, str], int],
+    install_hooks: Callable[[Path], int],
+    stream: TextIO,
+) -> None:
+    """Refresh existing Graphify components covered by upgrade consent."""
+    def refresh(label: str, detail: str, action: Callable[[], int]) -> None:
+        try:
+            rc = action()
+        except OSError as exc:
+            stream.write(render_inline_row(
+                label, f"refresh failed: {exc}", status="warn"
+            ))
+            stream.flush()
+            return
+        if rc == 0:
+            stream.write(render_inline_row(label, detail, status="done"))
+        else:
+            stream.write(render_inline_row(
+                label, f"refresh failed (exit {rc})", status="warn"
+            ))
+        stream.flush()
+
+    if global_status == "installed":
+        refresh(
+            "graphify global",
+            "user skill refreshed",
+            lambda: install_global(client),
+        )
+
+    if linked_worktree:
+        if integration_status == "installed" or hook_status == "installed":
+            integration_cmd = (
+                "graphify claude install"
+                if client == "claude"
+                else "graphify codex install"
+            )
+            stream.write(render_inline_row(
+                "graphify",
+                "linked worktree remains query-only . refresh from primary: "
+                f"{integration_cmd}; graphify hook install",
+                status="info",
+            ))
+            stream.flush()
+        return
+
+    if integration_status == "installed":
+        refresh(
+            "graphify integration",
+            "project integration refreshed",
+            lambda: install_integration(project_root, client),
+        )
+    if hook_status == "installed":
+        refresh(
+            "graphify hook",
+            "hooks refreshed",
+            lambda: install_hooks(project_root),
+        )
+
+
 def _run_preflight_v2(
     *,
     stream: TextIO | None = None,
@@ -1551,6 +1743,29 @@ def _run_preflight_v2(
             ))
             out.flush()
             return 0
+
+    version_state = _run_graphify_version_check_v2(
+        stream=out, input_fn=input_fn
+    )
+    if version_state == "upgraded":
+        _refresh_graphify_after_upgrade_v2(
+            client=client,
+            project_root=project_root,
+            linked_worktree=linked_worktree,
+            global_status=os.environ.get(
+                "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS", "unknown"
+            ),
+            integration_status=os.environ.get(
+                "SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS", "unknown"
+            ),
+            hook_status=os.environ.get(
+                "SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS", "unknown"
+            ),
+            install_global=install_global_fn,
+            install_integration=install_integration_fn,
+            install_hooks=install_hook_fn,
+            stream=out,
+        )
 
     if initialize_graph:
         graph_path = project_root / "graphify-out" / "graph.json"

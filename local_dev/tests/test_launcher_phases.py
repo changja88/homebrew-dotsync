@@ -45,6 +45,18 @@ def stub_external_cli_resolution(monkeypatch):
         launcher, "graphify_install_command",
         lambda: ["/stub/uv", "tool", "install", "graphifyy"],
         raising=False)
+    monkeypatch.setattr(
+        launcher,
+        "graphify_upgrade_command",
+        lambda: ["/stub/uv", "tool", "upgrade", "graphifyy"],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        launcher, "_graphify_installed_version", lambda: "0.9.47", raising=False
+    )
+    monkeypatch.setattr(
+        launcher, "_graphify_latest_version", lambda: "0.9.47", raising=False
+    )
     # Default to a machine that needs no node runtime, so the node-runtime
     # preflight step is inert unless a test opts in. (Without this, the check
     # would read the real ~/.claude / ~/.codex and fire on machines lacking
@@ -1683,6 +1695,23 @@ def test_tool_install_streaming_dumps_output_on_failure():
     assert "    Resolved 2 packages in 1.00s" in text
 
 
+def test_tool_install_streaming_handles_process_start_failure():
+    def missing_executable(*args, **kwargs):
+        raise FileNotFoundError("uv disappeared")
+
+    out = io.StringIO()
+
+    rc = launcher._run_tool_install_streaming(
+        ["/gone/uv", "tool", "upgrade", "graphifyy"],
+        label="graphify cli",
+        stream=out,
+        popen_fn=missing_executable,
+    )
+
+    assert rc == 127
+    assert "uv disappeared" in _strip_ansi(out.getvalue())
+
+
 # --- install prompt wording -----------------------------------------------------
 #
 # 설치 제안 프롬프트는 "상태(없음) → 질문 → (명령어)" 순서로 읽힌다.
@@ -1766,6 +1795,12 @@ def test_v2_preflight_graphify_opt_out_runs_no_graphify_actions(
         integration="missing",
         hook="missing",
     )
+    monkeypatch.setattr(
+        launcher,
+        "_run_graphify_version_check_v2",
+        lambda **kwargs: pytest.fail("must not check version without opt-in"),
+        raising=False,
+    )
 
     out = io.StringIO()
     rc = launcher._run_preflight_v2(
@@ -1785,6 +1820,208 @@ def test_v2_preflight_graphify_opt_out_runs_no_graphify_actions(
     assert "[y/N]" in text
     assert "Graphify disabled for this project" in text
     assert not (tmp_path / "graphify-out").exists()
+
+
+def test_v2_preflight_checks_graphify_version_for_opted_in_project(
+    monkeypatch, tmp_path,
+):
+    """기존 graph.json opt-in 프로젝트만 최신 버전 확인을 실행한다."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    _set_graphify_env(monkeypatch)
+
+    calls = []
+    monkeypatch.setattr(
+        launcher,
+        "_run_graphify_version_check_v2",
+        lambda **kwargs: calls.append(kwargs),
+        raising=False,
+    )
+    out = io.StringIO()
+
+    rc = launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: pytest.fail("current version must not prompt"),
+    )
+
+    assert rc == 0
+    assert len(calls) == 1
+    assert calls[0]["stream"] is out
+
+
+def test_v2_preflight_offers_refresh_after_graphify_cli_upgrade(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    _set_graphify_env(monkeypatch)
+    monkeypatch.setattr(
+        launcher,
+        "_run_graphify_version_check_v2",
+        lambda **kwargs: "upgraded",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        launcher, "_is_linked_worktree", lambda root: False, raising=False
+    )
+    refreshed = []
+    out = io.StringIO()
+
+    rc = launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: pytest.fail("upgrade consent already covers refresh"),
+        install_graphify_global=lambda client: refreshed.append("user skill") or 0,
+        install_graphify_integration=lambda root, client:
+            refreshed.append("project integration") or 0,
+        install_graphify_hooks=lambda root: refreshed.append("hooks") or 0,
+    )
+
+    assert rc == 0
+    assert refreshed == ["user skill", "project integration", "hooks"]
+    text = _strip_ansi(out.getvalue())
+    assert "user skill refreshed" in text
+    assert "project integration refreshed" in text
+    assert "hooks refreshed" in text
+
+
+def test_v2_preflight_upgrade_keeps_linked_worktree_query_only(
+    monkeypatch, tmp_path,
+):
+    """CLI 업그레이드 후에도 linked checkout의 프로젝트 파일은 갱신하지 않는다."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    _set_graphify_env(monkeypatch)
+    monkeypatch.setattr(
+        launcher,
+        "_run_graphify_version_check_v2",
+        lambda **kwargs: "upgraded",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        launcher, "_is_linked_worktree", lambda root: True, raising=False
+    )
+    refreshed = []
+    out = io.StringIO()
+
+    rc = launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: pytest.fail("upgrade consent already covers refresh"),
+        install_graphify_global=lambda client: refreshed.append("user skill") or 0,
+        install_graphify_integration=lambda root, client: pytest.fail(
+            "linked worktree integration must remain query-only"
+        ),
+        install_graphify_hooks=lambda root: pytest.fail(
+            "linked worktree hooks must remain query-only"
+        ),
+    )
+
+    assert rc == 0
+    assert refreshed == ["user skill"]
+    text = _strip_ansi(out.getvalue())
+    assert "linked worktree remains query-only" in text
+    assert "graphify codex install; graphify hook install" in text
+
+
+def test_graphify_version_check_offers_newer_release_with_default_no(monkeypatch):
+    """새 버전은 현재/최신 버전을 보여주되 Enter만으로 설치하지 않는다."""
+    monkeypatch.setattr(
+        launcher, "_graphify_installed_version", lambda: "0.9.44", raising=False
+    )
+    monkeypatch.setattr(
+        launcher, "_graphify_latest_version", lambda: "0.9.47", raising=False
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_graphify_cli_upgrade",
+        lambda **kwargs: pytest.fail("default No must not upgrade"),
+        raising=False,
+    )
+    out = io.StringIO()
+
+    result = launcher._run_graphify_version_check_v2(
+        stream=out,
+        input_fn=lambda: "",
+    )
+
+    text = _strip_ansi(out.getvalue())
+    assert result == "declined"
+    assert "Graphify update available: 0.9.44 → 0.9.47" in text
+    assert "Upgrade Graphify now?" in text
+    assert "installed Graphify components will also be refreshed" in text
+    assert "[y/N]" in text
+
+
+def test_graphify_version_check_reprobes_after_upgrade(monkeypatch):
+    """업그레이드 성공은 CLI를 다시 읽어 새 버전이 확인되어야 한다."""
+    installed_versions = iter(["0.9.44", "0.9.47"])
+    monkeypatch.setattr(
+        launcher,
+        "_graphify_installed_version",
+        lambda: next(installed_versions),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        launcher, "_graphify_latest_version", lambda: "0.9.47", raising=False
+    )
+    monkeypatch.setattr(
+        launcher, "_graphify_cli_upgrade", lambda **kwargs: 0, raising=False
+    )
+    out = io.StringIO()
+
+    result = launcher._run_graphify_version_check_v2(
+        stream=out,
+        input_fn=lambda: "y",
+    )
+
+    assert result == "upgraded"
+    assert "updated to 0.9.47" in _strip_ansi(out.getvalue())
+
+
+def test_graphify_version_check_warns_below_worktree_safe_minimum(monkeypatch):
+    """0.9.14 미만은 최신 조회가 실패해도 worktree 안전성 경고를 남긴다."""
+    monkeypatch.setattr(
+        launcher, "_graphify_installed_version", lambda: "0.9.13", raising=False
+    )
+    monkeypatch.setattr(
+        launcher, "_graphify_latest_version", lambda: None, raising=False
+    )
+    out = io.StringIO()
+
+    launcher._run_graphify_version_check_v2(
+        stream=out,
+        input_fn=lambda: pytest.fail("offline latest lookup must not prompt"),
+    )
+
+    text = _strip_ansi(out.getvalue())
+    assert "0.9.13" in text
+    assert "minimum 0.9.14" in text
+    assert "linked-worktree-safe hooks" in text
+
+
+def test_graphify_version_check_does_not_prompt_without_uv(monkeypatch):
+    monkeypatch.setattr(
+        launcher, "_graphify_installed_version", lambda: "0.9.44", raising=False
+    )
+    monkeypatch.setattr(
+        launcher, "_graphify_latest_version", lambda: "0.9.47", raising=False
+    )
+    monkeypatch.setattr(
+        launcher, "graphify_upgrade_command", lambda: None, raising=False
+    )
+    out = io.StringIO()
+
+    result = launcher._run_graphify_version_check_v2(
+        stream=out,
+        input_fn=lambda: pytest.fail("unavailable uv must not prompt"),
+    )
+
+    assert result == "unavailable"
+    text = _strip_ansi(out.getvalue())
+    assert "0.9.44 → 0.9.47" in text
+    assert "uv not found" in text
 
 
 def test_v2_preflight_graphify_opt_in_builds_before_project_setup(
@@ -1818,6 +2055,12 @@ def test_v2_preflight_graphify_opt_in_builds_before_project_setup(
     monkeypatch.setattr(
         launcher, "_is_linked_worktree", lambda root: False, raising=False
     )
+    monkeypatch.setattr(
+        launcher,
+        "_run_graphify_version_check_v2",
+        lambda **kwargs: order.append("version") or "current",
+        raising=False,
+    )
     answers = iter(["y", "", "", ""])
     out = io.StringIO()
     rc = launcher._run_preflight_v2(
@@ -1831,7 +2074,7 @@ def test_v2_preflight_graphify_opt_in_builds_before_project_setup(
     )
 
     assert rc == 0
-    assert order == ["build", "global", "integration", "hook"]
+    assert order == ["version", "build", "global", "integration", "hook"]
     assert "graphify-out/graph.json created" in _strip_ansi(out.getvalue())
 
 
@@ -1914,6 +2157,12 @@ def test_v2_preflight_graphify_does_not_initialize_in_linked_worktree(
         launcher,
         "_graphify_graph_create",
         lambda root: pytest.fail("must not build in linked worktree"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_run_graphify_version_check_v2",
+        lambda **kwargs: pytest.fail("must not check version before primary opt-in"),
         raising=False,
     )
 
