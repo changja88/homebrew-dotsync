@@ -724,6 +724,74 @@ def test_json_rpc_send_selector_failure_is_safe_and_closes_selector(
     assert failing_selector.closed
 
 
+def test_json_rpc_setup_base_exception_closes_selector_once_and_cleans_state(
+    monkeypatch, tmp_path
+):
+    command, pid_file = _rpc_command(tmp_path, "post-send-failure-response")
+    default_selector = process_module.selectors.DefaultSelector
+
+    class SetupInterrupt(BaseException):
+        pass
+
+    class SelectorCloseInterrupt(BaseException):
+        pass
+
+    setup_interrupt = SetupInterrupt("fixture setup interruption")
+    close_interrupt = SelectorCloseInterrupt("fixture close interruption")
+
+    class SetupInterruptingSelector:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def register(self, *args, **kwargs) -> None:
+            raise setup_interrupt
+
+        def close(self) -> None:
+            self.close_calls += 1
+            raise close_interrupt
+
+    interrupting_selector = SetupInterruptingSelector()
+    secret = "sentinel-setup-exception-params"
+
+    with JsonRpcProcess(
+        command,
+        env={"PATH": os.environ.get("PATH", "")},
+        cwd=tmp_path,
+        timeout=0.3,
+    ) as rpc:
+        monkeypatch.setattr(
+            process_module.selectors,
+            "DefaultSelector",
+            lambda: interrupting_selector,
+        )
+        with pytest.raises(SetupInterrupt) as interrupted:
+            rpc.request("first/read", {"value": secret})
+
+        monkeypatch.setattr(
+            process_module.selectors,
+            "DefaultSelector",
+            default_selector,
+        )
+        _release_fifo_fixture(pid_file)
+        with rpc._condition:
+            assert rpc._condition.wait_for(
+                lambda: rpc._failure is not None,
+                timeout=1.0,
+            )
+        with pytest.raises(ProviderError) as protocol_error:
+            rpc.request("second/read", {})
+
+    protocol_rendered = "".join(
+        traceback.format_exception(protocol_error.value)
+    )
+    assert interrupted.value is setup_interrupt
+    assert interrupting_selector.close_calls == 1
+    assert protocol_error.value.code == "rpc_protocol_error"
+    assert secret not in protocol_rendered
+    assert "sentinel-post-send-failure-response" not in protocol_rendered
+    _assert_process_stopped(pid_file)
+
+
 def test_json_rpc_active_send_failure_is_safe_and_cleans_request_state(
     monkeypatch, tmp_path
 ):

@@ -453,21 +453,10 @@ class JsonRpcProcess:
             if process.stdin is None or process.poll() is not None:
                 raise self._request_error("rpc_exited", method, "failed")
             selector: selectors.BaseSelector | None = None
-            selector_setup_failed = False
             try:
                 selector = selectors.DefaultSelector()
-                selector.register(process.stdin.fileno(), selectors.EVENT_WRITE)
             except Exception:
-                selector_setup_failed = True
-            if selector_setup_failed:
-                if selector is not None:
-                    try:
-                        selector.close()
-                    except Exception:
-                        pass
-                raise self._request_error(
-                    "rpc_send_failed", method, "could not be sent"
-                )
+                pass
             if selector is None:
                 raise self._request_error(
                     "rpc_send_failed", method, "could not be sent"
@@ -477,6 +466,9 @@ class JsonRpcProcess:
             active_exception: BaseException | None = None
             try:
                 try:
+                    selector.register(
+                        process.stdin.fileno(), selectors.EVENT_WRITE
+                    )
                     offset = 0
                     while offset < len(encoded):
                         failure = self._send_failure(deadline, cancel_event)
@@ -516,6 +508,9 @@ class JsonRpcProcess:
             finally:
                 try:
                     selector.close()
+                except Exception:
+                    if active_exception is None and send_failure is None:
+                        send_failure = "rpc_send_failed"
                 except BaseException as error:
                     if active_exception is None and send_failure is None:
                         active_exception = error
