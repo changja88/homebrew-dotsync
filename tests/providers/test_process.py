@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 import pty
@@ -170,6 +171,11 @@ elif mode == "argument":
     print("INPUT=" + input(), flush=True)
 elif mode == "stall":
     print("sentinel-pty-timeout-secret", flush=True)
+    time.sleep(10)
+elif mode == "read-failure":
+    os.write(1, b"sentinel-pty-read-failure-secret\r\n")
+    time.sleep(0.05)
+    os.write(1, b"read-failure-trigger\r\n")
     time.sleep(10)
 elif mode == "descendant-stall":
     import subprocess
@@ -1304,6 +1310,12 @@ def test_pty_session_timeout_terminates_and_reaps_child_without_output_leak(
             session.read_until(lambda value: "never" in value, 0.1)
 
     assert error.value.code == "pty_timeout"
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    assert session._output == bytearray()
+    _assert_traceback_has_no_terminal_sentinel(
+        error.value, b"sentinel-pty-timeout-secret"
+    )
     assert "sentinel-pty-timeout-secret" not in error.value.safe_message
     _assert_process_stopped(pid_file)
 
@@ -1311,26 +1323,67 @@ def test_pty_session_timeout_terminates_and_reaps_child_without_output_leak(
 def test_pty_session_wait_observes_cancellation(tmp_path):
     command, pid_file = _pty_command(tmp_path, "stall")
     cancel_event = threading.Event()
-    timer = threading.Timer(0.1, cancel_event.set)
     started = time.monotonic()
-    timer.start()
-    try:
-        with PtySession(
-            command,
-            env={"PATH": os.environ.get("PATH", "")},
-            cwd=tmp_path,
-        ) as session:
-            with pytest.raises(ProviderError) as error:
-                session.read_until(
-                    lambda value: "never" in value,
-                    5.0,
-                    cancel_event=cancel_event,
-                )
-    finally:
-        timer.cancel()
+
+    def cancel_after_output(value):
+        if "sentinel-pty-timeout-secret" in value:
+            cancel_event.set()
+        return False
+
+    with PtySession(
+        command,
+        env={"PATH": os.environ.get("PATH", "")},
+        cwd=tmp_path,
+    ) as session:
+        with pytest.raises(ProviderError) as error:
+            session.read_until(
+                cancel_after_output,
+                5.0,
+                cancel_event=cancel_event,
+            )
 
     assert time.monotonic() - started < 2.0
     assert error.value.code == "pty_cancelled"
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    assert session._output == bytearray()
+    _assert_traceback_has_no_terminal_sentinel(
+        error.value, b"sentinel-pty-timeout-secret"
+    )
+    _assert_process_stopped(pid_file)
+
+
+def test_pty_session_non_eio_read_failure_scrubs_accumulated_output(
+    monkeypatch, tmp_path
+):
+    command, pid_file = _pty_command(tmp_path, "read-failure")
+    original_read = process_module.os.read
+    read_calls = 0
+
+    def fail_second_read(file_descriptor, size):
+        nonlocal read_calls
+        read_calls += 1
+        if read_calls == 1:
+            return original_read(file_descriptor, size)
+        raise OSError(errno.EBADF, "injected read failure")
+
+    monkeypatch.setattr(process_module.os, "read", fail_second_read)
+    with PtySession(
+        command,
+        env={"PATH": os.environ.get("PATH", "")},
+        cwd=tmp_path,
+    ) as session:
+        with pytest.raises(ProviderError) as captured:
+            session.read_until(lambda value: False, 2.0)
+
+    assert read_calls == 2
+    assert captured.value.code == "pty_read_failed"
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert session._output == bytearray()
+    _assert_traceback_has_no_terminal_sentinel(
+        captured.value, b"sentinel-pty-read-failure-secret"
+    )
     _assert_process_stopped(pid_file)
 
 
@@ -1450,7 +1503,9 @@ def test_pty_session_preserves_normal_exit_for_complete_utf8_output(tmp_path):
             session.read_until(lambda value: False, 2.0)
 
     assert captured.value.code == "pty_exited"
-    assert bytes(session._output).decode("utf-8") == "COMPLETE-한"
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert session._output == bytearray()
     _assert_process_stopped(pid_file)
 
 
@@ -1468,6 +1523,7 @@ def test_pty_session_reports_exit_status_without_output_leak(tmp_path):
     assert error.value.code == "pty_exited"
     assert error.value.__cause__ is None
     assert error.value.__context__ is None
+    assert session._output == bytearray()
     _assert_traceback_has_no_terminal_sentinel(
         error.value, b"sentinel-pty-exit-secret"
     )

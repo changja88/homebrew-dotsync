@@ -784,23 +784,22 @@ class PtySession:
         cancel_event: threading.Event | None = None,
     ) -> str:
         selector = self._require_selector()
+        failure: tuple[str, str] | None = None
+        chunk = b""
         current, invalid_output = self._decoded_output()
         if invalid_output:
-            self.terminate()
-            raise self._pty_error(
-                "pty_output_invalid", "produced invalid output"
-            )
-        if current is not None and predicate(current):
+            failure = ("pty_output_invalid", "produced invalid output")
+        elif current is not None and predicate(current):
             return current
         deadline = time.monotonic() + timeout
-        while True:
+        while failure is None:
             if cancel_event is not None and cancel_event.is_set():
-                self.terminate()
-                raise self._pty_error("pty_cancelled", "was cancelled")
+                failure = ("pty_cancelled", "was cancelled")
+                break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                self.terminate()
-                raise self._pty_error("pty_timeout", "timed out")
+                failure = ("pty_timeout", "timed out")
+                break
             interval = (
                 min(remaining, 0.05)
                 if cancel_event is not None
@@ -811,7 +810,7 @@ class PtySession:
                 process = self._require_process()
                 if process.poll() is not None:
                     current = None
-                    self._raise_for_exit()
+                    failure = self._exit_failure()
                 continue
             reached_eof = False
             chunk = b""
@@ -821,33 +820,42 @@ class PtySession:
                 continue
             except OSError as error:
                 if error.errno != errno.EIO:
-                    raise self._pty_error(
-                        "pty_read_failed", "could not be read"
-                    ) from error
-                reached_eof = True
+                    failure = ("pty_read_failed", "could not be read")
+                else:
+                    reached_eof = True
+            if failure is not None:
+                break
             if reached_eof or not chunk:
                 chunk = b""
                 current = None
                 self._wait_for_exit()
-                self._raise_for_exit()
+                failure = self._exit_failure()
+                break
             if len(self._output) + len(chunk) > _MAX_PTY_OUTPUT_BYTES:
-                chunk = b""
-                current = None
-                self._output.clear()
-                self.terminate()
-                raise self._pty_error(
-                    "pty_output_limit", "exceeded its output limit"
+                failure = (
+                    "pty_output_limit",
+                    "exceeded its output limit",
                 )
+                break
             self._output.extend(chunk)
             chunk = b""
             current, invalid_output = self._decoded_output()
             if invalid_output:
-                self.terminate()
-                raise self._pty_error(
-                    "pty_output_invalid", "produced invalid output"
+                failure = (
+                    "pty_output_invalid",
+                    "produced invalid output",
                 )
+                break
             if current is not None and predicate(current):
                 return current
+
+        failure_code, failure_summary = failure
+        failure = None
+        chunk = b""
+        current = None
+        self._output.clear()
+        self.terminate()
+        raise self._pty_error(failure_code, failure_summary)
 
     def terminate(self) -> None:
         if self._terminated:
@@ -888,18 +896,11 @@ class PtySession:
             return None, False
         return decoded, False
 
-    def _raise_for_exit(self) -> None:
-        invalid_output = self._final_output_is_invalid()
-        if invalid_output:
-            self.terminate()
-            raise self._pty_error(
-                "pty_output_invalid", "produced invalid output"
-            )
-        raise self._pty_error("pty_exited", "exited")
-
-    def _final_output_is_invalid(self) -> bool:
+    def _exit_failure(self) -> tuple[str, str]:
         result = self._decoded_output(final=True)
-        return result[1]
+        if result[1]:
+            return "pty_output_invalid", "produced invalid output"
+        return "pty_exited", "exited"
 
     def _wait_for_exit(self) -> None:
         process = self._require_process()
