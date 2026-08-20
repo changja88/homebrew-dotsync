@@ -237,6 +237,69 @@ def test_exception_with_sentinel_stores_only_generic_error_code():
         registry.shutdown()
 
 
+def test_point_of_no_return_preserves_success_after_late_cancellation():
+    from dotsync.jobs import JobRegistry
+
+    def committed_operation(context):
+        context.mark_point_of_no_return()
+        context.cancel_event.set()
+        return {"status": "deleted"}
+
+    registry = JobRegistry({"delete": committed_operation})
+    try:
+        job = registry.submit("delete", account_id="account-1")
+        view = registry.wait(job.id, timeout=2)
+
+        assert view.state == "succeeded"
+        assert view.result == {"status": "deleted"}
+        assert view.error_code is None
+    finally:
+        registry.shutdown()
+
+
+def test_preexisting_point_of_no_return_finishes_recovery_despite_cancellation():
+    from dotsync.jobs import JobRegistry
+
+    def recover_committed_deletion(context):
+        context.cancel_event.set()
+        context.mark_point_of_no_return()
+        return {"status": "deleted"}
+
+    registry = JobRegistry({"delete": recover_committed_deletion})
+    try:
+        job = registry.submit("delete", account_id="account-1")
+        view = registry.wait(job.id, timeout=2)
+
+        assert view.state == "succeeded"
+        assert view.result == {"status": "deleted"}
+        assert view.error_code is None
+    finally:
+        registry.shutdown()
+
+
+def test_point_of_no_return_preserves_real_failure_after_late_cancellation():
+    from dotsync.jobs import JobRegistry
+
+    sentinel = "SENTINEL_RECOVERY_FAILURE"
+
+    def interrupted_committed_operation(context):
+        context.mark_point_of_no_return()
+        context.cancel_event.set()
+        raise RuntimeError(sentinel)
+
+    registry = JobRegistry({"delete": interrupted_committed_operation})
+    try:
+        job = registry.submit("delete", account_id="account-1")
+        view = registry.wait(job.id, timeout=2)
+
+        assert view.state == "failed"
+        assert view.error_code == "job_failed"
+        assert view.result is None
+        assert sentinel not in str(view)
+    finally:
+        registry.shutdown()
+
+
 @pytest.mark.parametrize(
     "normalized_code",
     ["provider_unavailable", "unsupported_usage_layout"],
@@ -432,6 +495,37 @@ def test_shutdown_is_bounded_when_callable_ignores_cancellation(monkeypatch):
         assert view.error_code == "cancelled"
     finally:
         release_noncooperative_job.set()
+        shutdown.join(timeout=2)
+
+
+def test_forced_shutdown_does_not_report_committed_job_as_cancelled(monkeypatch):
+    import dotsync.jobs as jobs_module
+    from dotsync.jobs import JobRegistry
+
+    monkeypatch.setattr(jobs_module, "_SHUTDOWN_GRACE_SECONDS", 0.0)
+    entered = threading.Event()
+    release_committed_job = threading.Event()
+
+    def committed_noncooperative(context):
+        context.mark_point_of_no_return()
+        entered.set()
+        release_committed_job.wait()
+        return {"status": "deleted"}
+
+    registry = JobRegistry({"delete": committed_noncooperative}, max_workers=1)
+    job = registry.submit("delete", account_id="account-1")
+    assert entered.wait(timeout=2)
+
+    shutdown = threading.Thread(target=registry.shutdown)
+    shutdown.start()
+    shutdown.join(timeout=1)
+    try:
+        assert not shutdown.is_alive()
+        view = registry.get(job.id)
+        assert view.state == "failed"
+        assert view.error_code == "job_failed"
+    finally:
+        release_committed_job.set()
         shutdown.join(timeout=2)
 
 

@@ -794,18 +794,174 @@ def test_force_local_delete_signaled_cancellation_after_logout_preserves_local_s
     profile.write_bytes(b"secret-profile")
     cancel_event = threading.Event()
     provider.on_logout = lambda current: cancel_event.set()
+    point_of_no_return_calls = []
 
     with pytest.raises(ProviderError) as captured:
         service.delete_account(
             account.id,
             force_local=True,
             cancel_event=cancel_event,
+            mark_point_of_no_return=lambda: point_of_no_return_calls.append(True),
         )
 
     assert captured.value.code == "logout_cancelled"
     assert accounts.get(account.id) == ready
     assert profile.read_bytes() == b"secret-profile"
     assert cache.load(account.id) == cached
+    assert point_of_no_return_calls == []
+
+
+def test_delete_cancellation_after_first_staged_tree_finishes_deletion(
+    service, provider, accounts, cache, account, paths, monkeypatch
+):
+    import dotsync.usage.deletion as deletion_module
+
+    accounts.set_state(account.id, "ready")
+    cache.save(_snapshot(account.id))
+    profile = paths.account_home(account.provider, account.id) / "auth.json"
+    profile.write_bytes(b"profile-secret-bytes")
+    cancel_event = threading.Event()
+    real_move = deletion_module.move_private_tree
+
+    def cancel_after_profile_stage(source, destination, *, allowed_root):
+        real_move(source, destination, allowed_root=allowed_root)
+        if source == paths.account_root(account.provider, account.id):
+            cancel_event.set()
+
+    monkeypatch.setattr(
+        deletion_module,
+        "move_private_tree",
+        cancel_after_profile_stage,
+    )
+
+    service.delete_account(
+        account.id,
+        force_local=False,
+        cancel_event=cancel_event,
+    )
+
+    assert cancel_event.is_set()
+    assert provider.events == [("logout", account.id)]
+    with pytest.raises(AccountNotFound):
+        accounts.get(account.id)
+    assert not paths.account_root(account.provider, account.id).exists()
+    assert cache.load(account.id) is None
+    assert not _deletion_root(paths, account.id).exists()
+
+
+def test_delete_marks_point_of_no_return_before_local_staging(
+    service, accounts, cache, account, paths
+):
+    ready = accounts.set_state(account.id, "ready")
+    cached = _snapshot(account.id)
+    cache.save(cached)
+    profile = paths.account_home(account.provider, account.id) / "auth.json"
+    profile.write_bytes(b"profile-secret-bytes")
+    observed = []
+
+    def mark_point_of_no_return():
+        observed.append(
+            (
+                accounts.get(account.id),
+                profile.read_bytes(),
+                cache.load(account.id),
+                _deletion_root(paths, account.id).exists(),
+            )
+        )
+
+    service.delete_account(
+        account.id,
+        force_local=False,
+        mark_point_of_no_return=mark_point_of_no_return,
+    )
+
+    assert observed == [(ready, b"profile-secret-bytes", cached, False)]
+    with pytest.raises(AccountNotFound):
+        accounts.get(account.id)
+
+
+def test_delete_cancellation_after_complete_staging_finishes_metadata_commit(
+    service, provider, accounts, cache, account, paths, monkeypatch
+):
+    from dotsync.usage.deletion import AccountDeletion
+
+    accounts.set_state(account.id, "ready")
+    cache.save(_snapshot(account.id))
+    profile = paths.account_home(account.provider, account.id) / "auth.json"
+    profile.write_bytes(b"profile-secret-bytes")
+    cancel_event = threading.Event()
+    real_stage = AccountDeletion.stage
+
+    def cancel_before_metadata_commit(deletion):
+        real_stage(deletion)
+        assert deletion.staged_profile.exists()
+        assert deletion.staged_cache.exists()
+        assert accounts.get(account.id).state == "ready"
+        cancel_event.set()
+
+    monkeypatch.setattr(AccountDeletion, "stage", cancel_before_metadata_commit)
+
+    service.delete_account(
+        account.id,
+        force_local=False,
+        cancel_event=cancel_event,
+    )
+
+    assert cancel_event.is_set()
+    assert provider.events == [("logout", account.id)]
+    with pytest.raises(AccountNotFound):
+        accounts.get(account.id)
+    assert not paths.account_root(account.provider, account.id).exists()
+    assert cache.load(account.id) is None
+    assert not _deletion_root(paths, account.id).exists()
+
+
+def test_delete_real_failure_after_late_cancellation_stays_recoverable(
+    service, provider, accounts, cache, account, paths, monkeypatch
+):
+    from dotsync.usage.deletion import DeletionRecoveryError
+    import dotsync.usage.deletion as deletion_module
+
+    ready = accounts.set_state(account.id, "ready")
+    cached = _snapshot(account.id)
+    cache.save(cached)
+    profile = paths.account_home(account.provider, account.id) / "auth.json"
+    profile.write_bytes(b"profile-secret-bytes")
+    cancel_event = threading.Event()
+    real_move = deletion_module.move_private_tree
+
+    def cancel_then_fail_cache_stage(source, destination, *, allowed_root):
+        if source == paths.account_root(account.provider, account.id):
+            real_move(source, destination, allowed_root=allowed_root)
+            cancel_event.set()
+            return
+        if source == _cache_root(paths, account.id):
+            raise OSError("cache-stage-sentinel-must-not-escape")
+        real_move(source, destination, allowed_root=allowed_root)
+
+    monkeypatch.setattr(
+        deletion_module,
+        "move_private_tree",
+        cancel_then_fail_cache_stage,
+    )
+
+    with pytest.raises(DeletionRecoveryError, match="quarantined") as captured:
+        service.delete_account(
+            account.id,
+            force_local=False,
+            cancel_event=cancel_event,
+        )
+
+    assert "cache-stage-sentinel" not in str(captured.value)
+    assert cancel_event.is_set()
+    assert provider.events == [("logout", account.id)]
+    assert accounts.get(account.id) == ready
+    assert not paths.account_root(account.provider, account.id).exists()
+    assert (
+        _deletion_root(paths, account.id) / "profile" / "home" / "auth.json"
+    ).read_bytes() == b"profile-secret-bytes"
+    assert cache.load(account.id) == cached
+    assert (_deletion_root(paths, account.id) / "manifest.json").is_file()
 
 
 def test_delete_prevalidates_cache_before_mutating_profile_or_metadata(
@@ -1068,10 +1224,19 @@ def test_delete_retry_commits_precommit_staging_without_restoring_or_logout(
     interrupted.stage()
     assert not profile.exists()
     assert cache.load(account.id) is None
+    cancel_event = threading.Event()
+    cancel_event.set()
+    point_of_no_return_calls = []
 
-    service.delete_account(account.id, force_local=False)
+    service.delete_account(
+        account.id,
+        force_local=False,
+        cancel_event=cancel_event,
+        mark_point_of_no_return=lambda: point_of_no_return_calls.append(True),
+    )
 
     assert provider.events == []
+    assert point_of_no_return_calls == [True]
     with pytest.raises(AccountNotFound):
         accounts.get(account.id)
     assert not profile.exists()

@@ -215,11 +215,12 @@ class UsageService:
         *,
         force_local: bool = False,
         cancel_event: threading.Event | None = None,
+        mark_point_of_no_return: Callable[[], None] | None = None,
     ) -> None:
         if type(force_local) is not bool:
             raise TypeError("force_local must be a boolean")
         with self._account_operation(account_id):
-            if self._recover_deletion(account_id, cancel_event):
+            if self._recover_deletion(account_id, mark_point_of_no_return):
                 return
             account = self._accounts.get(account_id)
             profile_root = self._paths.account_root(account.provider, account.id)
@@ -237,17 +238,28 @@ class UsageService:
             if cancel_event is not None and cancel_event.is_set():
                 raise _cancelled_provider_error("logout")
 
+            # Point of no return: cancellation is honored through this check.
+            # Once the deletion transaction begins, it must either commit or
+            # remain explicitly retryable; it must never report cancellation
+            # after moving account data out of the live trees.
+            if mark_point_of_no_return is not None:
+                mark_point_of_no_return()
             deletion = AccountDeletion.begin(self._paths, account)
-            self._commit_deletion(deletion, cancel_event)
+            self._commit_deletion(deletion)
 
     def _recover_deletion(
         self,
         account_id: str,
-        cancel_event: threading.Event | None,
+        mark_point_of_no_return: Callable[[], None] | None,
     ) -> bool:
         deletion = AccountDeletion.load(self._paths, account_id)
         if deletion is None:
             return False
+        if (
+            isinstance(deletion, AccountDeletion)
+            and mark_point_of_no_return is not None
+        ):
+            mark_point_of_no_return()
         try:
             fsync_private_directory(self._paths.root, root=self._paths.root)
         except OSError:
@@ -256,6 +268,8 @@ class UsageService:
             ) from None
         if isinstance(deletion, ManifestlessDeletionRoot):
             metadata_exists = self._metadata_exists(account_id)
+            if not metadata_exists and mark_point_of_no_return is not None:
+                mark_point_of_no_return()
             deletion.cleanup_if_empty()
             return not metadata_exists
         if self._metadata_exists(account_id):
@@ -264,7 +278,7 @@ class UsageService:
                 raise AccountStoreError(
                     "account deletion provider does not match metadata"
                 )
-            self._commit_deletion(deletion, cancel_event)
+            self._commit_deletion(deletion)
             return True
         deletion.cleanup_committed()
         return True
@@ -272,14 +286,9 @@ class UsageService:
     def _commit_deletion(
         self,
         deletion: AccountDeletion,
-        cancel_event: threading.Event | None,
     ) -> None:
         try:
-            if cancel_event is not None and cancel_event.is_set():
-                raise _cancelled_provider_error("logout")
             deletion.stage()
-            if cancel_event is not None and cancel_event.is_set():
-                raise _cancelled_provider_error("logout")
             self._accounts.delete_metadata(deletion.account_id)
         except PrivateAtomicWriteUncertain:
             raise DeletionCleanupPending(
@@ -287,11 +296,6 @@ class UsageService:
             ) from None
         except BaseException as error:
             if self._metadata_exists(deletion.account_id):
-                if isinstance(error, ProviderError) and _is_cancellation(
-                    error,
-                    cancel_event,
-                ):
-                    raise
                 if not isinstance(error, Exception):
                     raise
                 raise DeletionRecoveryError(
