@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 import uuid
@@ -10,7 +9,6 @@ import weakref
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Iterator
 
 from dotsync.accounts import (
@@ -21,11 +19,17 @@ from dotsync.accounts import (
     ProviderName,
 )
 from dotsync.app_paths import AppPaths
-from dotsync.private_fs import validate_private_tree
+from dotsync.private_fs import (
+    PrivateAtomicWriteUncertain,
+    PrivateDirectoryIdentity,
+    ensure_private_root_identity,
+    fsync_private_directory,
+    validate_private_tree,
+)
 from dotsync.providers import LoginProgress, ProviderError, UsageProvider
 
 from .cache import UsageCache, UsageCacheError
-from .deletion import AccountDeletion
+from .deletion import AccountDeletion, DeletionCleanupPending
 from .model import UsageSnapshot
 
 
@@ -104,9 +108,9 @@ class _ServiceCoordination:
             return len(self._account_locks)
 
 
-_COORDINATIONS: weakref.WeakValueDictionary[Path, _ServiceCoordination] = (
-    weakref.WeakValueDictionary()
-)
+_COORDINATIONS: weakref.WeakValueDictionary[
+    PrivateDirectoryIdentity, _ServiceCoordination
+] = weakref.WeakValueDictionary()
 _COORDINATIONS_GUARD = threading.Lock()
 
 
@@ -213,6 +217,11 @@ class UsageService:
             if self._recover_deletion(account_id):
                 return
             account = self._accounts.get(account_id)
+            profile_root = self._paths.account_root(account.provider, account.id)
+            cache_root = self._paths.usage / account.id
+            validate_private_tree(profile_root, allowed_root=self._paths.root)
+            validate_private_tree(cache_root, allowed_root=self._paths.root)
+
             try:
                 provider = self._provider_for(account)
                 with self._provider_operation("logout", cancel_event):
@@ -223,17 +232,16 @@ class UsageService:
             if cancel_event is not None and cancel_event.is_set():
                 raise _cancelled_provider_error("logout")
 
-            profile_root = self._paths.account_root(account.provider, account.id)
-            cache_root = self._paths.usage / account.id
-            validate_private_tree(profile_root, allowed_root=self._paths.root)
-            validate_private_tree(cache_root, allowed_root=self._paths.root)
-
             deletion = AccountDeletion.begin(self._paths, account)
             try:
                 deletion.stage()
                 if cancel_event is not None and cancel_event.is_set():
                     raise _cancelled_provider_error("logout")
                 self._accounts.delete_metadata(account.id)
+            except PrivateAtomicWriteUncertain:
+                raise DeletionCleanupPending(
+                    "account deletion metadata commit is uncertain; retry required"
+                ) from None
             except BaseException:
                 if self._metadata_exists(account.id):
                     deletion.restore()
@@ -246,6 +254,12 @@ class UsageService:
         deletion = AccountDeletion.load(self._paths, account_id)
         if deletion is None:
             return False
+        try:
+            fsync_private_directory(self._paths.root, root=self._paths.root)
+        except OSError:
+            raise DeletionCleanupPending(
+                "account deletion metadata commit is uncertain; retry required"
+            ) from None
         if self._metadata_exists(account_id):
             account = self._accounts.get(account_id)
             if account.provider != deletion.provider:
@@ -353,9 +367,7 @@ def _validate_account_id(account_id: object) -> str:
 
 
 def _coordination_for(paths: AppPaths) -> _ServiceCoordination:
-    identity = Path(
-        os.path.abspath(os.fspath((paths.root / "accounts.json").expanduser()))
-    )
+    identity = ensure_private_root_identity(paths.root)
     with _COORDINATIONS_GUARD:
         coordination = _COORDINATIONS.get(identity)
         if coordination is None:

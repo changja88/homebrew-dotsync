@@ -122,6 +122,14 @@ class AccountDeletion:
     def cleanup_committed(self) -> None:
         """Scrub staged data after the account metadata commit point."""
         try:
+            remove_private_tree(
+                self.staged_profile,
+                allowed_root=self.root,
+            )
+            remove_private_tree(
+                self.staged_cache,
+                allowed_root=self.root,
+            )
             self._cleanup()
         except Exception:
             raise DeletionCleanupPending(

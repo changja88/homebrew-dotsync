@@ -3,13 +3,16 @@ from __future__ import annotations
 import json
 import os
 import stat
+import traceback
 
 import pytest
 
 from dotsync.private_fs import (
+    PrivateAtomicWriteUncertain,
     UnsafePrivatePath,
     atomic_write_json,
     ensure_private_dir,
+    ensure_private_root_identity,
     move_private_tree,
     read_private_json,
     remove_private_tree,
@@ -49,6 +52,19 @@ def test_ensure_private_dir_rejects_symlink_parent(tmp_path):
         ensure_private_dir(tmp_path / "private" / "account", root=tmp_path)
 
     assert not (outside / "account").exists()
+
+
+def test_private_root_identity_uses_inode_and_keeps_distinct_roots_distinct(tmp_path):
+    first = tmp_path / "FirstRoot"
+    second = tmp_path / "second-root"
+
+    first_identity = ensure_private_root_identity(first)
+    second_identity = ensure_private_root_identity(second)
+
+    assert first_identity != second_identity
+    assert first_identity.device == first.stat().st_dev
+    assert first_identity.inode == first.stat().st_ino
+    assert stat.S_IMODE(first.stat().st_mode) == 0o700
 
 
 def test_atomic_write_json_creates_private_file(tmp_path):
@@ -105,6 +121,75 @@ def test_atomic_write_json_keeps_mutation_in_open_parent_after_path_is_replaced(
 
     assert not (outside / "state.json").exists()
     assert json.loads((moved / "state.json").read_text()) == {"schema_version": 1}
+
+
+def test_atomic_write_json_fsyncs_parent_directory_after_replace(
+    tmp_path, monkeypatch
+):
+    import dotsync.private_fs as private_fs
+
+    root = tmp_path / "private"
+    target = root / "state.json"
+    real_replace = private_fs.os.replace
+    real_fsync = private_fs.os.fsync
+    replaced = False
+    parent_synced_after_replace = False
+
+    def observe_replace(*args, **kwargs):
+        nonlocal replaced
+        real_replace(*args, **kwargs)
+        replaced = True
+
+    def observe_fsync(descriptor):
+        nonlocal parent_synced_after_replace
+        if replaced and stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            parent_synced_after_replace = True
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(private_fs.os, "replace", observe_replace)
+    monkeypatch.setattr(private_fs.os, "fsync", observe_fsync)
+
+    atomic_write_json(target, {"durable": True}, root=root)
+
+    assert parent_synced_after_replace is True
+    assert json.loads(target.read_text()) == {"durable": True}
+
+
+def test_atomic_write_json_directory_fsync_failure_reports_ambiguous_commit(
+    tmp_path, monkeypatch
+):
+    import dotsync.private_fs as private_fs
+
+    root = tmp_path / "private"
+    target = root / "state.json"
+    atomic_write_json(target, {"version": 1}, root=root)
+    real_fsync = private_fs.os.fsync
+    real_replace = private_fs.os.replace
+    replaced = False
+
+    def observe_replace(*args, **kwargs):
+        nonlocal replaced
+        real_replace(*args, **kwargs)
+        replaced = True
+
+    def fail_directory_fsync(descriptor):
+        if replaced and stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise OSError("directory fsync interrupted")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(private_fs.os, "replace", observe_replace)
+    monkeypatch.setattr(private_fs.os, "fsync", fail_directory_fsync)
+
+    with pytest.raises(PrivateAtomicWriteUncertain) as captured:
+        atomic_write_json(target, {"version": 2}, root=root)
+
+    assert str(captured.value) == "private JSON replacement durability is uncertain"
+    assert "interrupted" not in str(captured.value)
+    assert "interrupted" not in "".join(
+        traceback.format_exception(captured.value)
+    )
+    assert json.loads(target.read_text()) == {"version": 2}
+    assert [item.name for item in root.iterdir()] == ["state.json"]
 
 
 def test_read_private_json_rejects_symlink_target(tmp_path):
@@ -277,6 +362,7 @@ def test_move_private_tree_revalidates_contents_after_atomic_move(
     with pytest.raises(UnsafePrivatePath, match="symlink"):
         move_private_tree(source, destination, allowed_root=root)
 
-    assert source.exists()
-    assert not destination.exists()
+    assert not source.exists()
+    assert destination.exists()
+    assert (destination / "link").is_symlink()
     assert outside_sentinel.read_text() == "keep"

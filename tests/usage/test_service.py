@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import gc
+import os
+import stat
 import threading
 import uuid
 import weakref
@@ -316,6 +318,40 @@ def test_same_account_is_single_flight_across_service_instances(
     assert blocking_provider.call_count == 1
 
 
+def test_same_account_is_single_flight_across_case_aliases(tmp_path):
+    from dotsync.usage.service import OperationConflict, UsageService
+
+    first_paths, alias_paths = _case_alias_paths(tmp_path)
+    first_accounts = AccountStore(first_paths)
+    account = first_accounts.create("codex", "Personal")
+    blocking_provider = FirstCallBlockingProvider()
+    first_service = UsageService(
+        paths=first_paths,
+        accounts=first_accounts,
+        cache=UsageCache(first_paths),
+        providers={"codex": blocking_provider},
+    )
+    alias_service = UsageService(
+        paths=alias_paths,
+        accounts=AccountStore(alias_paths),
+        cache=UsageCache(alias_paths),
+        providers={"codex": blocking_provider},
+    )
+    thread, outcome = _start_thread(lambda: first_service.refresh(account.id))
+    assert blocking_provider.first_entered.wait(timeout=2)
+
+    try:
+        with pytest.raises(OperationConflict, match="already running"):
+            alias_service.refresh(account.id)
+    finally:
+        blocking_provider.release_first.set()
+        thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert outcome["error"] is None
+    assert blocking_provider.call_count == 1
+
+
 def test_provider_operations_are_globally_bounded_to_two(
     paths, accounts, cache
 ):
@@ -407,6 +443,53 @@ def test_provider_limit_is_shared_across_service_instances(
     assert blocking_provider.maximum_active == 2
 
 
+def test_provider_limit_is_shared_across_case_aliases(tmp_path):
+    from dotsync.usage.service import UsageService, _wait_for_provider_waiters
+
+    first_paths, alias_paths = _case_alias_paths(tmp_path)
+    first_accounts = AccountStore(first_paths)
+    alias_accounts = AccountStore(alias_paths)
+    blocking_provider = BlockingProvider()
+    first_service = UsageService(
+        paths=first_paths,
+        accounts=first_accounts,
+        cache=UsageCache(first_paths),
+        providers={"codex": blocking_provider},
+    )
+    alias_service = UsageService(
+        paths=alias_paths,
+        accounts=alias_accounts,
+        cache=UsageCache(alias_paths),
+        providers={"codex": blocking_provider},
+    )
+    accounts = [
+        first_accounts.create("codex", f"Alias {index}") for index in range(3)
+    ]
+    threads = [
+        _start_thread(lambda item=item: first_service.refresh(item.id))
+        for item in accounts[:2]
+    ]
+    blocking_provider.wait_for_entries(2)
+    third_thread, third_outcome = _start_thread(
+        lambda: alias_service.refresh(accounts[2].id)
+    )
+
+    try:
+        _wait_for_provider_waiters(alias_service, count=1, timeout=0.25)
+        assert blocking_provider.entered_count == 2
+        assert blocking_provider.maximum_active == 2
+    finally:
+        blocking_provider.release.set()
+        for thread, _ in threads:
+            thread.join(timeout=2)
+        third_thread.join(timeout=2)
+
+    assert all(outcome["error"] is None for _, outcome in threads)
+    assert third_outcome["error"] is None
+    assert blocking_provider.entered_count == 3
+    assert blocking_provider.maximum_active == 2
+
+
 def test_invalid_account_ids_allocate_no_coordination_locks(
     service,
 ):
@@ -419,7 +502,10 @@ def test_invalid_account_ids_allocate_no_coordination_locks(
         with pytest.raises(AccountStoreError, match="account id"):
             service.cached_usage(f"invalid-{index}")
 
-    assert _coordination_registry_stats() == before
+    after_roots, after_locks = _coordination_registry_stats()
+    before_roots, before_locks = before
+    assert after_roots <= before_roots
+    assert after_locks == before_locks
 
 
 def test_service_coordination_registry_releases_unused_roots(tmp_path):
@@ -723,7 +809,7 @@ def test_force_local_delete_signaled_cancellation_after_logout_preserves_local_s
 
 
 def test_delete_prevalidates_cache_before_mutating_profile_or_metadata(
-    service, accounts, cache, account, paths, tmp_path
+    service, provider, accounts, cache, account, paths, tmp_path
 ):
     ready = accounts.set_state(account.id, "ready")
     cache.save(_snapshot(account.id))
@@ -741,10 +827,35 @@ def test_delete_prevalidates_cache_before_mutating_profile_or_metadata(
     with pytest.raises(UnsafePrivatePath, match="symlink"):
         service.delete_account(account.id, force_local=False)
 
+    assert provider.events == []
     assert accounts.get(account.id) == ready
     assert profile_sentinel.read_bytes() == b"profile-secret-bytes"
     assert outside_sentinel.read_text() == "keep"
     assert _cache_root(paths, account.id).exists()
+
+
+def test_delete_prevalidates_staging_before_provider_logout(
+    service, provider, accounts, cache, account, paths, tmp_path
+):
+    ready = accounts.set_state(account.id, "ready")
+    cached = _snapshot(account.id)
+    cache.save(cached)
+    outside = tmp_path / "outside-staging"
+    outside.mkdir()
+    outside_sentinel = outside / "keep"
+    outside_sentinel.write_text("keep")
+    staging = _deletion_root(paths, account.id)
+    staging.mkdir(parents=True)
+    (staging / "profile").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(UnsafePrivatePath, match="symlink"):
+        service.delete_account(account.id, force_local=False)
+
+    assert provider.events == []
+    assert accounts.get(account.id) == ready
+    assert paths.account_root(account.provider, account.id).exists()
+    assert cache.load(account.id) == cached
+    assert outside_sentinel.read_text() == "keep"
 
 
 def test_delete_cache_staging_failure_rolls_profile_back(
@@ -773,6 +884,49 @@ def test_delete_cache_staging_failure_rolls_profile_back(
     assert profile_sentinel.read_bytes() == b"profile-secret-bytes"
     assert cache.load(account.id) == cached
     assert not _deletion_root(paths, account.id).exists()
+
+
+def test_delete_post_move_unsafe_profile_stays_quarantined(
+    service, provider, accounts, cache, account, paths, tmp_path, monkeypatch
+):
+    import dotsync.private_fs as private_fs
+
+    ready = accounts.set_state(account.id, "ready")
+    cached = _snapshot(account.id)
+    cache.save(cached)
+    profile = paths.account_home(account.provider, account.id) / "auth.json"
+    profile.write_bytes(b"profile-secret-bytes")
+    outside = tmp_path / "outside-injected"
+    outside.mkdir()
+    outside_sentinel = outside / "keep.txt"
+    outside_sentinel.write_text("keep")
+    staged_profile = _deletion_root(paths, account.id) / "profile"
+    real_rename = private_fs.os.rename
+    injected = False
+
+    def inject_after_profile_move(src, dst, **kwargs):
+        nonlocal injected
+        real_rename(src, dst, **kwargs)
+        if not injected and src == account.id and dst == "profile":
+            injected = True
+            (staged_profile / "link").symlink_to(
+                outside,
+                target_is_directory=True,
+            )
+
+    monkeypatch.setattr(private_fs.os, "rename", inject_after_profile_move)
+
+    with pytest.raises(UnsafePrivatePath, match="symlink"):
+        service.delete_account(account.id, force_local=False)
+
+    assert provider.events == [("logout", account.id)]
+    assert accounts.get(account.id) == ready
+    assert not paths.account_root(account.provider, account.id).exists()
+    assert staged_profile.exists()
+    assert (staged_profile / "link").is_symlink()
+    assert (_deletion_root(paths, account.id) / "manifest.json").is_file()
+    assert cache.load(account.id) == cached
+    assert outside_sentinel.read_text() == "keep"
 
 
 def test_delete_metadata_save_failure_restores_staged_profile_and_cache(
@@ -822,6 +976,50 @@ def test_delete_uses_metadata_oracle_after_ambiguous_commit_error(
         accounts.get(account.id)
     assert not paths.account_root(account.provider, account.id).exists()
     assert cache.load(account.id) is None
+    assert not _deletion_root(paths, account.id).exists()
+
+
+def test_delete_directory_fsync_failure_leaves_commit_oracle_recoverable(
+    service, accounts, cache, account, paths, monkeypatch
+):
+    from dotsync.usage.deletion import DeletionCleanupPending
+    import dotsync.private_fs as private_fs
+
+    cached = _snapshot(account.id)
+    cache.save(cached)
+    profile = paths.account_home(account.provider, account.id) / "auth.json"
+    profile.write_bytes(b"profile-secret-bytes")
+    real_replace = private_fs.os.replace
+    real_fsync = private_fs.os.fsync
+    registry_replaced = False
+
+    def observe_registry_replace(*args, **kwargs):
+        nonlocal registry_replaced
+        real_replace(*args, **kwargs)
+        if len(args) >= 2 and args[1] == "accounts.json":
+            registry_replaced = True
+
+    def fail_registry_directory_fsync(descriptor):
+        if registry_replaced and stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise OSError("registry directory fsync interrupted")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(private_fs.os, "replace", observe_registry_replace)
+    monkeypatch.setattr(private_fs.os, "fsync", fail_registry_directory_fsync)
+
+    with pytest.raises(DeletionCleanupPending, match="uncertain"):
+        service.delete_account(account.id, force_local=False)
+
+    assert (_deletion_root(paths, account.id) / "manifest.json").is_file()
+    assert (_deletion_root(paths, account.id) / "profile").exists()
+    assert (_deletion_root(paths, account.id) / "cache").exists()
+
+    monkeypatch.setattr(private_fs.os, "replace", real_replace)
+    monkeypatch.setattr(private_fs.os, "fsync", real_fsync)
+    service.delete_account(account.id, force_local=False)
+
+    with pytest.raises(AccountNotFound):
+        accounts.get(account.id)
     assert not _deletion_root(paths, account.id).exists()
 
 
@@ -875,6 +1073,45 @@ def test_delete_cleanup_failure_is_committed_and_retry_scrubs_staging(
     assert not paths.account_root(account.provider, account.id).exists()
     assert cache.load(account.id) is None
     assert _deletion_root(paths, account.id).exists()
+
+    monkeypatch.setattr(deletion_module, "remove_private_tree", real_remove)
+    service.delete_account(account.id, force_local=False)
+
+    assert not _deletion_root(paths, account.id).exists()
+
+
+def test_delete_partial_committed_cleanup_retains_manifest_for_retry(
+    service, accounts, cache, account, paths, monkeypatch
+):
+    from dotsync.usage.deletion import DeletionCleanupPending
+    import dotsync.usage.deletion as deletion_module
+
+    cache.save(_snapshot(account.id))
+    staged_profile = _deletion_root(paths, account.id) / "profile"
+    staged_cache = _deletion_root(paths, account.id) / "cache"
+    manifest = _deletion_root(paths, account.id) / "manifest.json"
+    real_remove = deletion_module.remove_private_tree
+
+    def fail_after_removing_profile(path, *, allowed_root):
+        if path == staged_profile:
+            real_remove(path, allowed_root=allowed_root)
+            raise OSError("profile payload removed before interruption")
+        return real_remove(path, allowed_root=allowed_root)
+
+    monkeypatch.setattr(
+        deletion_module,
+        "remove_private_tree",
+        fail_after_removing_profile,
+    )
+
+    with pytest.raises(DeletionCleanupPending, match="committed"):
+        service.delete_account(account.id, force_local=False)
+
+    with pytest.raises(AccountNotFound):
+        accounts.get(account.id)
+    assert not staged_profile.exists()
+    assert staged_cache.exists()
+    assert manifest.is_file()
 
     monkeypatch.setattr(deletion_module, "remove_private_tree", real_remove)
     service.delete_account(account.id, force_local=False)
@@ -945,3 +1182,12 @@ def _cache_root(paths: AppPaths, account_id: str):
 
 def _deletion_root(paths: AppPaths, account_id: str):
     return paths.root / ".deletions" / account_id
+
+
+def _case_alias_paths(tmp_path) -> tuple[AppPaths, AppPaths]:
+    root = tmp_path / "DotSyncIdentity"
+    root.mkdir(mode=0o700)
+    alias = tmp_path / "dotsyncidentity"
+    if not alias.exists() or not os.path.samestat(root.stat(), alias.stat()):
+        pytest.skip("requires a case-insensitive filesystem alias")
+    return AppPaths(root), AppPaths(alias)

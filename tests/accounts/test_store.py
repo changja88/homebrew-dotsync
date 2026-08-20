@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 import threading
 import uuid
@@ -183,6 +184,64 @@ def test_concurrent_create_shares_registry_lock_across_store_instances(tmp_path)
     assert first_store.list() == created
 
 
+def test_concurrent_create_shares_registry_lock_across_case_aliases(tmp_path):
+    from dotsync.accounts import AccountConflict, AccountStore
+
+    first_paths, alias_paths = _case_alias_paths(tmp_path)
+    first_store = AccountStore(first_paths)
+    alias_store = AccountStore(alias_paths)
+    assert first_store._lock is alias_store._lock
+
+    barrier = threading.Barrier(2)
+    created = []
+    conflicts = []
+
+    def create_duplicate(store: AccountStore) -> None:
+        barrier.wait()
+        try:
+            created.append(store.create(provider="claude", label="Personal"))
+        except AccountConflict as error:
+            conflicts.append(error)
+
+    threads = [
+        threading.Thread(target=create_duplicate, args=(first_store,)),
+        threading.Thread(target=create_duplicate, args=(alias_store,)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(created) == 1
+    assert len(conflicts) == 1
+    assert first_store.list() == created
+
+
+def test_distinct_case_sensitive_roots_keep_distinct_registry_locks(tmp_path):
+    from dotsync.accounts import AccountStore
+
+    first_store = AccountStore(AppPaths(tmp_path / "CaseRootOne"))
+    second_store = AccountStore(AppPaths(tmp_path / "caseroot-two"))
+
+    assert first_store._lock is not second_store._lock
+
+
+def test_account_store_rejects_symlink_private_root(tmp_path):
+    from dotsync.accounts import AccountStore
+    from dotsync.private_fs import UnsafePrivatePath
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root = tmp_path / "DotSync"
+    root.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(UnsafePrivatePath, match="symlink"):
+        AccountStore(AppPaths(root))
+
+    assert list(outside.iterdir()) == []
+
+
 def test_failed_atomic_save_preserves_last_valid_registry(tmp_path, monkeypatch):
     from dotsync.accounts import AccountStore
     import dotsync.accounts.store as store_module
@@ -244,3 +303,12 @@ def _record(**overrides: object) -> dict[str, object]:
     }
     record.update(overrides)
     return record
+
+
+def _case_alias_paths(tmp_path) -> tuple[AppPaths, AppPaths]:
+    root = tmp_path / "DotSyncIdentity"
+    root.mkdir(mode=0o700)
+    alias = tmp_path / "dotsyncidentity"
+    if not alias.exists() or not os.path.samestat(root.stat(), alias.stat()):
+        pytest.skip("requires a case-insensitive filesystem alias")
+    return AppPaths(root), AppPaths(alias)

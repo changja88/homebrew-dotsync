@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import os
 import threading
 import unicodedata
 import uuid
 import weakref
-from pathlib import Path
 from typing import Any, cast
 
 from dotsync.app_paths import AppPaths
-from dotsync.private_fs import atomic_write_json, ensure_private_dir, read_private_json
+from dotsync.private_fs import (
+    PrivateDirectoryIdentity,
+    atomic_write_json,
+    ensure_private_dir,
+    ensure_private_root_identity,
+    read_private_json,
+)
 
 from .model import AccountState, ManagedAccount, ProviderIdentity, ProviderName
 
@@ -38,7 +42,9 @@ _ACCOUNT_FIELDS = frozenset(
     {"id", "provider", "label", "state", "identity", "created_at"}
 )
 _IDENTITY_FIELDS = frozenset({"display_name", "email", "plan"})
-_REGISTRY_LOCKS: weakref.WeakValueDictionary[Path, Any] = weakref.WeakValueDictionary()
+_REGISTRY_LOCKS: weakref.WeakValueDictionary[
+    PrivateDirectoryIdentity, Any
+] = weakref.WeakValueDictionary()
 _REGISTRY_LOCKS_GUARD = threading.Lock()
 
 
@@ -48,7 +54,7 @@ class AccountStore:
     def __init__(self, paths: AppPaths) -> None:
         self._paths = paths
         self._registry_path = paths.root / "accounts.json"
-        self._lock = _lock_for_registry(self._registry_path)
+        self._lock = _lock_for_registry(ensure_private_root_identity(paths.root))
 
     def create(self, provider: ProviderName, label: str) -> ManagedAccount:
         with self._lock:
@@ -310,11 +316,10 @@ def _encode_account(account: ManagedAccount) -> dict[str, object]:
     }
 
 
-def _lock_for_registry(registry_path: Path) -> threading.RLock:
-    key = Path(os.path.abspath(os.fspath(registry_path.expanduser())))
+def _lock_for_registry(identity: PrivateDirectoryIdentity) -> threading.RLock:
     with _REGISTRY_LOCKS_GUARD:
-        lock = _REGISTRY_LOCKS.get(key)
+        lock = _REGISTRY_LOCKS.get(identity)
         if lock is None:
             lock = threading.RLock()
-            _REGISTRY_LOCKS[key] = lock
+            _REGISTRY_LOCKS[identity] = lock
         return cast(threading.RLock, lock)

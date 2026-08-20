@@ -16,6 +16,18 @@ class UnsafePrivatePath(ValueError):
     """Raised when a private filesystem operation would leave its boundary."""
 
 
+class PrivateAtomicWriteUncertain(OSError):
+    """Raised when replacement occurred but directory durability is uncertain."""
+
+
+@dataclass(frozen=True)
+class PrivateDirectoryIdentity:
+    """Stable filesystem identity for one validated private directory."""
+
+    device: int
+    inode: int
+
+
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 _READ_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW
 
@@ -120,6 +132,25 @@ def ensure_private_dir(path: Path, *, root: Path) -> None:
     os.close(descriptor)
 
 
+def ensure_private_root_identity(path: Path) -> PrivateDirectoryIdentity:
+    """Create/validate a private root and return its no-follow inode identity."""
+    descriptor = _open_managed_directory(path, root=path, create=True)
+    try:
+        metadata = os.fstat(descriptor)
+        return PrivateDirectoryIdentity(metadata.st_dev, metadata.st_ino)
+    finally:
+        os.close(descriptor)
+
+
+def fsync_private_directory(path: Path, *, root: Path) -> None:
+    """Durably flush one descriptor-validated private directory."""
+    descriptor = _open_managed_directory(path, root=root, create=False)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _validate_regular_target(parent_fd: int, name: str) -> None:
     metadata = _entry_metadata(parent_fd, name)
     if metadata is None:
@@ -169,6 +200,12 @@ def atomic_write_json(path: Path, data: Any, *, root: Path) -> None:
                 dst_dir_fd=parent_fd,
             )
             temporary_name = None
+            try:
+                os.fsync(parent_fd)
+            except OSError:
+                raise PrivateAtomicWriteUncertain(
+                    "private JSON replacement durability is uncertain"
+                ) from None
             final_fd = os.open(target_name, _READ_FILE_FLAGS, dir_fd=parent_fd)
             try:
                 final_metadata = os.fstat(final_fd)
@@ -332,6 +369,7 @@ def move_private_tree(
     destination_parent_fd: int | None = None
     tree: _ScannedDirectory | None = None
     moved = False
+    moved_contents_validated = False
     try:
         try:
             source_fd = _open_directory_at(source_parent_fd, source_relative[-1])
@@ -382,12 +420,17 @@ def move_private_tree(
         )
         moved_tree = _scan_tree(moved_fd)
         _close_tree(moved_tree)
+        moved_contents_validated = True
         os.fsync(source_parent_fd)
         if destination_parent_fd != source_parent_fd:
             os.fsync(destination_parent_fd)
         return True
     except BaseException:
-        if moved and destination_parent_fd is not None:
+        if (
+            moved
+            and moved_contents_validated
+            and destination_parent_fd is not None
+        ):
             try:
                 os.rename(
                     destination_relative[-1],
