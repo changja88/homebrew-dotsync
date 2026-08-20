@@ -80,6 +80,31 @@ elif mode == "duplicate-response":
     sys.stdout.write(response + "\n" + response + "\n")
     sys.stdout.flush()
     time.sleep(0.5)
+elif mode == "allocated-unsent-response":
+    first = json.loads(sys.stdin.readline())
+    with open(pid_file + ".control", "r", encoding="utf-8") as handle:
+        handle.readline()
+    print(json.dumps({
+        "jsonrpc": "2.0",
+        "id": first["id"] + 1,
+        "result": "sentinel-allocated-unsent-response",
+    }), flush=True)
+    with open(pid_file + ".ack", "w", encoding="utf-8") as handle:
+        handle.write("emitted")
+    sys.stdin.readline()
+    time.sleep(0.5)
+elif mode == "post-send-failure-response":
+    with open(pid_file + ".control", "r", encoding="utf-8") as handle:
+        handle.readline()
+    print(json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": "sentinel-post-send-failure-response",
+    }), flush=True)
+    with open(pid_file + ".ack", "w", encoding="utf-8") as handle:
+        handle.write("emitted")
+    sys.stdin.readline()
+    time.sleep(0.5)
 elif mode == "malformed":
     sys.stdin.readline()
     print("sentinel-malformed-secret{", flush=True)
@@ -159,6 +184,9 @@ def _rpc_command(tmp_path: Path, mode: str) -> tuple[list[Path | str], Path]:
     script = tmp_path / "rpc_fixture.py"
     script.write_text(RPC_FIXTURE, encoding="utf-8")
     pid_file = tmp_path / f"{mode}.pid"
+    if mode in {"allocated-unsent-response", "post-send-failure-response"}:
+        os.mkfifo(str(pid_file) + ".control")
+        os.mkfifo(str(pid_file) + ".ack")
     return [Path(sys.executable).resolve(), script, mode, pid_file], pid_file
 
 
@@ -219,6 +247,35 @@ def _fd_is_open(file_descriptor: int) -> bool:
 def _close_fd_if_open(file_descriptor: int) -> None:
     if _fd_is_open(file_descriptor):
         os.close(file_descriptor)
+
+
+def _release_fifo_fixture(pid_file: Path) -> None:
+    with open(str(pid_file) + ".control", "w", encoding="utf-8") as handle:
+        handle.write("go\n")
+    with open(str(pid_file) + ".ack", "r", encoding="utf-8") as handle:
+        assert handle.read() == "emitted"
+
+
+class _ControlledWriteLock:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._acquisitions = 0
+        self.first_send_finished = threading.Event()
+        self.second_send_blocked = threading.Event()
+        self.allow_second_send = threading.Event()
+
+    def __enter__(self):
+        self._lock.acquire()
+        self._acquisitions += 1
+        if self._acquisitions == 2:
+            self.second_send_blocked.set()
+            assert self.allow_second_send.wait(timeout=1.0)
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        if self._acquisitions == 1:
+            self.first_send_finished.set()
+        self._lock.release()
 
 
 def test_claude_environment_removes_api_billing_and_default_profile(
@@ -667,6 +724,75 @@ def test_json_rpc_send_selector_failure_is_safe_and_closes_selector(
     assert failing_selector.closed
 
 
+def test_json_rpc_active_send_failure_is_safe_and_cleans_request_state(
+    monkeypatch, tmp_path
+):
+    command, pid_file = _rpc_command(tmp_path, "post-send-failure-response")
+    default_selector = process_module.selectors.DefaultSelector
+
+    class ActiveFailingSelector:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def register(self, *args, **kwargs) -> None:
+            return None
+
+        def select(self, timeout=None):
+            raise RuntimeError("sentinel-active-selector-select")
+
+        def close(self) -> None:
+            self.closed = True
+            raise RuntimeError("sentinel-active-selector-close")
+
+    failing_selector = ActiveFailingSelector()
+    secret = "sentinel-active-send-params"
+
+    with JsonRpcProcess(
+        command,
+        env={"PATH": os.environ.get("PATH", "")},
+        cwd=tmp_path,
+        timeout=0.3,
+    ) as rpc:
+        monkeypatch.setattr(
+            process_module.selectors,
+            "DefaultSelector",
+            lambda: failing_selector,
+        )
+        with pytest.raises(ProviderError) as send_error:
+            rpc.request("first/read", {"value": secret})
+
+        monkeypatch.setattr(
+            process_module.selectors,
+            "DefaultSelector",
+            default_selector,
+        )
+        _release_fifo_fixture(pid_file)
+        with rpc._condition:
+            assert rpc._condition.wait_for(
+                lambda: rpc._failure is not None,
+                timeout=1.0,
+            )
+        with pytest.raises(ProviderError) as protocol_error:
+            rpc.request("second/read", {})
+
+    send_rendered = "".join(
+        traceback.format_exception(send_error.value)
+    )
+    protocol_rendered = "".join(
+        traceback.format_exception(protocol_error.value)
+    )
+    assert send_error.value.code == "rpc_send_failed"
+    assert send_error.value.__cause__ is None
+    assert send_error.value.__context__ is None
+    assert failing_selector.closed
+    assert "sentinel-active-selector-select" not in send_rendered
+    assert "sentinel-active-selector-close" not in send_rendered
+    assert secret not in send_rendered
+    assert protocol_error.value.code == "rpc_protocol_error"
+    assert "sentinel-post-send-failure-response" not in protocol_rendered
+    _assert_process_stopped(pid_file)
+
+
 def test_json_rpc_rejects_future_response_id_without_retaining_frame(tmp_path):
     command, pid_file = _rpc_command(tmp_path, "future-response")
 
@@ -714,6 +840,59 @@ def test_json_rpc_rejects_duplicate_response_id_with_pending_requests(tmp_path):
     assert first_outcome
     assert error.value.code == "rpc_protocol_error"
     assert "sentinel-duplicate-response" not in rendered
+    _assert_process_stopped(pid_file)
+
+
+def test_json_rpc_rejects_response_for_allocated_but_unsent_request(tmp_path):
+    command, pid_file = _rpc_command(tmp_path, "allocated-unsent-response")
+    controlled_lock = _ControlledWriteLock()
+    first_outcome = []
+    second_outcome = []
+
+    with JsonRpcProcess(
+        command,
+        env={"PATH": os.environ.get("PATH", "")},
+        cwd=tmp_path,
+        timeout=0.5,
+    ) as rpc:
+        rpc._write_lock = controlled_lock
+
+        def request_first() -> None:
+            try:
+                first_outcome.append(rpc.request("first/read", {}))
+            except ProviderError as error:
+                first_outcome.append(error)
+
+        def request_second() -> None:
+            try:
+                second_outcome.append(rpc.request("second/read", {}))
+            except ProviderError as error:
+                second_outcome.append(error)
+
+        first_thread = threading.Thread(target=request_first)
+        first_thread.start()
+        assert controlled_lock.first_send_finished.wait(timeout=1.0)
+        second_thread = threading.Thread(target=request_second)
+        second_thread.start()
+        assert controlled_lock.second_send_blocked.wait(timeout=1.0)
+        _release_fifo_fixture(pid_file)
+        with rpc._condition:
+            assert rpc._condition.wait_for(
+                lambda: rpc._failure is not None or bool(rpc._responses),
+                timeout=1.0,
+            )
+        controlled_lock.allow_second_send.set()
+        second_thread.join(timeout=1.0)
+        first_thread.join(timeout=1.0)
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert first_outcome
+    assert second_outcome
+    assert isinstance(second_outcome[0], ProviderError)
+    assert second_outcome[0].code == "rpc_protocol_error"
+    rendered = "".join(traceback.format_exception(second_outcome[0]))
+    assert "sentinel-allocated-unsent-response" not in rendered
     _assert_process_stopped(pid_file)
 
 

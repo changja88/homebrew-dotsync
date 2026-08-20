@@ -274,7 +274,7 @@ class JsonRpcProcess:
         self._condition = threading.Condition()
         self._write_lock = threading.Lock()
         self._responses: dict[int, dict[str, Any]] = {}
-        self._pending_ids: set[int] = set()
+        self._request_states: dict[int, str] = {}
         self._failure: str | None = None
         self._next_id = 1
         self._process: subprocess.Popen[str] | None = None
@@ -343,7 +343,7 @@ class JsonRpcProcess:
         with self._condition:
             request_id = self._next_id
             self._next_id += 1
-            self._pending_ids.add(request_id)
+            self._request_states[request_id] = "queued"
         try:
             self._send(
                 {
@@ -355,10 +355,10 @@ class JsonRpcProcess:
                 method,
                 deadline,
                 cancel_event,
+                request_id,
             )
-        except ProviderError:
-            with self._condition:
-                self._pending_ids.discard(request_id)
+        except BaseException:
+            self._discard_request(request_id)
             raise
 
         while True:
@@ -385,8 +385,7 @@ class JsonRpcProcess:
 
             if failure in {"rpc_timeout", "rpc_cancelled"}:
                 self._stop_process()
-            with self._condition:
-                self._pending_ids.discard(request_id)
+            self._discard_request(request_id)
             summary = {
                 "rpc_cancelled": "was cancelled",
                 "rpc_exited": "failed",
@@ -403,6 +402,7 @@ class JsonRpcProcess:
             {"jsonrpc": "2.0", "method": method, "params": params},
             method,
             time.monotonic() + self._timeout,
+            None,
             None,
         )
 
@@ -434,6 +434,7 @@ class JsonRpcProcess:
         method: str,
         deadline: float,
         cancel_event: threading.Event | None,
+        request_id: int | None,
     ) -> None:
         process = self._require_process()
         try:
@@ -445,6 +446,10 @@ class JsonRpcProcess:
                 "rpc_request_invalid", method, "could not be encoded"
             ) from error
         with self._write_lock:
+            if request_id is not None:
+                with self._condition:
+                    self._request_states[request_id] = "transmitting"
+                    self._condition.notify_all()
             if process.stdin is None or process.poll() is not None:
                 raise self._request_error("rpc_exited", method, "failed")
             selector: selectors.BaseSelector | None = None
@@ -467,36 +472,58 @@ class JsonRpcProcess:
                 raise self._request_error(
                     "rpc_send_failed", method, "could not be sent"
                 )
+            send_failure: str | None = None
+            send_summary = "could not be sent"
             try:
                 offset = 0
                 while offset < len(encoded):
                     failure = self._send_failure(deadline, cancel_event)
                     if failure is not None:
                         self._stop_process()
-                        summary = (
+                        send_failure = failure
+                        send_summary = (
                             "was cancelled"
                             if failure == "rpc_cancelled"
                             else "timed out"
                         )
-                        raise self._request_error(failure, method, summary)
+                        break
                     if process.poll() is not None:
-                        raise self._request_error("rpc_exited", method, "failed")
+                        send_failure = "rpc_exited"
+                        send_summary = "failed"
+                        break
                     remaining = deadline - time.monotonic()
-                    events = selector.select(min(remaining, 0.05))
+                    try:
+                        stdin_fd = process.stdin.fileno()
+                        events = selector.select(min(remaining, 0.05))
+                    except Exception:
+                        send_failure = "rpc_send_failed"
+                        break
                     if not events:
                         continue
                     try:
-                        offset += os.write(
-                            process.stdin.fileno(), encoded[offset:]
-                        )
+                        offset += os.write(stdin_fd, encoded[offset:])
                     except BlockingIOError:
                         continue
-                    except (BrokenPipeError, OSError) as error:
-                        raise self._request_error(
-                            "rpc_exited", method, "failed"
-                        ) from error
-            finally:
+                    except (BrokenPipeError, OSError, ValueError):
+                        send_failure = "rpc_send_failed"
+                        break
+            except Exception:
+                send_failure = "rpc_send_failed"
+            try:
                 selector.close()
+            except Exception:
+                if send_failure is None:
+                    send_failure = "rpc_send_failed"
+            if send_failure is not None:
+                raise self._request_error(
+                    send_failure,
+                    method,
+                    send_summary,
+                )
+            if request_id is not None:
+                with self._condition:
+                    self._request_states[request_id] = "transmitted"
+                    self._condition.notify_all()
 
     def _send_failure(
         self,
@@ -551,12 +578,17 @@ class JsonRpcProcess:
                 self._set_failure("rpc_protocol_error")
                 return
             with self._condition:
-                if response_id not in self._pending_ids:
+                while (
+                    self._request_states.get(response_id) == "transmitting"
+                    and self._failure is None
+                ):
+                    self._condition.wait()
+                if self._request_states.get(response_id) != "transmitted":
                     if self._failure is None:
                         self._failure = "rpc_protocol_error"
                     self._condition.notify_all()
                     return
-                self._pending_ids.remove(response_id)
+                self._request_states.pop(response_id, None)
                 self._responses[response_id] = message
                 self._condition.notify_all()
 
@@ -589,6 +621,12 @@ class JsonRpcProcess:
         with self._condition:
             if self._failure is None:
                 self._failure = code
+            self._condition.notify_all()
+
+    def _discard_request(self, request_id: int) -> None:
+        with self._condition:
+            self._request_states.pop(request_id, None)
+            self._responses.pop(request_id, None)
             self._condition.notify_all()
 
     def _request_error(
