@@ -49,10 +49,14 @@ def test_usage_window_rejects_blank_limit_id(limit_id):
         pytest.param("codex\r\nforged", id="crlf"),
         pytest.param("codex\x1b]8;;https://example.invalid\x07", id="osc"),
         pytest.param("codex\x07bell", id="bel"),
-        pytest.param("codex\u202ereversed", id="unicode-format"),
+        pytest.param("codex\u061cmark", id="arabic-letter-mark"),
+        pytest.param("codex\u200bhidden", id="zero-width-space"),
+        pytest.param("codex\u202ereversed", id="right-to-left-override"),
+        pytest.param("codex\ufeffhidden", id="zero-width-no-break-space"),
+        pytest.param("codex\ud800unsafe", id="surrogate"),
     ],
 )
-def test_usage_window_rejects_control_characters_in_limit_id(limit_id):
+def test_usage_window_rejects_unsafe_display_characters_in_limit_id(limit_id):
     with pytest.raises(ValueError, match="control"):
         UsageWindow(**{**VALID_WINDOW, "limit_id": limit_id})
 
@@ -62,10 +66,12 @@ def test_usage_window_rejects_control_characters_in_limit_id(limit_id):
     [
         pytest.param("Codex\nInjected", id="newline"),
         pytest.param("Codex\x1b[31m", id="escape"),
-        pytest.param("Codex\u2066isolate", id="unicode-format"),
+        pytest.param("Codex\u200fmark", id="right-to-left-mark"),
+        pytest.param("Codex\u2060joined", id="word-joiner"),
+        pytest.param("Codex\u2066isolate", id="left-to-right-isolate"),
     ],
 )
-def test_usage_window_rejects_control_characters_in_non_null_label(label):
+def test_usage_window_rejects_unsafe_display_characters_in_non_null_label(label):
     with pytest.raises(ValueError, match="control"):
         UsageWindow(**{**VALID_WINDOW, "label": label})
 
@@ -81,6 +87,44 @@ def test_usage_window_preserves_valid_unicode_limit_text():
 
     assert window.limit_id == "코덱스-🚀"
     assert window.label == "개인 한도 🚀"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_code_points"),
+    [
+        pytest.param(
+            "label",
+            "👨‍👩‍👧‍👦",
+            (0x1F468, 0x200D, 0x1F469, 0x200D, 0x1F467, 0x200D, 0x1F466),
+            id="family-emoji-with-zwj",
+        ),
+        pytest.param(
+            "label",
+            "می‌روم",
+            (0x0645, 0x06CC, 0x200C, 0x0631, 0x0648, 0x0645),
+            id="persian-with-zwnj",
+        ),
+        pytest.param(
+            "limit_id",
+            "\ue000",
+            (0xE000,),
+            id="private-use-glyph",
+        ),
+        pytest.param(
+            "label",
+            "\U0001fae9",
+            (0x1FAE9,),
+            id="newer-unicode-character",
+        ),
+    ],
+)
+def test_usage_window_preserves_safe_unicode_code_points(
+    field, value, expected_code_points
+):
+    window = UsageWindow(**{**VALID_WINDOW, field: value})
+
+    actual = getattr(window, field)
+    assert tuple(ord(character) for character in actual) == expected_code_points
 
 
 @pytest.mark.parametrize("duration", [True, 0, -1, 1.5])
@@ -1038,6 +1082,59 @@ def test_refresh_rejects_provider_control_characters_in_limit_text(
     assert captured.value.code == "unsupported_cli_version"
     assert captured.value.__cause__ is None
     assert captured.value.__context__ is None
+
+
+def test_refresh_preserves_safe_provider_unicode_sequences(
+    provider, account, fake_rpc
+):
+    limit_id = "\ue000-\U0001fae9"
+    label = "가족 👨‍👩‍👧‍👦 · می‌روم"
+    fake_rpc.respond(
+        "account/rateLimits/read",
+        {
+            "rateLimitsByLimitId": {
+                limit_id: {
+                    "limitId": limit_id,
+                    "limitName": label,
+                    "primary": {
+                        "usedPercent": 42,
+                        "windowDurationMins": 300,
+                        "resetsAt": None,
+                    },
+                    "secondary": None,
+                }
+            }
+        },
+    )
+
+    snapshot = provider.refresh_usage(account)
+
+    assert tuple(ord(character) for character in snapshot.windows[0].limit_id) == (
+        0xE000,
+        0x2D,
+        0x1FAE9,
+    )
+    assert tuple(ord(character) for character in snapshot.windows[0].label) == (
+        0xAC00,
+        0xC871,
+        0x20,
+        0x1F468,
+        0x200D,
+        0x1F469,
+        0x200D,
+        0x1F467,
+        0x200D,
+        0x1F466,
+        0x20,
+        0xB7,
+        0x20,
+        0x0645,
+        0x06CC,
+        0x200C,
+        0x0631,
+        0x0648,
+        0x0645,
+    )
 
 
 def test_malformed_response_error_never_contains_token_like_data(

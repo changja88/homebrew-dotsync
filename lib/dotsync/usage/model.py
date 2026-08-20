@@ -13,6 +13,30 @@ from typing import Literal
 _RFC3339 = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
 )
+_DANGEROUS_BIDI_CLASSES = frozenset(
+    {"LRE", "RLE", "LRO", "RLO", "PDF", "LRI", "RLI", "FSI", "PDI"}
+)
+_DANGEROUS_INVISIBLE_CODE_POINTS = frozenset(
+    {
+        0x00AD,  # soft hyphen
+        0x061C,  # Arabic letter mark
+        0x180E,  # Mongolian vowel separator
+        0x200B,  # zero-width space
+        0x200E,  # left-to-right mark
+        0x200F,  # right-to-left mark
+        0x2028,  # line separator
+        0x2029,  # paragraph separator
+        0x2060,  # word joiner
+        0x2061,  # function application
+        0x2062,  # invisible times
+        0x2063,  # invisible separator
+        0x2064,  # invisible plus
+        0xFEFF,  # zero-width no-break space
+        0xFFF9,  # interlinear annotation anchor
+        0xFFFA,  # interlinear annotation separator
+        0xFFFB,  # interlinear annotation terminator
+    }
+).union(range(0x206A, 0x2070), range(0x1BCA0, 0x1BCA4))
 
 
 def _require_rfc3339(value: object, field: str) -> None:
@@ -24,9 +48,16 @@ def _require_rfc3339(value: object, field: str) -> None:
         raise ValueError(f"{field} must be an RFC 3339 timestamp") from error
 
 
-def _reject_control_characters(value: str, field: str) -> None:
-    if any(unicodedata.category(character).startswith("C") for character in value):
-        raise ValueError(f"{field} must not contain control characters")
+def _reject_unsafe_display_characters(value: str, field: str) -> None:
+    for character in value:
+        if (
+            unicodedata.category(character) in {"Cc", "Cs"}
+            or unicodedata.bidirectional(character) in _DANGEROUS_BIDI_CLASSES
+            or ord(character) in _DANGEROUS_INVISIBLE_CODE_POINTS
+        ):
+            raise ValueError(
+                f"{field} must not contain control or unsafe formatting characters"
+            )
 
 
 @dataclass(frozen=True)
@@ -43,11 +74,11 @@ class UsageWindow:
             raise ValueError("unsupported usage window name")
         if not isinstance(self.limit_id, str) or not self.limit_id.strip():
             raise ValueError("limit id must not be blank")
-        _reject_control_characters(self.limit_id, "limit id")
+        _reject_unsafe_display_characters(self.limit_id, "limit id")
         if self.label is not None and not isinstance(self.label, str):
             raise TypeError("usage window label must be a string or None")
         if self.label is not None:
-            _reject_control_characters(self.label, "usage window label")
+            _reject_unsafe_display_characters(self.label, "usage window label")
         if type(self.used_percent) not in {int, float}:
             raise TypeError("usage percentage must be a number")
         try:
