@@ -439,6 +439,11 @@ def _parse_v2_1_usage(text: str, observed_at: str) -> tuple[UsageWindow, ...]:
             raise _usage_error()
         if any("%" in line for line in block[2:]):
             raise _usage_error()
+        if any(
+            _relative_reset(line, observed_at) is not None
+            for line in block[3:]
+        ):
+            raise _usage_error()
         limit_id, label, duration = _WINDOW_METADATA[name]
         if not 0.0 <= percentage <= 100.0:
             raise _usage_error()

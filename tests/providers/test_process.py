@@ -198,6 +198,10 @@ elif mode == "split-utf8":
     time.sleep(0.05)
     os.write(1, b"\x95\x9cREADY")
     time.sleep(10)
+elif mode == "incomplete-utf8-eof":
+    os.write(1, b"sentinel-pty-incomplete-secret\xed")
+elif mode == "complete-utf8-eof":
+    os.write(1, b"COMPLETE-\xed\x95\x9c")
 elif mode == "exit":
     print("sentinel-pty-exit-secret", flush=True)
     raise SystemExit(11)
@@ -235,6 +239,20 @@ def _pty_command(
         pid_file,
         *arguments,
     ], pid_file
+
+
+def _assert_traceback_has_no_terminal_sentinel(
+    error: BaseException, sentinel: bytes
+) -> None:
+    text_sentinel = sentinel.decode("ascii")
+    current = error.__traceback__
+    while current is not None:
+        for value in current.tb_frame.f_locals.values():
+            if isinstance(value, (bytes, bytearray)):
+                assert sentinel not in bytes(value)
+            elif isinstance(value, str):
+                assert text_sentinel not in value
+        current = current.tb_next
 
 
 def _assert_process_stopped(pid_file: Path) -> None:
@@ -1347,6 +1365,12 @@ def test_pty_session_enforces_total_output_ceiling_without_output_leak(tmp_path)
             session.read_until(lambda value: False, 2.0)
 
     assert error.value.code == "pty_output_limit"
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    assert session._output == bytearray()
+    _assert_traceback_has_no_terminal_sentinel(
+        error.value, b"sentinel-pty-output-secret"
+    )
     assert "sentinel-pty-output-secret" not in error.value.safe_message
     _assert_process_stopped(pid_file)
 
@@ -1370,6 +1394,9 @@ def test_pty_session_rejects_invalid_utf8_before_semantic_predicate(tmp_path):
     assert captured.value.__cause__ is None
     assert captured.value.__context__ is None
     assert session._output == bytearray()
+    _assert_traceback_has_no_terminal_sentinel(
+        captured.value, b"sentinel-pty-invalid-secret"
+    )
     assert "sentinel-pty-invalid-secret" not in rendered
     _assert_process_stopped(pid_file)
 
@@ -1388,6 +1415,45 @@ def test_pty_session_waits_for_split_valid_utf8_sequence(tmp_path):
     _assert_process_stopped(pid_file)
 
 
+def test_pty_session_rejects_incomplete_utf8_when_child_reaches_eof(tmp_path):
+    command, pid_file = _pty_command(tmp_path, "incomplete-utf8-eof")
+
+    with PtySession(
+        command,
+        env={"PATH": os.environ.get("PATH", "")},
+        cwd=tmp_path,
+    ) as session:
+        with pytest.raises(ProviderError) as captured:
+            session.read_until(lambda value: False, 2.0)
+
+    rendered = "".join(traceback.format_exception(captured.value))
+    assert captured.value.code == "pty_output_invalid"
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert session._output == bytearray()
+    _assert_traceback_has_no_terminal_sentinel(
+        captured.value, b"sentinel-pty-incomplete-secret"
+    )
+    assert "sentinel-pty-incomplete-secret" not in rendered
+    _assert_process_stopped(pid_file)
+
+
+def test_pty_session_preserves_normal_exit_for_complete_utf8_output(tmp_path):
+    command, pid_file = _pty_command(tmp_path, "complete-utf8-eof")
+
+    with PtySession(
+        command,
+        env={"PATH": os.environ.get("PATH", "")},
+        cwd=tmp_path,
+    ) as session:
+        with pytest.raises(ProviderError) as captured:
+            session.read_until(lambda value: False, 2.0)
+
+    assert captured.value.code == "pty_exited"
+    assert bytes(session._output).decode("utf-8") == "COMPLETE-한"
+    _assert_process_stopped(pid_file)
+
+
 def test_pty_session_reports_exit_status_without_output_leak(tmp_path):
     command, pid_file = _pty_command(tmp_path, "exit")
 
@@ -1400,6 +1466,11 @@ def test_pty_session_reports_exit_status_without_output_leak(tmp_path):
             session.read_until(lambda value: "never" in value, 2.0)
 
     assert error.value.code == "pty_exited"
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    _assert_traceback_has_no_terminal_sentinel(
+        error.value, b"sentinel-pty-exit-secret"
+    )
     assert "exit status 11" in error.value.safe_message
     assert "sentinel-pty-exit-secret" not in error.value.safe_message
     _assert_process_stopped(pid_file)

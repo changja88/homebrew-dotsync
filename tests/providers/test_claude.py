@@ -489,6 +489,57 @@ def test_parser_rejects_non_usage_or_non_adjacent_percentages(usage_rows):
     assert captured.value.code == "unsupported_usage_layout"
 
 
+@pytest.mark.parametrize(
+    "terminal_text",
+    [
+        pytest.param(
+            "5-hour limit\r\n"
+            "37% used\r\n"
+            "Resets in 2 hours\r\n"
+            "Resets in 1 hour\r\n",
+            id="english",
+        ),
+        pytest.param(
+            "5시간 한도\r\n"
+            "37% 사용\r\n"
+            "2시간 후 재설정\r\n"
+            "1시간 후 초기화\r\n",
+            id="korean",
+        ),
+    ],
+)
+def test_parser_rejects_duplicate_recognized_reset_rows(terminal_text):
+    with pytest.raises(ProviderError) as captured:
+        parse_claude_usage(
+            account_id=ACCOUNT_ID,
+            provider_version="2.1.215",
+            terminal_bytes=terminal_text.encode("utf-8"),
+            observed_at=OBSERVED_AT,
+        )
+
+    assert captured.value.code == "unsupported_usage_layout"
+
+
+def test_parser_allows_unrelated_footer_after_single_reset_row():
+    terminal_bytes = (
+        b"5-hour limit\r\n"
+        b"37% used\r\n"
+        b"Resets in 2 hours\r\n"
+        b"Press Esc to go back\r\n"
+    )
+
+    snapshot = parse_claude_usage(
+        account_id=ACCOUNT_ID,
+        provider_version="2.1.215",
+        terminal_bytes=terminal_bytes,
+        observed_at=OBSERVED_AT,
+    )
+
+    assert [(window.name, window.used_percent) for window in snapshot.windows] == [
+        ("five_hour", 37.0)
+    ]
+
+
 def test_truncated_terminal_escape_rejects_an_otherwise_valid_layout():
     terminal_bytes = fixture_bytes("claude_usage_v2_1_215.ansi") + b"\x1b["
 

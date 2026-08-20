@@ -784,7 +784,12 @@ class PtySession:
         cancel_event: threading.Event | None = None,
     ) -> str:
         selector = self._require_selector()
-        current = self._decoded_output()
+        current, invalid_output = self._decoded_output()
+        if invalid_output:
+            self.terminate()
+            raise self._pty_error(
+                "pty_output_invalid", "produced invalid output"
+            )
         if current is not None and predicate(current):
             return current
         deadline = time.monotonic() + timeout
@@ -805,8 +810,11 @@ class PtySession:
             if not events:
                 process = self._require_process()
                 if process.poll() is not None:
-                    raise self._pty_error("pty_exited", "exited")
+                    current = None
+                    self._raise_for_exit()
                 continue
+            reached_eof = False
+            chunk = b""
             try:
                 chunk = os.read(self._require_master_fd(), 65536)
             except BlockingIOError:
@@ -816,18 +824,28 @@ class PtySession:
                     raise self._pty_error(
                         "pty_read_failed", "could not be read"
                     ) from error
+                reached_eof = True
+            if reached_eof or not chunk:
+                chunk = b""
+                current = None
                 self._wait_for_exit()
-                raise self._pty_error("pty_exited", "exited") from error
-            if not chunk:
-                self._wait_for_exit()
-                raise self._pty_error("pty_exited", "exited")
+                self._raise_for_exit()
             if len(self._output) + len(chunk) > _MAX_PTY_OUTPUT_BYTES:
+                chunk = b""
+                current = None
+                self._output.clear()
                 self.terminate()
                 raise self._pty_error(
                     "pty_output_limit", "exceeded its output limit"
                 )
             self._output.extend(chunk)
-            current = self._decoded_output()
+            chunk = b""
+            current, invalid_output = self._decoded_output()
+            if invalid_output:
+                self.terminate()
+                raise self._pty_error(
+                    "pty_output_invalid", "produced invalid output"
+                )
             if current is not None and predicate(current):
                 return current
 
@@ -850,23 +868,38 @@ class PtySession:
             except OSError:
                 pass
 
-    def _decoded_output(self) -> str | None:
+    def _decoded_output(
+        self, *, final: bool = False
+    ) -> tuple[str | None, bool]:
         raw_output = bytes(self._output)
         decoder = codecs.getincrementaldecoder("utf-8")(errors="strict")
         decoded: str | None = None
+        pending = False
         try:
-            decoded = decoder.decode(raw_output, final=False)
+            decoded = decoder.decode(raw_output, final=final)
+            pending = bool(decoder.getstate()[0])
         except UnicodeError:
-            raw_output = b""
             self._output.clear()
+        raw_output = b""
+        decoder = None
         if decoded is None:
+            return None, True
+        if pending:
+            return None, False
+        return decoded, False
+
+    def _raise_for_exit(self) -> None:
+        invalid_output = self._final_output_is_invalid()
+        if invalid_output:
             self.terminate()
             raise self._pty_error(
                 "pty_output_invalid", "produced invalid output"
             )
-        if decoder.getstate()[0]:
-            return None
-        return decoded
+        raise self._pty_error("pty_exited", "exited")
+
+    def _final_output_is_invalid(self) -> bool:
+        result = self._decoded_output(final=True)
+        return result[1]
 
     def _wait_for_exit(self) -> None:
         process = self._require_process()
