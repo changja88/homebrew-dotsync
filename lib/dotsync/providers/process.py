@@ -8,6 +8,7 @@ import os
 import pty
 import selectors
 import shutil
+import signal
 import stat
 import subprocess
 import threading
@@ -135,6 +136,7 @@ def run_checked(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            start_new_session=True,
             shell=False,
         )
     except OSError as error:
@@ -142,13 +144,22 @@ def run_checked(
             "process_start_failed", "Provider process could not be started."
         ) from error
 
+    failure_code: str | None = None
     try:
         stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as error:
+    except subprocess.TimeoutExpired:
         _terminate_process(process)
+        failure_code = "process_timeout"
+    except UnicodeError:
+        _terminate_process(process)
+        failure_code = "process_output_invalid"
+
+    if failure_code == "process_timeout":
+        raise ProviderError("process_timeout", "Provider process timed out.")
+    if failure_code == "process_output_invalid":
         raise ProviderError(
-            "process_timeout", "Provider process timed out."
-        ) from error
+            "process_output_invalid", "Provider process output was invalid."
+        )
 
     completed = subprocess.CompletedProcess(
         normalized,
@@ -204,14 +215,43 @@ def _validated_cwd(cwd: Path) -> Path:
 
 
 def _terminate_process(process: subprocess.Popen[object]) -> None:
-    if process.poll() is not None:
-        return
-    process.terminate()
+    process_group = process.pid
+    if process_group == os.getpgrp():
+        raise RuntimeError("refusing to signal the current process group")
+    _signal_process_group(process_group, signal.SIGTERM)
+    deadline = time.monotonic() + 2.0
+    while _process_group_exists(process_group) and time.monotonic() < deadline:
+        if process.poll() is None:
+            try:
+                process.wait(timeout=0.01)
+            except subprocess.TimeoutExpired:
+                pass
+        else:
+            time.sleep(0.01)
+    if _process_group_exists(process_group):
+        _signal_process_group(process_group, signal.SIGKILL)
     try:
-        process.wait(timeout=2.0)
+        process.wait(timeout=0.5)
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait()
+
+
+def _signal_process_group(process_group: int, requested_signal: int) -> None:
+    try:
+        os.killpg(process_group, requested_signal)
+    except ProcessLookupError:
+        pass
+
+
+def _process_group_exists(process_group: int) -> bool:
+    try:
+        os.killpg(process_group, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 class JsonRpcProcess:
@@ -234,6 +274,7 @@ class JsonRpcProcess:
         self._condition = threading.Condition()
         self._write_lock = threading.Lock()
         self._responses: dict[int, dict[str, Any]] = {}
+        self._pending_ids: set[int] = set()
         self._failure: str | None = None
         self._next_id = 1
         self._process: subprocess.Popen[str] | None = None
@@ -255,12 +296,25 @@ class JsonRpcProcess:
                 encoding="utf-8",
                 errors="strict",
                 bufsize=1,
+                start_new_session=True,
                 shell=False,
             )
         except OSError as error:
             raise ProviderError(
                 "rpc_start_failed", "RPC process could not be started."
             ) from error
+        if process.stdin is None:
+            _terminate_process(process)
+            raise ProviderError(
+                "rpc_start_failed", "RPC process could not be started."
+            )
+        try:
+            os.set_blocking(process.stdin.fileno(), False)
+        except OSError:
+            _terminate_process(process)
+            raise ProviderError(
+                "rpc_start_failed", "RPC process could not be started."
+            )
         self._process = process
         self._reader = threading.Thread(
             target=self._read_messages,
@@ -283,22 +337,30 @@ class JsonRpcProcess:
     ) -> Any:
         if not method:
             raise ProviderError("rpc_method", "RPC method is invalid.")
-        with self._condition:
-            request_id = self._next_id
-            self._next_id += 1
-        self._send(
-            {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "method": method,
-                "params": params,
-            },
-            method,
-        )
-
         deadline = time.monotonic() + (
             self._timeout if timeout is None else timeout
         )
+        with self._condition:
+            request_id = self._next_id
+            self._next_id += 1
+            self._pending_ids.add(request_id)
+        try:
+            self._send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": method,
+                    "params": params,
+                },
+                method,
+                deadline,
+                cancel_event,
+            )
+        except ProviderError:
+            with self._condition:
+                self._pending_ids.discard(request_id)
+            raise
+
         while True:
             failure: str | None = None
             with self._condition:
@@ -323,6 +385,8 @@ class JsonRpcProcess:
 
             if failure in {"rpc_timeout", "rpc_cancelled"}:
                 self._stop_process()
+            with self._condition:
+                self._pending_ids.discard(request_id)
             summary = {
                 "rpc_cancelled": "was cancelled",
                 "rpc_exited": "failed",
@@ -338,6 +402,8 @@ class JsonRpcProcess:
         self._send(
             {"jsonrpc": "2.0", "method": method, "params": params},
             method,
+            time.monotonic() + self._timeout,
+            None,
         )
 
     def close(self) -> None:
@@ -362,10 +428,18 @@ class JsonRpcProcess:
         if reader is not None and reader is not threading.current_thread():
             reader.join(timeout=2.0)
 
-    def _send(self, message: dict[str, Any], method: str) -> None:
+    def _send(
+        self,
+        message: dict[str, Any],
+        method: str,
+        deadline: float,
+        cancel_event: threading.Event | None,
+    ) -> None:
         process = self._require_process()
         try:
-            encoded = json.dumps(message, separators=(",", ":")) + "\n"
+            encoded = (
+                json.dumps(message, separators=(",", ":")) + "\n"
+            ).encode("utf-8")
         except (TypeError, ValueError) as error:
             raise self._request_error(
                 "rpc_request_invalid", method, "could not be encoded"
@@ -373,11 +447,67 @@ class JsonRpcProcess:
         with self._write_lock:
             if process.stdin is None or process.poll() is not None:
                 raise self._request_error("rpc_exited", method, "failed")
+            selector: selectors.BaseSelector | None = None
+            selector_setup_failed = False
             try:
-                process.stdin.write(encoded)
-                process.stdin.flush()
-            except (BrokenPipeError, OSError) as error:
-                raise self._request_error("rpc_exited", method, "failed") from error
+                selector = selectors.DefaultSelector()
+                selector.register(process.stdin.fileno(), selectors.EVENT_WRITE)
+            except Exception:
+                selector_setup_failed = True
+            if selector_setup_failed:
+                if selector is not None:
+                    try:
+                        selector.close()
+                    except Exception:
+                        pass
+                raise self._request_error(
+                    "rpc_send_failed", method, "could not be sent"
+                )
+            if selector is None:
+                raise self._request_error(
+                    "rpc_send_failed", method, "could not be sent"
+                )
+            try:
+                offset = 0
+                while offset < len(encoded):
+                    failure = self._send_failure(deadline, cancel_event)
+                    if failure is not None:
+                        self._stop_process()
+                        summary = (
+                            "was cancelled"
+                            if failure == "rpc_cancelled"
+                            else "timed out"
+                        )
+                        raise self._request_error(failure, method, summary)
+                    if process.poll() is not None:
+                        raise self._request_error("rpc_exited", method, "failed")
+                    remaining = deadline - time.monotonic()
+                    events = selector.select(min(remaining, 0.05))
+                    if not events:
+                        continue
+                    try:
+                        offset += os.write(
+                            process.stdin.fileno(), encoded[offset:]
+                        )
+                    except BlockingIOError:
+                        continue
+                    except (BrokenPipeError, OSError) as error:
+                        raise self._request_error(
+                            "rpc_exited", method, "failed"
+                        ) from error
+            finally:
+                selector.close()
+
+    def _send_failure(
+        self,
+        deadline: float,
+        cancel_event: threading.Event | None,
+    ) -> str | None:
+        if cancel_event is not None and cancel_event.is_set():
+            return "rpc_cancelled"
+        if time.monotonic() >= deadline:
+            return "rpc_timeout"
+        return None
 
     def _read_messages(self) -> None:
         process = self._require_process()
@@ -421,6 +551,12 @@ class JsonRpcProcess:
                 self._set_failure("rpc_protocol_error")
                 return
             with self._condition:
+                if response_id not in self._pending_ids:
+                    if self._failure is None:
+                        self._failure = "rpc_protocol_error"
+                    self._condition.notify_all()
+                    return
+                self._pending_ids.remove(response_id)
                 self._responses[response_id] = message
                 self._condition.notify_all()
 
@@ -499,8 +635,13 @@ class PtySession:
     def __enter__(self) -> "PtySession":
         if self._process is not None:
             raise ProviderError("pty_state", "PTY process is already running.")
-        master_fd, slave_fd = pty.openpty()
+        master_fd: int | None = None
+        slave_fd: int | None = None
+        process: subprocess.Popen[bytes] | None = None
+        selector: selectors.BaseSelector | None = None
+        setup_failed = False
         try:
+            master_fd, slave_fd = pty.openpty()
             process = subprocess.Popen(
                 self._argv,
                 cwd=self._cwd,
@@ -512,21 +653,34 @@ class PtySession:
                 start_new_session=True,
                 shell=False,
             )
-        except OSError as error:
-            os.close(master_fd)
             os.close(slave_fd)
-            raise ProviderError(
-                "pty_start_failed", "PTY process could not be started."
-            ) from error
-        os.close(slave_fd)
-        try:
+            slave_fd = None
             os.set_blocking(master_fd, False)
             selector = selectors.DefaultSelector()
             selector.register(master_fd, selectors.EVENT_READ)
         except Exception:
-            os.close(master_fd)
-            _terminate_process(process)
-            raise
+            setup_failed = True
+        if setup_failed:
+            if selector is not None:
+                try:
+                    selector.close()
+                except Exception:
+                    pass
+            if process is not None:
+                _terminate_process(process)
+            for file_descriptor in (master_fd, slave_fd):
+                if file_descriptor is not None:
+                    try:
+                        os.close(file_descriptor)
+                    except OSError:
+                        pass
+            raise ProviderError(
+                "pty_start_failed", "PTY process could not be started."
+            )
+        if master_fd is None or process is None or selector is None:
+            raise ProviderError(
+                "pty_start_failed", "PTY process could not be started."
+            )
         self._process = process
         self._master_fd = master_fd
         self._selector = selector

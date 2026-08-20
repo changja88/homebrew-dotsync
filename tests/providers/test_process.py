@@ -1,13 +1,18 @@
 import json
 import os
+import pty
+import selectors
+import signal
 import stat
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 
 import pytest
 
+import dotsync.providers.process as process_module
 from dotsync.providers.base import ProviderError
 from dotsync.providers.process import (
     JsonRpcProcess,
@@ -54,6 +59,27 @@ elif mode == "observe-notify":
             "has_notify_id": "id" in notification,
         },
     }), flush=True)
+elif mode == "future-response":
+    request = json.loads(sys.stdin.readline())
+    print(json.dumps({
+        "jsonrpc": "2.0",
+        "id": request["id"] + 1,
+        "result": "sentinel-future-response",
+    }), flush=True)
+    time.sleep(0.5)
+elif mode == "duplicate-response":
+    first = json.loads(sys.stdin.readline())
+    with open(pid_file + ".first-read", "w", encoding="utf-8") as handle:
+        handle.write("ready")
+    json.loads(sys.stdin.readline())
+    response = json.dumps({
+        "jsonrpc": "2.0",
+        "id": first["id"],
+        "result": "sentinel-duplicate-response",
+    })
+    sys.stdout.write(response + "\n" + response + "\n")
+    sys.stdout.flush()
+    time.sleep(0.5)
 elif mode == "malformed":
     sys.stdin.readline()
     print("sentinel-malformed-secret{", flush=True)
@@ -72,6 +98,20 @@ elif mode == "oversized":
 elif mode == "stall":
     sys.stdin.readline()
     time.sleep(10)
+elif mode == "blocked-stdin":
+    time.sleep(0.5)
+elif mode == "descendant-stall":
+    import subprocess
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    with open(pid_file + ".child", "w", encoding="utf-8") as handle:
+        handle.write(str(child.pid))
+    sys.stdin.readline()
+    time.sleep(30)
 elif mode == "exit":
     sys.stdin.readline()
     raise SystemExit(9)
@@ -94,6 +134,18 @@ elif mode == "argument":
 elif mode == "stall":
     print("sentinel-pty-timeout-secret", flush=True)
     time.sleep(10)
+elif mode == "descendant-stall":
+    import subprocess
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    with open(pid_file + ".child", "w", encoding="utf-8") as handle:
+        handle.write(str(child.pid))
+    print("CHILD-READY", flush=True)
+    time.sleep(30)
 elif mode == "oversized":
     os.write(1, b"sentinel-pty-output-secret" + (b"x" * (2 * 1024 * 1024)))
     time.sleep(10)
@@ -127,8 +179,46 @@ def _pty_command(
 
 def _assert_process_stopped(pid_file: Path) -> None:
     pid = int(pid_file.read_text(encoding="utf-8"))
-    with pytest.raises(ProcessLookupError):
+    deadline = time.monotonic() + 1.0
+    while _process_exists(pid) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not _process_exists(pid)
+
+
+def _process_exists(pid: int) -> bool:
+    try:
         os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _cleanup_process(pid_file: Path) -> None:
+    if not pid_file.exists():
+        return
+    pid = int(pid_file.read_text(encoding="utf-8"))
+    if _process_exists(pid):
+        os.kill(pid, signal.SIGKILL)
+
+
+def _wait_for_file(path: Path) -> None:
+    deadline = time.monotonic() + 1.0
+    while not path.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert path.exists()
+
+
+def _fd_is_open(file_descriptor: int) -> bool:
+    try:
+        os.fstat(file_descriptor)
+    except OSError:
+        return False
+    return True
+
+
+def _close_fd_if_open(file_descriptor: int) -> None:
+    if _fd_is_open(file_descriptor):
+        os.close(file_descriptor)
 
 
 def test_claude_environment_removes_api_billing_and_default_profile(
@@ -271,6 +361,78 @@ def test_run_checked_requires_absolute_verified_argv_zero(tmp_path):
     assert error.value.code == "invalid_executable"
 
 
+def test_run_checked_timeout_discards_unsafe_exception_state(tmp_path):
+    secret = "sentinel-timeout-argument"
+
+    with pytest.raises(ProviderError) as error:
+        run_checked(
+            [
+                Path(sys.executable).resolve(),
+                "-c",
+                "import time; time.sleep(10)",
+                secret,
+            ],
+            env={"PATH": os.environ.get("PATH", "")},
+            cwd=tmp_path,
+            timeout=0.05,
+        )
+
+    rendered = "".join(traceback.format_exception(error.value))
+    assert error.value.code == "process_timeout"
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    assert secret not in rendered
+
+
+def test_run_checked_rejects_invalid_utf8_without_retaining_child_output(tmp_path):
+    secret = "sentinel-invalid-process-output"
+    code = (
+        "import os; "
+        f"os.write(1, {secret.encode()!r} + bytes([255])); "
+        "raise SystemExit(0)"
+    )
+
+    with pytest.raises(ProviderError) as error:
+        run_checked(
+            [Path(sys.executable).resolve(), "-c", code],
+            env={"PATH": os.environ.get("PATH", "")},
+            cwd=tmp_path,
+            timeout=2.0,
+        )
+
+    rendered = "".join(traceback.format_exception(error.value))
+    assert error.value.code == "process_output_invalid"
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    assert secret not in rendered
+
+
+def test_run_checked_timeout_terminates_descendants(tmp_path):
+    child_pid_file = tmp_path / "checked-child.pid"
+    code = (
+        "import pathlib, subprocess, sys, time; "
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import signal, time; signal.signal(signal.SIGTERM, "
+        "signal.SIG_IGN); time.sleep(30)'], stdin=subprocess.DEVNULL, "
+        "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); "
+        f"pathlib.Path({str(child_pid_file)!r}).write_text(str(child.pid)); "
+        "time.sleep(30)"
+    )
+
+    try:
+        with pytest.raises(ProviderError):
+            run_checked(
+                [Path(sys.executable).resolve(), "-c", code],
+                env={"PATH": os.environ.get("PATH", "")},
+                cwd=tmp_path,
+                timeout=0.1,
+            )
+
+        _assert_process_stopped(child_pid_file)
+    finally:
+        _cleanup_process(child_pid_file)
+
+
 def test_json_rpc_process_matches_sequential_responses_and_reports_notifications(
     tmp_path,
 ):
@@ -402,6 +564,178 @@ def test_json_rpc_wait_observes_cancellation_and_reaps_child(tmp_path):
     _assert_process_stopped(pid_file)
 
 
+def test_json_rpc_request_deadline_includes_blocked_transmission(tmp_path):
+    command, pid_file = _rpc_command(tmp_path, "blocked-stdin")
+    secret = "sentinel-blocked-request"
+    started = time.monotonic()
+
+    with JsonRpcProcess(
+        command,
+        env={"PATH": os.environ.get("PATH", "")},
+        cwd=tmp_path,
+        timeout=0.05,
+    ) as rpc:
+        with pytest.raises(ProviderError) as error:
+            rpc.request("account/read", {"value": ("x" * (2 * 1024 * 1024)) + secret})
+
+    rendered = "".join(traceback.format_exception(error.value))
+    assert time.monotonic() - started < 0.3
+    assert error.value.code == "rpc_timeout"
+    assert secret not in rendered
+    _assert_process_stopped(pid_file)
+
+
+def test_json_rpc_request_cancellation_includes_blocked_transmission(tmp_path):
+    command, pid_file = _rpc_command(tmp_path, "blocked-stdin")
+    cancel_event = threading.Event()
+    timer = threading.Timer(0.05, cancel_event.set)
+    started = time.monotonic()
+    timer.start()
+    try:
+        with JsonRpcProcess(
+            command,
+            env={"PATH": os.environ.get("PATH", "")},
+            cwd=tmp_path,
+            timeout=2.0,
+        ) as rpc:
+            with pytest.raises(ProviderError) as error:
+                rpc.request(
+                    "account/read",
+                    {"value": "x" * (2 * 1024 * 1024)},
+                    cancel_event=cancel_event,
+                )
+    finally:
+        timer.cancel()
+
+    assert time.monotonic() - started < 0.3
+    assert error.value.code == "rpc_cancelled"
+    _assert_process_stopped(pid_file)
+
+
+def test_json_rpc_notification_uses_default_send_deadline(tmp_path):
+    command, pid_file = _rpc_command(tmp_path, "blocked-stdin")
+    started = time.monotonic()
+
+    with JsonRpcProcess(
+        command,
+        env={"PATH": os.environ.get("PATH", "")},
+        cwd=tmp_path,
+        timeout=0.05,
+    ) as rpc:
+        with pytest.raises(ProviderError) as error:
+            rpc.notify("fixture/large", {"value": "x" * (2 * 1024 * 1024)})
+
+    assert time.monotonic() - started < 0.3
+    assert error.value.code == "rpc_timeout"
+    _assert_process_stopped(pid_file)
+
+
+def test_json_rpc_send_selector_failure_is_safe_and_closes_selector(
+    monkeypatch, tmp_path
+):
+    command, _ = _rpc_command(tmp_path, "stall")
+
+    class FailingSelector:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def register(self, *args, **kwargs):
+            raise RuntimeError("sentinel-rpc-selector")
+
+        def close(self) -> None:
+            self.closed = True
+
+    failing_selector = FailingSelector()
+
+    with JsonRpcProcess(
+        command,
+        env={"PATH": os.environ.get("PATH", "")},
+        cwd=tmp_path,
+        timeout=0.2,
+    ) as rpc:
+        monkeypatch.setattr(
+            process_module.selectors,
+            "DefaultSelector",
+            lambda: failing_selector,
+        )
+        with pytest.raises(ProviderError) as error:
+            rpc.request("account/read", {})
+
+    rendered = "".join(traceback.format_exception(error.value))
+    assert error.value.code == "rpc_send_failed"
+    assert "sentinel-rpc-selector" not in rendered
+    assert failing_selector.closed
+
+
+def test_json_rpc_rejects_future_response_id_without_retaining_frame(tmp_path):
+    command, pid_file = _rpc_command(tmp_path, "future-response")
+
+    with JsonRpcProcess(
+        command,
+        env={"PATH": os.environ.get("PATH", "")},
+        cwd=tmp_path,
+        timeout=0.2,
+    ) as rpc:
+        with pytest.raises(ProviderError) as error:
+            rpc.request("account/read", {})
+
+    rendered = "".join(traceback.format_exception(error.value))
+    assert error.value.code == "rpc_protocol_error"
+    assert "sentinel-future-response" not in rendered
+    _assert_process_stopped(pid_file)
+
+
+def test_json_rpc_rejects_duplicate_response_id_with_pending_requests(tmp_path):
+    command, pid_file = _rpc_command(tmp_path, "duplicate-response")
+    first_read = Path(str(pid_file) + ".first-read")
+    first_outcome = []
+
+    with JsonRpcProcess(
+        command,
+        env={"PATH": os.environ.get("PATH", "")},
+        cwd=tmp_path,
+        timeout=0.3,
+    ) as rpc:
+        def request_first() -> None:
+            try:
+                first_outcome.append(rpc.request("first/read", {}))
+            except ProviderError as error:
+                first_outcome.append(error)
+
+        thread = threading.Thread(target=request_first)
+        thread.start()
+        _wait_for_file(first_read)
+        with pytest.raises(ProviderError) as error:
+            rpc.request("second/read", {})
+        thread.join(timeout=1.0)
+
+    rendered = "".join(traceback.format_exception(error.value))
+    assert not thread.is_alive()
+    assert first_outcome
+    assert error.value.code == "rpc_protocol_error"
+    assert "sentinel-duplicate-response" not in rendered
+    _assert_process_stopped(pid_file)
+
+
+def test_json_rpc_timeout_terminates_descendants(tmp_path):
+    command, pid_file = _rpc_command(tmp_path, "descendant-stall")
+    child_pid_file = Path(str(pid_file) + ".child")
+
+    try:
+        with JsonRpcProcess(
+            command,
+            env={"PATH": os.environ.get("PATH", "")},
+            cwd=tmp_path,
+            timeout=0.1,
+        ) as rpc:
+            with pytest.raises(ProviderError):
+                rpc.request("account/read", {})
+
+        _assert_process_stopped(child_pid_file)
+    finally:
+        _cleanup_process(child_pid_file)
+
+
 def test_pty_session_captures_ansi_output_until_predicate_matches(tmp_path):
     command, pid_file = _pty_command(tmp_path, "ansi")
 
@@ -480,6 +814,25 @@ def test_pty_session_wait_observes_cancellation(tmp_path):
     _assert_process_stopped(pid_file)
 
 
+def test_pty_session_timeout_terminates_descendants(tmp_path):
+    command, pid_file = _pty_command(tmp_path, "descendant-stall")
+    child_pid_file = Path(str(pid_file) + ".child")
+
+    try:
+        with PtySession(
+            command,
+            env={"PATH": os.environ.get("PATH", "")},
+            cwd=tmp_path,
+        ) as session:
+            session.read_until(lambda output: "CHILD-READY" in output, 2.0)
+            with pytest.raises(ProviderError):
+                session.read_until(lambda output: "never" in output, 0.1)
+
+        _assert_process_stopped(child_pid_file)
+    finally:
+        _cleanup_process(child_pid_file)
+
+
 def test_pty_session_enforces_total_output_ceiling_without_output_leak(tmp_path):
     command, pid_file = _pty_command(tmp_path, "oversized")
 
@@ -511,3 +864,82 @@ def test_pty_session_reports_exit_status_without_output_leak(tmp_path):
     assert "exit status 11" in error.value.safe_message
     assert "sentinel-pty-exit-secret" not in error.value.safe_message
     _assert_process_stopped(pid_file)
+
+
+def test_pty_startup_value_error_closes_openpty_descriptors(
+    monkeypatch, tmp_path
+):
+    master_fd, slave_fd = pty.openpty()
+    monkeypatch.setattr(
+        process_module.pty,
+        "openpty",
+        lambda: (master_fd, slave_fd),
+    )
+    session = PtySession(
+        [Path(sys.executable).resolve(), "sentinel-argument\0invalid"],
+        env={"PATH": os.environ.get("PATH", "")},
+        cwd=tmp_path,
+    )
+
+    try:
+        with pytest.raises(ProviderError) as error:
+            session.__enter__()
+
+        rendered = "".join(traceback.format_exception(error.value))
+        assert error.value.code == "pty_start_failed"
+        assert "sentinel-argument" not in rendered
+        assert not _fd_is_open(master_fd)
+        assert not _fd_is_open(slave_fd)
+    finally:
+        _close_fd_if_open(master_fd)
+        _close_fd_if_open(slave_fd)
+
+
+def test_pty_selector_registration_failure_closes_all_owned_resources(
+    monkeypatch, tmp_path
+):
+    master_fd, slave_fd = pty.openpty()
+    real_selector = selectors.DefaultSelector()
+
+    class FailingSelector:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def register(self, *args, **kwargs):
+            raise RuntimeError("sentinel-selector-registration")
+
+        def close(self) -> None:
+            self.closed = True
+            real_selector.close()
+
+    failing_selector = FailingSelector()
+    monkeypatch.setattr(
+        process_module.pty,
+        "openpty",
+        lambda: (master_fd, slave_fd),
+    )
+    monkeypatch.setattr(
+        process_module.selectors,
+        "DefaultSelector",
+        lambda: failing_selector,
+    )
+    session = PtySession(
+        [Path(sys.executable).resolve(), "-c", "import time; time.sleep(10)"],
+        env={"PATH": os.environ.get("PATH", "")},
+        cwd=tmp_path,
+    )
+
+    try:
+        with pytest.raises(ProviderError) as error:
+            session.__enter__()
+
+        rendered = "".join(traceback.format_exception(error.value))
+        assert error.value.code == "pty_start_failed"
+        assert "sentinel-selector-registration" not in rendered
+        assert failing_selector.closed
+        assert not _fd_is_open(master_fd)
+        assert not _fd_is_open(slave_fd)
+    finally:
+        failing_selector.close()
+        _close_fd_if_open(master_fd)
+        _close_fd_if_open(slave_fd)
