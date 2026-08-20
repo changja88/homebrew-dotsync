@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import os
 import threading
 import unicodedata
 import uuid
+import weakref
+from pathlib import Path
 from typing import Any, cast
 
 from dotsync.app_paths import AppPaths
@@ -35,6 +38,8 @@ _ACCOUNT_FIELDS = frozenset(
     {"id", "provider", "label", "state", "identity", "created_at"}
 )
 _IDENTITY_FIELDS = frozenset({"display_name", "email", "plan"})
+_REGISTRY_LOCKS: weakref.WeakValueDictionary[Path, Any] = weakref.WeakValueDictionary()
+_REGISTRY_LOCKS_GUARD = threading.Lock()
 
 
 class AccountStore:
@@ -43,7 +48,7 @@ class AccountStore:
     def __init__(self, paths: AppPaths) -> None:
         self._paths = paths
         self._registry_path = paths.root / "accounts.json"
-        self._lock = threading.RLock()
+        self._lock = _lock_for_registry(self._registry_path)
 
     def create(self, provider: ProviderName, label: str) -> ManagedAccount:
         with self._lock:
@@ -303,3 +308,13 @@ def _encode_account(account: ManagedAccount) -> dict[str, object]:
         },
         "created_at": account.created_at,
     }
+
+
+def _lock_for_registry(registry_path: Path) -> threading.RLock:
+    key = Path(os.path.abspath(os.fspath(registry_path.expanduser())))
+    with _REGISTRY_LOCKS_GUARD:
+        lock = _REGISTRY_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _REGISTRY_LOCKS[key] = lock
+        return cast(threading.RLock, lock)

@@ -150,6 +150,39 @@ def test_concurrent_create_allows_only_one_duplicate_label(tmp_path):
     assert store.list() == created
 
 
+def test_concurrent_create_shares_registry_lock_across_store_instances(tmp_path):
+    from dotsync.accounts import AccountConflict, AccountStore
+
+    paths = AppPaths(tmp_path / "DotSync")
+    first_store = AccountStore(paths)
+    second_store = AccountStore(paths)
+    assert first_store._lock is second_store._lock
+
+    barrier = threading.Barrier(2)
+    created = []
+    conflicts = []
+
+    def create_duplicate(store: AccountStore) -> None:
+        barrier.wait()
+        try:
+            created.append(store.create(provider="claude", label="Personal"))
+        except AccountConflict as error:
+            conflicts.append(error)
+
+    threads = [
+        threading.Thread(target=create_duplicate, args=(first_store,)),
+        threading.Thread(target=create_duplicate, args=(second_store,)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(created) == 1
+    assert len(conflicts) == 1
+    assert first_store.list() == created
+
+
 def test_failed_atomic_save_preserves_last_valid_registry(tmp_path, monkeypatch):
     from dotsync.accounts import AccountStore
     import dotsync.accounts.store as store_module
