@@ -236,7 +236,7 @@ class FakeRpc:
             return response.pop(0)
         return response
 
-    def notify(self, method, params):
+    def notify(self, method, params, **kwargs):
         self.events.append(("notify", method, params))
 
 
@@ -485,6 +485,27 @@ def test_refresh_maps_official_rate_limit_windows(
     ]
 
 
+def test_refresh_cancellation_reaches_initialize_and_rate_limit_waits(
+    provider, account, fake_rpc
+):
+    cancel_event = threading.Event()
+
+    def cancel_refresh(rpc, params, kwargs):
+        assert kwargs["cancel_event"] is cancel_event
+        raise ProviderError("rpc_cancelled", "sentinel-must-not-escape")
+
+    fake_rpc.respond("account/rateLimits/read", cancel_refresh)
+
+    with pytest.raises(ProviderError) as captured:
+        provider.refresh_usage(account, cancel_event=cancel_event)
+
+    assert captured.value.code == "refresh_cancelled"
+    rpc = fake_rpc.instances[-1]
+    initialize = next(event for event in rpc.events if event[1] == "initialize")
+    assert initialize[3]["cancel_event"] is cancel_event
+    assert rpc.closed is True
+
+
 def test_login_uses_official_browser_flow_and_maps_non_secret_identity(
     provider, account, fake_rpc
 ):
@@ -677,6 +698,27 @@ def test_logout_uses_official_rpc_and_closes_server(provider, account, fake_rpc)
         "initialize",
         "account/logout",
     ]
+    assert rpc.closed is True
+
+
+def test_logout_cancellation_reaches_initialize_and_logout_waits(
+    provider, account, fake_rpc
+):
+    cancel_event = threading.Event()
+
+    def cancel_logout(rpc, params, kwargs):
+        assert kwargs["cancel_event"] is cancel_event
+        raise ProviderError("rpc_cancelled", "sentinel-must-not-escape")
+
+    fake_rpc.respond("account/logout", cancel_logout)
+
+    with pytest.raises(ProviderError) as captured:
+        provider.logout(account, cancel_event=cancel_event)
+
+    assert captured.value.code == "logout_cancelled"
+    rpc = fake_rpc.instances[-1]
+    initialize = next(event for event in rpc.events if event[1] == "initialize")
+    assert initialize[3]["cancel_event"] is cancel_event
     assert rpc.closed is True
 
 

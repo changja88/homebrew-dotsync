@@ -401,14 +401,20 @@ class JsonRpcProcess:
             }.get(failure, "failed")
             raise self._request_error(failure or "rpc_failed", method, summary)
 
-    def notify(self, method: str, params: Any) -> None:
+    def notify(
+        self,
+        method: str,
+        params: Any,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
         if not method:
             raise ProviderError("rpc_method", "RPC method is invalid.")
         self._send(
             {"jsonrpc": "2.0", "method": method, "params": params},
             method,
             time.monotonic() + self._timeout,
-            None,
+            cancel_event,
             None,
         )
 

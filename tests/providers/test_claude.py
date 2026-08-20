@@ -854,6 +854,20 @@ def test_refresh_timeout_has_safe_code_and_terminates_pty(
     assert pty_factory.instances[0].terminated
 
 
+def test_refresh_cancellation_has_safe_code_and_terminates_pty(
+    provider, account, pty_factory
+):
+    cancel_event = threading.Event()
+    pty_factory.queue(ProviderError("pty_cancelled", "sentinel-must-not-escape"))
+
+    with pytest.raises(ProviderError) as error:
+        provider.refresh_usage(account, cancel_event=cancel_event)
+
+    assert error.value.code == "refresh_cancelled"
+    assert "sentinel-must-not-escape" not in str(error.value)
+    assert pty_factory.instances[0].terminated
+
+
 def test_logout_uses_only_official_scoped_command(
     provider, account, paths, runner, resolver
 ):
@@ -868,6 +882,20 @@ def test_logout_uses_only_official_scoped_command(
     assert call["cwd"] == paths.account_probe("claude", account.id)
     assert call["env"]["CLAUDE_CONFIG_DIR"] == str(account_root / "home")
     assert call["env"]["CLAUDE_CODE_TMPDIR"] == str(account_root / "tmp")
+
+
+def test_pre_cancelled_logout_runs_no_resolver_or_command(
+    provider, account, runner, resolver
+):
+    cancel_event = threading.Event()
+    cancel_event.set()
+
+    with pytest.raises(ProviderError) as error:
+        provider.logout(account, cancel_event=cancel_event)
+
+    assert error.value.code == "logout_cancelled"
+    assert resolver.calls == []
+    assert runner.calls == []
 
 
 def test_logout_failure_is_normalized_without_raw_command_output(

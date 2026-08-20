@@ -401,7 +401,9 @@ class CodexUsageProvider:
         failure: ProviderError | None = None
         try:
             with self._initialized_rpc(
-                account, on_notification=collect_notification
+                account,
+                on_notification=collect_notification,
+                cancel_event=cancel_event,
             ) as (rpc, _):
                 result = rpc.request(
                     "account/login/start",
@@ -436,12 +438,25 @@ class CodexUsageProvider:
             raise _schema_error()
         return identity
 
-    def refresh_usage(self, account: ManagedAccount) -> UsageSnapshot:
+    def refresh_usage(
+        self,
+        account: ManagedAccount,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> UsageSnapshot:
         snapshot: UsageSnapshot | None = None
         failure: ProviderError | None = None
         try:
-            with self._initialized_rpc(account) as (rpc, version):
-                result = rpc.request("account/rateLimits/read", {})
+            with self._initialized_rpc(
+                account,
+                cancel_event=cancel_event,
+            ) as (rpc, version):
+                result = _rpc_request(
+                    rpc,
+                    "account/rateLimits/read",
+                    {},
+                    cancel_event,
+                )
             windows = self._rate_limit_windows(result)
             snapshot = UsageSnapshot(
                 account_id=account.id,
@@ -459,13 +474,28 @@ class CodexUsageProvider:
             raise _schema_error()
         return snapshot
 
-    def logout(self, account: ManagedAccount) -> None:
+    def logout(
+        self,
+        account: ManagedAccount,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
+        _raise_if_cancelled(cancel_event, operation="logout")
         invocation = self._prepare_invocation(account)
         failure: ProviderError | None = None
         app_server_start_failed = False
         try:
-            with self._initialized_rpc(account, invocation=invocation) as (rpc, _):
-                result = rpc.request("account/logout", {})
+            with self._initialized_rpc(
+                account,
+                invocation=invocation,
+                cancel_event=cancel_event,
+            ) as (rpc, _):
+                result = _rpc_request(
+                    rpc,
+                    "account/logout",
+                    {},
+                    cancel_event,
+                )
                 if type(result) is not dict or result:
                     raise _schema_error()
         except ProviderError as error:
@@ -478,6 +508,7 @@ class CodexUsageProvider:
         if not app_server_start_failed:
             return
 
+        _raise_if_cancelled(cancel_event, operation="logout")
         try:
             self._checked_runner(
                 [invocation.executable, "logout"],
@@ -524,6 +555,7 @@ class CodexUsageProvider:
         *,
         on_notification: Callable[[str, Any], None] | None = None,
         invocation: _CodexInvocation | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> Iterator[tuple[JsonRpcProcess, str]]:
         invocation = invocation or self._prepare_invocation(account)
         executable = invocation.executable
@@ -537,7 +569,8 @@ class CodexUsageProvider:
             on_notification=on_notification,
         )
         with rpc:
-            result = rpc.request(
+            result = _rpc_request(
+                rpc,
                 "initialize",
                 {
                     "clientInfo": {
@@ -546,9 +579,10 @@ class CodexUsageProvider:
                         "version": __version__,
                     }
                 },
+                cancel_event,
             )
             version = self._initialize_result(result, environment["CODEX_HOME"])
-            rpc.notify("initialized", {})
+            _rpc_notify(rpc, "initialized", {}, cancel_event)
             yield rpc, version
 
     def _prepare_invocation(self, account: ManagedAccount) -> _CodexInvocation:
@@ -842,11 +876,49 @@ class CodexUsageProvider:
             )
         if error.code == "rpc_timeout" and operation == "refresh":
             return ProviderError("refresh_timeout", "Codex usage refresh timed out.")
-        if error.code == "rpc_cancelled" and operation == "login":
-            return ProviderError("login_cancelled", "Codex login was cancelled.")
+        if error.code == "rpc_cancelled":
+            return ProviderError(
+                f"{operation}_cancelled",
+                f"Codex {operation} was cancelled.",
+            )
         if operation == "logout" and error.code.startswith("process_"):
             return ProviderError("logout_failed", "Codex logout failed.")
         return ProviderError(
             "provider_unavailable",
             f"Codex {operation} is unavailable.",
+        )
+
+
+def _rpc_request(
+    rpc: JsonRpcProcess,
+    method: str,
+    params: Any,
+    cancel_event: threading.Event | None,
+) -> Any:
+    if cancel_event is None:
+        return rpc.request(method, params)
+    return rpc.request(method, params, cancel_event=cancel_event)
+
+
+def _rpc_notify(
+    rpc: JsonRpcProcess,
+    method: str,
+    params: Any,
+    cancel_event: threading.Event | None,
+) -> None:
+    if cancel_event is None:
+        rpc.notify(method, params)
+        return
+    rpc.notify(method, params, cancel_event=cancel_event)
+
+
+def _raise_if_cancelled(
+    cancel_event: threading.Event | None,
+    *,
+    operation: str,
+) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise ProviderError(
+            f"{operation}_cancelled",
+            f"Codex {operation} was cancelled.",
         )

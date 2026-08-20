@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Literal, Protocol
 
@@ -34,11 +35,23 @@ class UsageProvider(Protocol):
         self,
         account: ManagedAccount,
         report: Callable[[LoginProgress], None],
+        *,
+        cancel_event: threading.Event | None = None,
     ) -> ProviderIdentity:
         raise NotImplementedError
 
-    def refresh_usage(self, account: ManagedAccount) -> UsageSnapshot:
+    def refresh_usage(
+        self,
+        account: ManagedAccount,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> UsageSnapshot:
         raise NotImplementedError
 
-    def logout(self, account: ManagedAccount) -> None:
+    def logout(
+        self,
+        account: ManagedAccount,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
         raise NotImplementedError

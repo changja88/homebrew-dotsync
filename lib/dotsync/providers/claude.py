@@ -607,6 +607,7 @@ class ClaudeUsageProvider:
         *,
         cancel_event: threading.Event | None = None,
     ) -> UsageSnapshot:
+        _raise_if_operation_cancelled(cancel_event, operation="refresh")
         deadline = self._monotonic() + self._refresh_timeout
         snapshot: UsageSnapshot | None = None
         failure: ProviderError | None = None
@@ -662,16 +663,24 @@ class ClaudeUsageProvider:
             raise _usage_error()
         return snapshot
 
-    def logout(self, account: ManagedAccount) -> None:
+    def logout(
+        self,
+        account: ManagedAccount,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
+        _raise_if_operation_cancelled(cancel_event, operation="logout")
         failure: ProviderError | None = None
         try:
             invocation = self._prepare_invocation(account)
+            _raise_if_operation_cancelled(cancel_event, operation="logout")
             self._checked_runner(
                 [invocation.executable, "auth", "logout"],
                 env=invocation.environment,
                 cwd=invocation.cwd,
                 timeout=self._command_timeout,
             )
+            _raise_if_operation_cancelled(cancel_event, operation="logout")
         except ProviderError as error:
             failure = self._normalize_error(error, operation="logout")
         if failure is not None:
@@ -788,6 +797,11 @@ class ClaudeUsageProvider:
             return ProviderError("cli_missing", "Claude CLI is not installed.")
         if error.code == "unsafe_account_path":
             return _unsafe_account_path_error()
+        if error.code in {"refresh_cancelled", "logout_cancelled"}:
+            return ProviderError(
+                error.code,
+                f"Claude {operation} was cancelled.",
+            )
         if operation == "logout":
             return ProviderError("logout_failed", "Claude logout failed.")
         if error.code == "reauth_required":
@@ -804,6 +818,10 @@ class ClaudeUsageProvider:
             )
         if error.code == "pty_cancelled" and operation == "login":
             return ProviderError("login_cancelled", "Claude login was cancelled.")
+        if error.code == "pty_cancelled" and operation == "refresh":
+            return ProviderError(
+                "refresh_cancelled", "Claude refresh was cancelled."
+            )
         if error.code == "pty_timeout" and operation == "refresh":
             return ProviderError(
                 "refresh_timeout", "Claude usage refresh timed out."
@@ -854,6 +872,18 @@ def _raise_if_login_cancelled(
 ) -> None:
     if cancel_event is not None and cancel_event.is_set():
         raise ProviderError("login_cancelled", "Claude login was cancelled.")
+
+
+def _raise_if_operation_cancelled(
+    cancel_event: threading.Event | None,
+    *,
+    operation: str,
+) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise ProviderError(
+            f"{operation}_cancelled",
+            f"Claude {operation} was cancelled.",
+        )
 
 
 def _login_wait_complete(output: str) -> bool:
