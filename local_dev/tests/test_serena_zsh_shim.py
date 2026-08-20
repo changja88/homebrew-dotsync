@@ -2,6 +2,7 @@ from pathlib import Path
 import os
 import shlex
 import subprocess
+import sys
 import pytest
 
 from local_dev.serena_mcp_management.serena_zsh_shim import (
@@ -11,6 +12,62 @@ from local_dev.serena_mcp_management.serena_zsh_shim import (
     render_zsh_shim,
     uninstall_zshrc_shim,
 )
+
+
+def _guarded_graphify_hook(marker: str) -> str:
+    """A minimal installed hook carrying Graphify's linked-worktree guard."""
+    marker_end = marker.replace("-start", "-end")
+    return f"""#!/bin/sh
+{marker}
+_GFY_GITDIR=$(cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd)
+_GFY_COMMONDIR=$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)
+if [ -n "$_GFY_COMMONDIR" ] && [ "$_GFY_GITDIR" != "$_GFY_COMMONDIR" ]; then
+  exit 0
+fi
+graphify update . >/dev/null 2>&1
+{marker_end}
+"""
+
+
+@pytest.mark.no_subprocess_block
+@pytest.mark.parametrize("unsafe_kind", ["action-before-guard", "duplicate-block"])
+def test_zsh_shim_graphify_hook_guard_must_dominate_one_managed_block(
+    tmp_path, unsafe_kind,
+):
+    shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(
+        tmp_path
+    )
+    marker = "# graphify-hook-start"
+    marker_end = "# graphify-hook-end"
+    safe_block = _guarded_graphify_hook(marker)
+    if unsafe_kind == "action-before-guard":
+        hook_text = safe_block.replace(
+            f"{marker}\n", f"{marker}\ngraphify update .\n", 1
+        )
+    else:
+        hook_text = safe_block + safe_block
+    hook_path = tmp_path / "post-commit"
+    hook_path.write_text(hook_text)
+
+    result = subprocess.run(
+        [
+            "zsh",
+            "-fc",
+            (
+                f"source {shlex.quote(str(shim_path))}; "
+                "_dotsync_agent_graphify_hook_worktree_safe "
+                f"{shlex.quote(str(hook_path))} "
+                f"{shlex.quote(marker)} {shlex.quote(marker_end)}; "
+                "print safe=$?"
+            ),
+        ],
+        env={**os.environ, "HOME": str(tmp_path)},
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert "safe=1" in result.stdout
 
 
 def test_render_zsh_shim_defines_codex_and_claude_functions():
@@ -32,8 +89,48 @@ def test_render_zsh_shim_defines_codex_and_claude_functions():
     assert "SERENA_AGENT_CLIENT=claude" in text
     assert "SERENA_REAL_CLAUDE=/opt/homebrew/bin/claude" in text
     assert '"$SERENA_AGENT_PYTHON" "$SERENA_AGENT_LAUNCHER" "$@"' in text
+    assert text.count(
+        'PYTHONDONTWRITEBYTECODE=1 "$SERENA_AGENT_PYTHON" '
+        '"$SERENA_AGENT_LAUNCHER" "$@"'
+    ) == 2
     assert "_dotsync_agent_serena_project_available" in text
     assert '--effort xhigh' not in text
+
+
+@pytest.mark.no_subprocess_block
+def test_install_shim_removes_stale_runtime_bytecode(tmp_path):
+    """배포 디렉터리는 실행 코드만 남기고 기존 Python cache를 제거한다."""
+    repo_root = Path(__file__).resolve().parents[2]
+    stable_dir = tmp_path / "agent_launcher"
+    stale_cache = (
+        stable_dir
+        / "local_dev"
+        / "serena_mcp_management"
+        / "__pycache__"
+        / "stale.pyc"
+    )
+    stale_cache.parent.mkdir(parents=True)
+    stale_cache.write_bytes(b"stale")
+    zshrc = tmp_path / ".zshrc"
+    zshrc.write_text("# existing\n")
+
+    subprocess.run(
+        [
+            "make",
+            "-C",
+            str(repo_root / "local_dev"),
+            "install-shim",
+            f"STABLE_DIR={stable_dir}",
+            f"ZSHRC={zshrc}",
+            f"PYTHON={sys.executable}",
+            f"PYTHON_EXECUTABLE={sys.executable}",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    assert not stale_cache.parent.exists()
 
 
 def test_render_zsh_shim_defines_graphify_split_helpers():
@@ -101,8 +198,12 @@ def test_zsh_shim_graphify_hooks_check_respects_core_hooks_path(tmp_path):
         capture_output=True,
     )
     hooks_dir.mkdir(parents=True)
-    (hooks_dir / "post-commit").write_text("#!/bin/sh\n# graphify-hook-start\n")
-    (hooks_dir / "post-checkout").write_text("#!/bin/sh\n# graphify-checkout-hook-start\n")
+    (hooks_dir / "post-commit").write_text(
+        _guarded_graphify_hook("# graphify-hook-start")
+    )
+    (hooks_dir / "post-checkout").write_text(
+        _guarded_graphify_hook("# graphify-checkout-hook-start")
+    )
 
     result = subprocess.run(
         [
@@ -121,6 +222,89 @@ def test_zsh_shim_graphify_hooks_check_respects_core_hooks_path(tmp_path):
     )
 
     assert "hooks=0" in result.stdout
+
+
+@pytest.mark.no_subprocess_block
+def test_zsh_shim_graphify_hooks_rejects_legacy_worktree_unsafe_hooks(tmp_path):
+    """Graphify 블록 밖의 git-dir 비교는 구형 훅을 안전하게 만들지 않는다."""
+    shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "-C", str(project), "init"], check=True, capture_output=True)
+    hooks_dir = project / ".git" / "hooks"
+    (hooks_dir / "post-commit").write_text(
+        "#!/bin/sh\n"
+        "git rev-parse --git-dir >/dev/null\n"
+        "git rev-parse --git-common-dir >/dev/null\n"
+        "# graphify-hook-start\necho rebuild\n# graphify-hook-end\n"
+    )
+    (hooks_dir / "post-checkout").write_text(
+        "#!/bin/sh\n"
+        "git rev-parse --git-dir >/dev/null\n"
+        "git rev-parse --git-common-dir >/dev/null\n"
+        "# graphify-checkout-hook-start\necho rebuild\n"
+        "# graphify-checkout-hook-end\n"
+    )
+
+    result = subprocess.run(
+        [
+            "zsh",
+            "-fc",
+            (
+                f"source {shim_path}; "
+                f"_dotsync_agent_graphify_hooks_installed {project}; "
+                "print hooks=$?"
+            ),
+        ],
+        env={**os.environ, "HOME": str(tmp_path)},
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert "hooks=1" in result.stdout
+
+
+@pytest.mark.no_subprocess_block
+def test_zsh_shim_graphify_hooks_rejects_non_guard_git_probes_inside_marker(
+    tmp_path,
+):
+    """git-dir/common-dir 조회만 있고 비교·탈출이 없으면 guarded hook이 아니다."""
+    shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    subprocess.run(["git", "-C", str(project), "init"], check=True, capture_output=True)
+    hooks_dir = project / ".git" / "hooks"
+    for name, marker in (
+        ("post-commit", "graphify-hook"),
+        ("post-checkout", "graphify-checkout-hook"),
+    ):
+        (hooks_dir / name).write_text(
+            "#!/bin/sh\n"
+            f"# {marker}-start\n"
+            "git rev-parse --git-dir >/dev/null\n"
+            "git rev-parse --git-common-dir >/dev/null\n"
+            "echo rebuild\n"
+            f"# {marker}-end\n"
+        )
+
+    result = subprocess.run(
+        [
+            "zsh",
+            "-fc",
+            (
+                f"source {shim_path}; "
+                f"_dotsync_agent_graphify_hooks_installed {project}; "
+                "print hooks=$?"
+            ),
+        ],
+        env={**os.environ, "HOME": str(tmp_path)},
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert "hooks=1" in result.stdout
 
 
 @pytest.mark.no_subprocess_block
@@ -170,10 +354,10 @@ def test_zsh_shim_graphify_hooks_check_resolves_linked_worktree_common_dir(
     )
     hooks_dir = repository / ".git" / "hooks"
     (hooks_dir / "post-commit").write_text(
-        "#!/bin/sh\n# graphify-hook-start\n"
+        _guarded_graphify_hook("# graphify-hook-start")
     )
     (hooks_dir / "post-checkout").write_text(
-        "#!/bin/sh\n# graphify-checkout-hook-start\n"
+        _guarded_graphify_hook("# graphify-checkout-hook-start")
     )
 
     result = subprocess.run(

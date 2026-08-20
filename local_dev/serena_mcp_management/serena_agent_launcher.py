@@ -802,7 +802,7 @@ def _graphify_hook_value(status: str) -> tuple[str, str]:
     """Return (value, item_status) for the graphify hook preflight row."""
     if status == "installed":
         return "post-commit + post-checkout hooks installed", "done"
-    return 'hooks not installed . run "graphify hook install"', "warn"
+    return 'hooks missing or outdated . run "graphify hook install"', "warn"
 
 
 def _serena_mcp_status(snapshot) -> str:
@@ -1231,6 +1231,72 @@ def _graphify_hook_install(project_root: Path) -> int:
     return proc.returncode
 
 
+def _graphify_graph_create(project_root: Path) -> tuple[int, str]:
+    """Create the initial code graph with Graphify's headless CLI.
+
+    The launcher cannot invoke the interactive ``/graphify`` agent skill before
+    the child agent starts. ``graphify update`` is Graphify's deterministic,
+    no-LLM bootstrap for source code and creates the same graph.json consumed by
+    query/explain and the post-commit hooks. Documentation and image semantics
+    remain an explicit agent-side ``/graphify --update`` operation.
+    """
+    graphify = graphify_command()
+    if graphify is None:
+        return 2, "graphify CLI is unavailable\n"
+    try:
+        proc = subprocess.run(
+            [*graphify, "update", str(project_root)],
+            cwd=str(project_root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError as exc:
+        return 127, f"{exc}\n"
+    return proc.returncode, proc.stdout or ""
+
+
+def _resolved_git_path(project_root: Path, flag: str) -> Path | None:
+    """Resolve one ``git rev-parse`` path without assuming its path style."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(project_root), "rev-parse", flag],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    path = Path(proc.stdout.strip())
+    if not path.is_absolute():
+        path = project_root / path
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return None
+
+
+def _is_linked_worktree(project_root: Path) -> bool:
+    """True when ``project_root`` is a linked, rather than primary, worktree."""
+    git_dir = _resolved_git_path(project_root, "--git-dir")
+    common_dir = _resolved_git_path(project_root, "--git-common-dir")
+    if git_dir is not None and common_dir is not None:
+        return git_dir != common_dir
+
+    # A linked worktree normally stores a ``gitdir: ...`` pointer in a .git
+    # file. If git itself cannot be executed, keep the primary-only invariant
+    # by treating that file shape conservatively as a linked worktree.
+    try:
+        return (project_root / ".git").is_file()
+    except OSError:
+        return False
+
+
 def _graphify_global_install(client: str) -> int:
     """Run `graphify install` (or `graphify install --platform codex`) for the user.
 
@@ -1399,9 +1465,10 @@ def _run_preflight_v2(
     ``serena_state`` is the result returned by ``_run_serena_init_v2``
     (one of ``managed``/``created``/``skipped``/``failed``). It is accepted
     for signature compatibility with existing callers only: the integration
-    prompt no longer derives its default from Serena/graphify-global state.
-    Per user preference (2026-07-23) that prompt always defaults to No, so
-    an accidental bare Enter never wires graphify into the project.
+    prompt no longer derives its default from Serena state. A missing graph's
+    explicit project opt-in makes the remaining Graphify setup prompts default
+    to Yes; repair prompts for an already-built graph keep the previous safe
+    default of No.
 
     Returns:
         0 if interactive mode is off or user confirms, 130 if user aborts.
@@ -1434,6 +1501,32 @@ def _run_preflight_v2(
         install_node=install_node,
     )
 
+    graph_status = os.environ.get(
+        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS", "unknown"
+    )
+    initialize_graph = graph_status == "missing"
+    linked_worktree = _is_linked_worktree(project_root)
+    if initialize_graph:
+        if not confirm(
+            "Initialize Graphify for this project?",
+            default=False,
+            stream=out,
+            input_fn=input_fn,
+        ):
+            out.write(render_inline_row(
+                "graphify", "Graphify disabled for this project", status="info"
+            ))
+            out.flush()
+            return 0
+        if linked_worktree:
+            out.write(render_inline_row(
+                "graphify",
+                "initialize Graphify from the primary checkout",
+                status="warn",
+            ))
+            out.flush()
+            return 0
+
     # The CLI is checked alongside the four file-presence rows, not derived from
     # them: those four probe files that survive a CLI uninstall, so a missing
     # executable alone used to leave this set at {"installed", "built"} and the
@@ -1459,6 +1552,29 @@ def _run_preflight_v2(
             out.flush()
             return 0
 
+    if initialize_graph:
+        graph_path = project_root / "graphify-out" / "graph.json"
+        marker_existed_before_build = os.path.lexists(graph_path)
+        rc, captured = _graphify_graph_create(project_root)
+        if rc != 0 or not graph_path.is_file():
+            if (
+                rc != 0
+                and not marker_existed_before_build
+                and os.path.lexists(graph_path)
+            ):
+                try:
+                    graph_path.unlink()
+                except OSError as exc:
+                    captured += f"could not remove partial graph marker: {exc}\n"
+            for line in captured.splitlines():
+                out.write(f"    {line}\n")
+            detail = f"initial graph build failed (exit {rc})"
+            if rc == 0:
+                detail = "initial graph build failed: graph.json was not created"
+            _emit("graphify graph", detail, ok=False)
+            return 0
+        _emit("graphify graph", "graphify-out/graph.json created", ok=True)
+
     global_status = os.environ.get(
         "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS", "unknown"
     )
@@ -1466,7 +1582,7 @@ def _run_preflight_v2(
         cmd = "graphify install" if client == "claude" else "graphify install --platform codex"
         if confirm(
             f"graphify global skill is not installed — install it? ({cmd})",
-            default=False,
+            default=initialize_graph,
             stream=out,
             input_fn=input_fn,
         ):
@@ -1479,6 +1595,15 @@ def _run_preflight_v2(
             else:
                 _emit("graphify global", f"global install failed (exit {rc})", ok=False)
 
+    if linked_worktree:
+        out.write(render_inline_row(
+            "graphify",
+            "linked worktree is query-only . run project setup from the primary checkout",
+            status="info",
+        ))
+        out.flush()
+        return 0
+
     integration_status = os.environ.get(
         "SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS", "unknown"
     )
@@ -1487,9 +1612,10 @@ def _run_preflight_v2(
         cmd = (
             "graphify claude install" if client == "claude" else "graphify codex install"
         )
-        # 사용자 선호(2026-07-23): 프로젝트에 graphify를 실수로 심지 않도록
-        # 통합 프롬프트는 항상 No 기본값.
-        integration_default = False
+        # A fresh graph was explicitly approved at the project-level gate, so
+        # Enter completes that setup. Existing opted-in projects still use No
+        # for repair prompts to avoid surprising project-file changes.
+        integration_default = initialize_graph
         if confirm(
             f"graphify is not wired into this project — set it up? ({cmd})",
             default=integration_default,

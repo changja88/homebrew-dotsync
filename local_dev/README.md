@@ -43,12 +43,15 @@ so agent sessions see the same CLIs.
 **Self-install prompts.** CLI가 해석되지 않으면 interactive preflight가 설치
 여부를 직접 묻는다 (`uv tool install …`, default Yes). Serena CLI 설치는
 프로젝트 초기화에 동의한 뒤에만 제안하고, `No`를 선택하면 CLI 해석·설치와
-서버 시작을 모두 건너뛴다. Graphify CLI 설치는 graphify 행 중 하나라도
-missing일 때 graphify 질문들 직전에 제안한다. 거절하면 아래의 degrade 동작이
-그대로 적용되고(graphify 질문들은 통째로 skip), `uv` 자체가 없으면 묻지 않고
-경고 행만 남긴다. 설치가 도는 동안 uv의 패키지 벽 출력은 캡처해 숨기고
-spinner 행 하나에 마지막 진행 줄(패키지 1개)만 갱신해 보여준다. 캡처한 전체
-출력은 설치가 실패했을 때만 들여쓰기로 풀어 남긴다.
+서버 시작을 모두 건너뛴다. Graphify도 `graphify-out/graph.json`이 없는
+프로젝트에서는 먼저 초기화 여부를 묻는다(default No). `No`면 Graphify CLI,
+skill, integration, hook을 설치하거나 실행하지 않는다. `Yes`면 CLI를 확인한 뒤
+`graphify update <project-root>`로 최초 code graph를 만들고, marker가 실제로
+생성된 경우에만 나머지 integration/hook 단계로 진행한다. CLI 설치를 거절하거나
+`uv`가 없으면 Graphify 설정을 통째로 건너뛴다. 설치가 도는 동안 uv의 패키지
+벽 출력은 캡처해 숨기고 spinner 행 하나에 마지막 진행 줄(패키지 1개)만
+갱신해 보여준다. 캡처한 전체 출력은 설치가 실패했을 때만 들여쓰기로 풀어
+남긴다.
 
 | CLI | Install | Resolution rules |
 |---|---|---|
@@ -59,7 +62,7 @@ When the Serena CLI remains unresolvable after initialization consent, the
 launcher prints `! serena unavailable …` and launches the bare agent instead
 of crashing.
 
-Graphify preflight paths follow graphifyy 0.8.x behavior: the codex
+Graphify preflight paths follow current graphifyy behavior: the codex
 user-level skill lives at `~/.codex/skills/graphify` (claude:
 `~/.claude/skills/graphify`).
 
@@ -318,6 +321,17 @@ requires a git repo. When the project isn't one yet, the launcher swaps the
 Yes); accepting it runs `git init` and then installs the hooks, while declining
 skips the hook step with a "needs a git repo — run `git init` first" note.
 
+The primary checkout owns the canonical Graphify graph. A new linked worktree
+may receive a copied `graphify-out/` snapshot for queries, but Graphify's
+official hooks must skip automatic rebuilds there. The launcher therefore
+treats marker-only legacy hooks as outdated unless both post-commit and
+post-checkout contain the current git-dir/common-dir worktree guard. If a
+linked worktree has no copied graph yet, the launcher refuses to initialize an
+independent graph and asks the user to initialize Graphify from the primary
+checkout. Automatic code updates then happen only through the primary
+checkout's hooks; document, paper, and image changes still require an explicit
+agent-side `/graphify --update`.
+
 An early preflight step checks the **Node.js runtime** — it runs *before* the
 graphify section so the graphify CLI being unavailable (which early-returns that
 section) can't skip it; node and graphify are independent concerns.
@@ -402,8 +416,18 @@ dotsync from   # ~/.zshrc 변경을 dotsync sync 폴더본에도 반영 (안 하
 exec zsh   # reload claude/codex shell functions
 ```
 
-`install-shim` is the only command. It rsyncs the dev tree to `$STABLE_DIR` and
-rewrites the managed block in `~/.zshrc` in one step, pointing
+`install-shim` is the only command. It rsyncs the dev tree to `$STABLE_DIR`,
+updates the launcher-owned Serena/Graphify guidance in both the dotsync folder
+and the live Codex/Claude user scope, and rewrites the managed block in
+`~/.zshrc` in one step. The guidance updater owns only the section between its
+Markdown markers and the two matching Claude hook commands; unrelated personal
+instructions and settings are preserved. It derives the dotsync folder from
+`$STABLE_DIR/..`; use `DOTSYNC_CONFIG_DIR=/path` or `LIVE_HOME=/path` for an
+isolated install. If the dotsync user-scope files are all absent, that guidance
+step is skipped so a launcher-only test install remains valid; a partial set is
+an error.
+
+The generated zsh block points
 `SERENA_AGENT_PYTHON` at a durable system-managed interpreter chosen by
 `serena_zsh_shim.py`'s `default_python_executable()` (Homebrew/python.org,
 first choice `/opt/homebrew/bin/python3.12`). No venv is created — uv-managed

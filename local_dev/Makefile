@@ -24,6 +24,8 @@
 
 ZSHRC ?= $(HOME)/.zshrc
 STABLE_DIR ?= $(HOME)/Desktop/dotsync_config/agent_launcher
+DOTSYNC_CONFIG_DIR ?= $(abspath $(STABLE_DIR)/..)
+LIVE_HOME ?= $(HOME)
 # generator 를 "실행할" python (stdlib only 라 3.9+ 면 충분; 기록될 interpreter 와는 별개).
 PYTHON ?= python3
 # 비우면 default_python_executable() 자동 선택(권장). 채우면 그 값을 그대로 기록.
@@ -36,11 +38,13 @@ help:
 	@echo "local_dev — internal-only development tooling (not part of dotsync)"
 	@echo ""
 	@echo "Targets:"
-	@echo "  install-shim     Mirror $(SRC_TREE)/ into $(STABLE_DIR)/ and write managed block into ZSHRC=$(ZSHRC)"
+	@echo "  install-shim     Mirror launcher, update user guidance, and write the managed zsh block"
 
 install-shim:
 	@mkdir -p "$(DEST_TREE)"
-	@rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' \
+	@rsync -a --delete --delete-excluded --exclude '__pycache__' --exclude '*.pyc' \
 	    "$(SRC_TREE)/" "$(DEST_TREE)/"
+	@"$(PYTHON)" "$(DEST_TREE)/user_scope_guidance.py" \
+	    --config-root "$(DOTSYNC_CONFIG_DIR)" --live-home "$(LIVE_HOME)"
 	@"$(PYTHON)" "$(DEST_TREE)/serena_zsh_shim.py" --install-zshrc --rc-path "$(ZSHRC)" \
 	    $(if $(PYTHON_EXECUTABLE),--python-executable "$(PYTHON_EXECUTABLE)",)

@@ -179,6 +179,47 @@ _dotsync_agent_graphify_integration_installed() {
   return 0
 }
 
+_dotsync_agent_graphify_hook_worktree_safe() {
+  local file="$1"
+  local marker="$2"
+  local marker_end="$3"
+  local section=""
+  local guard_line=""
+  local guard_end_line=""
+  [[ -f "$file" ]] || return 1
+  [[ "$(grep -Fxc "$marker" "$file" 2>/dev/null)" == "1" ]] || return 1
+  [[ "$(grep -Fxc "$marker_end" "$file" 2>/dev/null)" == "1" ]] || return 1
+  section="$(sed -n "/^${marker}\$/,/^${marker_end}\$/p" "$file" 2>/dev/null)"
+  [[ "$section" == *"$marker_end"* ]] || return 1
+  [[ "$(print -r -- "$section" | grep -Fxc \
+    '_GFY_GITDIR=$(cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd)' \
+  )" == "1" ]] || return 1
+  [[ "$(print -r -- "$section" | grep -Fxc \
+    '_GFY_COMMONDIR=$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)' \
+  )" == "1" ]] || return 1
+  [[ "$(print -r -- "$section" | grep -Fxc \
+    'if [ -n "$_GFY_COMMONDIR" ] && [ "$_GFY_GITDIR" != "$_GFY_COMMONDIR" ]; then' \
+  )" == "1" ]] || return 1
+  guard_line="$(print -r -- "$section" | grep -nFx \
+    'if [ -n "$_GFY_COMMONDIR" ] && [ "$_GFY_GITDIR" != "$_GFY_COMMONDIR" ]; then' \
+    | cut -d: -f1)"
+  guard_end_line="$(print -r -- "$section" | awk -v start="$guard_line" \
+    'NR > start && $0 == "fi" { print NR; exit }')"
+  [[ -n "$guard_end_line" ]] || return 1
+  print -r -- "$section" | awk -v start="$guard_line" -v end="$guard_end_line" '
+    NR > start && NR < end && $0 ~ /^[[:space:]]*exit 0[[:space:]]*$/ { found = 1 }
+    END { exit(found ? 0 : 1) }
+  ' || return 1
+  print -r -- "$section" | awk -v guard_end="$guard_end_line" '
+    /(^|[[:space:]])graphify[[:space:]]+update([[:space:]]|$)|"\$GRAPHIFY_PYTHON"[[:space:]]+-c/ {
+      found = 1
+      if (NR <= guard_end) unsafe = 1
+    }
+    END { exit(found && !unsafe ? 0 : 1) }
+  ' || return 1
+  return 0
+}
+
 _dotsync_agent_graphify_hooks_installed() {
   local project_root="$1"
   local pc=""
@@ -201,6 +242,14 @@ _dotsync_agent_graphify_hooks_installed() {
   [[ -f "$pc" && -f "$pco" ]] || return 1
   grep -q "graphify-hook-start" "$pc" 2>/dev/null || return 1
   grep -q "graphify-checkout-hook-start" "$pco" 2>/dev/null || return 1
+  # Graphify 0.9.44+ deliberately skips automatic rebuilds in linked
+  # worktrees. Marker-only legacy hooks still rebuild a rogue worktree-local
+  # graph, so treat them as outdated and let the launcher offer a refresh.
+  _dotsync_agent_graphify_hook_worktree_safe \
+    "$pc" "# graphify-hook-start" "# graphify-hook-end" || return 1
+  _dotsync_agent_graphify_hook_worktree_safe \
+    "$pco" "# graphify-checkout-hook-start" \
+    "# graphify-checkout-hook-end" || return 1
   _dotsync_agent_graphify_pins_runnable "$pc" || return 1
   _dotsync_agent_graphify_pins_runnable "$pco" || return 1
   return 0
@@ -242,7 +291,7 @@ claude() {
   SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive" \
   SERENA_AGENT_PROJECT_ROOT="$project_root" \
   SERENA_REAL_CLAUDE=__CLAUDE_BINARY__ \
-  "$SERENA_AGENT_PYTHON" "$SERENA_AGENT_LAUNCHER" "$@"
+  PYTHONDONTWRITEBYTECODE=1 "$SERENA_AGENT_PYTHON" "$SERENA_AGENT_LAUNCHER" "$@"
 }
 
 codex() {
@@ -281,7 +330,7 @@ codex() {
   SERENA_AGENT_CLEAR_BEFORE_CHILD="$interactive" \
   SERENA_AGENT_PROJECT_ROOT="$project_root" \
   SERENA_REAL_CODEX=__CODEX_BINARY__ \
-  "$SERENA_AGENT_PYTHON" "$SERENA_AGENT_LAUNCHER" "$@"
+  PYTHONDONTWRITEBYTECODE=1 "$SERENA_AGENT_PYTHON" "$SERENA_AGENT_LAUNCHER" "$@"
 }
 # <<< dotsync serena agent launcher <<<
 '''

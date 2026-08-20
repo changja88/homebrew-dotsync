@@ -1406,11 +1406,9 @@ def test_v2_main_clears_terminal_before_child_when_serena_skipped(monkeypatch, t
 #
 # Rule (per user request):
 #   1. Serena init prompt          -> default=No  (only shown when missing)
-#   2. graphify global install     -> default=No  (only shown when missing)
-#   3. graphify integration install-> default=No (always). 사용자 선호
-#                                     (2026-07-23): Serena/graphify-global
-#                                     상태와 무관하게 항상 No — 실수로 Enter를
-#                                     쳐도 프로젝트에 graphify가 심기지 않도록.
+#   2. graphify project init       -> default=No  (graph.json missing)
+#   3. graphify global/integration -> fresh init 뒤에는 Yes; 기존 graph의
+#                                     누락 복구에서는 No
 #   4. graphify hook install       -> default=Yes (always)
 #   5. final "Run <client>?"       -> default=Yes (always)
 #
@@ -1753,6 +1751,267 @@ def test_v2_preflight_offers_graphify_cli_install_before_actions(monkeypatch):
     assert "uv tool install graphifyy" in text
 
 
+def test_v2_preflight_graphify_opt_out_runs_no_graphify_actions(
+    monkeypatch, tmp_path,
+):
+    """그래프가 없는 프로젝트의 기본 No는 Graphify를 전혀 초기화하지 않는다."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_CLI_STATUS", "missing")
+    _set_graphify_env(
+        monkeypatch,
+        global_="missing",
+        graph="missing",
+        integration="missing",
+        hook="missing",
+    )
+
+    out = io.StringIO()
+    rc = launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: "",
+        install_graphify_cli=lambda: pytest.fail("must not install cli"),
+        install_graphify_global=lambda client: pytest.fail("must not install skill"),
+        install_graphify_integration=lambda root, client: pytest.fail(
+            "must not install integration"
+        ),
+        install_graphify_hooks=lambda root: pytest.fail("must not install hooks"),
+    )
+
+    text = _strip_ansi(out.getvalue())
+    assert rc == 0
+    assert "Initialize Graphify for this project?" in text
+    assert "[y/N]" in text
+    assert "Graphify disabled for this project" in text
+    assert not (tmp_path / "graphify-out").exists()
+
+
+def test_v2_preflight_graphify_opt_in_builds_before_project_setup(
+    monkeypatch, tmp_path,
+):
+    """Yes는 marker를 실제 생성한 뒤 integration과 hook을 설치한다."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_CLI_STATUS", "installed")
+    _set_graphify_env(
+        monkeypatch,
+        global_="missing",
+        graph="missing",
+        integration="missing",
+        hook="missing",
+    )
+
+    order = []
+
+    def build_graph(project_root):
+        order.append("build")
+        out_dir = project_root / "graphify-out"
+        out_dir.mkdir()
+        (out_dir / "graph.json").write_text('{"nodes": [], "links": []}\n')
+        return 0, "Code graph updated.\n"
+
+    monkeypatch.setattr(
+        launcher, "_graphify_graph_create", build_graph, raising=False
+    )
+    monkeypatch.setattr(
+        launcher, "_is_linked_worktree", lambda root: False, raising=False
+    )
+    answers = iter(["y", "", "", ""])
+    out = io.StringIO()
+    rc = launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: next(answers),
+        install_graphify_global=lambda client: order.append("global") or 0,
+        install_graphify_integration=lambda root, client:
+            order.append("integration") or 0,
+        install_graphify_hooks=lambda root: order.append("hook") or 0,
+        is_git_repo=lambda root: True,
+    )
+
+    assert rc == 0
+    assert order == ["build", "global", "integration", "hook"]
+    assert "graphify-out/graph.json created" in _strip_ansi(out.getvalue())
+
+
+def test_v2_preflight_graphify_build_requires_real_marker(monkeypatch, tmp_path):
+    """CLI exit 0만으로 성공 처리하지 않고 graph.json postcondition을 확인한다."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_CLI_STATUS", "installed")
+    _set_graphify_env(monkeypatch, graph="missing", integration="missing")
+    monkeypatch.setattr(
+        launcher,
+        "_graphify_graph_create",
+        lambda root: (0, "command exited without creating a graph\n"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        launcher, "_is_linked_worktree", lambda root: False, raising=False
+    )
+
+    out = io.StringIO()
+    rc = launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: "y",
+        install_graphify_integration=lambda root, client: pytest.fail(
+            "must not integrate without graph.json"
+        ),
+        install_graphify_hooks=lambda root: pytest.fail(
+            "must not install hooks without graph.json"
+        ),
+    )
+
+    assert rc == 0
+    assert "initial graph build failed" in _strip_ansi(out.getvalue())
+
+
+def test_v2_preflight_graphify_failed_build_removes_new_partial_marker(
+    monkeypatch, tmp_path,
+):
+    """실패한 최초 build가 만든 graph.json을 다음 실행의 opt-in으로 남기지 않는다."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_GRAPHIFY_CLI_STATUS", "installed")
+    _set_graphify_env(monkeypatch, graph="missing")
+    monkeypatch.setattr(
+        launcher, "_is_linked_worktree", lambda root: False, raising=False
+    )
+
+    def fail_after_marker(project_root):
+        graph_dir = project_root / "graphify-out"
+        graph_dir.mkdir()
+        (graph_dir / "graph.json").write_text("partial\n")
+        return 1, "build failed after partial output\n"
+
+    monkeypatch.setattr(
+        launcher, "_graphify_graph_create", fail_after_marker, raising=False
+    )
+
+    out = io.StringIO()
+    rc = launcher._run_preflight_v2(stream=out, input_fn=lambda: "y")
+
+    assert rc == 0
+    assert not (tmp_path / "graphify-out" / "graph.json").exists()
+    assert "initial graph build failed" in _strip_ansi(out.getvalue())
+
+
+def test_v2_preflight_graphify_does_not_initialize_in_linked_worktree(
+    monkeypatch, tmp_path,
+):
+    """Canonical graph가 없으면 linked worktree에 독립 그래프를 만들지 않는다."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    _set_graphify_env(monkeypatch, graph="missing")
+    monkeypatch.setattr(
+        launcher, "_is_linked_worktree", lambda root: True, raising=False
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_graphify_graph_create",
+        lambda root: pytest.fail("must not build in linked worktree"),
+        raising=False,
+    )
+
+    out = io.StringIO()
+    rc = launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: "y",
+        install_graphify_global=lambda client: pytest.fail("must not install skill"),
+        install_graphify_integration=lambda root, client: pytest.fail(
+            "must not install integration"
+        ),
+        install_graphify_hooks=lambda root: pytest.fail("must not install hooks"),
+    )
+
+    assert rc == 0
+    assert "initialize Graphify from the primary checkout" in _strip_ansi(
+        out.getvalue()
+    )
+
+
+def test_v2_preflight_graphify_linked_graph_skips_project_setup(
+    monkeypatch, tmp_path,
+):
+    """복사된 graph가 있어도 linked worktree의 integration/hook은 건드리지 않는다."""
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    _set_graphify_env(
+        monkeypatch,
+        global_="installed",
+        graph="built",
+        integration="missing",
+        hook="missing",
+    )
+    monkeypatch.setattr(
+        launcher, "_is_linked_worktree", lambda root: True, raising=False
+    )
+
+    out = io.StringIO()
+    rc = launcher._run_preflight_v2(
+        stream=out,
+        input_fn=lambda: pytest.fail("linked project setup must not prompt"),
+        install_graphify_integration=lambda root, client: pytest.fail(
+            "must not install integration in a linked worktree"
+        ),
+        install_graphify_hooks=lambda root: pytest.fail(
+            "must not install hooks in a linked worktree"
+        ),
+    )
+
+    assert rc == 0
+    text = _strip_ansi(out.getvalue())
+    assert "linked worktree" in text
+    assert "query-only" in text
+    assert "primary checkout" in text
+
+
+def test_graphify_graph_create_reports_disappeared_cli(monkeypatch, tmp_path):
+    """해석 뒤 executable이 사라져도 traceback 대신 build failure로 강등한다."""
+    monkeypatch.setattr(launcher, "graphify_command", lambda: ["/gone/graphify"])
+
+    def missing_executable(*args, **kwargs):
+        raise FileNotFoundError("graphify disappeared")
+
+    monkeypatch.setattr(launcher.subprocess, "run", missing_executable)
+
+    rc, output = launcher._graphify_graph_create(tmp_path)
+
+    assert rc == 127
+    assert "graphify disappeared" in output
+
+
+def test_is_linked_worktree_returns_false_for_plain_directory_when_git_is_unavailable(
+    monkeypatch, tmp_path,
+):
+    """git probe 자체를 실행할 수 없는 일반 디렉터리는 primary로 취급한다."""
+    def missing_git(*args, **kwargs):
+        raise FileNotFoundError("git unavailable")
+
+    monkeypatch.setattr(launcher.subprocess, "run", missing_git)
+
+    assert launcher._is_linked_worktree(tmp_path) is False
+
+
+def test_is_linked_worktree_uses_git_file_fallback_when_git_is_unavailable(
+    monkeypatch, tmp_path,
+):
+    """git probe가 실패해도 linked worktree의 .git 파일은 fail-safe로 막는다."""
+    (tmp_path / ".git").write_text("gitdir: /repo/.git/worktrees/topic\n")
+
+    def missing_git(*args, **kwargs):
+        raise FileNotFoundError("git unavailable")
+
+    monkeypatch.setattr(launcher.subprocess, "run", missing_git)
+
+    assert launcher._is_linked_worktree(tmp_path) is True
+
+
 def test_v2_preflight_skips_graphify_actions_when_cli_declined(monkeypatch):
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", "/repo")
@@ -1765,7 +2024,7 @@ def test_v2_preflight_skips_graphify_actions_when_cli_declined(monkeypatch):
                         lambda: None, raising=False)
 
     out = io.StringIO()
-    answers = iter(["n"])  # CLI 설치 거절 — 이후 어떤 graphify 질문도 없어야 한다
+    answers = iter(["y", "n"])  # Graphify opt-in → CLI 설치 거절
     rc = launcher._run_preflight_v2(
         stream=out,
         input_fn=lambda: next(answers),
