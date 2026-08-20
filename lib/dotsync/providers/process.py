@@ -474,46 +474,53 @@ class JsonRpcProcess:
                 )
             send_failure: str | None = None
             send_summary = "could not be sent"
+            active_exception: BaseException | None = None
             try:
-                offset = 0
-                while offset < len(encoded):
-                    failure = self._send_failure(deadline, cancel_event)
-                    if failure is not None:
-                        self._stop_process()
-                        send_failure = failure
-                        send_summary = (
-                            "was cancelled"
-                            if failure == "rpc_cancelled"
-                            else "timed out"
-                        )
-                        break
-                    if process.poll() is not None:
-                        send_failure = "rpc_exited"
-                        send_summary = "failed"
-                        break
-                    remaining = deadline - time.monotonic()
-                    try:
-                        stdin_fd = process.stdin.fileno()
-                        events = selector.select(min(remaining, 0.05))
-                    except Exception:
-                        send_failure = "rpc_send_failed"
-                        break
-                    if not events:
-                        continue
-                    try:
-                        offset += os.write(stdin_fd, encoded[offset:])
-                    except BlockingIOError:
-                        continue
-                    except (BrokenPipeError, OSError, ValueError):
-                        send_failure = "rpc_send_failed"
-                        break
-            except Exception:
-                send_failure = "rpc_send_failed"
-            try:
-                selector.close()
-            except Exception:
-                if send_failure is None:
+                try:
+                    offset = 0
+                    while offset < len(encoded):
+                        failure = self._send_failure(deadline, cancel_event)
+                        if failure is not None:
+                            self._stop_process()
+                            send_failure = failure
+                            send_summary = (
+                                "was cancelled"
+                                if failure == "rpc_cancelled"
+                                else "timed out"
+                            )
+                            break
+                        if process.poll() is not None:
+                            send_failure = "rpc_exited"
+                            send_summary = "failed"
+                            break
+                        remaining = deadline - time.monotonic()
+                        try:
+                            stdin_fd = process.stdin.fileno()
+                            events = selector.select(min(remaining, 0.05))
+                        except Exception:
+                            send_failure = "rpc_send_failed"
+                            break
+                        if not events:
+                            continue
+                        try:
+                            offset += os.write(stdin_fd, encoded[offset:])
+                        except BlockingIOError:
+                            continue
+                        except (BrokenPipeError, OSError, ValueError):
+                            send_failure = "rpc_send_failed"
+                            break
+                except Exception:
                     send_failure = "rpc_send_failed"
+                except BaseException as error:
+                    active_exception = error
+            finally:
+                try:
+                    selector.close()
+                except BaseException as error:
+                    if active_exception is None and send_failure is None:
+                        active_exception = error
+            if active_exception is not None:
+                raise active_exception
             if send_failure is not None:
                 raise self._request_error(
                     send_failure,

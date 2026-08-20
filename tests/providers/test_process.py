@@ -793,6 +793,144 @@ def test_json_rpc_active_send_failure_is_safe_and_cleans_request_state(
     _assert_process_stopped(pid_file)
 
 
+def test_json_rpc_base_exception_during_send_always_closes_selector_and_cleans_state(
+    monkeypatch, tmp_path
+):
+    command, pid_file = _rpc_command(tmp_path, "post-send-failure-response")
+    default_selector = process_module.selectors.DefaultSelector
+
+    class ActiveSendInterrupt(BaseException):
+        pass
+
+    class SelectorCloseInterrupt(BaseException):
+        pass
+
+    active_interrupt = ActiveSendInterrupt("fixture active interruption")
+    close_interrupt = SelectorCloseInterrupt("fixture close interruption")
+
+    class InterruptingSelector:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def register(self, *args, **kwargs) -> None:
+            return None
+
+        def select(self, timeout=None):
+            raise active_interrupt
+
+        def close(self) -> None:
+            self.closed = True
+            raise close_interrupt
+
+    interrupting_selector = InterruptingSelector()
+    secret = "sentinel-base-exception-send-params"
+
+    with JsonRpcProcess(
+        command,
+        env={"PATH": os.environ.get("PATH", "")},
+        cwd=tmp_path,
+        timeout=0.3,
+    ) as rpc:
+        monkeypatch.setattr(
+            process_module.selectors,
+            "DefaultSelector",
+            lambda: interrupting_selector,
+        )
+        with pytest.raises(ActiveSendInterrupt) as interrupted:
+            rpc.request("first/read", {"value": secret})
+
+        monkeypatch.setattr(
+            process_module.selectors,
+            "DefaultSelector",
+            default_selector,
+        )
+        _release_fifo_fixture(pid_file)
+        with rpc._condition:
+            assert rpc._condition.wait_for(
+                lambda: rpc._failure is not None,
+                timeout=1.0,
+            )
+        with pytest.raises(ProviderError) as protocol_error:
+            rpc.request("second/read", {})
+
+    protocol_rendered = "".join(
+        traceback.format_exception(protocol_error.value)
+    )
+    assert interrupted.value is active_interrupt
+    assert interrupting_selector.closed
+    assert protocol_error.value.code == "rpc_protocol_error"
+    assert secret not in protocol_rendered
+    assert "sentinel-post-send-failure-response" not in protocol_rendered
+    _assert_process_stopped(pid_file)
+
+
+def test_json_rpc_base_exception_from_selector_close_cleans_request_state(
+    monkeypatch, tmp_path
+):
+    command, pid_file = _rpc_command(tmp_path, "respond")
+    default_selector = process_module.selectors.DefaultSelector
+    real_selector = default_selector()
+
+    class SelectorCloseInterrupt(BaseException):
+        pass
+
+    close_interrupt = SelectorCloseInterrupt("fixture close interruption")
+
+    class CloseInterruptingSelector:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def register(self, *args, **kwargs):
+            return real_selector.register(*args, **kwargs)
+
+        def select(self, timeout=None):
+            return real_selector.select(timeout)
+
+        def close(self) -> None:
+            self.closed = True
+            real_selector.close()
+            raise close_interrupt
+
+    interrupting_selector = CloseInterruptingSelector()
+    secret = "sentinel-close-exception-params"
+
+    with JsonRpcProcess(
+        command,
+        env={"PATH": os.environ.get("PATH", "")},
+        cwd=tmp_path,
+        timeout=0.3,
+    ) as rpc:
+        monkeypatch.setattr(
+            process_module.selectors,
+            "DefaultSelector",
+            lambda: interrupting_selector,
+        )
+        with pytest.raises(SelectorCloseInterrupt) as interrupted:
+            rpc.request("first/read", {"value": secret})
+
+        monkeypatch.setattr(
+            process_module.selectors,
+            "DefaultSelector",
+            default_selector,
+        )
+        with rpc._condition:
+            assert rpc._condition.wait_for(
+                lambda: rpc._failure is not None,
+                timeout=1.0,
+            )
+        with pytest.raises(ProviderError) as protocol_error:
+            rpc.request("second/read", {})
+
+    protocol_rendered = "".join(
+        traceback.format_exception(protocol_error.value)
+    )
+    assert interrupted.value is close_interrupt
+    assert interrupting_selector.closed
+    assert protocol_error.value.code == "rpc_protocol_error"
+    assert secret not in protocol_rendered
+    _assert_process_stopped(pid_file)
+
+
 def test_json_rpc_rejects_future_response_id_without_retaining_frame(tmp_path):
     command, pid_file = _rpc_command(tmp_path, "future-response")
 
