@@ -1,7 +1,9 @@
 """Watchdog for stale Serena MCP session leases."""
 from __future__ import annotations
 
+import argparse
 import os
+import select
 import subprocess
 import sys
 import time
@@ -21,6 +23,7 @@ from local_dev.serena_mcp_management.serena_mcp.termination import terminate_pid
 HEARTBEAT_INTERVAL_SECONDS = 5.0
 LEASE_TIMEOUT_SECONDS = 30.0
 _REPO_ROOT = Path(__file__).resolve().parents[3]
+WATCHDOG_READY_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,12 +65,16 @@ def cleanup_once(scope: Scope, *, now: float, lease_timeout_seconds: float) -> b
         return False
 
 
-def make_launcher_lease(lease_id: str, *, now: float | None = None) -> Lease:
+def make_launcher_lease(
+    lease_id: str, client_type: str, *, now: float | None = None
+) -> Lease:
     """Create a lease for the current launcher process."""
 
+    if client_type not in {"codex", "claude"}:
+        raise ValueError(f"unsupported client type: {client_type}")
     timestamp = time.time() if now is None else now
     pid = os.getpid()
-    return Lease(lease_id, pid, timestamp, process_identity(pid))
+    return Lease(lease_id, client_type, pid, timestamp, process_identity(pid))
 
 
 def launcher_process_matches(lease: Lease) -> bool:
@@ -78,27 +85,19 @@ def launcher_process_matches(lease: Lease) -> bool:
     return process_identity(lease.launcher_pid) == lease.launcher_identity
 
 
-def release_lease_and_shutdown_if_empty(scope: Scope, lease_id: str) -> ShutdownStats:
+def release_lease_and_shutdown_if_empty(
+    scope: Scope, lease_id: str, server_instance_id: str
+) -> ShutdownStats:
     """Release one launcher lease and stop the scoped server when it is unused."""
 
     with locked_registry(scope) as registry:
         if registry.record is None:
-            return ShutdownStats(
-                sessions_before=0,
-                sessions_closed=0,
-                sessions_remaining=0,
-                server_was_running=False,
-                server_stopped=False,
-            )
+            return _no_shutdown_stats()
         if not record_belongs_to_scope(registry.record, scope):
             registry.record = None
-            return ShutdownStats(
-                sessions_before=0,
-                sessions_closed=0,
-                sessions_remaining=0,
-                server_was_running=False,
-                server_stopped=False,
-            )
+            return _no_shutdown_stats()
+        if registry.record.server_instance_id != server_instance_id:
+            return _no_shutdown_stats()
         sessions_before = len(registry.record.leases)
         sessions_closed = 1 if lease_id in registry.record.leases else 0
         registry.record.leases.pop(lease_id, None)
@@ -122,6 +121,16 @@ def release_lease_and_shutdown_if_empty(scope: Scope, lease_id: str) -> Shutdown
         )
 
 
+def _no_shutdown_stats() -> ShutdownStats:
+    return ShutdownStats(
+        sessions_before=0,
+        sessions_closed=0,
+        sessions_remaining=0,
+        server_was_running=False,
+        server_stopped=False,
+    )
+
+
 def run_watchdog(scope: Scope) -> int:
     """Run cleanup until the scoped server no longer needs a watchdog."""
 
@@ -139,32 +148,103 @@ def run_watchdog(scope: Scope) -> int:
 def ensure_watchdog(scope: Scope) -> None:
     """Ensure exactly one live watchdog is recorded for a scope."""
 
-    with locked_registry(scope) as registry:
-        if registry.record is None:
-            return
-        if registry.record.watchdog_pid and _pid_identity_matches(
-            registry.record.watchdog_pid,
-            registry.record.watchdog_identity,
-        ):
-            return
-        env = os.environ.copy()
-        env["PYTHONPATH"] = _pythonpath_with_repo_root(env.get("PYTHONPATH"))
-        proc = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "local_dev.serena_mcp_management.serena_mcp.watchdog",
-                str(scope.project_root),
-                scope.client_type,
-            ],
-            cwd=str(_REPO_ROOT),
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        registry.record.watchdog_pid = proc.pid
-        registry.record.watchdog_identity = process_identity(proc.pid)
+    proc: subprocess.Popen | None = None
+    read_fd: int | None = None
+    write_fd: int | None = None
+    try:
+        with locked_registry(scope) as registry:
+            if registry.record is None:
+                return
+            if registry.record.watchdog_pid and _pid_identity_matches(
+                registry.record.watchdog_pid,
+                registry.record.watchdog_identity,
+            ):
+                return
+            env = os.environ.copy()
+            env["PYTHONPATH"] = _pythonpath_with_repo_root(env.get("PYTHONPATH"))
+            read_fd, write_fd = os.pipe()
+            try:
+                proc = subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-m",
+                        "local_dev.serena_mcp_management.serena_mcp.watchdog",
+                        str(scope.project_root),
+                        scope.context_profile,
+                        "--ready-fd",
+                        str(write_fd),
+                    ],
+                    cwd=str(_REPO_ROOT),
+                    env=env,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                    pass_fds=(write_fd,),
+                )
+            finally:
+                if write_fd is not None:
+                    os.close(write_fd)
+                    write_fd = None
+            identity = _wait_for_watchdog_readiness(proc, read_fd)
+            registry.record.watchdog_pid = proc.pid
+            registry.record.watchdog_identity = identity
+    except BaseException as primary_error:
+        if proc is not None:
+            try:
+                _stop_and_reap_owned_watchdog(proc)
+            except BaseException as cleanup_error:
+                primary_error.add_note(
+                    f"owned watchdog cleanup failed: {cleanup_error}"
+                )
+        raise
+    finally:
+        if write_fd is not None:
+            os.close(write_fd)
+        if read_fd is not None:
+            os.close(read_fd)
+
+
+def _wait_for_watchdog_readiness(
+    process: subprocess.Popen,
+    ready_fd: int,
+    *,
+    timeout: float = WATCHDOG_READY_TIMEOUT_SECONDS,
+) -> str:
+    deadline = time.monotonic() + timeout
+    ready = False
+    identity: str | None = None
+    while time.monotonic() < deadline:
+        returncode = process.poll()
+        if returncode is not None:
+            process.wait()
+            raise RuntimeError(
+                f"watchdog exited before readiness with status {returncode}"
+            )
+        if identity is None:
+            identity = process_identity(process.pid)
+        readable, _, _ = select.select([ready_fd], [], [], 0.05)
+        if readable:
+            ready = os.read(ready_fd, 1) == b"R"
+        if ready and identity is not None:
+            return identity
+    raise RuntimeError("watchdog did not become ready before timeout")
+
+
+def _stop_and_reap_owned_watchdog(
+    process: subprocess.Popen,
+    *,
+    timeout: float = 2.0,
+) -> None:
+    if process.poll() is None:
+        process.terminate()
+    try:
+        process.wait(timeout=timeout)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    if process.poll() is None:
+        process.kill()
+    process.wait(timeout=timeout)
 
 
 def _pythonpath_with_repo_root(current: str | None) -> str:
@@ -185,6 +265,8 @@ def _terminate_record(record: ServerRecord) -> None:
 
 
 def _terminate_pid(pid: int, *, expected_identity: str | None = None) -> None:
+    if expected_identity is None:
+        return
     terminate_pid(pid, expected_identity=expected_identity)
 
 
@@ -196,5 +278,17 @@ def _pid_identity_matches(pid: int, expected_identity: str | None) -> bool:
     return process_identity(pid) == expected_identity
 
 
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Watch shared Serena leases.")
+    parser.add_argument("project_root", type=Path)
+    parser.add_argument("context_profile")
+    parser.add_argument("--ready-fd", type=int, required=True)
+    args = parser.parse_args(argv)
+    scope = Scope(args.project_root, args.context_profile)
+    os.write(args.ready_fd, b"R")
+    os.close(args.ready_fd)
+    return run_watchdog(scope)
+
+
 if __name__ == "__main__":
-    raise SystemExit(run_watchdog(Scope(Path(sys.argv[1]), sys.argv[2])))
+    raise SystemExit(main())

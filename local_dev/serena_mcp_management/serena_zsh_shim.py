@@ -53,7 +53,7 @@ _dotsync_agent_project_root() {
 
   [[ -f "$dir" ]] && dir="${dir:h}"
   while true; do
-    if [[ -f "$dir/.serena/project.yml" ]]; then
+    if [[ -f "$dir/.serena/project.yml" || -e "$dir/.git" ]]; then
       print -r -- "$dir"
       return 0
     fi
@@ -111,6 +111,31 @@ _dotsync_agent_graphify_available() {
   command -v graphify >/dev/null 2>&1
 }
 
+# graphify writes its own absolute path into the files it installs (hook JSON
+# pins the executable, the git hook pins its interpreter). A `uv tool` install
+# does not survive a clean macOS reinstall, so those pins can dangle while the
+# file still greps clean — registered is not the same as runnable. Files with no
+# absolute graphify path (inline-shell hooks) have nothing to verify and pass.
+# A pin starts a shell word (line start, whitespace, `=`, or a quote) — a `/`
+# continuing `${HOME}` or a relative path like graphify-out/.graphify_python is
+# not a pin, and treating it as one fails every probe against real hooks.
+_dotsync_agent_graphify_pins_runnable() {
+  local file="$1"
+  [[ -f "$file" ]] || return 0
+
+  local pins
+  pins="$(grep -oE "(^|[[:space:]='\"])/[^ \"']*graphif[^ \"']*" "$file" 2>/dev/null \
+    | sed -E "s/^[[:space:]='\"]//" | sort -u)"
+  [[ -n "$pins" ]] || return 0
+
+  local pin
+  while IFS= read -r pin; do
+    [[ -n "$pin" ]] || continue
+    [[ -e "$pin" ]] || return 1
+  done <<< "$pins"
+  return 0
+}
+
 _dotsync_agent_graphify_global_installed() {
   local client="$1"
   case "$client" in
@@ -150,6 +175,7 @@ _dotsync_agent_graphify_integration_installed() {
       grep -q "hook-check" "$cfg_file" 2>/dev/null || return 1
       ;;
   esac
+  _dotsync_agent_graphify_pins_runnable "$cfg_file" || return 1
   return 0
 }
 
@@ -175,6 +201,8 @@ _dotsync_agent_graphify_hooks_installed() {
   [[ -f "$pc" && -f "$pco" ]] || return 1
   grep -q "graphify-hook-start" "$pc" 2>/dev/null || return 1
   grep -q "graphify-checkout-hook-start" "$pco" 2>/dev/null || return 1
+  _dotsync_agent_graphify_pins_runnable "$pc" || return 1
+  _dotsync_agent_graphify_pins_runnable "$pco" || return 1
   return 0
 }
 
@@ -191,6 +219,8 @@ claude() {
   local project_root="$(_dotsync_agent_project_root "$PWD")"
   local serena_status="managed"
   _dotsync_agent_serena_project_available "$project_root" || serena_status="missing"
+  local graphify_cli_status="installed"
+  _dotsync_agent_graphify_available || graphify_cli_status="missing"
   local graphify_global_status="installed"
   _dotsync_agent_graphify_global_installed claude || graphify_global_status="missing"
   local graphify_graph_status="built"
@@ -201,6 +231,7 @@ claude() {
   _dotsync_agent_graphify_hooks_installed "$project_root" || graphify_hook_status="missing"
 
   SERENA_AGENT_PREFLIGHT_SERENA_STATUS="$serena_status" \
+  SERENA_AGENT_PREFLIGHT_GRAPHIFY_CLI_STATUS="$graphify_cli_status" \
   SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS="$graphify_global_status" \
   SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS="$graphify_graph_status" \
   SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS="$graphify_integration_status" \
@@ -227,6 +258,8 @@ codex() {
   local project_root="$(_dotsync_agent_project_root "$PWD")"
   local serena_status="managed"
   _dotsync_agent_serena_project_available "$project_root" || serena_status="missing"
+  local graphify_cli_status="installed"
+  _dotsync_agent_graphify_available || graphify_cli_status="missing"
   local graphify_global_status="installed"
   _dotsync_agent_graphify_global_installed codex || graphify_global_status="missing"
   local graphify_graph_status="built"
@@ -237,6 +270,7 @@ codex() {
   _dotsync_agent_graphify_hooks_installed "$project_root" || graphify_hook_status="missing"
 
   SERENA_AGENT_PREFLIGHT_SERENA_STATUS="$serena_status" \
+  SERENA_AGENT_PREFLIGHT_GRAPHIFY_CLI_STATUS="$graphify_cli_status" \
   SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS="$graphify_global_status" \
   SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS="$graphify_graph_status" \
   SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS="$graphify_integration_status" \

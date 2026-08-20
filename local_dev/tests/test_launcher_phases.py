@@ -386,9 +386,14 @@ def test_v2_serena_init_create_calls_serena_cli(monkeypatch, tmp_path):
         return 0, ""
 
     monkeypatch.setattr(launcher, "_serena_project_create", fake_create, raising=False)
+    monkeypatch.setattr(launcher, "serena_server_command", lambda: ["/fake/serena"])
     out = io.StringIO()
     answers = iter(["y"])
-    result = launcher._run_serena_init_v2(stream=out, input_fn=lambda: next(answers))
+    result = launcher._run_serena_init_v2(
+        project_root=tmp_path,
+        stream=out,
+        input_fn=lambda: next(answers),
+    )
     assert result == "created"
     assert captured["root"] == tmp_path
 
@@ -398,9 +403,14 @@ def test_v2_serena_init_create_failure_returns_failed(monkeypatch, tmp_path):
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
     monkeypatch.setattr(launcher, "_serena_project_create",
                         lambda project_root: (1, ""), raising=False)
+    monkeypatch.setattr(launcher, "serena_server_command", lambda: ["/fake/serena"])
     out = io.StringIO()
     answers = iter(["y"])
-    result = launcher._run_serena_init_v2(stream=out, input_fn=lambda: next(answers))
+    result = launcher._run_serena_init_v2(
+        project_root=tmp_path,
+        stream=out,
+        input_fn=lambda: next(answers),
+    )
     assert result == "failed"
 
 
@@ -572,8 +582,9 @@ def test_v2_shutdown_with_spinner_outputs_progress_then_done(monkeypatch):
     stats = launcher._stop_mcp_with_spinner(
         scope=mock.Mock(),
         lease_id="lease-1",
+        server_instance_id="instance-1",
         stream=out,
-        shutdown_fn=lambda scope, lease_id: fake_stats,
+        shutdown_fn=lambda scope, lease_id, server_instance_id: fake_stats,
     )
     assert stats is fake_stats
     text = out.getvalue()
@@ -585,7 +596,7 @@ def test_v2_shutdown_with_spinner_outputs_progress_then_done(monkeypatch):
 def test_v2_shutdown_with_spinner_propagates_exception(monkeypatch):
     monkeypatch.delenv("SERENA_AGENT_INTERACTIVE", raising=False)
 
-    def boom(scope, lease_id):
+    def boom(scope, lease_id, server_instance_id):
         raise RuntimeError("shutdown failed")
 
     out = io.StringIO()
@@ -593,6 +604,7 @@ def test_v2_shutdown_with_spinner_propagates_exception(monkeypatch):
         launcher._stop_mcp_with_spinner(
             scope=mock.Mock(),
             lease_id="lease-1",
+            server_instance_id="instance-1",
             stream=out,
             shutdown_fn=boom,
         )
@@ -860,13 +872,16 @@ def _run_main_for_cleanup_choices(
     session_choice,
     session_choice_exception=None,
     call_public_main=False,
-    serena_state="skipped",
     captured_summary_warnings=None,
 ):
+    (tmp_path / ".git").mkdir(exist_ok=True)
+    (tmp_path / ".serena").mkdir(exist_ok=True)
+    (tmp_path / ".serena" / "project.yml").write_text("project_name: test\n")
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("SERENA_AGENT_CLIENT", client)
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
+    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
     if client == "claude":
         monkeypatch.setenv(
@@ -891,10 +906,6 @@ def _run_main_for_cleanup_choices(
         call_log.append("setup")
         return 0
 
-    def fake_serena_init(**kwargs):
-        call_log.append("serena-init")
-        return serena_state
-
     def fake_session_choice(**kwargs):
         call_log.append("session-choice")
         if session_choice_exception is not None:
@@ -904,7 +915,6 @@ def _run_main_for_cleanup_choices(
     monkeypatch.setattr(launcher, "_render_preflight_overview_v2", fake_overview)
     monkeypatch.setattr(launcher, "_run_serena_cli_install_v2", lambda **kwargs: None)
     monkeypatch.setattr(launcher, "_run_preflight_v2", fake_preflight, raising=False)
-    monkeypatch.setattr(launcher, "_run_serena_init_v2", fake_serena_init, raising=False)
     monkeypatch.setattr(launcher, "_run_session_choice_v2", fake_session_choice,
                         raising=False)
     monkeypatch.setattr(
@@ -989,9 +999,8 @@ def test_v2_main_claude_keep_runs_no_cleanup(monkeypatch, tmp_path):
     )
 
     assert rc == 0
-    assert call_log[:4] == [
+    assert call_log[:3] == [
         "overview",
-        "serena-init",
         "setup",
         "session-choice",
     ]
@@ -1414,7 +1423,11 @@ def test_v2_serena_init_prompt_defaults_to_no(monkeypatch, tmp_path):
     monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
     out = io.StringIO()
     answers = iter([""])  # bare Enter
-    result = launcher._run_serena_init_v2(stream=out, input_fn=lambda: next(answers))
+    result = launcher._run_serena_init_v2(
+        project_root=tmp_path,
+        stream=out,
+        input_fn=lambda: next(answers),
+    )
     assert result == "skipped"
     assert "[y/N]" in out.getvalue()
 
@@ -1486,9 +1499,14 @@ def test_v2_serena_init_success_shows_clean_row_not_raw_output(monkeypatch, tmp_
         )
 
     monkeypatch.setattr(launcher, "_serena_project_create", fake_create, raising=False)
+    monkeypatch.setattr(launcher, "serena_server_command", lambda: ["/fake/serena"])
     out = io.StringIO()
     answers = iter(["y"])
-    result = launcher._run_serena_init_v2(stream=out, input_fn=lambda: next(answers))
+    result = launcher._run_serena_init_v2(
+        project_root=tmp_path,
+        stream=out,
+        input_fn=lambda: next(answers),
+    )
     text = _strip_ansi(out.getvalue())
     assert result == "created"
     assert "project created" in text
@@ -1505,9 +1523,14 @@ def test_v2_serena_init_failure_dumps_captured_output(monkeypatch, tmp_path):
         lambda project_root: (1, "serena exploded: real traceback line\n"),
         raising=False,
     )
+    monkeypatch.setattr(launcher, "serena_server_command", lambda: ["/fake/serena"])
     out = io.StringIO()
     answers = iter(["y"])
-    result = launcher._run_serena_init_v2(stream=out, input_fn=lambda: next(answers))
+    result = launcher._run_serena_init_v2(
+        project_root=tmp_path,
+        stream=out,
+        input_fn=lambda: next(answers),
+    )
     text = _strip_ansi(out.getvalue())
     assert result == "failed"
     assert "serena exploded: real traceback line" in text  # dumped for diagnosis
@@ -1519,6 +1542,10 @@ def test_v2_main_keep_launches_bare_when_serena_cli_missing(
     """project.yml이 있어도(managed) serena CLI 자체를 못 찾으면 scoped server를
     띄울 수 없다 — traceback 대신 경고 한 줄을 남기고 bare child로 강등한다.
     keep을 선택하면 bare launch 전에도 정리는 실행하지 않는다."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".serena").mkdir()
+    (tmp_path / ".serena" / "project.yml").write_text("project_name: test\n")
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
     monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
@@ -1664,38 +1691,34 @@ def test_tool_install_streaming_dumps_output_on_failure():
 # 명령어가 문장 주어처럼 먼저 나오지 않는다.
 
 
-def test_v2_main_runs_serena_cli_phase_before_init(monkeypatch, tmp_path):
-    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
-    monkeypatch.setenv("SERENA_AGENT_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
-    monkeypatch.setenv("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "missing")
-    monkeypatch.delenv("SERENA_AGENT_CLEAR_BEFORE_CHILD", raising=False)
-    _set_graphify_env(monkeypatch)
-
+def test_v2_serena_init_installs_cli_before_project_create(monkeypatch, tmp_path):
+    resolution = [None]
     order = []
-    monkeypatch.setattr(launcher, "_render_preflight_overview_v2",
-                        lambda *, stream=None: None, raising=False)
-    monkeypatch.setattr(launcher, "_run_serena_cli_install_v2",
-                        lambda **kw: order.append("cli") or "present",
-                        raising=False)
-    monkeypatch.setattr(launcher, "_run_serena_init_v2",
-                        lambda **kw: order.append("init") or "skipped",
-                        raising=False)
-    monkeypatch.setattr(launcher, "_run_preflight_v2",
-                        lambda **kw: 0, raising=False)
-    monkeypatch.setattr(launcher, "_run_session_choice_v2",
-                        lambda **kw: "keep", raising=False)
-    monkeypatch.setattr(launcher, "find_real_binary",
-                        lambda client: "/usr/bin/true", raising=False)
 
-    class _Result:
-        returncode = 0
+    monkeypatch.setattr(launcher, "serena_server_command", lambda: resolution[0])
 
-    monkeypatch.setattr(launcher.subprocess, "run", lambda cmd, *a, **k: _Result())
+    def fake_install(**kwargs):
+        order.append("cli")
+        resolution[0] = ["/fake/serena"]
+        return "installed"
 
-    rc = launcher._main_v2([])
-    assert rc == 0
-    assert order == ["cli", "init"]
+    def fake_create(project_root):
+        order.append("create")
+        (project_root / ".serena").mkdir()
+        (project_root / ".serena" / "project.yml").write_text("project_name: test\n")
+        return 0, ""
+
+    monkeypatch.setattr(launcher, "_run_serena_cli_install_v2", fake_install)
+    monkeypatch.setattr(launcher, "_serena_project_create", fake_create)
+
+    result = launcher._run_serena_init_v2(
+        project_root=tmp_path,
+        stream=io.StringIO(),
+        input_fn=lambda: "y",
+    )
+
+    assert result == "created"
+    assert order == ["cli", "create"]
 
 
 def test_v2_preflight_offers_graphify_cli_install_before_actions(monkeypatch):

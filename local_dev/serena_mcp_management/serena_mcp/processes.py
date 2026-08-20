@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from local_dev.serena_mcp_management.serena_mcp.health import process_identity
-from local_dev.serena_mcp_management.serena_mcp.paths import Scope, serena_context_for
+from local_dev.serena_mcp_management.serena_mcp.paths import Scope, shared_context_path
 
 
 class ProcessScanError(RuntimeError):
@@ -91,8 +91,15 @@ def process_matches_scope(process: SerenaMcpProcess, scope: Scope) -> bool:
 
     return (
         process.project_root == scope.project_root
-        and process.context == serena_context_for(scope.client_type)
+        and uses_bundled_shared_context(process.context)
     )
+
+
+def uses_bundled_shared_context(context: str) -> bool:
+    """Return whether an absolute context argument identifies the bundled profile."""
+
+    context_path = Path(context)
+    return context_path.is_absolute() and context_path.resolve() == shared_context_path()
 
 
 def _is_serena_start_mcp_server(argv: list[str]) -> bool:

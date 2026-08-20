@@ -1,11 +1,13 @@
 """Health checks for scoped Serena MCP servers."""
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
@@ -25,22 +27,96 @@ def pid_is_alive(pid: int) -> bool:
 
 
 def process_identity(pid: int) -> str | None:
-    """Return a stable per-process identity (start time), or None if unusable.
+    """Return a high-resolution immutable start identity, or None if unusable.
 
-    Identity is the process start time (`ps lstart`), which together with the
-    pid pins a process for reuse detection. The command text is deliberately
-    NOT queried: macOS framework Python re-execs itself moments after launch
-    (the symlinked `…/bin/python3.12` becomes `…/Python.app/Contents/MacOS/
-    Python`), which changes its `ps command=` argv0. Keying identity on the
-    command made every `python -m` child — notably the MCP proxy — fail its
-    identity match seconds after start, so `server_is_healthy` never became
-    true and the scoped server timed out. Start time is immutable across the
-    re-exec; the other health probes (http, dashboard, pid-alive) supply the
-    remaining process-correctness guarantees.
+    macOS uses libproc's microsecond process start timestamp; Linux uses the
+    kernel start-tick field in ``/proc/<pid>/stat``. Other platforms fall back
+    to ``ps lstart``. Command text is deliberately excluded because framework
+    Python may re-exec with a different argv0 while retaining the same process
+    identity. The PID plus immutable start data prevents PID-reuse mistakes;
+    endpoint and dashboard probes provide the remaining health guarantees.
     """
 
     if pid <= 0:
         return None
+    if sys.platform == "darwin":
+        return _darwin_process_identity(pid)
+    if sys.platform.startswith("linux"):
+        identity = _linux_process_identity(pid)
+        if identity is not None:
+            return identity
+    return _portable_process_identity(pid)
+
+
+class _ProcBsdInfo(ctypes.Structure):
+    _fields_ = [
+        ("pbi_flags", ctypes.c_uint32),
+        ("pbi_status", ctypes.c_uint32),
+        ("pbi_xstatus", ctypes.c_uint32),
+        ("pbi_pid", ctypes.c_uint32),
+        ("pbi_ppid", ctypes.c_uint32),
+        ("pbi_uid", ctypes.c_uint32),
+        ("pbi_gid", ctypes.c_uint32),
+        ("pbi_ruid", ctypes.c_uint32),
+        ("pbi_rgid", ctypes.c_uint32),
+        ("pbi_svuid", ctypes.c_uint32),
+        ("pbi_svgid", ctypes.c_uint32),
+        ("rfu_1", ctypes.c_uint32),
+        ("pbi_comm", ctypes.c_char * 16),
+        ("pbi_name", ctypes.c_char * 32),
+        ("pbi_nfiles", ctypes.c_uint32),
+        ("pbi_pgid", ctypes.c_uint32),
+        ("pbi_pjobc", ctypes.c_uint32),
+        ("e_tdev", ctypes.c_uint32),
+        ("e_tpgid", ctypes.c_uint32),
+        ("pbi_nice", ctypes.c_int32),
+        ("pbi_start_tvsec", ctypes.c_uint64),
+        ("pbi_start_tvusec", ctypes.c_uint64),
+    ]
+
+
+def _darwin_process_identity(pid: int) -> str | None:
+    try:
+        libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        proc_pidinfo = libproc.proc_pidinfo
+        proc_pidinfo.argtypes = (
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_uint64,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        )
+        proc_pidinfo.restype = ctypes.c_int
+        info = _ProcBsdInfo()
+        size = ctypes.sizeof(info)
+        copied = proc_pidinfo(pid, 3, 0, ctypes.byref(info), size)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+    if copied != size or info.pbi_pid != pid or info.pbi_status == 5:
+        return None
+    if info.pbi_start_tvsec <= 0 or info.pbi_start_tvusec >= 1_000_000:
+        return None
+    return f"darwin:{info.pbi_start_tvsec}:{info.pbi_start_tvusec:06d}"
+
+
+def _linux_process_identity(pid: int) -> str | None:
+    try:
+        stat_line = Path(f"/proc/{pid}/stat").read_text()
+    except (OSError, UnicodeDecodeError):
+        return None
+    closing_paren = stat_line.rfind(")")
+    if closing_paren < 0:
+        return None
+    fields = stat_line[closing_paren + 2 :].split()
+    if len(fields) <= 19 or fields[0] == "Z":
+        return None
+    start_ticks = fields[19]
+    if not start_ticks.isdigit():
+        return None
+    return f"linux:{start_ticks}"
+
+
+def _portable_process_identity(pid: int) -> str | None:
     try:
         proc = subprocess.run(
             ["ps", "-o", "stat=", "-o", "lstart=", "-p", str(pid)],
@@ -58,7 +134,8 @@ def process_identity(pid: int) -> str | None:
     stat, _, rest = line.partition(" ")
     if "Z" in stat:
         return None
-    return rest.strip() or None
+    identity = rest.strip()
+    return f"ps:{identity}" if identity else None
 
 
 def http_endpoint_alive(url: str, *, timeout: float = 1.0) -> bool:
@@ -86,6 +163,9 @@ def http_endpoint_alive(url: str, *, timeout: float = 1.0) -> bool:
     try:
         with urlopen(request, timeout=timeout) as response:
             return 200 <= response.status < 300
+    except HTTPError as exc:
+        exc.close()
+        return False
     except (OSError, URLError):
         return False
 
@@ -102,6 +182,9 @@ def dashboard_matches_project(
     try:
         with urlopen(url, timeout=timeout) as response:
             body = response.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        exc.close()
+        return False
     except (OSError, URLError):
         return False
     if "Active Project: None" in body:

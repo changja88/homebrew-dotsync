@@ -12,11 +12,11 @@ def terminate_pid(
     pid: int,
     *,
     timeout: float = 5.0,
-    expected_identity: str | None = None,
+    expected_identity: str,
 ) -> None:
     """Terminate a process group, falling back to PID kill and SIGKILL."""
 
-    if pid <= 0:
+    if pid <= 0 or expected_identity is None:
         return
     if not _identity_matches(pid, expected_identity):
         return
@@ -54,7 +54,7 @@ def _send_pid(pid: int, sig: signal.Signals) -> bool:
         return False
 
 
-def _identity_matches(pid: int, expected_identity: str | None) -> bool:
+def _identity_matches(pid: int, expected_identity: str) -> bool:
     if expected_identity is None:
-        return True
+        return False
     return process_identity(pid) == expected_identity

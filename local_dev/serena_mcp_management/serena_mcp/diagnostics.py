@@ -3,13 +3,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from local_dev.serena_mcp_management.serena_mcp.paths import (
-    Scope,
-    client_type_for_serena_context,
-)
+from local_dev.serena_mcp_management.serena_mcp.paths import Scope
 from local_dev.serena_mcp_management.serena_mcp.processes import (
     ProcessScanError,
     scan_serena_mcp_processes,
+    uses_bundled_shared_context,
 )
 from local_dev.serena_mcp_management.serena_mcp.registry import (
     locked_registry,
@@ -53,10 +51,12 @@ def snapshot_global_lifecycle(
     stale_lease_count = 0
 
     for process in processes:
-        client_type = client_type_for_serena_context(process.context)
-        if client_type is None or process.identity is None:
+        if (
+            process.identity is None
+            or not uses_bundled_shared_context(process.context)
+        ):
             continue
-        scope = Scope(process.project_root, client_type)
+        scope = Scope(process.project_root)
         record = read_registry_record(scope)
         if record is None or not record_belongs_to_scope(record, scope):
             continue

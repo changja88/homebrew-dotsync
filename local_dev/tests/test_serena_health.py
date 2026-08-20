@@ -31,6 +31,11 @@ def test_pid_is_alive_for_current_process():
 
 
 def test_process_identity_returns_start_time_from_ps(monkeypatch):
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.health.sys.platform",
+        "freebsd",
+    )
+
     def fake_run(cmd, check, text, capture_output):
         # command= must NOT be queried — it is the volatile field that breaks
         # identity across macOS framework-Python re-exec.
@@ -46,10 +51,14 @@ def test_process_identity_returns_start_time_from_ps(monkeypatch):
 
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.health.subprocess.run", fake_run)
 
-    assert process_identity(1234) == "Fri May  8 10:00:00 2026"
+    assert process_identity(1234) == "ps:Fri May  8 10:00:00 2026"
 
 
 def test_process_identity_returns_none_for_zombie_status(monkeypatch):
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.health.sys.platform",
+        "freebsd",
+    )
     monkeypatch.setattr(
         "local_dev.serena_mcp_management.serena_mcp.health.subprocess.run",
         lambda *args, **kwargs: SimpleNamespace(
@@ -62,6 +71,10 @@ def test_process_identity_returns_none_for_zombie_status(monkeypatch):
 
 
 def test_process_identity_returns_none_when_ps_cannot_run(monkeypatch):
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.health.sys.platform",
+        "freebsd",
+    )
     def fake_run(*args, **kwargs):
         raise OSError("ps unavailable")
 

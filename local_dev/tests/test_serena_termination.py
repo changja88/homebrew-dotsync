@@ -17,6 +17,10 @@ def test_terminate_pid_sends_sigterm_then_sigkill_when_process_survives(monkeypa
         lambda pid: next(alive_checks),
     )
     monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.termination.process_identity",
+        lambda pid: "owned identity",
+    )
+    monkeypatch.setattr(
         "local_dev.serena_mcp_management.serena_mcp.termination.time.sleep",
         lambda seconds: sleeps.append(seconds),
     )
@@ -25,7 +29,7 @@ def test_terminate_pid_sends_sigterm_then_sigkill_when_process_survives(monkeypa
         iter([0.0, 0.1, 0.2, 10.0]).__next__,
     )
 
-    terminate_pid(123, timeout=0.15)
+    terminate_pid(123, timeout=0.15, expected_identity="owned identity")
 
     assert calls == [
         ("killpg", 123, signal.SIGTERM),
@@ -47,8 +51,12 @@ def test_terminate_pid_falls_back_to_individual_pid_on_permission_error(monkeypa
         lambda pid, sig: calls.append(("kill", pid, sig)),
     )
     monkeypatch.setattr("local_dev.serena_mcp_management.serena_mcp.termination.pid_is_alive", lambda pid: False)
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.termination.process_identity",
+        lambda pid: "owned identity",
+    )
 
-    terminate_pid(123)
+    terminate_pid(123, expected_identity="owned identity")
 
     assert calls == [
         ("killpg", 123, signal.SIGTERM),
@@ -73,8 +81,12 @@ def test_terminate_pid_falls_back_to_individual_pid_when_process_group_missing(m
         "local_dev.serena_mcp_management.serena_mcp.termination.pid_is_alive",
         lambda pid: next(alive_checks),
     )
+    monkeypatch.setattr(
+        "local_dev.serena_mcp_management.serena_mcp.termination.process_identity",
+        lambda pid: "owned identity",
+    )
 
-    terminate_pid(123)
+    terminate_pid(123, expected_identity="owned identity")
 
     assert calls == [
         ("killpg", 123, signal.SIGTERM),

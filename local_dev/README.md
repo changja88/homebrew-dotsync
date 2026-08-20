@@ -53,7 +53,7 @@ missing일 때 graphify 질문들 직전에. 거절하면 아래의 degrade 동�
 | CLI | Install | Resolution rules |
 |---|---|---|
 | `graphify` | `uv tool install graphifyy` | Direct binary only. **No uvx fallback**: graphify writes its own absolute path into project hooks (`.codex/hooks.json` 등), so an ephemeral uvx cache path would rot there after `uv cache clean`. |
-| `serena` | `uv tool install --from "git+https://github.com/oraios/serena" serena-agent` | One-shot commands (`serena project create`) fall back to `uvx --from git+…oraios/serena` when no direct binary exists. The **long-running scoped server requires a direct binary** — uvx keeps the real server as a child process, so the registry would record the wrapper pid and same-scope orphan cleanup would kill its own server. |
+| `serena` | `uv tool install --from "git+https://github.com/oraios/serena" serena-agent` | One-shot commands (`serena project create`) fall back to `uvx --from git+…oraios/serena` when no direct binary exists. The **long-running scoped server requires a direct binary** so registry identity, direct-child ownership, health checks, and final shutdown all refer to the real server process rather than an intermediate wrapper. |
 
 When the serena CLI is unresolvable the launcher degrades gracefully: the
 Initialize prompt still works (uvx), and the scoped-server phase prints
@@ -68,6 +68,22 @@ user-level skill lives at `~/.codex/skills/graphify` (claude:
 `serena_mcp_management/` contains the local Serena MCP launcher, zsh shim
 generator, and scoped server lifecycle code used for Codex and Claude
 development sessions.
+
+Serena is an exact project opt-in: the nearest project/worktree root must
+contain `.serena/project.yml`. Without that marker the launcher starts the real
+Codex or Claude binary without creating Serena state or attempting a server.
+For an opted-in root, the sharing key is the canonical worktree path plus the
+fixed `dotsync-shared-cli-v1` profile; the client type is deliberately not part
+of the key. Every Codex and Claude process launched from the same worktree
+therefore shares one Serena server/proxy generation, while different
+worktrees—even from the same repository—use independent generations.
+
+Each launcher owns one lease. Exiting a client releases only that lease; the
+server, proxy, and watchdog remain while any lease survives and stop when the
+last lease is released. Registry, lock, and log state lives in a private
+per-user runtime/cache directory outside the repository. Process-table
+discovery is diagnostic-only: termination requires a private registry record
+with PID identity or direct child ownership.
 
 The managed zsh flow is:
 

@@ -49,8 +49,16 @@ from local_dev.serena_mcp_management.node_preflight import (
     node_need,
 )
 from local_dev.serena_mcp_management.serena_mcp.diagnostics import snapshot_global_lifecycle
-from local_dev.serena_mcp_management.serena_mcp.paths import Scope, find_project_root
-from local_dev.serena_mcp_management.serena_mcp.registry import locked_registry, touch_lease
+from local_dev.serena_mcp_management.serena_mcp.paths import (
+    Scope,
+    find_project_root,
+    serena_opted_in,
+)
+from local_dev.serena_mcp_management.serena_mcp.registry import (
+    locked_registry,
+    record_belongs_to_scope,
+    refresh_existing_lease,
+)
 from local_dev.serena_mcp_management.serena_mcp.server import ensure_server
 from local_dev.serena_mcp_management.serena_mcp.watchdog import (
     HEARTBEAT_INTERVAL_SECONDS,
@@ -104,6 +112,15 @@ class InventorySnapshot:
     error: str | None = None
     memory_inventory: MemoryInventory | None = None
     memory_error: str | None = None
+
+
+class _AcquiredRecordPresentationInterrupted(Exception):
+    """Carry a record across a post-acquisition KeyboardInterrupt boundary."""
+
+    def __init__(self, record, interrupt: KeyboardInterrupt) -> None:
+        super().__init__(str(interrupt))
+        self.record = record
+        self.interrupt = interrupt
 
 
 class _MemoryScanKwargs(TypedDict):
@@ -372,27 +389,42 @@ def _start_mcp_with_spinner(
         Any exception from ensure_server.
     """
     out = stream if stream is not None else sys.stdout
-    out.write(f"  \x1b[{PURPLE}m·\x1b[0m serena     preparing scoped server")
+    out.write(f"  \x1b[{PURPLE}m·\x1b[0m serena     preparing shared worktree server")
     out.flush()
     frame_state = {"frame": 0}
 
     def on_tick(frame: int) -> None:
         frame_state["frame"] = frame
-        out.write(f"\r  {style_spinner(frame)} serena     preparing scoped server")
+        out.write(f"\r  {style_spinner(frame)} serena     preparing shared worktree server")
         out.flush()
 
     ticker = SpinnerTicker(on_tick=on_tick, interval=0.1)
     ticker.start()
     try:
         record = ensure_server(scope, lease)
-    except Exception as exc:
-        ticker.stop()
-        out.write(f"\r  \x1b[33m!\x1b[0m serena     failed     . {exc}\n")
-        out.flush()
+    except BaseException:
+        try:
+            ticker.stop()
+        except BaseException:
+            pass
         raise
-    ticker.stop()
-    out.write(f"\r  \x1b[{PINK}m✓\x1b[0m serena     ready      . {record.mcp_url}\n")
-    out.flush()
+    presentation_interrupt: KeyboardInterrupt | None = None
+    try:
+        ticker.stop()
+    except KeyboardInterrupt as exc:
+        presentation_interrupt = exc
+    except Exception:
+        pass
+    if presentation_interrupt is None:
+        try:
+            out.write(f"\r  \x1b[{PINK}m✓\x1b[0m serena     ready      . {record.mcp_url}\n")
+            out.flush()
+        except KeyboardInterrupt as exc:
+            presentation_interrupt = exc
+        except Exception:
+            pass
+    if presentation_interrupt is not None:
+        raise _AcquiredRecordPresentationInterrupted(record, presentation_interrupt) from presentation_interrupt
     return record
 
 
@@ -438,7 +470,7 @@ def _render_summary_v2(
         Item(
             id="mcp",
             label="serena",
-            value=f"server {mcp_lifecycle}",
+            value=f"shared worktree server {mcp_lifecycle}",
             status="done",
         ),
     ]
@@ -461,28 +493,42 @@ def _main_v2(args: list[str]) -> int:
     warnings: list[str] = []
     interactive = os.environ.get("SERENA_AGENT_INTERACTIVE") == "1"
     out = sys.stdout
+    client_type = infer_client_type(
+        os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0])
+    )
+    discovered_root = find_project_root(Path.cwd())
+    root_hint = _project_root_from_environment()
+    project_root = root_hint if root_hint == discovered_root else discovered_root
+    os.environ["SERENA_AGENT_PROJECT_ROOT"] = str(project_root)
+
+    real_binary = find_real_binary(client_type)
+    if not serena_opted_in(project_root):
+        if not interactive:
+            return _launch_bare_child(
+                args,
+                client_type=client_type,
+                real_binary=real_binary,
+            )
+        serena_state = _run_serena_init_v2(project_root=project_root)
+        if serena_state != "created" or not serena_opted_in(project_root):
+            if serena_state != "skipped":
+                warnings.append(f"serena project create {serena_state}")
+            return _launch_bare_child(
+                args,
+                client_type=client_type,
+                real_binary=real_binary,
+            )
+    else:
+        serena_state = "managed"
 
     if interactive:
         _render_preflight_overview_v2()
-        _run_serena_cli_install_v2()
-
-    serena_state = _run_serena_init_v2() if interactive else "managed"
-
-    if interactive:
         rc = _run_preflight_v2(serena_state=serena_state)
         if rc != 0:
             return rc
 
-    client_type = infer_client_type(
-        os.environ.get("SERENA_AGENT_CLIENT", sys.argv[0])
-    )
-    project_root = (
-        _project_root_from_environment()
-        or find_project_root(Path.cwd())
-    )
     session_choice = _run_session_choice_v2()
 
-    real_binary: str | None = None
     if interactive and session_choice == "reset_all":
         if client_type == "codex":
             reset_result = _run_codex_reset_v2(
@@ -520,17 +566,6 @@ def _main_v2(args: list[str]) -> int:
     if summary_state is not None:
         warnings.extend(summary_state.warnings)
 
-    if real_binary is None:
-        real_binary = find_real_binary(client_type)
-
-    if serena_state in {"skipped", "failed"}:
-        warnings.append(f"serena project create {serena_state}")
-        return _launch_bare_child(
-            args,
-            client_type=client_type,
-            real_binary=real_binary,
-        )
-
     if serena_server_command() is None:
         out.write(
             "  ! serena    unavailable . serena CLI not found —"
@@ -543,27 +578,50 @@ def _main_v2(args: list[str]) -> int:
             real_binary=real_binary,
         )
 
-    scope = Scope(project_root, client_type)
+    scope = Scope(project_root)
     lease_id = str(uuid.uuid4())
-    lease = make_launcher_lease(lease_id)
-
-    record = (
-        _start_mcp_with_spinner(scope=scope, lease=lease)
-        if interactive
-        else ensure_server(scope, lease)
-    )
-
-    stop = threading.Event()
+    lease = make_launcher_lease(lease_id, client_type)
+    stop: threading.Event | None = None
     cleanup: Callable[[], None] = lambda: None
     child: subprocess.Popen | None = None
-    heartbeat = threading.Thread(
-        target=_heartbeat_loop,
-        args=(scope, lease_id, stop),
-        daemon=True,
-    )
-    heartbeat.start()
+    stats: ShutdownStats | None = None
 
     try:
+        record = (
+            _start_mcp_with_spinner(scope=scope, lease=lease)
+            if interactive
+            else ensure_server(scope, lease)
+        )
+    except _AcquiredRecordPresentationInterrupted as exc:
+        try:
+            _release_acquired_record(
+                interactive=interactive,
+                scope=scope,
+                lease_id=lease_id,
+                server_instance_id=exc.record.server_instance_id,
+            )
+        except KeyboardInterrupt:
+            pass
+        raise exc.interrupt
+    except Exception as exc:
+        message = f"shared worktree server unavailable: {exc}"
+        warnings.append(message)
+        out.write(f"  ! serena    unavailable . {message}\n")
+        out.flush()
+        return _launch_bare_child(
+            args,
+            client_type=client_type,
+            real_binary=real_binary,
+        )
+
+    try:
+        stop = threading.Event()
+        heartbeat = threading.Thread(
+            target=_heartbeat_loop,
+            args=(scope, lease_id, record.server_instance_id, stop),
+            daemon=True,
+        )
+        heartbeat.start()
         cmd, cleanup = build_child_command(
             client_type=client_type,
             real_binary=real_binary,
@@ -573,7 +631,11 @@ def _main_v2(args: list[str]) -> int:
         open_dashboard_if_requested(record.dashboard_url)
         if os.environ.get("SERENA_AGENT_CLEAR_BEFORE_CHILD") == "1":
             clear_terminal_before_child()
-        child = subprocess.Popen(cmd, cwd=str(project_root))
+        child = subprocess.Popen(
+            cmd,
+            cwd=str(project_root),
+            start_new_session=True,
+        )
 
         def shutdown(signum=None, frame=None):
             stop.set()
@@ -584,15 +646,37 @@ def _main_v2(args: list[str]) -> int:
             signal.signal(signum, shutdown)
         rc = int(child.wait())
     finally:
-        stop.set()
-        cleanup()
-        if interactive:
+        primary_exception_active = sys.exc_info()[0] is not None
+        if stop is not None:
+            stop.set()
+        child_cleanup_error: BaseException | None = None
+        if child is not None and child.poll() is None:
             try:
-                stats = _stop_mcp_with_spinner(scope=scope, lease_id=lease_id)
-            except Exception:
-                stats = None
-        else:
-            stats = _remove_lease_and_shutdown_if_empty(scope, lease_id)
+                _terminate_and_reap_owned_child(child)
+            except BaseException as exc:
+                child_cleanup_error = exc
+                warnings.append(f"client process cleanup failed: {exc}")
+        try:
+            cleanup()
+        except BaseException as exc:
+            warnings.append(f"client MCP config cleanup failed: {exc}")
+        release_error: BaseException | None = None
+        try:
+            stats = _release_acquired_record(
+                interactive=interactive,
+                scope=scope,
+                lease_id=lease_id,
+                server_instance_id=record.server_instance_id,
+            )
+        except BaseException as exc:
+            release_error = exc
+        if release_error is not None:
+            warnings.append(f"serena lease release failed: {release_error}")
+            if not primary_exception_active:
+                if child_cleanup_error is None:
+                    raise release_error
+        if child_cleanup_error is not None and not primary_exception_active:
+            raise child_cleanup_error
 
     if interactive:
         if stats is None:
@@ -630,6 +714,33 @@ def _project_root_from_environment() -> Path | None:
     return Path(value).resolve()
 
 
+def _terminate_and_reap_owned_child(
+    child: subprocess.Popen,
+    *,
+    timeout: float = 3.0,
+) -> None:
+    """Stop and reap the directly owned agent process group."""
+
+    if child.poll() is None:
+        try:
+            os.killpg(child.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            if child.poll() is None:
+                child.terminate()
+    try:
+        child.wait(timeout=timeout)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    if child.poll() is None:
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            if child.poll() is None:
+                child.kill()
+    child.wait(timeout=timeout)
+
+
 
 def _short_path(path: str) -> str:
     """Convert an absolute path to a tilde-abbreviated version."""
@@ -637,6 +748,19 @@ def _short_path(path: str) -> str:
     if path.startswith(home):
         return "~" + path[len(home):]
     return path
+
+
+def _graphify_cli_value(status: str) -> tuple[str, str]:
+    """Return (value, item_status) for the graphify cli preflight row.
+
+    Every other graphify row is a file-presence probe, so all four keep
+    reporting ✓ when only the executable disappears (a clean macOS reinstall
+    restores dotfiles but not `uv tool` installs). Without this row the screen
+    carries no clue while `graphify query` is in fact unusable.
+    """
+    if status == "installed":
+        return "graphify on PATH", "done"
+    return 'cli not installed . run "uv tool install graphifyy"', "warn"
 
 
 def _graphify_global_value(client: str, status: str) -> tuple[str, str]:
@@ -718,6 +842,9 @@ def _preflight_box(
     project_root = os.environ.get("SERENA_AGENT_PROJECT_ROOT", "")
     serena_status = os.environ.get("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
 
+    cli_status = os.environ.get(
+        "SERENA_AGENT_PREFLIGHT_GRAPHIFY_CLI_STATUS", "unknown"
+    )
     global_status = os.environ.get(
         "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS", "unknown"
     )
@@ -758,6 +885,7 @@ def _preflight_box(
         serena_mcp_value = "scan unavailable"
         serena_mcp_status = "warn"
 
+    cli_value, cli_item_status = _graphify_cli_value(cli_status)
     global_value, global_item_status = _graphify_global_value(client, global_status)
     graph_value, graph_item_status = _graphify_graph_value(client, graph_status)
     integration_value, integration_item_status = _graphify_integration_value(
@@ -804,6 +932,12 @@ def _preflight_box(
             status=serena_mcp_status,
         ),
         Item(
+            id="graphify-cli",
+            label="graphify cli",
+            value=cli_value,
+            status=cli_item_status,
+        ),
+        Item(
             id="graphify-global",
             label="graphify global",
             value=global_value,
@@ -830,7 +964,7 @@ def _preflight_box(
         Item(
             id="context",
             label="context",
-            value="claude-code" if client == "claude" else "codex",
+            value="shared-cli (oaicompat-agent)",
             status="info",
         ),
         Item(
@@ -965,8 +1099,8 @@ def _run_serena_cli_install_v2(
     """Offer to install the serena CLI when it cannot be resolved.
 
     Returns one of: 'present', 'installed', 'declined', 'failed',
-    'unavailable'. 어떤 결과여도 흐름은 계속된다 — 이후 단계가 uvx
-    fallback(project create)과 bare-launch 강등(scoped server)으로 처리한다.
+    'unavailable'. 실패하거나 거절하면 프로젝트 마커를 만들지 않고
+    bare-launch로 강등한다.
     """
     if serena_server_command() is not None:
         return "present"
@@ -1293,7 +1427,12 @@ def _run_preflight_v2(
         install_node=install_node,
     )
 
+    # The CLI is checked alongside the four file-presence rows, not derived from
+    # them: those four probe files that survive a CLI uninstall, so a missing
+    # executable alone used to leave this set at {"installed", "built"} and the
+    # whole recovery block below never ran.
     graphify_statuses = {
+        os.environ.get("SERENA_AGENT_PREFLIGHT_GRAPHIFY_CLI_STATUS", "unknown"),
         os.environ.get("SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS", "unknown"),
         os.environ.get("SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS", "unknown"),
         os.environ.get("SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS", "unknown"),
@@ -1615,19 +1754,20 @@ def _serena_project_create(project_root: Path) -> tuple[int, str]:
 
 def _run_serena_init_v2(
     *,
+    project_root: Path,
     stream: TextIO | None = None,
     input_fn: Callable[[], str] | None = None,
 ) -> str:
-    """Run optional v2 serena-init phase.
+    """Run the interactive opt-in phase for one already-resolved worktree.
 
-    Returns one of: 'managed', 'created', 'skipped', 'failed'.
+    A persistent Serena CLI must be usable before project creation can write
+    the opt-in marker.  This keeps a declined/failed install from changing the
+    worktree while still allowing the agent itself to launch bare.
+
+    Returns one of: 'created', 'skipped', 'failed'.
     """
-    serena_status = os.environ.get("SERENA_AGENT_PREFLIGHT_SERENA_STATUS", "managed")
-    if serena_status != "missing":
-        return "managed"
-
     out = stream if stream is not None else sys.stdout
-    project_root = Path(os.environ.get("SERENA_AGENT_PROJECT_ROOT", ".")).resolve()
+    project_root = project_root.resolve()
 
     if not confirm(
         "Initialize Serena for this project?",
@@ -1638,6 +1778,13 @@ def _run_serena_init_v2(
         out.write("  ! serena    skipped   . launching without Serena project config\n")
         out.flush()
         return "skipped"
+
+    if serena_server_command() is None:
+        install_state = _run_serena_cli_install_v2(stream=out)
+        if install_state not in {"present", "installed"} or serena_server_command() is None:
+            out.write("  ! serena    unavailable . launching without Serena project config\n")
+            out.flush()
+            return "failed"
 
     rc, output = _serena_project_create(project_root)
     if rc != 0 or not (project_root / ".serena" / "project.yml").exists():
@@ -1652,61 +1799,154 @@ def _run_serena_init_v2(
     return "created"
 
 
-def _heartbeat_loop(scope: Scope, lease_id: str, stop: threading.Event) -> None:
+def _heartbeat_loop(
+    scope: Scope,
+    lease_id: str,
+    server_instance_id: str,
+    stop: threading.Event,
+) -> None:
     while not stop.wait(HEARTBEAT_INTERVAL_SECONDS):
-        if not _touch_lease_if_record_exists(scope, lease_id, stop):
+        if not _touch_lease_if_record_exists(scope, lease_id, server_instance_id, stop):
             return
 
 
 def _touch_lease_if_record_exists(
     scope: Scope,
     lease_id: str,
+    server_instance_id: str,
     stop: threading.Event,
     *,
     now: float | None = None,
 ) -> bool:
-    """Refresh or reattach this launcher's lease if its server record still exists."""
+    """Refresh this launcher's lease only on its acquired server instance."""
 
     with locked_registry(scope) as registry:
-        if registry.record is None or stop.is_set():
+        record = registry.record
+        if (
+            record is None
+            or stop.is_set()
+            or not record_belongs_to_scope(record, scope)
+            or record.server_instance_id != server_instance_id
+        ):
             return False
-        touch_lease(registry, make_launcher_lease(lease_id, now=now))
-        return True
+        current_lease = record.leases.get(lease_id)
+        if current_lease is None:
+            return False
+        refreshed_lease = make_launcher_lease(
+            lease_id,
+            current_lease.client_type,
+            now=now,
+        )
+        return refresh_existing_lease(
+            registry,
+            lease=refreshed_lease,
+            server_instance_id=server_instance_id,
+        )
 
 
-def _remove_lease_and_shutdown_if_empty(scope: Scope, lease_id: str) -> ShutdownStats:
-    return release_lease_and_shutdown_if_empty(scope, lease_id)
+def _remove_lease_and_shutdown_if_empty(
+    scope: Scope, lease_id: str, server_instance_id: str
+) -> ShutdownStats:
+    return release_lease_and_shutdown_if_empty(scope, lease_id, server_instance_id)
+
+
+def _release_acquired_record(
+    *,
+    interactive: bool,
+    scope: Scope,
+    lease_id: str,
+    server_instance_id: str,
+) -> ShutdownStats:
+    """Release exactly one already-acquired server record."""
+
+    if interactive:
+        return _stop_mcp_with_spinner(
+            scope=scope,
+            lease_id=lease_id,
+            server_instance_id=server_instance_id,
+        )
+    return _remove_lease_and_shutdown_if_empty(scope, lease_id, server_instance_id)
 
 
 def _stop_mcp_with_spinner(
     *,
     scope,
     lease_id: str,
+    server_instance_id: str,
     stream=None,
     shutdown_fn=None,
 ):
     """Run lease release + MCP shutdown with a single-line spinner."""
     out = stream if stream is not None else sys.stdout
     fn = shutdown_fn if shutdown_fn is not None else _remove_lease_and_shutdown_if_empty
-    out.write(f"  \x1b[{PURPLE}m·\x1b[0m serena     stopping scoped server")
-    out.flush()
+    presentation_interrupt: KeyboardInterrupt | None = None
+
+    try:
+        out.write(f"  \x1b[{PURPLE}m·\x1b[0m serena     stopping shared worktree server")
+        out.flush()
+    except KeyboardInterrupt as exc:
+        presentation_interrupt = exc
+    except Exception:
+        pass
 
     def on_tick(frame: int) -> None:
-        out.write(f"\r  {style_spinner(frame)} serena     stopping scoped server")
-        out.flush()
+        try:
+            out.write(f"\r  {style_spinner(frame)} serena     stopping shared worktree server")
+            out.flush()
+        except KeyboardInterrupt:
+            pass
+        except Exception:
+            pass
 
-    ticker = SpinnerTicker(on_tick=on_tick, interval=0.1)
-    ticker.start()
+    ticker: SpinnerTicker | None = None
     try:
-        stats = fn(scope, lease_id)
-    except Exception as exc:
-        ticker.stop()
-        out.write(f"\r  \x1b[33m!\x1b[0m serena     shutdown failed . {exc}\n")
-        out.flush()
+        ticker = SpinnerTicker(on_tick=on_tick, interval=0.1)
+        ticker.start()
+    except KeyboardInterrupt as exc:
+        if presentation_interrupt is None:
+            presentation_interrupt = exc
+        ticker = None
+    except Exception:
+        ticker = None
+    try:
+        stats = fn(scope, lease_id, server_instance_id)
+    except BaseException as exc:
+        if ticker is not None:
+            try:
+                ticker.stop()
+            except BaseException:
+                pass
+        try:
+            out.write(f"\r  \x1b[33m!\x1b[0m serena     shutdown failed . {exc}\n")
+            out.flush()
+        except BaseException:
+            pass
         raise
-    ticker.stop()
-    out.write(f"\r  \x1b[{PINK}m✓\x1b[0m serena     stopped scoped server\n")
-    out.flush()
+    if ticker is not None:
+        try:
+            ticker.stop()
+        except KeyboardInterrupt as exc:
+            if presentation_interrupt is None:
+                presentation_interrupt = exc
+        except Exception:
+            pass
+    if presentation_interrupt is None:
+        try:
+            lifecycle = (
+                "stopped shared worktree server"
+                if stats.server_stopped
+                else f"kept ({stats.sessions_remaining} sessions)"
+            )
+            out.write(
+                f"\r  \x1b[{PINK}m✓\x1b[0m serena     {lifecycle}\n"
+            )
+            out.flush()
+        except KeyboardInterrupt as exc:
+            presentation_interrupt = exc
+        except Exception:
+            pass
+    if presentation_interrupt is not None:
+        raise presentation_interrupt
     return stats
 
 

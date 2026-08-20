@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Protocol
 from urllib.parse import ParseResult, urlparse, urlunparse
 
+from local_dev.serena_mcp_management.serena_mcp.paths import (
+    open_private_runtime_file,
+)
+
 
 _HOP_BY_HOP_HEADERS = {
     "connection",
@@ -151,8 +155,7 @@ def main() -> int:
     log_handle = None
     if args.log_path:
         log_path = Path(args.log_path)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_handle = log_path.open("a")
+        log_handle = open_private_runtime_file(log_path, append=True)
 
     try:
         serve_forever(args.host, args.port, args.upstream_url)
