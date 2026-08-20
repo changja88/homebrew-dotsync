@@ -32,6 +32,7 @@ from .cache import UsageCache, UsageCacheError
 from .deletion import (
     AccountDeletion,
     DeletionCleanupPending,
+    DeletionRecoveryError,
     ManifestlessDeletionRoot,
 )
 from .model import UsageSnapshot
@@ -218,7 +219,7 @@ class UsageService:
         if type(force_local) is not bool:
             raise TypeError("force_local must be a boolean")
         with self._account_operation(account_id):
-            if self._recover_deletion(account_id):
+            if self._recover_deletion(account_id, cancel_event):
                 return
             account = self._accounts.get(account_id)
             profile_root = self._paths.account_root(account.provider, account.id)
@@ -237,24 +238,13 @@ class UsageService:
                 raise _cancelled_provider_error("logout")
 
             deletion = AccountDeletion.begin(self._paths, account)
-            try:
-                deletion.stage()
-                if cancel_event is not None and cancel_event.is_set():
-                    raise _cancelled_provider_error("logout")
-                self._accounts.delete_metadata(account.id)
-            except PrivateAtomicWriteUncertain:
-                raise DeletionCleanupPending(
-                    "account deletion metadata commit is uncertain; retry required"
-                ) from None
-            except BaseException:
-                if self._metadata_exists(account.id):
-                    deletion.restore()
-                    raise
-                deletion.cleanup_committed()
-                return
-            deletion.cleanup_committed()
+            self._commit_deletion(deletion, cancel_event)
 
-    def _recover_deletion(self, account_id: str) -> bool:
+    def _recover_deletion(
+        self,
+        account_id: str,
+        cancel_event: threading.Event | None,
+    ) -> bool:
         deletion = AccountDeletion.load(self._paths, account_id)
         if deletion is None:
             return False
@@ -274,10 +264,42 @@ class UsageService:
                 raise AccountStoreError(
                     "account deletion provider does not match metadata"
                 )
-            deletion.restore()
-            return False
+            self._commit_deletion(deletion, cancel_event)
+            return True
         deletion.cleanup_committed()
         return True
+
+    def _commit_deletion(
+        self,
+        deletion: AccountDeletion,
+        cancel_event: threading.Event | None,
+    ) -> None:
+        try:
+            if cancel_event is not None and cancel_event.is_set():
+                raise _cancelled_provider_error("logout")
+            deletion.stage()
+            if cancel_event is not None and cancel_event.is_set():
+                raise _cancelled_provider_error("logout")
+            self._accounts.delete_metadata(deletion.account_id)
+        except PrivateAtomicWriteUncertain:
+            raise DeletionCleanupPending(
+                "account deletion metadata commit is uncertain; retry required"
+            ) from None
+        except BaseException as error:
+            if self._metadata_exists(deletion.account_id):
+                if isinstance(error, ProviderError) and _is_cancellation(
+                    error,
+                    cancel_event,
+                ):
+                    raise
+                if not isinstance(error, Exception):
+                    raise
+                raise DeletionRecoveryError(
+                    "account deletion interrupted; staged data left quarantined"
+                ) from None
+            deletion.cleanup_committed()
+            return
+        deletion.cleanup_committed()
 
     def _metadata_exists(self, account_id: str) -> bool:
         try:

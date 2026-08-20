@@ -359,7 +359,7 @@ def test_move_private_tree_revalidates_contents_after_atomic_move(
 
     monkeypatch.setattr(private_fs.os, "rename", inject_symlink_after_move)
 
-    with pytest.raises(UnsafePrivatePath, match="symlink"):
+    with pytest.raises(UnsafePrivatePath, match="quarantined"):
         move_private_tree(source, destination, allowed_root=root)
 
     assert not source.exists()
@@ -368,7 +368,7 @@ def test_move_private_tree_revalidates_contents_after_atomic_move(
     assert outside_sentinel.read_text() == "keep"
 
 
-def test_move_private_tree_revalidates_again_before_fsync_failure_rollback(
+def test_move_private_tree_revalidates_again_and_quarantines_fsync_failure(
     tmp_path, monkeypatch
 ):
     import dotsync.private_fs as private_fs
@@ -398,10 +398,56 @@ def test_move_private_tree_revalidates_again_before_fsync_failure_rollback(
 
     monkeypatch.setattr(private_fs.os, "fsync", inject_symlink_then_fail_fsync)
 
-    with pytest.raises(OSError, match="post-scan fsync interrupted"):
+    with pytest.raises(UnsafePrivatePath, match="quarantined") as captured:
+        move_private_tree(source, destination, allowed_root=root)
+
+    assert "post-scan fsync interrupted" not in str(captured.value)
+    assert not source.exists()
+    assert (destination / "sentinel.txt").read_text() == "source"
+    assert (destination / "link").is_symlink()
+    assert outside_sentinel.read_text() == "keep"
+
+
+def test_move_private_tree_never_restores_after_fresh_validation_returns(
+    tmp_path, monkeypatch
+):
+    import dotsync.private_fs as private_fs
+
+    root = tmp_path / "private"
+    source = root / "source"
+    destination = root / "staging" / "destination"
+    outside = tmp_path / "outside"
+    source.mkdir(parents=True)
+    outside.mkdir()
+    (source / "sentinel.txt").write_text("source")
+    outside_sentinel = outside / "keep.txt"
+    outside_sentinel.write_text("keep")
+    real_validation = private_fs._tree_matches_fresh_validation
+
+    def validate_then_inject(parent_fd, name, expected_metadata):
+        is_valid = real_validation(parent_fd, name, expected_metadata)
+        assert is_valid is True
+        (destination / "late-link").symlink_to(
+            outside,
+            target_is_directory=True,
+        )
+        return is_valid
+
+    def fail_first_fsync(descriptor):
+        raise OSError("post-move fsync interrupted")
+
+    monkeypatch.setattr(
+        private_fs,
+        "_tree_matches_fresh_validation",
+        validate_then_inject,
+    )
+    monkeypatch.setattr(private_fs.os, "fsync", fail_first_fsync)
+
+    with pytest.raises(UnsafePrivatePath, match="quarantined"):
         move_private_tree(source, destination, allowed_root=root)
 
     assert not source.exists()
     assert (destination / "sentinel.txt").read_text() == "source"
-    assert (destination / "link").is_symlink()
+    assert (destination / "late-link").is_symlink()
+    assert not (source / "late-link").exists()
     assert outside_sentinel.read_text() == "keep"

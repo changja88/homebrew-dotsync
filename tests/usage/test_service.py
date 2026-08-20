@@ -858,9 +858,10 @@ def test_delete_prevalidates_staging_before_provider_logout(
     assert outside_sentinel.read_text() == "keep"
 
 
-def test_delete_cache_staging_failure_rolls_profile_back(
-    service, accounts, cache, account, paths, monkeypatch
+def test_delete_cache_staging_failure_quarantines_profile_and_retry_resumes(
+    service, provider, accounts, cache, account, paths, monkeypatch
 ):
+    from dotsync.usage.deletion import DeletionRecoveryError
     import dotsync.usage.deletion as deletion_module
 
     ready = accounts.set_state(account.id, "ready")
@@ -877,18 +878,33 @@ def test_delete_cache_staging_failure_rolls_profile_back(
 
     monkeypatch.setattr(deletion_module, "move_private_tree", fail_cache_stage)
 
-    with pytest.raises(OSError, match="cache staging interrupted"):
+    with pytest.raises(DeletionRecoveryError, match="quarantined") as captured:
         service.delete_account(account.id, force_local=False)
 
+    assert "cache staging interrupted" not in str(captured.value)
     assert accounts.get(account.id) == ready
-    assert profile_sentinel.read_bytes() == b"profile-secret-bytes"
+    assert not paths.account_root(account.provider, account.id).exists()
+    assert (
+        _deletion_root(paths, account.id) / "profile" / "home" / "auth.json"
+    ).read_bytes() == b"profile-secret-bytes"
     assert cache.load(account.id) == cached
+    assert (_deletion_root(paths, account.id) / "manifest.json").is_file()
+    assert provider.events == [("logout", account.id)]
+
+    monkeypatch.setattr(deletion_module, "move_private_tree", real_move)
+    service.delete_account(account.id, force_local=False)
+
+    with pytest.raises(AccountNotFound):
+        accounts.get(account.id)
     assert not _deletion_root(paths, account.id).exists()
+    assert cache.load(account.id) is None
+    assert provider.events == [("logout", account.id)]
 
 
 def test_delete_post_move_unsafe_profile_stays_quarantined(
     service, provider, accounts, cache, account, paths, tmp_path, monkeypatch
 ):
+    from dotsync.usage.deletion import DeletionRecoveryError
     import dotsync.private_fs as private_fs
 
     ready = accounts.set_state(account.id, "ready")
@@ -916,7 +932,7 @@ def test_delete_post_move_unsafe_profile_stays_quarantined(
 
     monkeypatch.setattr(private_fs.os, "rename", inject_after_profile_move)
 
-    with pytest.raises(UnsafePrivatePath, match="symlink"):
+    with pytest.raises(DeletionRecoveryError, match="quarantined"):
         service.delete_account(account.id, force_local=False)
 
     assert provider.events == [("logout", account.id)]
@@ -929,9 +945,11 @@ def test_delete_post_move_unsafe_profile_stays_quarantined(
     assert outside_sentinel.read_text() == "keep"
 
 
-def test_delete_metadata_save_failure_restores_staged_profile_and_cache(
-    service, accounts, cache, account, paths, monkeypatch
+def test_delete_metadata_save_failure_quarantines_staged_trees_and_retry_resumes(
+    service, provider, accounts, cache, account, paths, monkeypatch
 ):
+    from dotsync.usage.deletion import DeletionRecoveryError
+
     ready = accounts.set_state(account.id, "ready")
     cached = _snapshot(account.id)
     cache.save(cached)
@@ -946,13 +964,27 @@ def test_delete_metadata_save_failure_restores_staged_profile_and_cache(
 
     monkeypatch.setattr(accounts, "_save", fail_delete)
 
-    with pytest.raises(OSError, match="metadata save interrupted"):
+    with pytest.raises(DeletionRecoveryError, match="quarantined") as captured:
         service.delete_account(account.id, force_local=False)
 
+    assert "metadata save interrupted" not in str(captured.value)
     assert accounts.get(account.id) == ready
-    assert profile_sentinel.read_bytes() == b"profile-secret-bytes"
-    assert cache.load(account.id) == cached
+    assert not paths.account_root(account.provider, account.id).exists()
+    assert cache.load(account.id) is None
+    assert (
+        _deletion_root(paths, account.id) / "profile" / "home" / "auth.json"
+    ).read_bytes() == b"profile-secret-bytes"
+    assert (_deletion_root(paths, account.id) / "cache").exists()
+    assert (_deletion_root(paths, account.id) / "manifest.json").is_file()
+    assert provider.events == [("logout", account.id)]
+
+    monkeypatch.setattr(accounts, "_save", real_save)
+    service.delete_account(account.id, force_local=False)
+
+    with pytest.raises(AccountNotFound):
+        accounts.get(account.id)
     assert not _deletion_root(paths, account.id).exists()
+    assert provider.events == [("logout", account.id)]
 
 
 def test_delete_uses_metadata_oracle_after_ambiguous_commit_error(
@@ -1023,7 +1055,7 @@ def test_delete_directory_fsync_failure_leaves_commit_oracle_recoverable(
     assert not _deletion_root(paths, account.id).exists()
 
 
-def test_delete_retry_restores_precommit_staging_before_provider_logout(
+def test_delete_retry_commits_precommit_staging_without_restoring_or_logout(
     service, provider, accounts, cache, account, paths
 ):
     from dotsync.usage.deletion import AccountDeletion
@@ -1036,16 +1068,14 @@ def test_delete_retry_restores_precommit_staging_before_provider_logout(
     interrupted.stage()
     assert not profile.exists()
     assert cache.load(account.id) is None
-    recovered_before_logout = []
-    provider.on_logout = lambda current: recovered_before_logout.append(
-        (profile.read_bytes(), cache.load(current.id))
-    )
 
     service.delete_account(account.id, force_local=False)
 
-    assert recovered_before_logout == [(b"profile-secret-bytes", cached)]
+    assert provider.events == []
     with pytest.raises(AccountNotFound):
         accounts.get(account.id)
+    assert not profile.exists()
+    assert cache.load(account.id) is None
     assert not _deletion_root(paths, account.id).exists()
 
 

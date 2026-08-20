@@ -466,25 +466,18 @@ def move_private_tree(
         if destination_parent_fd != source_parent_fd:
             os.fsync(destination_parent_fd)
         return True
-    except BaseException:
-        if (
-            moved
-            and destination_parent_fd is not None
-            and _tree_matches_fresh_validation(
+    except BaseException as error:
+        if moved and destination_parent_fd is not None:
+            destination_is_valid = _tree_matches_fresh_validation(
                 destination_parent_fd,
                 destination_relative[-1],
                 scanned_metadata,
             )
-        ):
-            try:
-                os.rename(
-                    destination_relative[-1],
-                    source_relative[-1],
-                    src_dir_fd=destination_parent_fd,
-                    dst_dir_fd=source_parent_fd,
-                )
-            except OSError:
-                pass
+            if isinstance(error, Exception):
+                detail = "interrupted" if destination_is_valid else "unsafe"
+                raise UnsafePrivatePath(
+                    f"private tree move {detail}; destination left quarantined"
+                ) from None
         raise
     finally:
         if tree is not None:

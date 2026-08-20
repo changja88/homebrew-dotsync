@@ -110,34 +110,16 @@ class AccountDeletion:
         return self.paths.usage / self.account_id
 
     def stage(self) -> None:
-        try:
-            move_private_tree(
-                self.profile,
-                self.staged_profile,
-                allowed_root=self.paths.root,
-            )
-            move_private_tree(
-                self.cache,
-                self.staged_cache,
-                allowed_root=self.paths.root,
-            )
-        except BaseException:
-            self.restore()
-            raise
-
-    def restore(self) -> None:
-        """Restore staged trees while metadata still declares the account live."""
         move_private_tree(
-            self.staged_cache,
-            self.cache,
-            allowed_root=self.paths.root,
-        )
-        move_private_tree(
-            self.staged_profile,
             self.profile,
+            self.staged_profile,
             allowed_root=self.paths.root,
         )
-        self._cleanup()
+        move_private_tree(
+            self.cache,
+            self.staged_cache,
+            allowed_root=self.paths.root,
+        )
 
     def cleanup_committed(self) -> None:
         """Scrub staged data after the account metadata commit point."""
