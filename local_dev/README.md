@@ -41,23 +41,23 @@ tool bin)**, and the managed zshrc block prepends `$HOME/.local/bin` to PATH
 so agent sessions see the same CLIs.
 
 **Self-install prompts.** CLI가 해석되지 않으면 interactive preflight가 설치
-여부를 직접 묻는다 (`uv tool install …`, default Yes) — serena CLI는
-Initialize 프롬프트 직전에 항상, graphify CLI는 graphify 행 중 하나라도
-missing일 때 graphify 질문들 직전에. 거절하면 아래의 degrade 동작이 그대로
-적용되고(graphify 질문들은 통째로 skip), `uv` 자체가 없으면 묻지 않고 경고
-행만 남긴다. 설치가 도는 동안 uv의 패키지 벽 출력은 캡처해 숨기고 spinner
-행 하나에 마지막 진행 줄(패키지 1개)만 갱신해 보여준다 — 캡처한 전체 출력은
-설치가 실패했을 때만 들여쓰기로 풀어 남긴다. 디자인 문서:
-`docs/cli-self-install-prompt-spec.md`.
+여부를 직접 묻는다 (`uv tool install …`, default Yes). Serena CLI 설치는
+프로젝트 초기화에 동의한 뒤에만 제안하고, `No`를 선택하면 CLI 해석·설치와
+서버 시작을 모두 건너뛴다. Graphify CLI 설치는 graphify 행 중 하나라도
+missing일 때 graphify 질문들 직전에 제안한다. 거절하면 아래의 degrade 동작이
+그대로 적용되고(graphify 질문들은 통째로 skip), `uv` 자체가 없으면 묻지 않고
+경고 행만 남긴다. 설치가 도는 동안 uv의 패키지 벽 출력은 캡처해 숨기고
+spinner 행 하나에 마지막 진행 줄(패키지 1개)만 갱신해 보여준다. 캡처한 전체
+출력은 설치가 실패했을 때만 들여쓰기로 풀어 남긴다.
 
 | CLI | Install | Resolution rules |
 |---|---|---|
 | `graphify` | `uv tool install graphifyy` | Direct binary only. **No uvx fallback**: graphify writes its own absolute path into project hooks (`.codex/hooks.json` 등), so an ephemeral uvx cache path would rot there after `uv cache clean`. |
-| `serena` | `uv tool install --from "git+https://github.com/oraios/serena" serena-agent` | One-shot commands (`serena project create`) fall back to `uvx --from git+…oraios/serena` when no direct binary exists. The **long-running scoped server requires a direct binary** so registry identity, direct-child ownership, health checks, and final shutdown all refer to the real server process rather than an intermediate wrapper. |
+| `serena` | `uv tool install --from "git+https://github.com/oraios/serena" serena-agent` | One-shot commands (`serena project create`) can fall back to `uvx --from git+…oraios/serena`. The **long-running worktree-shared server requires a direct binary** so registry identity, direct-child ownership, health checks, and final shutdown all refer to the real server process rather than an intermediate wrapper. |
 
-When the serena CLI is unresolvable the launcher degrades gracefully: the
-Initialize prompt still works (uvx), and the scoped-server phase prints
-`! serena unavailable …` and launches the bare agent instead of crashing.
+When the Serena CLI remains unresolvable after initialization consent, the
+launcher prints `! serena unavailable …` and launches the bare agent instead
+of crashing.
 
 Graphify preflight paths follow graphifyy 0.8.x behavior: the codex
 user-level skill lives at `~/.codex/skills/graphify` (claude:
@@ -66,8 +66,8 @@ user-level skill lives at `~/.codex/skills/graphify` (claude:
 ## Serena MCP Management
 
 `serena_mcp_management/` contains the local Serena MCP launcher, zsh shim
-generator, and scoped server lifecycle code used for Codex and Claude
-development sessions.
+generator, and worktree-shared server lifecycle code used for Codex and
+Claude development sessions.
 
 Serena is an exact project opt-in: the nearest project/worktree root must
 contain `.serena/project.yml`. Without that marker the launcher starts the real
@@ -104,8 +104,10 @@ counts. After setup prompts (including an optional Initialize/Skip prompt when
 `.serena/project.yml` is absent), the launcher shows the same default-safe
 keep/reset choice for Claude and Codex. A confirmed reset is product-wide and
 has no per-session preserve list. The launcher performs the selected
-product-scoped action and starts the scoped Serena MCP server with inline
-progress rows below the preflight box.
+product-scoped action and, when the project opted in, starts the
+worktree-shared Serena MCP server with inline progress rows below the preflight
+box. An opt-out launch runs the same independent preflight and then starts the
+bare agent without resolving or starting Serena.
 When the agent TUI exits, a summary box reports session duration, cleanup
 result, MCP lifecycle, and any accumulated warnings.
 Non-interactive commands (`codex exec`, `claude -p`, help/version) and Claude

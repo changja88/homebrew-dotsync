@@ -354,6 +354,36 @@ def test_zsh_shim_passes_project_root_to_launcher(tmp_path):
 
 
 @pytest.mark.no_subprocess_block
+def test_zsh_shim_project_root_prefers_nested_worktree_boundary(tmp_path):
+    parent = tmp_path / "parent"
+    nested = parent / "worktrees" / "feature"
+    child = nested / "src"
+    (parent / ".serena").mkdir(parents=True)
+    (parent / ".serena" / "project.yml").write_text("project_name: parent\n")
+    nested.mkdir(parents=True)
+    (nested / ".git").write_text("gitdir: /tmp/fake\n")
+    child.mkdir()
+    shim_path, *_ = _write_zsh_fixture(tmp_path)
+
+    result = subprocess.run(
+        [
+            "zsh",
+            "-df",
+            "-c",
+            'source "$1"; cd "$2"; _dotsync_agent_project_root "$PWD"',
+            "zsh",
+            str(shim_path),
+            str(child),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == str(nested)
+
+
+@pytest.mark.no_subprocess_block
 def test_zsh_shim_should_manage_tty_session_commands_only(tmp_path):
     shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
     result = subprocess.run(
