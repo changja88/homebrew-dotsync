@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import gc
 import threading
 import uuid
+import weakref
 
 import pytest
 
@@ -80,6 +82,24 @@ class BlockingProvider(FakeProvider):
                 lambda: self.entered_count >= count,
                 timeout=2,
             )
+
+
+class FirstCallBlockingProvider(FakeProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.first_entered = threading.Event()
+        self.release_first = threading.Event()
+        self.call_count = 0
+        self._guard = threading.Lock()
+
+    def refresh_usage(self, account, *, cancel_event=None):
+        with self._guard:
+            self.call_count += 1
+            call_number = self.call_count
+        if call_number == 1:
+            self.first_entered.set()
+            assert self.release_first.wait(timeout=2)
+        return _snapshot(account.id)
 
 
 @pytest.fixture
@@ -264,6 +284,38 @@ def test_same_account_refresh_is_single_flight(paths, accounts, cache):
     assert outcomes["error"] is None
 
 
+def test_same_account_is_single_flight_across_service_instances(
+    paths, accounts, cache
+):
+    from dotsync.usage.service import OperationConflict, UsageService
+
+    blocking_provider = FirstCallBlockingProvider()
+    first_service = UsageService(
+        paths=paths,
+        accounts=accounts,
+        cache=cache,
+        providers={"codex": blocking_provider},
+    )
+    second_service = UsageService(
+        paths=AppPaths(paths.root / "."),
+        accounts=AccountStore(AppPaths(paths.root / ".")),
+        cache=UsageCache(AppPaths(paths.root / ".")),
+        providers={"codex": blocking_provider},
+    )
+    account = accounts.create("codex", "Personal")
+    thread, outcome = _start_thread(lambda: first_service.refresh(account.id))
+    assert blocking_provider.first_entered.wait(timeout=2)
+
+    with pytest.raises(OperationConflict, match="already running"):
+        second_service.refresh(account.id)
+
+    blocking_provider.release_first.set()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert outcome["error"] is None
+    assert blocking_provider.call_count == 1
+
+
 def test_provider_operations_are_globally_bounded_to_two(
     paths, accounts, cache
 ):
@@ -307,6 +359,89 @@ def test_provider_operations_are_globally_bounded_to_two(
     assert outcomes == []
     assert blocking_provider.entered_count == 3
     assert blocking_provider.maximum_active == 2
+
+
+def test_provider_limit_is_shared_across_service_instances(
+    paths, accounts, cache
+):
+    from dotsync.usage.service import UsageService, _wait_for_provider_waiters
+
+    blocking_provider = BlockingProvider()
+    services = [
+        UsageService(
+            paths=paths,
+            accounts=accounts,
+            cache=cache,
+            providers={"codex": blocking_provider},
+        )
+        for _ in range(2)
+    ]
+    managed = [
+        accounts.create("codex", f"Shared {index}") for index in range(3)
+    ]
+    outcomes = []
+
+    def refresh(index):
+        try:
+            services[index % 2].refresh(managed[index].id)
+        except BaseException as error:
+            outcomes.append(error)
+
+    threads = [threading.Thread(target=refresh, args=(index,)) for index in range(2)]
+    for thread in threads:
+        thread.start()
+    blocking_provider.wait_for_entries(2)
+    third = threading.Thread(target=refresh, args=(2,))
+    third.start()
+    _wait_for_provider_waiters(services[0], count=1, timeout=2)
+
+    assert blocking_provider.maximum_active == 2
+    assert blocking_provider.entered_count == 2
+
+    blocking_provider.release.set()
+    for thread in [*threads, third]:
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+    assert outcomes == []
+    assert blocking_provider.entered_count == 3
+    assert blocking_provider.maximum_active == 2
+
+
+def test_invalid_account_ids_allocate_no_coordination_locks(
+    service,
+):
+    from dotsync.accounts import AccountStoreError
+    from dotsync.usage.service import _coordination_registry_stats
+
+    before = _coordination_registry_stats()
+
+    for index in range(100):
+        with pytest.raises(AccountStoreError, match="account id"):
+            service.cached_usage(f"invalid-{index}")
+
+    assert _coordination_registry_stats() == before
+
+
+def test_service_coordination_registry_releases_unused_roots(tmp_path):
+    from dotsync.usage.service import UsageService, _coordination_registry_stats
+
+    gc.collect()
+    before_roots, before_locks = _coordination_registry_stats()
+    paths = AppPaths(tmp_path / "ephemeral" / "DotSync")
+    service = UsageService(
+        paths=paths,
+        accounts=AccountStore(paths),
+        cache=UsageCache(paths),
+        providers={},
+    )
+    coordination = weakref.ref(service._coordination)
+    assert _coordination_registry_stats() == (before_roots + 1, before_locks)
+
+    del service
+    gc.collect()
+
+    assert coordination() is None
+    assert _coordination_registry_stats() == (before_roots, before_locks)
 
 
 def test_refresh_cancellation_stops_while_waiting_for_provider_slot(
@@ -489,6 +624,264 @@ def test_force_local_delete_allows_unavailable_registered_provider(
         accounts.get(account.id)
 
 
+def test_force_local_delete_cancellation_while_waiting_preserves_all_local_state(
+    paths, accounts, cache
+):
+    from dotsync.usage.service import UsageService, _wait_for_provider_waiters
+
+    blocking_provider = BlockingProvider()
+    service = UsageService(
+        paths=paths,
+        accounts=accounts,
+        cache=cache,
+        providers={"codex": blocking_provider},
+    )
+    refreshing = [
+        accounts.create("codex", f"Blocking {index}") for index in range(2)
+    ]
+    deleting = accounts.create("codex", "Delete me")
+    ready = accounts.set_state(deleting.id, "ready")
+    cached = _snapshot(deleting.id)
+    cache.save(cached)
+    profile = paths.account_home(deleting.provider, deleting.id) / "auth.json"
+    profile.write_bytes(b"secret-profile")
+    first, first_outcome = _start_thread(lambda: service.refresh(refreshing[0].id))
+    second, second_outcome = _start_thread(lambda: service.refresh(refreshing[1].id))
+    blocking_provider.wait_for_entries(2)
+    cancel_event = threading.Event()
+    deleting_thread, delete_outcome = _start_thread(
+        lambda: service.delete_account(
+            deleting.id,
+            force_local=True,
+            cancel_event=cancel_event,
+        )
+    )
+    _wait_for_provider_waiters(service, count=1, timeout=2)
+
+    cancel_event.set()
+    deleting_thread.join(timeout=2)
+    try:
+        assert not deleting_thread.is_alive()
+        assert isinstance(delete_outcome["error"], ProviderError)
+        assert delete_outcome["error"].code == "logout_cancelled"
+        assert accounts.get(deleting.id) == ready
+        assert profile.read_bytes() == b"secret-profile"
+        assert cache.load(deleting.id) == cached
+        assert ("logout", deleting.id) not in blocking_provider.events
+    finally:
+        blocking_provider.release.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+        assert first_outcome["error"] is None
+        assert second_outcome["error"] is None
+
+
+def test_force_local_delete_provider_cancellation_preserves_all_local_state(
+    service, provider, accounts, cache, account, paths
+):
+    ready = accounts.set_state(account.id, "ready")
+    cached = _snapshot(account.id)
+    cache.save(cached)
+    profile = paths.account_home(account.provider, account.id) / "auth.json"
+    profile.write_bytes(b"secret-profile")
+    provider.fail_with(
+        "logout",
+        ProviderError("logout_cancelled", "logout cancelled"),
+    )
+
+    with pytest.raises(ProviderError) as captured:
+        service.delete_account(account.id, force_local=True)
+
+    assert captured.value.code == "logout_cancelled"
+    assert accounts.get(account.id) == ready
+    assert profile.read_bytes() == b"secret-profile"
+    assert cache.load(account.id) == cached
+
+
+def test_force_local_delete_signaled_cancellation_after_logout_preserves_local_state(
+    service, provider, accounts, cache, account, paths
+):
+    ready = accounts.set_state(account.id, "ready")
+    cached = _snapshot(account.id)
+    cache.save(cached)
+    profile = paths.account_home(account.provider, account.id) / "auth.json"
+    profile.write_bytes(b"secret-profile")
+    cancel_event = threading.Event()
+    provider.on_logout = lambda current: cancel_event.set()
+
+    with pytest.raises(ProviderError) as captured:
+        service.delete_account(
+            account.id,
+            force_local=True,
+            cancel_event=cancel_event,
+        )
+
+    assert captured.value.code == "logout_cancelled"
+    assert accounts.get(account.id) == ready
+    assert profile.read_bytes() == b"secret-profile"
+    assert cache.load(account.id) == cached
+
+
+def test_delete_prevalidates_cache_before_mutating_profile_or_metadata(
+    service, accounts, cache, account, paths, tmp_path
+):
+    ready = accounts.set_state(account.id, "ready")
+    cache.save(_snapshot(account.id))
+    profile_sentinel = paths.account_home(account.provider, account.id) / "auth.json"
+    profile_sentinel.write_bytes(b"profile-secret-bytes")
+    outside = tmp_path / "outside-cache"
+    outside.mkdir()
+    outside_sentinel = outside / "keep"
+    outside_sentinel.write_text("keep")
+    (_cache_root(paths, account.id) / "link").symlink_to(
+        outside,
+        target_is_directory=True,
+    )
+
+    with pytest.raises(UnsafePrivatePath, match="symlink"):
+        service.delete_account(account.id, force_local=False)
+
+    assert accounts.get(account.id) == ready
+    assert profile_sentinel.read_bytes() == b"profile-secret-bytes"
+    assert outside_sentinel.read_text() == "keep"
+    assert _cache_root(paths, account.id).exists()
+
+
+def test_delete_cache_staging_failure_rolls_profile_back(
+    service, accounts, cache, account, paths, monkeypatch
+):
+    import dotsync.usage.deletion as deletion_module
+
+    ready = accounts.set_state(account.id, "ready")
+    cached = _snapshot(account.id)
+    cache.save(cached)
+    profile_sentinel = paths.account_home(account.provider, account.id) / "auth.json"
+    profile_sentinel.write_bytes(b"profile-secret-bytes")
+    real_move = deletion_module.move_private_tree
+
+    def fail_cache_stage(source, destination, *, allowed_root):
+        if source == _cache_root(paths, account.id):
+            raise OSError("cache staging interrupted")
+        return real_move(source, destination, allowed_root=allowed_root)
+
+    monkeypatch.setattr(deletion_module, "move_private_tree", fail_cache_stage)
+
+    with pytest.raises(OSError, match="cache staging interrupted"):
+        service.delete_account(account.id, force_local=False)
+
+    assert accounts.get(account.id) == ready
+    assert profile_sentinel.read_bytes() == b"profile-secret-bytes"
+    assert cache.load(account.id) == cached
+    assert not _deletion_root(paths, account.id).exists()
+
+
+def test_delete_metadata_save_failure_restores_staged_profile_and_cache(
+    service, accounts, cache, account, paths, monkeypatch
+):
+    ready = accounts.set_state(account.id, "ready")
+    cached = _snapshot(account.id)
+    cache.save(cached)
+    profile_sentinel = paths.account_home(account.provider, account.id) / "auth.json"
+    profile_sentinel.write_bytes(b"profile-secret-bytes")
+    real_save = accounts._save
+
+    def fail_delete(records):
+        if records == []:
+            raise OSError("metadata save interrupted")
+        return real_save(records)
+
+    monkeypatch.setattr(accounts, "_save", fail_delete)
+
+    with pytest.raises(OSError, match="metadata save interrupted"):
+        service.delete_account(account.id, force_local=False)
+
+    assert accounts.get(account.id) == ready
+    assert profile_sentinel.read_bytes() == b"profile-secret-bytes"
+    assert cache.load(account.id) == cached
+    assert not _deletion_root(paths, account.id).exists()
+
+
+def test_delete_uses_metadata_oracle_after_ambiguous_commit_error(
+    service, accounts, cache, account, paths, monkeypatch
+):
+    cached = _snapshot(account.id)
+    cache.save(cached)
+    profile = paths.account_home(account.provider, account.id) / "auth.json"
+    profile.write_bytes(b"profile-secret-bytes")
+    real_delete_metadata = accounts.delete_metadata
+
+    def commit_then_report_io_error(account_id):
+        real_delete_metadata(account_id)
+        raise OSError("metadata fsync outcome was ambiguous")
+
+    monkeypatch.setattr(accounts, "delete_metadata", commit_then_report_io_error)
+
+    service.delete_account(account.id, force_local=False)
+
+    with pytest.raises(AccountNotFound):
+        accounts.get(account.id)
+    assert not paths.account_root(account.provider, account.id).exists()
+    assert cache.load(account.id) is None
+    assert not _deletion_root(paths, account.id).exists()
+
+
+def test_delete_retry_restores_precommit_staging_before_provider_logout(
+    service, provider, accounts, cache, account, paths
+):
+    from dotsync.usage.deletion import AccountDeletion
+
+    cached = _snapshot(account.id)
+    cache.save(cached)
+    profile = paths.account_home(account.provider, account.id) / "auth.json"
+    profile.write_bytes(b"profile-secret-bytes")
+    interrupted = AccountDeletion.begin(paths, account)
+    interrupted.stage()
+    assert not profile.exists()
+    assert cache.load(account.id) is None
+    recovered_before_logout = []
+    provider.on_logout = lambda current: recovered_before_logout.append(
+        (profile.read_bytes(), cache.load(current.id))
+    )
+
+    service.delete_account(account.id, force_local=False)
+
+    assert recovered_before_logout == [(b"profile-secret-bytes", cached)]
+    with pytest.raises(AccountNotFound):
+        accounts.get(account.id)
+    assert not _deletion_root(paths, account.id).exists()
+
+
+def test_delete_cleanup_failure_is_committed_and_retry_scrubs_staging(
+    service, accounts, cache, account, paths, monkeypatch
+):
+    from dotsync.usage.deletion import DeletionCleanupPending
+    import dotsync.usage.deletion as deletion_module
+
+    cache.save(_snapshot(account.id))
+    real_remove = deletion_module.remove_private_tree
+
+    def fail_staged_cleanup(path, *, allowed_root):
+        if path == _deletion_root(paths, account.id):
+            raise OSError("staged cleanup interrupted")
+        return real_remove(path, allowed_root=allowed_root)
+
+    monkeypatch.setattr(deletion_module, "remove_private_tree", fail_staged_cleanup)
+
+    with pytest.raises(DeletionCleanupPending, match="committed"):
+        service.delete_account(account.id, force_local=False)
+
+    with pytest.raises(AccountNotFound):
+        accounts.get(account.id)
+    assert not paths.account_root(account.provider, account.id).exists()
+    assert cache.load(account.id) is None
+    assert _deletion_root(paths, account.id).exists()
+
+    monkeypatch.setattr(deletion_module, "remove_private_tree", real_remove)
+    service.delete_account(account.id, force_local=False)
+
+    assert not _deletion_root(paths, account.id).exists()
+
+
 def test_delete_rejects_symlinked_profile_without_touching_target_or_metadata(
     service, provider, accounts, cache, account, paths, tmp_path
 ):
@@ -507,7 +900,7 @@ def test_delete_rejects_symlinked_profile_without_touching_target_or_metadata(
         service.delete_account(account.id, force_local=False)
 
     assert sentinel.read_text(encoding="utf-8") == "keep"
-    assert accounts.get(account.id).state == "logged_out"
+    assert accounts.get(account.id).state == "ready"
     assert cache.load(account.id) is not None
     assert moved_profile.exists()
 
@@ -544,3 +937,11 @@ def _snapshot(account_id: str, *, used_percent: float = 42.0) -> UsageSnapshot:
         source="codex_app_server",
         provider_version="1.2.3",
     )
+
+
+def _cache_root(paths: AppPaths, account_id: str):
+    return paths.usage / account_id
+
+
+def _deletion_root(paths: AppPaths, account_id: str):
+    return paths.root / ".deletions" / account_id

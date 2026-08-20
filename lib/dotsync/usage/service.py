@@ -2,18 +2,30 @@
 
 from __future__ import annotations
 
+import os
 import threading
+import time
+import uuid
+import weakref
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterator
 
-from dotsync.accounts import AccountStore, ManagedAccount, ProviderName
+from dotsync.accounts import (
+    AccountNotFound,
+    AccountStore,
+    AccountStoreError,
+    ManagedAccount,
+    ProviderName,
+)
 from dotsync.app_paths import AppPaths
-from dotsync.private_fs import remove_private_tree
+from dotsync.private_fs import validate_private_tree
 from dotsync.providers import LoginProgress, ProviderError, UsageProvider
 
 from .cache import UsageCache, UsageCacheError
+from .deletion import AccountDeletion
 from .model import UsageSnapshot
 
 
@@ -26,6 +38,76 @@ class UsageResult:
     snapshot: UsageSnapshot | None
     stale: bool
     error_code: str | None
+
+
+class _ProviderLimiter:
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self._available = limit
+        self._waiters = 0
+        self._condition = threading.Condition()
+
+    def acquire(self, cancel_event: threading.Event | None) -> bool:
+        with self._condition:
+            if self._available == 0:
+                self._waiters += 1
+                self._condition.notify_all()
+                try:
+                    while self._available == 0:
+                        if cancel_event is not None and cancel_event.is_set():
+                            return False
+                        self._condition.wait(
+                            timeout=0.05 if cancel_event is not None else None
+                        )
+                finally:
+                    self._waiters -= 1
+                    self._condition.notify_all()
+            if cancel_event is not None and cancel_event.is_set():
+                return False
+            self._available -= 1
+            return True
+
+    def release(self) -> None:
+        with self._condition:
+            if self._available >= self._limit:
+                raise RuntimeError("provider operation limiter released too often")
+            self._available += 1
+            self._condition.notify()
+
+    def wait_for_waiters(self, count: int, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        with self._condition:
+            return self._condition.wait_for(
+                lambda: self._waiters >= count,
+                timeout=max(0.0, deadline - time.monotonic()),
+            )
+
+
+class _ServiceCoordination:
+    def __init__(self) -> None:
+        self.provider_limiter = _ProviderLimiter(2)
+        self._account_locks: weakref.WeakValueDictionary[
+            str, threading.Lock
+        ] = weakref.WeakValueDictionary()
+        self._account_locks_guard = threading.Lock()
+
+    def lock_for_account(self, account_id: str) -> threading.Lock:
+        with self._account_locks_guard:
+            lock = self._account_locks.get(account_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._account_locks[account_id] = lock
+            return lock
+
+    def lock_count(self) -> int:
+        with self._account_locks_guard:
+            return len(self._account_locks)
+
+
+_COORDINATIONS: weakref.WeakValueDictionary[Path, _ServiceCoordination] = (
+    weakref.WeakValueDictionary()
+)
+_COORDINATIONS_GUARD = threading.Lock()
 
 
 class UsageService:
@@ -43,9 +125,7 @@ class UsageService:
         self._accounts = accounts
         self._cache = cache
         self._providers = dict(providers)
-        self._provider_slots = threading.BoundedSemaphore(2)
-        self._account_locks: dict[str, threading.Lock] = {}
-        self._account_locks_guard = threading.Lock()
+        self._coordination = _coordination_for(paths)
 
     def create_account(self, provider: ProviderName, label: str) -> ManagedAccount:
         return self._accounts.create(provider, label)
@@ -130,34 +210,64 @@ class UsageService:
         if type(force_local) is not bool:
             raise TypeError("force_local must be a boolean")
         with self._account_operation(account_id):
+            if self._recover_deletion(account_id):
+                return
             account = self._accounts.get(account_id)
-            logout_succeeded = False
             try:
                 provider = self._provider_for(account)
                 with self._provider_operation("logout", cancel_event):
                     provider.logout(account, cancel_event=cancel_event)
-            except ProviderError:
-                if not force_local:
+            except ProviderError as error:
+                if _is_cancellation(error, cancel_event) or not force_local:
                     raise
-            else:
-                logout_succeeded = True
-
-            if logout_succeeded:
-                self._accounts.set_state(account.id, "logged_out")
+            if cancel_event is not None and cancel_event.is_set():
+                raise _cancelled_provider_error("logout")
 
             profile_root = self._paths.account_root(account.provider, account.id)
-            remove_private_tree(
-                profile_root,
-                allowed_root=self._paths.accounts / account.provider,
-            )
-            self._cache.delete(account.id)
-            self._accounts.delete_metadata(account.id)
+            cache_root = self._paths.usage / account.id
+            validate_private_tree(profile_root, allowed_root=self._paths.root)
+            validate_private_tree(cache_root, allowed_root=self._paths.root)
+
+            deletion = AccountDeletion.begin(self._paths, account)
+            try:
+                deletion.stage()
+                if cancel_event is not None and cancel_event.is_set():
+                    raise _cancelled_provider_error("logout")
+                self._accounts.delete_metadata(account.id)
+            except BaseException:
+                if self._metadata_exists(account.id):
+                    deletion.restore()
+                    raise
+                deletion.cleanup_committed()
+                return
+            deletion.cleanup_committed()
+
+    def _recover_deletion(self, account_id: str) -> bool:
+        deletion = AccountDeletion.load(self._paths, account_id)
+        if deletion is None:
+            return False
+        if self._metadata_exists(account_id):
+            account = self._accounts.get(account_id)
+            if account.provider != deletion.provider:
+                raise AccountStoreError(
+                    "account deletion provider does not match metadata"
+                )
+            deletion.restore()
+            return False
+        deletion.cleanup_committed()
+        return True
+
+    def _metadata_exists(self, account_id: str) -> bool:
+        try:
+            self._accounts.get(account_id)
+        except AccountNotFound:
+            return False
+        return True
 
     @contextmanager
     def _account_operation(self, account_id: str) -> Iterator[None]:
-        if type(account_id) is not str:
-            self._accounts.get(account_id)
-        lock = self._lock_for_account(account_id)
+        validated_id = _validate_account_id(account_id)
+        lock = self._coordination.lock_for_account(validated_id)
         if not lock.acquire(blocking=False):
             raise OperationConflict("an account operation is already running")
         try:
@@ -171,32 +281,13 @@ class UsageService:
         operation: str,
         cancel_event: threading.Event | None,
     ) -> Iterator[None]:
-        acquired = False
-        if cancel_event is None:
-            self._provider_slots.acquire()
-            acquired = True
-        else:
-            while not acquired:
-                if cancel_event.is_set():
-                    raise _cancelled_provider_error(operation)
-                acquired = self._provider_slots.acquire(timeout=0.05)
-            if cancel_event.is_set():
-                self._provider_slots.release()
-                acquired = False
-                raise _cancelled_provider_error(operation)
+        acquired = self._coordination.provider_limiter.acquire(cancel_event)
+        if not acquired:
+            raise _cancelled_provider_error(operation)
         try:
             yield
         finally:
-            if acquired:
-                self._provider_slots.release()
-
-    def _lock_for_account(self, account_id: str) -> threading.Lock:
-        with self._account_locks_guard:
-            lock = self._account_locks.get(account_id)
-            if lock is None:
-                lock = threading.Lock()
-                self._account_locks[account_id] = lock
-            return lock
+            self._coordination.provider_limiter.release()
 
     def _provider_for(self, account: ManagedAccount) -> UsageProvider:
         provider = self._providers.get(account.provider)
@@ -236,3 +327,57 @@ def _cancelled_provider_error(operation: str) -> ProviderError:
         "logout": "logout_cancelled",
     }
     return ProviderError(codes[operation], "The account operation was cancelled.")
+
+
+def _is_cancellation(
+    error: ProviderError,
+    cancel_event: threading.Event | None,
+) -> bool:
+    return (
+        (cancel_event is not None and cancel_event.is_set())
+        or error.code == "cancelled"
+        or error.code.endswith("_cancelled")
+    )
+
+
+def _validate_account_id(account_id: object) -> str:
+    if type(account_id) is not str:
+        raise AccountStoreError("account id must be a canonical UUID")
+    try:
+        parsed = uuid.UUID(account_id)
+    except ValueError:
+        raise AccountStoreError("account id must be a canonical UUID") from None
+    if str(parsed) != account_id:
+        raise AccountStoreError("account id must be a canonical UUID")
+    return account_id
+
+
+def _coordination_for(paths: AppPaths) -> _ServiceCoordination:
+    identity = Path(
+        os.path.abspath(os.fspath((paths.root / "accounts.json").expanduser()))
+    )
+    with _COORDINATIONS_GUARD:
+        coordination = _COORDINATIONS.get(identity)
+        if coordination is None:
+            coordination = _ServiceCoordination()
+            _COORDINATIONS[identity] = coordination
+        return coordination
+
+
+def _coordination_registry_stats() -> tuple[int, int]:
+    with _COORDINATIONS_GUARD:
+        coordinations = list(_COORDINATIONS.values())
+    return (
+        len(coordinations),
+        sum(coordination.lock_count() for coordination in coordinations),
+    )
+
+
+def _wait_for_provider_waiters(
+    service: UsageService,
+    *,
+    count: int,
+    timeout: float,
+) -> None:
+    if not service._coordination.provider_limiter.wait_for_waiters(count, timeout):
+        raise AssertionError("provider operation did not reach the shared limit")

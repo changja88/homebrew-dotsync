@@ -607,9 +607,55 @@ def test_login_cancellation_uses_official_cancel_and_closes_server(
         "request",
         "account/login/cancel",
         {"loginId": login_id},
-        {},
+        {"timeout": 2.0},
     ) in rpc.events
     assert rpc.closed is True
+
+
+def test_login_cancel_cleanup_timeout_is_short_and_server_still_closes(
+    provider, account, fake_rpc, monkeypatch
+):
+    import dotsync.providers.codex as codex_module
+
+    cleanup_timeout = 0.05
+    monkeypatch.setattr(
+        codex_module,
+        "_LOGIN_CANCEL_CLEANUP_TIMEOUT_SECONDS",
+        cleanup_timeout,
+        raising=False,
+    )
+    cancel_event = threading.Event()
+    login_id = "unresponsive-cancel-login-id"
+    cleanup_entered = threading.Event()
+    never_respond = threading.Event()
+
+    def start_login(rpc, params, kwargs):
+        cancel_event.set()
+        return {
+            "type": "chatgpt",
+            "loginId": login_id,
+            "authUrl": "https://auth.openai.invalid/login",
+        }
+
+    def unresponsive_cancel(rpc, params, kwargs):
+        cleanup_entered.set()
+        assert kwargs == {"timeout": cleanup_timeout}
+        assert never_respond.wait(timeout=kwargs["timeout"]) is False
+        raise ProviderError("rpc_timeout", "SENTINEL_RAW_CANCEL_TIMEOUT")
+
+    fake_rpc.respond("account/login/start", start_login)
+    fake_rpc.respond("account/login/cancel", unresponsive_cancel)
+
+    started = time.monotonic()
+    with pytest.raises(ProviderError) as captured:
+        provider.login(account, lambda progress: None, cancel_event=cancel_event)
+    elapsed = time.monotonic() - started
+
+    assert cleanup_entered.is_set()
+    assert elapsed < 0.5
+    assert captured.value.code == "login_cancelled"
+    assert "SENTINEL" not in captured.value.safe_message
+    assert fake_rpc.instances[-1].closed is True
 
 
 def test_login_rejects_null_chatgpt_plan(provider, account, fake_rpc):

@@ -34,6 +34,7 @@ from .process import (
 
 _RPC_TIMEOUT_SECONDS = 30.0
 _LOGIN_TIMEOUT_SECONDS = 600.0
+_LOGIN_CANCEL_CLEANUP_TIMEOUT_SECONDS = 2.0
 _MAX_CONFIG_BYTES = 1024 * 1024
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 _READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW
@@ -656,7 +657,9 @@ class CodexUsageProvider:
             if cancel_event is not None and cancel_event.is_set():
                 try:
                     result = rpc.request(
-                        "account/login/cancel", {"loginId": login_id}
+                        "account/login/cancel",
+                        {"loginId": login_id},
+                        timeout=_LOGIN_CANCEL_CLEANUP_TIMEOUT_SECONDS,
                     )
                     if (
                         type(result) is not dict

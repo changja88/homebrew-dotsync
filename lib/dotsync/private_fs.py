@@ -270,6 +270,142 @@ def _remove_scanned_tree(tree: _ScannedDirectory) -> None:
         tree.descriptor = None
 
 
+def validate_private_tree(path: Path, *, allowed_root: Path) -> bool:
+    """Validate a regular private tree without following links or mutating it."""
+    root_parts, relative = _relative_parts(path, allowed_root)
+    try:
+        parent_fd = _open_directory(
+            [*root_parts, *relative[:-1]],
+            create=False,
+            managed_start=None,
+        )
+    except FileNotFoundError:
+        return False
+    tree: _ScannedDirectory | None = None
+    try:
+        try:
+            target_fd = _open_directory_at(parent_fd, relative[-1])
+        except FileNotFoundError:
+            return False
+        tree = _scan_tree(target_fd)
+        return True
+    finally:
+        if tree is not None:
+            _close_tree(tree)
+        os.close(parent_fd)
+
+
+def move_private_tree(
+    source: Path,
+    destination: Path,
+    *,
+    allowed_root: Path,
+) -> bool:
+    """Atomically move one validated tree within a descriptor-anchored root."""
+    absolute_source, private_root = _within_root(source, allowed_root)
+    absolute_destination, _ = _within_root(destination, allowed_root)
+    if absolute_source == absolute_destination:
+        raise UnsafePrivatePath("private tree source and destination must differ")
+    try:
+        absolute_destination.relative_to(absolute_source)
+    except ValueError:
+        pass
+    else:
+        raise UnsafePrivatePath("private tree destination cannot be inside source")
+
+    root_parts = _parts(private_root)
+    source_relative = list(absolute_source.relative_to(private_root).parts)
+    destination_relative = list(absolute_destination.relative_to(private_root).parts)
+    if not source_relative or not destination_relative:
+        raise UnsafePrivatePath(
+            "private tree must be a strict descendant of allowed_root"
+        )
+
+    try:
+        source_parent_fd = _open_directory(
+            [*root_parts, *source_relative[:-1]],
+            create=False,
+            managed_start=None,
+        )
+    except FileNotFoundError:
+        return False
+    destination_parent_fd: int | None = None
+    tree: _ScannedDirectory | None = None
+    moved = False
+    try:
+        try:
+            source_fd = _open_directory_at(source_parent_fd, source_relative[-1])
+        except FileNotFoundError:
+            return False
+        tree = _scan_tree(source_fd)
+        assert tree.descriptor is not None
+        scanned_metadata = os.fstat(tree.descriptor)
+
+        destination_parent_fd = _open_directory(
+            [*root_parts, *destination_relative[:-1]],
+            create=True,
+            managed_start=len(root_parts) - 1 if root_parts else None,
+        )
+        if _entry_metadata(destination_parent_fd, destination_relative[-1]) is not None:
+            raise UnsafePrivatePath("private tree destination already exists")
+
+        current_metadata = _entry_metadata(source_parent_fd, source_relative[-1])
+        if (
+            current_metadata is None
+            or not stat.S_ISDIR(current_metadata.st_mode)
+            or (current_metadata.st_dev, current_metadata.st_ino)
+            != (scanned_metadata.st_dev, scanned_metadata.st_ino)
+        ):
+            raise UnsafePrivatePath("private tree changed during validation")
+
+        os.rename(
+            source_relative[-1],
+            destination_relative[-1],
+            src_dir_fd=source_parent_fd,
+            dst_dir_fd=destination_parent_fd,
+        )
+        moved = True
+        destination_metadata = _entry_metadata(
+            destination_parent_fd,
+            destination_relative[-1],
+        )
+        if (
+            destination_metadata is None
+            or not stat.S_ISDIR(destination_metadata.st_mode)
+            or (destination_metadata.st_dev, destination_metadata.st_ino)
+            != (scanned_metadata.st_dev, scanned_metadata.st_ino)
+        ):
+            raise UnsafePrivatePath("private tree move could not be verified")
+        moved_fd = _open_directory_at(
+            destination_parent_fd,
+            destination_relative[-1],
+        )
+        moved_tree = _scan_tree(moved_fd)
+        _close_tree(moved_tree)
+        os.fsync(source_parent_fd)
+        if destination_parent_fd != source_parent_fd:
+            os.fsync(destination_parent_fd)
+        return True
+    except BaseException:
+        if moved and destination_parent_fd is not None:
+            try:
+                os.rename(
+                    destination_relative[-1],
+                    source_relative[-1],
+                    src_dir_fd=destination_parent_fd,
+                    dst_dir_fd=source_parent_fd,
+                )
+            except OSError:
+                pass
+        raise
+    finally:
+        if tree is not None:
+            _close_tree(tree)
+        if destination_parent_fd is not None:
+            os.close(destination_parent_fd)
+        os.close(source_parent_fd)
+
+
 def remove_private_tree(path: Path, *, allowed_root: Path) -> None:
     """Remove a regular private tree only after a descriptor-anchored scan."""
     target, root = _within_root(path, allowed_root)

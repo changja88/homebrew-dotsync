@@ -5,13 +5,13 @@ from __future__ import annotations
 import copy
 import json
 import math
+import queue
 import re
 import threading
 import time
 import unicodedata
 import uuid
 from collections.abc import Callable, Mapping
-from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, cast
 
@@ -84,7 +84,6 @@ class _JobRecord:
     result: dict[str, object] | None = None
     error_code: str | None = None
     finished_at: float | None = None
-    future: Future[None] | None = None
     children: list[_ChildProcess] = field(default_factory=list)
 
 
@@ -123,6 +122,8 @@ _MAX_WORKERS = 4
 _MAX_SAFE_JSON_BYTES = 64 * 1024
 _TERMINAL_RETENTION_SECONDS = 30 * 60
 _SHUTDOWN_GRACE_SECONDS = 2.0
+_FORCED_TEARDOWN_SECONDS = 2.0
+_WORKER_JOIN_SECONDS = 0.25
 _ERROR_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SAFE_PROVIDER_CODES = frozenset(
     {
@@ -161,12 +162,21 @@ class JobRegistry:
         self._monotonic = monotonic
         self._condition = threading.Condition(threading.RLock())
         self._jobs: dict[str, _JobRecord] = {}
-        self._executor = ThreadPoolExecutor(
-            max_workers=max_workers,
-            thread_name_prefix="dotsync-job",
-        )
+        self._work: queue.Queue[str | object] = queue.Queue()
+        self._worker_stop = object()
+        self._workers = [
+            threading.Thread(
+                target=self._worker_loop,
+                name=f"dotsync-job_{index}",
+                daemon=True,
+            )
+            for index in range(max_workers)
+        ]
         self._shutting_down = False
+        self._forced_teardown = False
         self._shutdown_complete = False
+        for worker in self._workers:
+            worker.start()
 
     def __enter__(self) -> "JobRegistry":
         return self
@@ -194,11 +204,7 @@ class JobRegistry:
             )
             record = _JobRecord(job=job, cancel_event=threading.Event())
             self._jobs[job.id] = record
-            try:
-                record.future = self._executor.submit(self._execute, job.id)
-            except RuntimeError:
-                del self._jobs[job.id]
-                raise RegistryClosed("job registry is shutting down") from None
+            self._work.put(job.id)
             self._condition.notify_all()
             return job
 
@@ -245,11 +251,7 @@ class JobRegistry:
             if record.state in _TERMINAL_STATES:
                 return self._view_locked(record)
             record.cancel_event.set()
-            if (
-                record.state == "queued"
-                and record.future is not None
-                and record.future.cancel()
-            ):
+            if record.state == "queued":
                 self._finish_locked(record, error_code="cancelled")
             self._condition.notify_all()
             return self._view_locked(record)
@@ -266,11 +268,7 @@ class JobRegistry:
                 if record.state in _TERMINAL_STATES:
                     continue
                 record.cancel_event.set()
-                if (
-                    record.state == "queued"
-                    and record.future is not None
-                    and record.future.cancel()
-                ):
+                if record.state == "queued":
                     self._finish_locked(record, error_code="cancelled")
             self._condition.notify_all()
 
@@ -280,18 +278,38 @@ class JobRegistry:
                 if remaining <= 0:
                     break
                 self._condition.wait(timeout=remaining)
-            children = self._registered_children_locked()
-
-        for child in children:
-            _terminate_child(child)
-
-        self._executor.shutdown(wait=True, cancel_futures=True)
-        with self._condition:
+            self._forced_teardown = True
+            children = self._take_all_children_locked()
             for record in self._jobs.values():
                 if record.state not in _TERMINAL_STATES:
                     self._finish_locked(record, error_code="cancelled")
+            self._condition.notify_all()
+
+        _terminate_children_bounded(children, timeout=_FORCED_TEARDOWN_SECONDS)
+        for _ in self._workers:
+            self._work.put(self._worker_stop)
+        worker_deadline = time.monotonic() + _WORKER_JOIN_SECONDS
+        for worker in self._workers:
+            worker.join(timeout=max(0.0, worker_deadline - time.monotonic()))
+
+        with self._condition:
             self._shutdown_complete = True
             self._condition.notify_all()
+
+    def _worker_loop(self) -> None:
+        while True:
+            work = self._work.get()
+            if work is self._worker_stop:
+                return
+            self._execute(cast(str, work))
+
+    def _wait_for_forced_teardown(self, *, timeout: float) -> bool:
+        """Deterministic diagnostic seam for shutdown race regression tests."""
+        with self._condition:
+            return self._condition.wait_for(
+                lambda: self._forced_teardown,
+                timeout=timeout,
+            )
 
     def _execute(self, job_id: str) -> None:
         with self._condition:
@@ -363,13 +381,19 @@ class JobRegistry:
             for method in ("terminate", "wait", "kill")
         ):
             raise _JobFailure("invalid_job_child")
+        terminate_immediately = False
         with self._condition:
             record = self._jobs.get(job_id)
-            if record is None or record.state in _TERMINAL_STATES:
+            if self._forced_teardown:
+                terminate_immediately = True
+            elif record is None or record.state in _TERMINAL_STATES:
                 raise _JobFailure("invalid_job_child")
-            if all(existing is not child for existing in record.children):
+            elif all(existing is not child for existing in record.children):
                 record.children.append(child)
             self._condition.notify_all()
+        if terminate_immediately:
+            _terminate_children_bounded([child], timeout=_FORCED_TEARDOWN_SECONDS)
+            raise _JobFailure("cancelled")
 
     def _unregister_child(self, job_id: str, child: _ChildProcess) -> None:
         with self._condition:
@@ -439,12 +463,13 @@ class JobRegistry:
             record.state not in _TERMINAL_STATES for record in self._jobs.values()
         )
 
-    def _registered_children_locked(self) -> list[_ChildProcess]:
+    def _take_all_children_locked(self) -> list[_ChildProcess]:
         children: list[_ChildProcess] = []
         for record in self._jobs.values():
             for child in record.children:
                 if all(existing is not child for existing in children):
                     children.append(child)
+            record.children = []
         return children
 
 
@@ -570,3 +595,25 @@ def _terminate_child(child: _ChildProcess) -> None:
         child.wait(timeout=1.0)
     except BaseException:
         pass
+
+
+def _terminate_children_bounded(
+    children: list[_ChildProcess],
+    *,
+    timeout: float,
+) -> None:
+    """Attempt all child teardowns concurrently within one bounded deadline."""
+    threads = [
+        threading.Thread(
+            target=_terminate_child,
+            args=(child,),
+            name="dotsync-child-teardown",
+            daemon=True,
+        )
+        for child in children
+    ]
+    for thread in threads:
+        thread.start()
+    deadline = time.monotonic() + timeout
+    for thread in threads:
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))

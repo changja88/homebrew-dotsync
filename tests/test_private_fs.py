@@ -10,8 +10,10 @@ from dotsync.private_fs import (
     UnsafePrivatePath,
     atomic_write_json,
     ensure_private_dir,
+    move_private_tree,
     read_private_json,
     remove_private_tree,
+    validate_private_tree,
 )
 
 
@@ -177,3 +179,104 @@ def test_remove_private_tree_does_not_follow_parent_swapped_after_scan(
         remove_private_tree(root, allowed_root=allowed_root)
 
     assert json.loads(outside_config.read_text()) == {"outside": True}
+
+
+def test_validate_private_tree_checks_every_entry_without_mutating(tmp_path):
+    root = tmp_path / "private" / "account"
+    root.mkdir(parents=True)
+    (root / "home").mkdir()
+    (root / "home" / "auth.json").write_text('{"keep": true}')
+
+    assert validate_private_tree(root, allowed_root=tmp_path / "private") is True
+    assert json.loads((root / "home" / "auth.json").read_text()) == {"keep": True}
+    assert (
+        validate_private_tree(
+            tmp_path / "private" / "missing",
+            allowed_root=tmp_path / "private",
+        )
+        is False
+    )
+
+
+def test_validate_private_tree_rejects_nested_symlink_without_mutating(tmp_path):
+    root = tmp_path / "private" / "account"
+    outside = tmp_path / "outside"
+    root.mkdir(parents=True)
+    outside.mkdir()
+    sentinel = outside / "keep"
+    sentinel.write_text("keep")
+    (root / "link").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(UnsafePrivatePath, match="symlink"):
+        validate_private_tree(root, allowed_root=tmp_path / "private")
+
+    assert sentinel.read_text() == "keep"
+    assert root.exists()
+
+
+def test_move_private_tree_atomically_stages_and_restores_validated_tree(tmp_path):
+    private_root = tmp_path / "private"
+    source = private_root / "accounts" / "account"
+    staged = private_root / ".deletions" / "account" / "profile"
+    source.mkdir(parents=True)
+    (source / "home").mkdir()
+    sentinel = source / "home" / "auth.json"
+    sentinel.write_bytes(b"credential-bytes")
+
+    assert move_private_tree(source, staged, allowed_root=private_root) is True
+    assert not source.exists()
+    assert (staged / "home" / "auth.json").read_bytes() == b"credential-bytes"
+
+    assert move_private_tree(staged, source, allowed_root=private_root) is True
+    assert not staged.exists()
+    assert sentinel.read_bytes() == b"credential-bytes"
+
+
+def test_move_private_tree_rejects_existing_destination_before_mutation(tmp_path):
+    private_root = tmp_path / "private"
+    source = private_root / "accounts" / "account"
+    destination = private_root / ".deletions" / "account" / "profile"
+    source.mkdir(parents=True)
+    destination.mkdir(parents=True)
+    (source / "keep").write_text("source")
+    (destination / "keep").write_text("destination")
+
+    with pytest.raises(UnsafePrivatePath, match="destination"):
+        move_private_tree(source, destination, allowed_root=private_root)
+
+    assert (source / "keep").read_text() == "source"
+    assert (destination / "keep").read_text() == "destination"
+
+
+def test_move_private_tree_revalidates_contents_after_atomic_move(
+    tmp_path, monkeypatch
+):
+    import dotsync.private_fs as private_fs
+
+    root = tmp_path / "private"
+    source = root / "source"
+    destination = root / "staging" / "destination"
+    outside = tmp_path / "outside"
+    source.mkdir(parents=True)
+    outside.mkdir()
+    (source / "sentinel.txt").write_text("source")
+    outside_sentinel = outside / "keep.txt"
+    outside_sentinel.write_text("keep")
+    real_rename = private_fs.os.rename
+    injected = False
+
+    def inject_symlink_after_move(src, dst, **kwargs):
+        nonlocal injected
+        real_rename(src, dst, **kwargs)
+        if not injected and src == "source" and dst == "destination":
+            injected = True
+            (destination / "link").symlink_to(outside, target_is_directory=True)
+
+    monkeypatch.setattr(private_fs.os, "rename", inject_symlink_after_move)
+
+    with pytest.raises(UnsafePrivatePath, match="symlink"):
+        move_private_tree(source, destination, allowed_root=root)
+
+    assert source.exists()
+    assert not destination.exists()
+    assert outside_sentinel.read_text() == "keep"

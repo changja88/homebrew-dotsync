@@ -352,6 +352,89 @@ def test_shutdown_terminates_registered_child_before_joining_worker():
     assert child.terminated.is_set()
 
 
+def test_child_registered_after_forced_teardown_is_immediately_terminated(
+    monkeypatch,
+):
+    import dotsync.jobs as jobs_module
+    from dotsync.jobs import JobRegistry
+
+    monkeypatch.setattr(jobs_module, "_SHUTDOWN_GRACE_SECONDS", 0.0)
+
+    class LateChild:
+        def __init__(self) -> None:
+            self.terminated = threading.Event()
+
+        def terminate(self):
+            self.terminated.set()
+
+        def wait(self, timeout=None):
+            assert self.terminated.wait(timeout=timeout)
+            return 0
+
+        def kill(self):
+            self.terminated.set()
+
+    child = LateChild()
+    entered = threading.Event()
+    register_late = threading.Event()
+    registration_returned = threading.Event()
+
+    def operation(context):
+        entered.set()
+        assert register_late.wait(timeout=2)
+        try:
+            context.register_child(child)
+        finally:
+            registration_returned.set()
+        return None
+
+    registry = JobRegistry({"late-child": operation})
+    job = registry.submit("late-child")
+    assert entered.wait(timeout=2)
+    shutdown = threading.Thread(target=registry.shutdown)
+    shutdown.start()
+    assert registry._wait_for_forced_teardown(timeout=2)
+
+    register_late.set()
+    assert registration_returned.wait(timeout=2)
+    assert child.terminated.wait(timeout=2)
+    shutdown.join(timeout=2)
+
+    assert not shutdown.is_alive()
+    assert registry.get(job.id).state == "failed"
+    assert registry.get(job.id).error_code == "cancelled"
+
+
+def test_shutdown_is_bounded_when_callable_ignores_cancellation(monkeypatch):
+    import dotsync.jobs as jobs_module
+    from dotsync.jobs import JobRegistry
+
+    monkeypatch.setattr(jobs_module, "_SHUTDOWN_GRACE_SECONDS", 0.0)
+    entered = threading.Event()
+    release_noncooperative_job = threading.Event()
+
+    def noncooperative(context):
+        entered.set()
+        release_noncooperative_job.wait()
+        return None
+
+    registry = JobRegistry({"noncooperative": noncooperative}, max_workers=1)
+    job = registry.submit("noncooperative")
+    assert entered.wait(timeout=2)
+
+    shutdown = threading.Thread(target=registry.shutdown)
+    shutdown.start()
+    shutdown.join(timeout=1)
+    try:
+        assert not shutdown.is_alive()
+        view = registry.get(job.id)
+        assert view.state == "failed"
+        assert view.error_code == "cancelled"
+    finally:
+        release_noncooperative_job.set()
+        shutdown.join(timeout=2)
+
+
 def test_context_manager_shutdown_is_idempotent():
     from dotsync.jobs import JobRegistry
 
