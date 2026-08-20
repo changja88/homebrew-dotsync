@@ -1,0 +1,661 @@
+"""Sanitized process primitives for account-scoped provider commands."""
+
+from __future__ import annotations
+
+import errno
+import json
+import os
+import pty
+import selectors
+import shutil
+import stat
+import subprocess
+import threading
+import time
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import Any, Callable
+
+from dotsync.accounts import ProviderName
+
+from .base import ProviderError
+
+
+_PASSTHROUGH_VARIABLES = frozenset(
+    {
+        "PATH",
+        "LANG",
+        "LC_ALL",
+        "LC_ADDRESS",
+        "LC_COLLATE",
+        "LC_CTYPE",
+        "LC_IDENTIFICATION",
+        "LC_MEASUREMENT",
+        "LC_MESSAGES",
+        "LC_MONETARY",
+        "LC_NAME",
+        "LC_NUMERIC",
+        "LC_PAPER",
+        "LC_TELEPHONE",
+        "LC_TIME",
+        "TERM",
+        "COLORTERM",
+        "NO_COLOR",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "CURL_CA_BUNDLE",
+        "REQUESTS_CA_BUNDLE",
+        "COMMAND_MODE",
+        "SECURITYSESSIONID",
+        "XPC_FLAGS",
+        "XPC_SERVICE_NAME",
+        "__CFBundleIdentifier",
+        "__CF_USER_TEXT_ENCODING",
+    }
+)
+_MAX_RPC_LINE_BYTES = 1024 * 1024
+_MAX_PTY_OUTPUT_BYTES = 2 * 1024 * 1024
+_MAX_PTY_INPUT_BYTES = 64 * 1024
+
+
+def provider_environment(
+    provider: ProviderName | str,
+    account_root: Path,
+) -> dict[str, str]:
+    """Build an allowlisted environment rooted in one managed account."""
+    if provider not in {"claude", "codex"}:
+        raise ValueError("unsupported provider")
+
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key in _PASSTHROUGH_VARIABLES
+    }
+    home = account_root / "home"
+    tmp = account_root / "tmp"
+    env["HOME"] = str(home)
+    env["TMPDIR"] = str(tmp)
+    if provider == "claude":
+        env["CLAUDE_CONFIG_DIR"] = str(home)
+        env["CLAUDE_CODE_TMPDIR"] = str(tmp)
+    else:
+        env["CODEX_HOME"] = str(home)
+    return env
+
+
+def resolve_executable(command: str, *, path: str | None = None) -> Path:
+    """Resolve a fixed command name to a verified absolute executable file."""
+    if not command or Path(command).name != command:
+        raise ProviderError(
+            "executable_unavailable", "Provider executable is unavailable."
+        )
+    found = shutil.which(command, path=path)
+    if found is None:
+        raise ProviderError(
+            "executable_unavailable", "Provider executable is unavailable."
+        )
+    resolved = Path(found).resolve()
+    try:
+        mode = resolved.stat().st_mode
+    except OSError as error:
+        raise ProviderError(
+            "executable_unavailable", "Provider executable is unavailable."
+        ) from error
+    if not stat.S_ISREG(mode) or not os.access(resolved, os.X_OK):
+        raise ProviderError(
+            "executable_unavailable", "Provider executable is unavailable."
+        )
+    return resolved
+
+
+def run_checked(
+    argv: Sequence[str | os.PathLike[str]],
+    *,
+    env: Mapping[str, str],
+    cwd: Path,
+    timeout: float,
+) -> subprocess.CompletedProcess[str]:
+    """Run a verified executable without a shell and normalize failures."""
+    normalized = _validated_argv(argv)
+    working_directory = _validated_cwd(cwd)
+    try:
+        process = subprocess.Popen(
+            normalized,
+            cwd=working_directory,
+            env=dict(env),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            shell=False,
+        )
+    except OSError as error:
+        raise ProviderError(
+            "process_start_failed", "Provider process could not be started."
+        ) from error
+
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        _terminate_process(process)
+        raise ProviderError(
+            "process_timeout", "Provider process timed out."
+        ) from error
+
+    completed = subprocess.CompletedProcess(
+        normalized,
+        process.returncode,
+        stdout,
+        stderr,
+    )
+    if process.returncode != 0:
+        raise ProviderError(
+            "process_failed",
+            f"Provider process failed with exit status {process.returncode}.",
+        )
+    return completed
+
+
+def _validated_argv(
+    argv: Sequence[str | os.PathLike[str]],
+) -> list[str]:
+    if not argv:
+        raise ProviderError("invalid_executable", "Provider executable is invalid.")
+    normalized = [os.fspath(value) for value in argv]
+    executable = Path(normalized[0])
+    try:
+        mode = executable.stat().st_mode
+    except OSError as error:
+        raise ProviderError(
+            "invalid_executable", "Provider executable is invalid."
+        ) from error
+    if (
+        not executable.is_absolute()
+        or not stat.S_ISREG(mode)
+        or not os.access(executable, os.X_OK)
+    ):
+        raise ProviderError("invalid_executable", "Provider executable is invalid.")
+    normalized[0] = str(executable.resolve())
+    return normalized
+
+
+def _validated_cwd(cwd: Path) -> Path:
+    try:
+        resolved = cwd.resolve(strict=True)
+    except OSError as error:
+        raise ProviderError(
+            "invalid_working_directory",
+            "Provider working directory is unavailable.",
+        ) from error
+    if not resolved.is_dir():
+        raise ProviderError(
+            "invalid_working_directory",
+            "Provider working directory is unavailable.",
+        )
+    return resolved
+
+
+def _terminate_process(process: subprocess.Popen[object]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+class JsonRpcProcess:
+    """A bounded, line-delimited JSON-RPC child process."""
+
+    def __init__(
+        self,
+        argv: Sequence[str | os.PathLike[str]],
+        *,
+        env: Mapping[str, str],
+        cwd: Path,
+        timeout: float,
+        on_notification: Callable[[str, Any], None] | None = None,
+    ) -> None:
+        self._argv = _validated_argv(argv)
+        self._env = dict(env)
+        self._cwd = _validated_cwd(cwd)
+        self._timeout = timeout
+        self._on_notification = on_notification
+        self._condition = threading.Condition()
+        self._write_lock = threading.Lock()
+        self._responses: dict[int, dict[str, Any]] = {}
+        self._failure: str | None = None
+        self._next_id = 1
+        self._process: subprocess.Popen[str] | None = None
+        self._reader: threading.Thread | None = None
+        self._closed = False
+
+    def __enter__(self) -> "JsonRpcProcess":
+        if self._process is not None:
+            raise ProviderError("rpc_state", "RPC process is already running.")
+        try:
+            process = subprocess.Popen(
+                self._argv,
+                cwd=self._cwd,
+                env=self._env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="strict",
+                bufsize=1,
+                shell=False,
+            )
+        except OSError as error:
+            raise ProviderError(
+                "rpc_start_failed", "RPC process could not be started."
+            ) from error
+        self._process = process
+        self._reader = threading.Thread(
+            target=self._read_messages,
+            name="dotsync-json-rpc-reader",
+            daemon=True,
+        )
+        self._reader.start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
+
+    def request(
+        self,
+        method: str,
+        params: Any,
+        *,
+        timeout: float | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> Any:
+        if not method:
+            raise ProviderError("rpc_method", "RPC method is invalid.")
+        with self._condition:
+            request_id = self._next_id
+            self._next_id += 1
+        self._send(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+                "params": params,
+            },
+            method,
+        )
+
+        deadline = time.monotonic() + (
+            self._timeout if timeout is None else timeout
+        )
+        while True:
+            failure: str | None = None
+            with self._condition:
+                response = self._responses.pop(request_id, None)
+                if response is not None:
+                    return self._result_from_response(method, response)
+                failure = self._failure
+                if failure is None:
+                    process = self._require_process()
+                    if process.poll() is not None:
+                        failure = "rpc_exited"
+                if failure is None and cancel_event is not None:
+                    if cancel_event.is_set():
+                        failure = "rpc_cancelled"
+                remaining = deadline - time.monotonic()
+                if failure is None and remaining <= 0:
+                    failure = "rpc_timeout"
+                if failure is None:
+                    interval = min(remaining, 0.05)
+                    self._condition.wait(timeout=interval)
+                    continue
+
+            if failure in {"rpc_timeout", "rpc_cancelled"}:
+                self._stop_process()
+            summary = {
+                "rpc_cancelled": "was cancelled",
+                "rpc_exited": "failed",
+                "rpc_line_too_large": "received an oversized response",
+                "rpc_protocol_error": "received a malformed response",
+                "rpc_timeout": "timed out",
+            }.get(failure, "failed")
+            raise self._request_error(failure or "rpc_failed", method, summary)
+
+    def notify(self, method: str, params: Any) -> None:
+        if not method:
+            raise ProviderError("rpc_method", "RPC method is invalid.")
+        self._send(
+            {"jsonrpc": "2.0", "method": method, "params": params},
+            method,
+        )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        process = self._process
+        if process is None:
+            return
+        if process.stdin is not None:
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
+        self._stop_process()
+        if process.stdout is not None:
+            try:
+                process.stdout.close()
+            except OSError:
+                pass
+        reader = self._reader
+        if reader is not None and reader is not threading.current_thread():
+            reader.join(timeout=2.0)
+
+    def _send(self, message: dict[str, Any], method: str) -> None:
+        process = self._require_process()
+        try:
+            encoded = json.dumps(message, separators=(",", ":")) + "\n"
+        except (TypeError, ValueError) as error:
+            raise self._request_error(
+                "rpc_request_invalid", method, "could not be encoded"
+            ) from error
+        with self._write_lock:
+            if process.stdin is None or process.poll() is not None:
+                raise self._request_error("rpc_exited", method, "failed")
+            try:
+                process.stdin.write(encoded)
+                process.stdin.flush()
+            except (BrokenPipeError, OSError) as error:
+                raise self._request_error("rpc_exited", method, "failed") from error
+
+    def _read_messages(self) -> None:
+        process = self._require_process()
+        stream = process.stdout
+        if stream is None:
+            self._set_failure("rpc_protocol_error")
+            return
+        while True:
+            try:
+                line = stream.readline(_MAX_RPC_LINE_BYTES + 1)
+            except (OSError, UnicodeError, ValueError):
+                if not self._closed:
+                    self._set_failure("rpc_protocol_error")
+                return
+            if not line:
+                if not self._closed:
+                    try:
+                        process.wait(timeout=0.1)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    self._set_failure("rpc_exited")
+                return
+            if len(line.encode("utf-8")) > _MAX_RPC_LINE_BYTES:
+                self._set_failure("rpc_line_too_large")
+                return
+            try:
+                message = json.loads(line)
+            except (json.JSONDecodeError, UnicodeError):
+                self._set_failure("rpc_protocol_error")
+                return
+            if not isinstance(message, dict):
+                self._set_failure("rpc_protocol_error")
+                return
+            if "id" not in message:
+                if not self._handle_notification(message):
+                    self._set_failure("rpc_protocol_error")
+                    return
+                continue
+            response_id = message["id"]
+            if type(response_id) is not int:
+                self._set_failure("rpc_protocol_error")
+                return
+            with self._condition:
+                self._responses[response_id] = message
+                self._condition.notify_all()
+
+    def _handle_notification(self, message: dict[str, Any]) -> bool:
+        method = message.get("method")
+        if not isinstance(method, str):
+            return False
+        callback = self._on_notification
+        if callback is not None:
+            try:
+                callback(method, message.get("params"))
+            except Exception:
+                return False
+        return True
+
+    def _result_from_response(
+        self, method: str, response: dict[str, Any]
+    ) -> Any:
+        if "error" in response:
+            raise self._request_error(
+                "rpc_remote_error", method, "returned an error"
+            )
+        if "result" not in response:
+            raise self._request_error(
+                "rpc_protocol_error", method, "received a malformed response"
+            )
+        return response["result"]
+
+    def _set_failure(self, code: str) -> None:
+        with self._condition:
+            if self._failure is None:
+                self._failure = code
+            self._condition.notify_all()
+
+    def _request_error(
+        self, code: str, method: str, summary: str
+    ) -> ProviderError:
+        process = self._process
+        status = None if process is None else process.poll()
+        status_text = "unavailable" if status is None else str(status)
+        return ProviderError(
+            code,
+            f"RPC method {method!r} {summary} (exit status {status_text}).",
+        )
+
+    def _require_process(self) -> subprocess.Popen[str]:
+        if self._process is None:
+            raise ProviderError("rpc_state", "RPC process is not running.")
+        return self._process
+
+    def _stop_process(self) -> None:
+        process = self._process
+        if process is not None:
+            _terminate_process(process)
+
+
+class PtySession:
+    """A bounded pseudo-terminal session for interactive provider login."""
+
+    def __init__(
+        self,
+        argv: Sequence[str | os.PathLike[str]],
+        *,
+        env: Mapping[str, str],
+        cwd: Path,
+    ) -> None:
+        self._argv = _validated_argv(argv)
+        self._env = dict(env)
+        self._cwd = _validated_cwd(cwd)
+        self._process: subprocess.Popen[bytes] | None = None
+        self._master_fd: int | None = None
+        self._selector: selectors.BaseSelector | None = None
+        self._output = bytearray()
+        self._terminated = False
+
+    def __enter__(self) -> "PtySession":
+        if self._process is not None:
+            raise ProviderError("pty_state", "PTY process is already running.")
+        master_fd, slave_fd = pty.openpty()
+        try:
+            process = subprocess.Popen(
+                self._argv,
+                cwd=self._cwd,
+                env=self._env,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                close_fds=True,
+                start_new_session=True,
+                shell=False,
+            )
+        except OSError as error:
+            os.close(master_fd)
+            os.close(slave_fd)
+            raise ProviderError(
+                "pty_start_failed", "PTY process could not be started."
+            ) from error
+        os.close(slave_fd)
+        try:
+            os.set_blocking(master_fd, False)
+            selector = selectors.DefaultSelector()
+            selector.register(master_fd, selectors.EVENT_READ)
+        except Exception:
+            os.close(master_fd)
+            _terminate_process(process)
+            raise
+        self._process = process
+        self._master_fd = master_fd
+        self._selector = selector
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.terminate()
+
+    def write_line(self, value: str) -> None:
+        if "\n" in value or "\r" in value:
+            raise ProviderError("pty_input_invalid", "PTY input must be one line.")
+        encoded = (value + "\n").encode("utf-8")
+        if len(encoded) > _MAX_PTY_INPUT_BYTES:
+            raise ProviderError("pty_input_invalid", "PTY input is too large.")
+        master_fd = self._require_master_fd()
+        offset = 0
+        while offset < len(encoded):
+            try:
+                offset += os.write(master_fd, encoded[offset:])
+            except BlockingIOError:
+                time.sleep(0.01)
+            except OSError as error:
+                raise self._pty_error(
+                    "pty_write_failed", "could not accept input"
+                ) from error
+
+    def read_until(
+        self,
+        predicate: Callable[[str], bool],
+        timeout: float,
+        cancel_event: threading.Event | None = None,
+    ) -> str:
+        selector = self._require_selector()
+        current = self._decoded_output()
+        if predicate(current):
+            return current
+        deadline = time.monotonic() + timeout
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                self.terminate()
+                raise self._pty_error("pty_cancelled", "was cancelled")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.terminate()
+                raise self._pty_error("pty_timeout", "timed out")
+            interval = (
+                min(remaining, 0.05)
+                if cancel_event is not None
+                else remaining
+            )
+            events = selector.select(interval)
+            if not events:
+                process = self._require_process()
+                if process.poll() is not None:
+                    raise self._pty_error("pty_exited", "exited")
+                continue
+            try:
+                chunk = os.read(self._require_master_fd(), 65536)
+            except BlockingIOError:
+                continue
+            except OSError as error:
+                if error.errno != errno.EIO:
+                    raise self._pty_error(
+                        "pty_read_failed", "could not be read"
+                    ) from error
+                self._wait_for_exit()
+                raise self._pty_error("pty_exited", "exited") from error
+            if not chunk:
+                self._wait_for_exit()
+                raise self._pty_error("pty_exited", "exited")
+            if len(self._output) + len(chunk) > _MAX_PTY_OUTPUT_BYTES:
+                self.terminate()
+                raise self._pty_error(
+                    "pty_output_limit", "exceeded its output limit"
+                )
+            self._output.extend(chunk)
+            current = self._decoded_output()
+            if predicate(current):
+                return current
+
+    def terminate(self) -> None:
+        if self._terminated:
+            return
+        self._terminated = True
+        selector = self._selector
+        self._selector = None
+        if selector is not None:
+            selector.close()
+        process = self._process
+        if process is not None:
+            _terminate_process(process)
+        master_fd = self._master_fd
+        self._master_fd = None
+        if master_fd is not None:
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
+
+    def _decoded_output(self) -> str:
+        return self._output.decode("utf-8", errors="replace")
+
+    def _wait_for_exit(self) -> None:
+        process = self._require_process()
+        try:
+            process.wait(timeout=0.1)
+        except subprocess.TimeoutExpired:
+            pass
+
+    def _pty_error(self, code: str, summary: str) -> ProviderError:
+        process = self._process
+        status = None if process is None else process.poll()
+        status_text = "unavailable" if status is None else str(status)
+        return ProviderError(
+            code,
+            f"PTY process {summary} (exit status {status_text}).",
+        )
+
+    def _require_process(self) -> subprocess.Popen[bytes]:
+        if self._process is None:
+            raise ProviderError("pty_state", "PTY process is not running.")
+        return self._process
+
+    def _require_master_fd(self) -> int:
+        if self._master_fd is None:
+            raise ProviderError("pty_state", "PTY process is not running.")
+        return self._master_fd
+
+    def _require_selector(self) -> selectors.BaseSelector:
+        if self._selector is None:
+            raise ProviderError("pty_state", "PTY process is not running.")
+        return self._selector
