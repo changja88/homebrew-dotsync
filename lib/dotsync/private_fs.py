@@ -332,6 +332,49 @@ def validate_private_tree(path: Path, *, allowed_root: Path) -> bool:
         os.close(parent_fd)
 
 
+def _tree_matches_fresh_validation(
+    parent_fd: int,
+    name: str,
+    expected_metadata: os.stat_result,
+) -> bool:
+    """Return true only for a freshly scanned tree with the expected identity."""
+    target_fd: int | None = None
+    tree: _ScannedDirectory | None = None
+    try:
+        current_metadata = _entry_metadata(parent_fd, name)
+        if (
+            current_metadata is None
+            or not stat.S_ISDIR(current_metadata.st_mode)
+            or (current_metadata.st_dev, current_metadata.st_ino)
+            != (expected_metadata.st_dev, expected_metadata.st_ino)
+        ):
+            return False
+        target_fd = _open_directory_at(parent_fd, name)
+        opened_metadata = os.fstat(target_fd)
+        if (opened_metadata.st_dev, opened_metadata.st_ino) != (
+            expected_metadata.st_dev,
+            expected_metadata.st_ino,
+        ):
+            return False
+        scan_fd = target_fd
+        target_fd = None
+        tree = _scan_tree(scan_fd)
+        final_metadata = _entry_metadata(parent_fd, name)
+        return bool(
+            final_metadata is not None
+            and stat.S_ISDIR(final_metadata.st_mode)
+            and (final_metadata.st_dev, final_metadata.st_ino)
+            == (expected_metadata.st_dev, expected_metadata.st_ino)
+        )
+    except BaseException:
+        return False
+    finally:
+        if target_fd is not None:
+            os.close(target_fd)
+        if tree is not None:
+            _close_tree(tree)
+
+
 def move_private_tree(
     source: Path,
     destination: Path,
@@ -369,7 +412,6 @@ def move_private_tree(
     destination_parent_fd: int | None = None
     tree: _ScannedDirectory | None = None
     moved = False
-    moved_contents_validated = False
     try:
         try:
             source_fd = _open_directory_at(source_parent_fd, source_relative[-1])
@@ -420,7 +462,6 @@ def move_private_tree(
         )
         moved_tree = _scan_tree(moved_fd)
         _close_tree(moved_tree)
-        moved_contents_validated = True
         os.fsync(source_parent_fd)
         if destination_parent_fd != source_parent_fd:
             os.fsync(destination_parent_fd)
@@ -428,8 +469,12 @@ def move_private_tree(
     except BaseException:
         if (
             moved
-            and moved_contents_validated
             and destination_parent_fd is not None
+            and _tree_matches_fresh_validation(
+                destination_parent_fd,
+                destination_relative[-1],
+                scanned_metadata,
+            )
         ):
             try:
                 os.rename(
@@ -447,6 +492,46 @@ def move_private_tree(
         if destination_parent_fd is not None:
             os.close(destination_parent_fd)
         os.close(source_parent_fd)
+
+
+def remove_empty_private_directory(path: Path, *, allowed_root: Path) -> bool:
+    """Remove only a descriptor-validated empty private directory."""
+    target, root = _within_root(path, allowed_root)
+    if target == root:
+        raise UnsafePrivatePath("private directory must be below its root")
+    root_parts, relative = _relative_parts(path, allowed_root)
+    try:
+        parent_fd = _open_directory(
+            [*root_parts, *relative[:-1]],
+            create=False,
+            managed_start=None,
+        )
+    except FileNotFoundError:
+        return False
+    target_fd: int | None = None
+    try:
+        try:
+            target_fd = _open_directory_at(parent_fd, relative[-1])
+        except FileNotFoundError:
+            return False
+        expected_metadata = os.fstat(target_fd)
+        with os.scandir(os.dup(target_fd)) as entries:
+            if next(entries, None) is not None:
+                raise UnsafePrivatePath("private directory is not empty")
+        current_metadata = _entry_metadata(parent_fd, relative[-1])
+        if (
+            current_metadata is None
+            or not stat.S_ISDIR(current_metadata.st_mode)
+            or (current_metadata.st_dev, current_metadata.st_ino)
+            != (expected_metadata.st_dev, expected_metadata.st_ino)
+        ):
+            raise UnsafePrivatePath("private directory changed during validation")
+        os.rmdir(relative[-1], dir_fd=parent_fd)
+        return True
+    finally:
+        if target_fd is not None:
+            os.close(target_fd)
+        os.close(parent_fd)
 
 
 def remove_private_tree(path: Path, *, allowed_root: Path) -> None:

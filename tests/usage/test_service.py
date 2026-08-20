@@ -1119,6 +1119,62 @@ def test_delete_partial_committed_cleanup_retains_manifest_for_retry(
     assert not _deletion_root(paths, account.id).exists()
 
 
+def test_delete_retry_removes_empty_staging_after_final_rmdir_failure(
+    service, accounts, cache, account, paths, monkeypatch
+):
+    from dotsync.usage.deletion import DeletionCleanupPending
+    import dotsync.private_fs as private_fs
+
+    cache.save(_snapshot(account.id))
+    deletion_root = _deletion_root(paths, account.id)
+    real_rmdir = private_fs.os.rmdir
+    failed = False
+
+    def fail_final_transaction_rmdir(name, *, dir_fd=None):
+        nonlocal failed
+        if name == account.id and not failed:
+            failed = True
+            raise OSError("final transaction rmdir interrupted")
+        real_rmdir(name, dir_fd=dir_fd)
+
+    monkeypatch.setattr(private_fs.os, "rmdir", fail_final_transaction_rmdir)
+
+    with pytest.raises(DeletionCleanupPending, match="committed"):
+        service.delete_account(account.id, force_local=False)
+
+    with pytest.raises(AccountNotFound):
+        accounts.get(account.id)
+    assert deletion_root.is_dir()
+    assert list(deletion_root.iterdir()) == []
+
+    monkeypatch.setattr(private_fs.os, "rmdir", real_rmdir)
+    service.delete_account(account.id, force_local=False)
+
+    assert not deletion_root.exists()
+
+
+def test_delete_rejects_nonempty_manifestless_staging_before_provider_logout(
+    service, provider, accounts, cache, account, paths
+):
+    from dotsync.usage.deletion import DeletionRecoveryError
+
+    ready = accounts.set_state(account.id, "ready")
+    cached = _snapshot(account.id)
+    cache.save(cached)
+    deletion_root = _deletion_root(paths, account.id)
+    deletion_root.mkdir(parents=True)
+    unexpected = deletion_root / "unexpected"
+    unexpected.write_text("do-not-trust")
+
+    with pytest.raises(DeletionRecoveryError, match="missing its manifest"):
+        service.delete_account(account.id, force_local=False)
+
+    assert provider.events == []
+    assert accounts.get(account.id) == ready
+    assert cache.load(account.id) == cached
+    assert unexpected.read_text() == "do-not-trust"
+
+
 def test_delete_rejects_symlinked_profile_without_touching_target_or_metadata(
     service, provider, accounts, cache, account, paths, tmp_path
 ):

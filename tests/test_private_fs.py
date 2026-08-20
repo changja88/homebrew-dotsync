@@ -366,3 +366,42 @@ def test_move_private_tree_revalidates_contents_after_atomic_move(
     assert destination.exists()
     assert (destination / "link").is_symlink()
     assert outside_sentinel.read_text() == "keep"
+
+
+def test_move_private_tree_revalidates_again_before_fsync_failure_rollback(
+    tmp_path, monkeypatch
+):
+    import dotsync.private_fs as private_fs
+
+    root = tmp_path / "private"
+    source = root / "source"
+    destination = root / "staging" / "destination"
+    outside = tmp_path / "outside"
+    source.mkdir(parents=True)
+    outside.mkdir()
+    (source / "sentinel.txt").write_text("source")
+    outside_sentinel = outside / "keep.txt"
+    outside_sentinel.write_text("keep")
+    real_fsync = private_fs.os.fsync
+    failed = False
+
+    def inject_symlink_then_fail_fsync(descriptor):
+        nonlocal failed
+        if not failed:
+            failed = True
+            (destination / "link").symlink_to(
+                outside,
+                target_is_directory=True,
+            )
+            raise OSError("post-scan fsync interrupted")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(private_fs.os, "fsync", inject_symlink_then_fail_fsync)
+
+    with pytest.raises(OSError, match="post-scan fsync interrupted"):
+        move_private_tree(source, destination, allowed_root=root)
+
+    assert not source.exists()
+    assert (destination / "sentinel.txt").read_text() == "source"
+    assert (destination / "link").is_symlink()
+    assert outside_sentinel.read_text() == "keep"

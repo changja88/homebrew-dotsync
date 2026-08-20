@@ -13,6 +13,7 @@ from dotsync.private_fs import (
     ensure_private_dir,
     move_private_tree,
     read_private_json,
+    remove_empty_private_directory,
     remove_private_tree,
     validate_private_tree,
 )
@@ -28,6 +29,23 @@ class DeletionCleanupPending(RuntimeError):
 
 _MANIFEST_FIELDS = frozenset({"account_id", "provider"})
 _PROVIDERS = frozenset({"claude", "codex"})
+
+
+@dataclass(frozen=True)
+class ManifestlessDeletionRoot:
+    """An untrusted transaction root eligible only for proven-empty cleanup."""
+
+    paths: AppPaths
+    account_id: str
+
+    def cleanup_if_empty(self) -> None:
+        root = self.paths.root / ".deletions" / self.account_id
+        try:
+            remove_empty_private_directory(root, allowed_root=self.paths.root)
+        except Exception:
+            raise DeletionRecoveryError(
+                "account deletion staging is missing its manifest"
+            ) from None
 
 
 @dataclass(frozen=True)
@@ -52,16 +70,18 @@ class AccountDeletion:
         return deletion
 
     @classmethod
-    def load(cls, paths: AppPaths, account_id: str) -> "AccountDeletion | None":
+    def load(
+        cls,
+        paths: AppPaths,
+        account_id: str,
+    ) -> "AccountDeletion | ManifestlessDeletionRoot | None":
         root = paths.root / ".deletions" / account_id
         if not validate_private_tree(root, allowed_root=paths.root):
             return None
         try:
             data = read_private_json(root / "manifest.json", root=paths.root)
-        except FileNotFoundError as error:
-            raise DeletionRecoveryError(
-                "account deletion staging is missing its manifest"
-            ) from error
+        except FileNotFoundError:
+            return ManifestlessDeletionRoot(paths, account_id)
         provider = _decode_manifest(data, account_id)
         return cls(paths, account_id, provider)
 

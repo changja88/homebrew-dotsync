@@ -29,7 +29,11 @@ from dotsync.private_fs import (
 from dotsync.providers import LoginProgress, ProviderError, UsageProvider
 
 from .cache import UsageCache, UsageCacheError
-from .deletion import AccountDeletion, DeletionCleanupPending
+from .deletion import (
+    AccountDeletion,
+    DeletionCleanupPending,
+    ManifestlessDeletionRoot,
+)
 from .model import UsageSnapshot
 
 
@@ -260,6 +264,10 @@ class UsageService:
             raise DeletionCleanupPending(
                 "account deletion metadata commit is uncertain; retry required"
             ) from None
+        if isinstance(deletion, ManifestlessDeletionRoot):
+            metadata_exists = self._metadata_exists(account_id)
+            deletion.cleanup_if_empty()
+            return not metadata_exists
         if self._metadata_exists(account_id):
             account = self._accounts.get(account_id)
             if account.provider != deletion.provider:
