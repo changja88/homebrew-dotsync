@@ -316,33 +316,68 @@ class LauncherOptInTests(unittest.TestCase):
             heartbeat.assert_not_called()
             release.assert_not_called()
 
-    def test_interactive_init_decline_launches_bare_before_cli_resolution(self) -> None:
-        """Declining initialization must not turn into an install or server prompt."""
+    def test_interactive_init_decline_keeps_preflight_and_launches_bare_without_serena(
+        self,
+    ) -> None:
+        """Serena opt-out must preserve independent launch preparation."""
 
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw) / "worktree"
             (root / ".git").mkdir(parents=True)
+            events: list[str] = []
+
+            def decline_serena(*args, **kwargs) -> bool:
+                events.append("serena-prompt")
+                return False
+
+            def reject_serena_call(*args, **kwargs):
+                raise AssertionError("Serena opt-out must not resolve or start Serena")
+
             with (
                 _launcher_environment(root, interactive=True),
-                patch.object(launcher, "_render_preflight_overview_v2"),
-                patch.object(launcher, "_run_preflight_v2", return_value=0),
-                patch.object(launcher, "_run_session_choice_v2", return_value="keep"),
-                patch.object(launcher, "confirm", return_value=False),
+                patch.object(
+                    launcher,
+                    "_render_preflight_overview_v2",
+                    side_effect=lambda: events.append("overview"),
+                ),
+                patch.object(
+                    launcher,
+                    "_run_preflight_v2",
+                    side_effect=lambda *, serena_state: events.append(
+                        f"preflight:{serena_state}"
+                    )
+                    or 0,
+                ),
+                patch.object(
+                    launcher,
+                    "_run_session_choice_v2",
+                    side_effect=lambda: events.append("session-choice") or "keep",
+                ),
+                patch.object(launcher, "confirm", side_effect=decline_serena),
                 patch.object(launcher, "find_real_binary", return_value="/fake/codex"),
-                patch.object(launcher, "_launch_bare_child", return_value=18) as bare,
-                patch.object(launcher, "serena_server_command") as server_command,
-                patch.object(launcher, "_run_serena_cli_install_v2") as install,
-                patch.object(launcher, "_serena_project_create") as create,
-                patch.object(launcher, "ensure_server") as ensure,
+                patch.object(
+                    launcher,
+                    "_launch_bare_child",
+                    side_effect=lambda *args, **kwargs: events.append("launch") or 18,
+                ),
+                patch.object(launcher, "serena_server_command", side_effect=reject_serena_call),
+                patch.object(launcher, "_run_serena_cli_install_v2", side_effect=reject_serena_call),
+                patch.object(launcher, "_serena_project_create", side_effect=reject_serena_call),
+                patch.object(launcher, "ensure_server", side_effect=reject_serena_call),
             ):
                 result = launcher._main_v2([])
 
             self.assertEqual(result, 18)
-            bare.assert_called_once_with([], client_type="codex", real_binary="/fake/codex")
-            server_command.assert_not_called()
-            install.assert_not_called()
-            create.assert_not_called()
-            ensure.assert_not_called()
+            self.assertEqual(
+                events,
+                [
+                    "overview",
+                    "serena-prompt",
+                    "preflight:skipped",
+                    "session-choice",
+                    "launch",
+                ],
+            )
 
     def test_interactive_init_accept_creates_marker_then_acquires_shared_server(self) -> None:
         """Creation after a resolved CLI must opt in the exact worktree before startup."""
@@ -805,6 +840,9 @@ class LauncherOptInTests(unittest.TestCase):
             (root / ".git").mkdir(parents=True)
             with (
                 _launcher_environment(root, interactive=True),
+                patch.object(launcher, "_render_preflight_overview_v2"),
+                patch.object(launcher, "_run_preflight_v2", return_value=0),
+                patch.object(launcher, "_run_session_choice_v2", return_value="keep"),
                 patch.object(launcher, "confirm", return_value=True),
                 patch.object(launcher, "find_real_binary", return_value="/fake/codex"),
                 patch.object(launcher, "serena_server_command", return_value=None),

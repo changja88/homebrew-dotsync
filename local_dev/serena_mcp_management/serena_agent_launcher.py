@@ -502,6 +502,9 @@ def _main_v2(args: list[str]) -> int:
     os.environ["SERENA_AGENT_PROJECT_ROOT"] = str(project_root)
 
     real_binary = find_real_binary(client_type)
+    if interactive:
+        _render_preflight_overview_v2()
+
     if not serena_opted_in(project_root):
         if not interactive:
             return _launch_bare_child(
@@ -510,19 +513,10 @@ def _main_v2(args: list[str]) -> int:
                 real_binary=real_binary,
             )
         serena_state = _run_serena_init_v2(project_root=project_root)
-        if serena_state != "created" or not serena_opted_in(project_root):
-            if serena_state != "skipped":
-                warnings.append(f"serena project create {serena_state}")
-            return _launch_bare_child(
-                args,
-                client_type=client_type,
-                real_binary=real_binary,
-            )
     else:
         serena_state = "managed"
 
     if interactive:
-        _render_preflight_overview_v2()
         rc = _run_preflight_v2(serena_state=serena_state)
         if rc != 0:
             return rc
@@ -565,6 +559,19 @@ def _main_v2(args: list[str]) -> int:
         summary_state = None
     if summary_state is not None:
         warnings.extend(summary_state.warnings)
+
+    serena_ready = (
+        serena_state in {"managed", "created"}
+        and serena_opted_in(project_root)
+    )
+    if not serena_ready:
+        if serena_state != "skipped":
+            warnings.append(f"serena project create {serena_state}")
+        return _launch_bare_child(
+            args,
+            client_type=client_type,
+            real_binary=real_binary,
+        )
 
     if serena_server_command() is None:
         out.write(
