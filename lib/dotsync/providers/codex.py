@@ -11,6 +11,7 @@ import threading
 import time
 import tomllib
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -27,6 +28,7 @@ from .process import (
     JsonRpcProcess,
     provider_environment,
     resolve_executable,
+    run_checked,
 )
 
 
@@ -35,18 +37,23 @@ _LOGIN_TIMEOUT_SECONDS = 600.0
 _MAX_CONFIG_BYTES = 1024 * 1024
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 _READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW
+_MISSING = object()
 _USER_AGENT_VERSION = re.compile(
     r"^codex_cli_rs/(?P<version>\d+(?:\.\d+){2}(?:[-+][A-Za-z0-9.-]+)?)"
 )
-_TOP_LEVEL_CREDENTIAL_KEY = re.compile(
-    r"^\s*(?:cli_auth_credentials_store|"
-    r"\"cli_auth_credentials_store\"|'cli_auth_credentials_store')\s*="
-)
-_TABLE_HEADER = re.compile(r"^\s*\[\[?.+\]\]?\s*(?:#.*)?$")
+_CREDENTIAL_STORE_KEY = "cli_auth_credentials_store"
 
 
 RpcFactory = Callable[..., JsonRpcProcess]
 ExecutableResolver = Callable[..., Path]
+CheckedRunner = Callable[..., Any]
+
+
+@dataclass(frozen=True)
+class _CodexInvocation:
+    executable: Path
+    environment: dict[str, str]
+    cwd: Path
 
 
 def _schema_error() -> ProviderError:
@@ -144,38 +151,184 @@ def _write_config(home_fd: int, value: str) -> None:
         os.close(final_fd)
 
 
-def _force_file_credential_store(value: str) -> str:
+def _invalid_config_error() -> ProviderError:
+    return ProviderError(
+        "provider_unavailable",
+        "The managed Codex configuration is invalid.",
+    )
+
+
+def _parse_config(value: str) -> dict[str, Any]:
     try:
-        parsed = tomllib.loads(value) if value else {}
+        return tomllib.loads(value) if value else {}
     except (tomllib.TOMLDecodeError, UnicodeError):
-        raise ProviderError(
-            "provider_unavailable",
-            "The managed Codex configuration is invalid.",
-        ) from None
+        pass
+    raise _invalid_config_error()
 
-    lines = value.splitlines(keepends=True)
-    table_index = len(lines)
-    for index, line in enumerate(lines):
-        if _TABLE_HEADER.fullmatch(line.rstrip("\r\n")):
-            table_index = index
+
+def _skip_toml_layout(value: str, start: int) -> int:
+    index = start
+    while index < len(value):
+        if value[index] in " \t\r\n":
+            index += 1
+            continue
+        if value[index] != "#":
             break
-    assignment_indexes = [
-        index
-        for index, line in enumerate(lines[:table_index])
-        if _TOP_LEVEL_CREDENTIAL_KEY.match(line)
-    ]
-    has_top_level_key = "cli_auth_credentials_store" in parsed
-    if has_top_level_key and len(assignment_indexes) != 1:
-        raise ProviderError(
-            "provider_unavailable",
-            "The managed Codex configuration is invalid.",
-        )
+        newline = value.find("\n", index)
+        index = len(value) if newline < 0 else newline + 1
+    return index
 
-    setting = 'cli_auth_credentials_store = "file"\n'
-    if assignment_indexes:
-        lines[assignment_indexes[0]] = setting
-        return "".join(lines)
-    return setting + value
+
+def _toml_statement_end(value: str, start: int) -> int:
+    index = start
+    array_depth = 0
+    inline_table_depth = 0
+    string_state: str | None = None
+    while index < len(value):
+        if string_state == "basic":
+            if value[index] == "\\":
+                index += 2
+            elif value[index] == '"':
+                string_state = None
+                index += 1
+            else:
+                index += 1
+            continue
+        if string_state == "literal":
+            if value[index] == "'":
+                string_state = None
+            index += 1
+            continue
+        if string_state in {"multiline_basic", "multiline_literal"}:
+            quote = '"' if string_state == "multiline_basic" else "'"
+            if string_state == "multiline_basic" and value[index] == "\\":
+                index += 2
+                continue
+            if value[index] == quote:
+                run_end = index
+                while run_end < len(value) and value[run_end] == quote:
+                    run_end += 1
+                if run_end - index >= 3:
+                    string_state = None
+                index = run_end
+                continue
+            index += 1
+            continue
+
+        if value.startswith('"""', index):
+            string_state = "multiline_basic"
+            index += 3
+            continue
+        if value.startswith("'''", index):
+            string_state = "multiline_literal"
+            index += 3
+            continue
+        character = value[index]
+        if character == '"':
+            string_state = "basic"
+            index += 1
+        elif character == "'":
+            string_state = "literal"
+            index += 1
+        elif character == "[":
+            array_depth += 1
+            index += 1
+        elif character == "]":
+            array_depth -= 1
+            index += 1
+        elif character == "{":
+            inline_table_depth += 1
+            index += 1
+        elif character == "}":
+            inline_table_depth -= 1
+            index += 1
+        elif character == "#":
+            if array_depth == 0 and inline_table_depth == 0:
+                return index
+            newline = value.find("\n", index)
+            index = len(value) if newline < 0 else newline
+        elif character in "\r\n":
+            if array_depth == 0 and inline_table_depth == 0:
+                return index
+            index += 1
+        else:
+            index += 1
+    return len(value)
+
+
+def _top_level_statement_spans(value: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    index = 0
+    while True:
+        start = _skip_toml_layout(value, index)
+        if start >= len(value) or value[start] == "[":
+            return spans
+        end = _toml_statement_end(value, start)
+        spans.append((start, end))
+        index = end
+
+
+def _assignment_key(statement: str) -> str | None:
+    index = 0
+    string_state: str | None = None
+    while index < len(statement):
+        character = statement[index]
+        if string_state == "basic":
+            if character == "\\":
+                index += 2
+            elif character == '"':
+                string_state = None
+                index += 1
+            else:
+                index += 1
+            continue
+        if string_state == "literal":
+            if character == "'":
+                string_state = None
+            index += 1
+            continue
+        if character == '"':
+            string_state = "basic"
+            index += 1
+        elif character == "'":
+            string_state = "literal"
+            index += 1
+        elif character == "=":
+            key_source = statement[:index].strip()
+            try:
+                probe = tomllib.loads(f"{key_source} = 0")
+            except tomllib.TOMLDecodeError:
+                return None
+            if probe == {_CREDENTIAL_STORE_KEY: 0}:
+                return _CREDENTIAL_STORE_KEY
+            return None
+        else:
+            index += 1
+    return None
+
+
+def _force_file_credential_store(value: str) -> str:
+    parsed = _parse_config(value)
+    candidate_spans = [
+        (start, end)
+        for start, end in _top_level_statement_spans(value)
+        if _assignment_key(value[start:end]) == _CREDENTIAL_STORE_KEY
+    ]
+    has_top_level_key = _CREDENTIAL_STORE_KEY in parsed
+    if has_top_level_key != (len(candidate_spans) == 1):
+        raise _invalid_config_error()
+
+    setting = f'{_CREDENTIAL_STORE_KEY} = "file"'
+    if candidate_spans:
+        start, end = candidate_spans[0]
+        separator = " " if end < len(value) and value[end] == "#" else ""
+        updated = value[:start] + setting + separator + value[end:]
+    else:
+        updated = setting + "\n" + value
+    final = _parse_config(updated)
+    if final.get(_CREDENTIAL_STORE_KEY) != "file":
+        raise _invalid_config_error()
+    return updated
 
 
 class CodexUsageProvider:
@@ -187,6 +340,7 @@ class CodexUsageProvider:
         *,
         rpc_factory: RpcFactory = JsonRpcProcess,
         executable_resolver: ExecutableResolver = resolve_executable,
+        checked_runner: CheckedRunner = run_checked,
         clock: Callable[[], datetime] | None = None,
         rpc_timeout: float = _RPC_TIMEOUT_SECONDS,
         login_timeout: float = _LOGIN_TIMEOUT_SECONDS,
@@ -194,6 +348,7 @@ class CodexUsageProvider:
         self._paths = paths
         self._rpc_factory = rpc_factory
         self._executable_resolver = executable_resolver
+        self._checked_runner = checked_runner
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._rpc_timeout = rpc_timeout
         self._login_timeout = login_timeout
@@ -214,7 +369,13 @@ class CodexUsageProvider:
                     )
                     os.close(create_fd)
                     current = ""
-                _write_config(home_fd, _force_file_credential_store(current))
+                updated = _force_file_credential_store(current)
+                _write_config(home_fd, updated)
+                written = _read_config(home_fd)
+                if written is None or _parse_config(written).get(
+                    _CREDENTIAL_STORE_KEY
+                ) != "file":
+                    raise _invalid_config_error()
             finally:
                 os.close(home_fd)
         except ProviderError:
@@ -236,6 +397,8 @@ class CodexUsageProvider:
             notifications.put((method, params))
 
         report(LoginProgress("starting"))
+        identity: ProviderIdentity | None = None
+        failure: ProviderError | None = None
         try:
             with self._initialized_rpc(
                 account, on_notification=collect_notification
@@ -265,16 +428,22 @@ class CodexUsageProvider:
                 )
                 identity = self._read_identity(rpc, cancel_event)
                 report(LoginProgress("done"))
-                return identity
         except ProviderError as error:
-            raise self._normalize_error(error, operation="login") from None
+            failure = self._normalize_error(error, operation="login")
+        if failure is not None:
+            raise failure
+        if identity is None:
+            raise _schema_error()
+        return identity
 
     def refresh_usage(self, account: ManagedAccount) -> UsageSnapshot:
+        snapshot: UsageSnapshot | None = None
+        failure: ProviderError | None = None
         try:
             with self._initialized_rpc(account) as (rpc, version):
                 result = rpc.request("account/rateLimits/read", {})
             windows = self._rate_limit_windows(result)
-            return UsageSnapshot(
+            snapshot = UsageSnapshot(
                 account_id=account.id,
                 provider="codex",
                 windows=windows,
@@ -283,16 +452,46 @@ class CodexUsageProvider:
                 provider_version=version,
             )
         except ProviderError as error:
-            raise self._normalize_error(error, operation="refresh") from None
+            failure = self._normalize_error(error, operation="refresh")
+        if failure is not None:
+            raise failure
+        if snapshot is None:
+            raise _schema_error()
+        return snapshot
 
     def logout(self, account: ManagedAccount) -> None:
+        invocation = self._prepare_invocation(account)
+        failure: ProviderError | None = None
+        app_server_start_failed = False
         try:
-            with self._initialized_rpc(account) as (rpc, _):
+            with self._initialized_rpc(account, invocation=invocation) as (rpc, _):
                 result = rpc.request("account/logout", {})
                 if type(result) is not dict or result:
                     raise _schema_error()
         except ProviderError as error:
-            raise self._normalize_error(error, operation="logout") from None
+            if error.code == "rpc_start_failed":
+                app_server_start_failed = True
+            else:
+                failure = self._normalize_error(error, operation="logout")
+        if failure is not None:
+            raise failure
+        if not app_server_start_failed:
+            return
+
+        try:
+            self._checked_runner(
+                [invocation.executable, "logout"],
+                env=invocation.environment,
+                cwd=invocation.cwd,
+                timeout=self._rpc_timeout,
+            )
+        except ProviderError as fallback_error:
+            failure = self._normalize_error(
+                fallback_error,
+                operation="logout",
+            )
+        if failure is not None:
+            raise failure
 
     def _account_paths(self, account: ManagedAccount) -> tuple[Path, Path, Path, Path]:
         if account.provider != "codex":
@@ -324,20 +523,12 @@ class CodexUsageProvider:
         account: ManagedAccount,
         *,
         on_notification: Callable[[str, Any], None] | None = None,
+        invocation: _CodexInvocation | None = None,
     ) -> Iterator[tuple[JsonRpcProcess, str]]:
-        root, probe = self._ensure_account_directories(account)
-        environment = provider_environment("codex", root)
-        try:
-            executable = self._executable_resolver(
-                "codex", path=environment.get("PATH")
-            )
-        except ProviderError as error:
-            if error.code == "executable_unavailable":
-                raise ProviderError(
-                    "cli_missing", "Codex CLI is not installed."
-                ) from None
-            raise
-
+        invocation = invocation or self._prepare_invocation(account)
+        executable = invocation.executable
+        environment = invocation.environment
+        probe = invocation.cwd
         rpc = self._rpc_factory(
             [executable, "app-server"],
             env=environment,
@@ -359,6 +550,21 @@ class CodexUsageProvider:
             version = self._initialize_result(result, environment["CODEX_HOME"])
             rpc.notify("initialized", {})
             yield rpc, version
+
+    def _prepare_invocation(self, account: ManagedAccount) -> _CodexInvocation:
+        root, probe = self._ensure_account_directories(account)
+        environment = provider_environment("codex", root)
+        try:
+            executable = self._executable_resolver(
+                "codex", path=environment.get("PATH")
+            )
+        except ProviderError as error:
+            if error.code == "executable_unavailable":
+                raise ProviderError(
+                    "cli_missing", "Codex CLI is not installed."
+                ) from None
+            raise
+        return _CodexInvocation(executable, environment, probe)
 
     @staticmethod
     def _initialize_result(result: Any, expected_home: str) -> str:
@@ -391,8 +597,16 @@ class CodexUsageProvider:
             raise _schema_error()
         if not isinstance(auth_url, str):
             raise _schema_error()
-        parsed_url = urlsplit(auth_url)
-        if parsed_url.scheme != "https" or not parsed_url.netloc:
+        parsed_url = None
+        try:
+            parsed_url = urlsplit(auth_url)
+        except ValueError:
+            pass
+        if (
+            parsed_url is None
+            or parsed_url.scheme != "https"
+            or not parsed_url.netloc
+        ):
             raise _schema_error()
         return login_id, auth_url
 
@@ -486,12 +700,14 @@ class CodexUsageProvider:
 
     @staticmethod
     def _rate_limit_windows(result: Any) -> tuple[UsageWindow, ...]:
-        if type(result) is not dict or type(result.get("rateLimits")) is not dict:
+        if type(result) is not dict:
             raise _schema_error()
-        buckets = result.get("rateLimitsByLimitId")
+        buckets = result.get("rateLimitsByLimitId", _MISSING)
         snapshots: list[tuple[str, dict[str, Any]]]
-        if buckets is None:
-            fallback = result["rateLimits"]
+        if buckets is _MISSING or buckets is None:
+            fallback = result.get("rateLimits", _MISSING)
+            if type(fallback) is not dict:
+                raise _schema_error()
             raw_fallback_id = fallback.get("limitId")
             fallback_id = "codex" if raw_fallback_id is None else raw_fallback_id
             if not isinstance(fallback_id, str) or not fallback_id.strip():
@@ -500,11 +716,14 @@ class CodexUsageProvider:
         else:
             if type(buckets) is not dict or not buckets:
                 raise _schema_error()
+            if any(
+                not isinstance(limit_id, str) or not limit_id.strip()
+                for limit_id in buckets
+            ):
+                raise _schema_error()
             snapshots = []
             for limit_id in sorted(buckets):
                 snapshot = buckets[limit_id]
-                if not isinstance(limit_id, str) or not limit_id.strip():
-                    raise _schema_error()
                 if type(snapshot) is not dict:
                     raise _schema_error()
                 embedded_id = snapshot.get("limitId")
@@ -562,13 +781,16 @@ class CodexUsageProvider:
                     .replace("+00:00", "Z")
                 )
             except (OverflowError, OSError, ValueError):
-                raise _schema_error() from None
+                reset_timestamp = None
+            if reset_timestamp is None:
+                raise _schema_error()
         name = {
             300: "five_hour",
             10080: "seven_day",
         }.get(duration, "other")
+        window = None
         try:
-            return UsageWindow(
+            window = UsageWindow(
                 name=name,
                 limit_id=limit_id,
                 label=label,
@@ -576,8 +798,11 @@ class CodexUsageProvider:
                 duration_minutes=duration,
                 resets_at=reset_timestamp,
             )
-        except (TypeError, ValueError):
-            raise _schema_error() from None
+        except (OverflowError, TypeError, ValueError):
+            pass
+        if window is None:
+            raise _schema_error()
+        return window
 
     def _observed_at(self) -> str:
         observed = self._clock()
@@ -602,12 +827,26 @@ class CodexUsageProvider:
             return error
         if error.code == "executable_unavailable":
             return ProviderError("cli_missing", "Codex CLI is not installed.")
-        if error.code == "rpc_remote_error":
-            code = "logout_failed" if operation == "logout" else "reauth_required"
-            return ProviderError(code, f"Codex {operation} requires authentication.")
+        if error.code in {
+            "rpc_line_too_large",
+            "rpc_method_not_found",
+            "rpc_invalid_request",
+            "rpc_invalid_params",
+            "rpc_protocol_error",
+        }:
+            return _schema_error()
+        if error.code == "rpc_authentication_error":
+            return ProviderError(
+                "reauth_required",
+                "Codex authentication is required.",
+            )
         if error.code == "rpc_timeout" and operation == "refresh":
             return ProviderError("refresh_timeout", "Codex usage refresh timed out.")
         if error.code == "rpc_cancelled" and operation == "login":
             return ProviderError("login_cancelled", "Codex login was cancelled.")
-        code = "logout_failed" if operation == "logout" else "provider_unavailable"
-        return ProviderError(code, f"Codex {operation} is unavailable.")
+        if operation == "logout" and error.code.startswith("process_"):
+            return ProviderError("logout_failed", "Codex logout failed.")
+        return ProviderError(
+            "provider_unavailable",
+            f"Codex {operation} is unavailable.",
+        )

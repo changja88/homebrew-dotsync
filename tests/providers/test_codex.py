@@ -43,6 +43,46 @@ def test_usage_window_rejects_blank_limit_id(limit_id):
         UsageWindow(**{**VALID_WINDOW, "limit_id": limit_id})
 
 
+@pytest.mark.parametrize(
+    "limit_id",
+    [
+        pytest.param("codex\r\nforged", id="crlf"),
+        pytest.param("codex\x1b]8;;https://example.invalid\x07", id="osc"),
+        pytest.param("codex\x07bell", id="bel"),
+        pytest.param("codex\u202ereversed", id="unicode-format"),
+    ],
+)
+def test_usage_window_rejects_control_characters_in_limit_id(limit_id):
+    with pytest.raises(ValueError, match="control"):
+        UsageWindow(**{**VALID_WINDOW, "limit_id": limit_id})
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        pytest.param("Codex\nInjected", id="newline"),
+        pytest.param("Codex\x1b[31m", id="escape"),
+        pytest.param("Codex\u2066isolate", id="unicode-format"),
+    ],
+)
+def test_usage_window_rejects_control_characters_in_non_null_label(label):
+    with pytest.raises(ValueError, match="control"):
+        UsageWindow(**{**VALID_WINDOW, "label": label})
+
+
+def test_usage_window_preserves_valid_unicode_limit_text():
+    window = UsageWindow(
+        **{
+            **VALID_WINDOW,
+            "limit_id": "코덱스-🚀",
+            "label": "개인 한도 🚀",
+        }
+    )
+
+    assert window.limit_id == "코덱스-🚀"
+    assert window.label == "개인 한도 🚀"
+
+
 @pytest.mark.parametrize("duration", [True, 0, -1, 1.5])
 def test_usage_window_rejects_invalid_duration(duration):
     with pytest.raises((TypeError, ValueError), match="duration"):
@@ -112,6 +152,7 @@ class FakeRpc:
         timeout,
         on_notification=None,
         responses,
+        enter_error=None,
     ):
         self.argv = tuple(argv)
         self.environment = dict(env)
@@ -119,11 +160,14 @@ class FakeRpc:
         self.timeout = timeout
         self.on_notification = on_notification
         self.responses = responses
+        self.enter_error = enter_error
         self.events = []
         self.closed = False
 
     def __enter__(self):
         self.events.append(("enter", None))
+        if self.enter_error is not None:
+            raise self.enter_error
         return self
 
     def __exit__(self, *exc_info):
@@ -156,12 +200,18 @@ class FakeRpcFactory:
     def __init__(self):
         self.responses = {}
         self.instances = []
+        self.enter_error = None
 
     def respond(self, method, response):
         self.responses[method] = response
 
     def __call__(self, argv, **kwargs):
-        rpc = FakeRpc(argv, **kwargs, responses=self.responses)
+        rpc = FakeRpc(
+            argv,
+            **kwargs,
+            responses=self.responses,
+            enter_error=self.enter_error,
+        )
         self.instances.append(rpc)
         return rpc
 
@@ -228,6 +278,86 @@ def test_prepare_profile_forces_top_level_file_credentials(
     assert parsed["compatibility"]["cli_auth_credentials_store"] == "nested-value"
     assert stat.S_IMODE(home.stat().st_mode) == 0o700
     assert stat.S_IMODE(config.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize(
+    ("delimiter", "string_key"),
+    [
+        ('"""', "basic_notes"),
+        ("'''", "literal_notes"),
+    ],
+)
+def test_prepare_profile_ignores_multiline_string_syntax_lookalikes(
+    provider, account, paths, delimiter, string_key
+):
+    home = paths.account_home("codex", account.id)
+    home.mkdir(parents=True)
+    config = home / "config.toml"
+    note = (
+        'cli_auth_credentials_store = "string-content"\n'
+        "[string-content-table]\n"
+    )
+    config.write_text(
+        f"{string_key} = {delimiter}\n"
+        f"{note}"
+        f"{delimiter}\n"
+        'cli_auth_credentials_store = "keyring"\n'
+        'array_value = ["assignment = inside", "[array-header]"]\n'
+        'inline_value = { text = "assignment = inside", header = "[inline]" }\n'
+        '# cli_auth_credentials_store = "comment-content"\n'
+        "[features]\n"
+        "web_search = true\n",
+        encoding="utf-8",
+    )
+
+    provider.prepare_profile(account)
+
+    parsed = tomllib.loads(config.read_text(encoding="utf-8"))
+    assert parsed[string_key] == note
+    assert parsed["cli_auth_credentials_store"] == "file"
+    assert parsed["array_value"] == ["assignment = inside", "[array-header]"]
+    assert parsed["inline_value"] == {
+        "text": "assignment = inside",
+        "header": "[inline]",
+    }
+    assert parsed["features"] == {"web_search": True}
+
+
+def test_login_rejects_invalid_account_toml_before_starting_app_server(
+    provider, account, paths, fake_rpc
+):
+    home = paths.account_home("codex", account.id)
+    home.mkdir(parents=True)
+    (home / "config.toml").write_text(
+        'cli_auth_credentials_store = "unterminated\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProviderError) as captured:
+        provider.login(account, lambda progress: None)
+
+    assert captured.value.code == "provider_unavailable"
+    assert fake_rpc.instances == []
+
+
+def test_login_rejects_toml_table_that_conflicts_with_required_top_level_key(
+    provider, account, paths, fake_rpc
+):
+    home = paths.account_home("codex", account.id)
+    home.mkdir(parents=True)
+    config = home / "config.toml"
+    original = (
+        "[cli_auth_credentials_store]\n"
+        'backend = "account-owned-option"\n'
+    )
+    config.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ProviderError) as captured:
+        provider.login(account, lambda progress: None)
+
+    assert captured.value.code == "provider_unavailable"
+    assert config.read_text(encoding="utf-8") == original
+    assert fake_rpc.instances == []
 
 
 def test_prepare_profile_adds_top_level_key_when_only_nested_key_exists(
@@ -451,6 +581,48 @@ def test_login_rejects_null_chatgpt_plan(provider, account, fake_rpc):
     assert fake_rpc.instances[-1].closed is True
 
 
+def test_login_rejects_malformed_auth_url_without_exposing_raw_value(
+    provider, account, fake_rpc
+):
+    secret = "sentinel-invalid-url"
+    fake_rpc.respond(
+        "account/login/start",
+        {
+            "type": "chatgpt",
+            "loginId": "login-with-invalid-url",
+            "authUrl": f"https://[{secret}",
+        },
+    )
+
+    with pytest.raises(ProviderError) as captured:
+        provider.login(account, lambda progress: None)
+
+    assert captured.value.code == "unsupported_cli_version"
+    assert secret not in str(captured.value)
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert fake_rpc.instances[-1].closed is True
+
+
+def test_login_maps_missing_official_account_method_to_unsupported_cli_version(
+    provider, account, fake_rpc
+):
+    secret = "sentinel-method-not-found"
+    fake_rpc.respond(
+        "account/login/start",
+        ProviderError("rpc_method_not_found", secret),
+    )
+
+    with pytest.raises(ProviderError) as captured:
+        provider.login(account, lambda progress: None)
+
+    assert captured.value.code == "unsupported_cli_version"
+    assert secret not in str(captured.value)
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert fake_rpc.instances[-1].closed is True
+
+
 def test_logout_uses_official_rpc_and_closes_server(provider, account, fake_rpc):
     fake_rpc.respond("account/logout", {})
 
@@ -462,6 +634,139 @@ def test_logout_uses_official_rpc_and_closes_server(provider, account, fake_rpc)
         "account/logout",
     ]
     assert rpc.closed is True
+
+
+def test_logout_falls_back_to_scoped_fixed_cli_only_when_app_server_cannot_start(
+    monkeypatch, paths, account, fake_rpc
+):
+    sentinel_default_home = "/Users/test/.codex"
+    monkeypatch.setenv("CODEX_HOME", sentinel_default_home)
+    monkeypatch.setattr(
+        Path,
+        "home",
+        classmethod(lambda cls: (_ for _ in ()).throw(AssertionError())),
+    )
+    fake_rpc.enter_error = ProviderError(
+        "rpc_start_failed", "sentinel-start-error"
+    )
+    resolved = Path("/fixture/bin/codex")
+    resolutions = []
+    fallback_calls = []
+
+    def resolve(command, **kwargs):
+        resolutions.append((command, kwargs))
+        return resolved
+
+    def run(argv, **kwargs):
+        fallback_calls.append((tuple(argv), kwargs))
+
+    fallback_provider = CodexUsageProvider(
+        paths,
+        rpc_factory=fake_rpc,
+        executable_resolver=resolve,
+        checked_runner=run,
+    )
+
+    fallback_provider.logout(account)
+
+    assert len(resolutions) == 1
+    rpc = fake_rpc.instances[-1]
+    assert rpc.argv == (resolved, "app-server")
+    assert fallback_calls == [
+        (
+            (resolved, "logout"),
+            {
+                "env": rpc.environment,
+                "cwd": paths.account_probe("codex", account.id),
+                "timeout": 30.0,
+            },
+        )
+    ]
+    assert rpc.environment["CODEX_HOME"] == str(
+        paths.account_home("codex", account.id)
+    )
+    assert sentinel_default_home not in rpc.environment.values()
+
+
+def test_logout_does_not_fallback_after_successful_app_server_start(
+    paths, account, fake_rpc
+):
+    fallback_calls = []
+    fake_rpc.respond(
+        "account/logout",
+        ProviderError("rpc_remote_error", "sentinel-account-error"),
+    )
+    provider = CodexUsageProvider(
+        paths,
+        rpc_factory=fake_rpc,
+        executable_resolver=lambda command, **kwargs: Path(
+            "/fixture/bin/codex"
+        ),
+        checked_runner=lambda *args, **kwargs: fallback_calls.append(
+            (args, kwargs)
+        ),
+    )
+
+    with pytest.raises(ProviderError) as captured:
+        provider.logout(account)
+
+    assert captured.value.code == "provider_unavailable"
+    assert fallback_calls == []
+    assert fake_rpc.instances[-1].closed is True
+
+
+def test_logout_does_not_fallback_when_initialized_server_later_exits(
+    paths, account, fake_rpc
+):
+    fallback_calls = []
+    fake_rpc.respond(
+        "initialize",
+        ProviderError("rpc_exited", "sentinel-initialize-error"),
+    )
+    provider = CodexUsageProvider(
+        paths,
+        rpc_factory=fake_rpc,
+        executable_resolver=lambda command, **kwargs: Path(
+            "/fixture/bin/codex"
+        ),
+        checked_runner=lambda *args, **kwargs: fallback_calls.append(
+            (args, kwargs)
+        ),
+    )
+
+    with pytest.raises(ProviderError) as captured:
+        provider.logout(account)
+
+    assert captured.value.code == "provider_unavailable"
+    assert fallback_calls == []
+    assert fake_rpc.instances[-1].closed is True
+
+
+def test_logout_normalizes_scoped_cli_fallback_failure_without_raw_details(
+    paths, account, fake_rpc
+):
+    secret = "sentinel-fallback-secret"
+    fake_rpc.enter_error = ProviderError("rpc_start_failed", secret)
+
+    def fail(*args, **kwargs):
+        raise ProviderError("process_failed", secret)
+
+    provider = CodexUsageProvider(
+        paths,
+        rpc_factory=fake_rpc,
+        executable_resolver=lambda command, **kwargs: Path(
+            "/fixture/bin/codex"
+        ),
+        checked_runner=fail,
+    )
+
+    with pytest.raises(ProviderError) as captured:
+        provider.logout(account)
+
+    assert captured.value.code == "logout_failed"
+    assert secret not in str(captured.value)
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
 
 
 def test_refresh_prefers_current_bucket_map_and_orders_limit_ids(
@@ -516,6 +821,71 @@ def test_refresh_prefers_current_bucket_map_and_orders_limit_ids(
         ("codex", None, "seven_day", 10080),
         ("zeta", "Zeta limit", "other", 60),
     ]
+
+
+@pytest.mark.parametrize(
+    "legacy_value",
+    [
+        pytest.param("absent", id="absent"),
+        pytest.param(None, id="null"),
+        pytest.param([], id="array"),
+        pytest.param("malformed", id="string"),
+    ],
+)
+def test_refresh_current_bucket_map_does_not_require_valid_legacy_object(
+    provider, account, fake_rpc, legacy_value
+):
+    response = {
+        "rateLimitsByLimitId": {
+            "codex": {
+                "limitId": "codex",
+                "limitName": "Codex 한도",
+                "primary": {
+                    "usedPercent": 12,
+                    "windowDurationMins": 300,
+                    "resetsAt": None,
+                },
+                "secondary": None,
+            }
+        }
+    }
+    if legacy_value != "absent":
+        response["rateLimits"] = legacy_value
+    fake_rpc.respond("account/rateLimits/read", response)
+
+    snapshot = provider.refresh_usage(account)
+
+    assert [
+        (window.limit_id, window.label, window.used_percent)
+        for window in snapshot.windows
+    ] == [("codex", "Codex 한도", 12.0)]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        pytest.param({}, id="both-absent"),
+        pytest.param({"rateLimits": None}, id="legacy-null"),
+        pytest.param({"rateLimits": []}, id="legacy-malformed"),
+        pytest.param(
+            {"rateLimitsByLimitId": {}, "rateLimits": {}},
+            id="current-empty-does-not-fallback",
+        ),
+        pytest.param(
+            {"rateLimitsByLimitId": "invalid", "rateLimits": {}},
+            id="current-malformed-does-not-fallback",
+        ),
+    ],
+)
+def test_refresh_rejects_invalid_or_missing_current_and_legacy_buckets(
+    provider, account, fake_rpc, response
+):
+    fake_rpc.respond("account/rateLimits/read", response)
+
+    with pytest.raises(ProviderError) as captured:
+        provider.refresh_usage(account)
+
+    assert captured.value.code == "unsupported_cli_version"
 
 
 def test_refresh_uses_backward_compatible_single_bucket(provider, account, fake_rpc):
@@ -603,6 +973,71 @@ def test_refresh_rejects_invalid_official_window_values(
         provider.refresh_usage(account)
 
     assert captured.value.code == "unsupported_cli_version"
+
+
+def test_refresh_rejects_arbitrarily_large_percentage_without_overflow_escape(
+    provider, account, fake_rpc
+):
+    fake_rpc.respond(
+        "account/rateLimits/read",
+        {
+            "rateLimits": {
+                "limitId": "codex",
+                "primary": {
+                    "usedPercent": 10**10000,
+                    "windowDurationMins": 300,
+                    "resetsAt": None,
+                },
+                "secondary": None,
+            }
+        },
+    )
+
+    with pytest.raises(ProviderError) as captured:
+        provider.refresh_usage(account)
+
+    assert captured.value.code == "unsupported_cli_version"
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+
+
+@pytest.mark.parametrize(
+    ("limit_id", "label"),
+    [
+        pytest.param("codex\r\nforged", None, id="limit-crlf"),
+        pytest.param("codex\x1b]0;title\x07", None, id="limit-osc"),
+        pytest.param("codex\u202eforged", None, id="limit-unicode-format"),
+        pytest.param("codex", "Codex\x07bell", id="label-bel"),
+        pytest.param("codex", "Codex\u2066isolate", id="label-unicode-format"),
+    ],
+)
+def test_refresh_rejects_provider_control_characters_in_limit_text(
+    provider, account, fake_rpc, limit_id, label
+):
+    fake_rpc.respond(
+        "account/rateLimits/read",
+        {
+            "rateLimitsByLimitId": {
+                limit_id: {
+                    "limitId": limit_id,
+                    "limitName": label,
+                    "primary": {
+                        "usedPercent": 42,
+                        "windowDurationMins": 300,
+                        "resetsAt": None,
+                    },
+                    "secondary": None,
+                }
+            }
+        },
+    )
+
+    with pytest.raises(ProviderError) as captured:
+        provider.refresh_usage(account)
+
+    assert captured.value.code == "unsupported_cli_version"
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
 
 
 def test_malformed_response_error_never_contains_token_like_data(
@@ -705,15 +1140,60 @@ def test_initialize_rejects_wrong_account_home_without_exposing_it(
     assert fake_rpc.instances[-1].closed is True
 
 
-def test_refresh_maps_rpc_authentication_error_to_reauth_required(
-    provider, account, fake_rpc
+@pytest.mark.parametrize(
+    ("rpc_code", "expected_code"),
+    [
+        ("rpc_method_not_found", "unsupported_cli_version"),
+        ("rpc_invalid_params", "unsupported_cli_version"),
+        ("rpc_protocol_error", "unsupported_cli_version"),
+        ("rpc_invalid_request", "unsupported_cli_version"),
+        ("rpc_authentication_error", "reauth_required"),
+        ("rpc_server_overloaded", "provider_unavailable"),
+        ("rpc_remote_error", "provider_unavailable"),
+        ("rpc_exited", "provider_unavailable"),
+    ],
+)
+def test_refresh_maps_safe_rpc_error_classes_without_raw_details(
+    provider, account, fake_rpc, rpc_code, expected_code
 ):
+    secret = f"sentinel-{rpc_code}"
     fake_rpc.respond(
         "account/rateLimits/read",
-        ProviderError("rpc_remote_error", "RPC account error."),
+        ProviderError(rpc_code, secret),
     )
 
     with pytest.raises(ProviderError) as captured:
         provider.refresh_usage(account)
 
+    assert captured.value.code == expected_code
+    assert secret not in str(captured.value)
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+
+
+def test_logout_maps_authentication_error_to_reauth_without_cli_fallback(
+    paths, account, fake_rpc
+):
+    fallback_calls = []
+    fake_rpc.respond(
+        "account/logout",
+        ProviderError("rpc_authentication_error", "sentinel-auth-error"),
+    )
+    provider = CodexUsageProvider(
+        paths,
+        rpc_factory=fake_rpc,
+        executable_resolver=lambda command, **kwargs: Path(
+            "/fixture/bin/codex"
+        ),
+        checked_runner=lambda *args, **kwargs: fallback_calls.append(
+            (args, kwargs)
+        ),
+    )
+
+    with pytest.raises(ProviderError) as captured:
+        provider.logout(account)
+
     assert captured.value.code == "reauth_required"
+    assert fallback_calls == []
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None

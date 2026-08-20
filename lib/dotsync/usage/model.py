@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
@@ -23,6 +24,11 @@ def _require_rfc3339(value: object, field: str) -> None:
         raise ValueError(f"{field} must be an RFC 3339 timestamp") from error
 
 
+def _reject_control_characters(value: str, field: str) -> None:
+    if any(unicodedata.category(character).startswith("C") for character in value):
+        raise ValueError(f"{field} must not contain control characters")
+
+
 @dataclass(frozen=True)
 class UsageWindow:
     name: Literal["five_hour", "seven_day", "other"]
@@ -37,11 +43,19 @@ class UsageWindow:
             raise ValueError("unsupported usage window name")
         if not isinstance(self.limit_id, str) or not self.limit_id.strip():
             raise ValueError("limit id must not be blank")
+        _reject_control_characters(self.limit_id, "limit id")
         if self.label is not None and not isinstance(self.label, str):
             raise TypeError("usage window label must be a string or None")
+        if self.label is not None:
+            _reject_control_characters(self.label, "usage window label")
         if type(self.used_percent) not in {int, float}:
             raise TypeError("usage percentage must be a number")
-        percentage = float(self.used_percent)
+        try:
+            percentage = float(self.used_percent)
+        except OverflowError as error:
+            raise ValueError(
+                "usage percentage must be between 0 and 100"
+            ) from error
         if not math.isfinite(percentage) or not 0.0 <= percentage <= 100.0:
             raise ValueError("usage percentage must be between 0 and 100")
         object.__setattr__(self, "used_percent", percentage)

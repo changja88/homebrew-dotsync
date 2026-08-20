@@ -140,6 +140,18 @@ elif mode == "descendant-stall":
 elif mode == "exit":
     sys.stdin.readline()
     raise SystemExit(9)
+elif mode == "remote-error":
+    request = json.loads(sys.stdin.readline())
+    code = json.loads(sys.argv[3])
+    print(json.dumps({
+        "jsonrpc": "2.0",
+        "id": request["id"],
+        "error": {
+            "code": code,
+            "message": "sentinel-remote-message",
+            "data": {"token": "sentinel-remote-data"},
+        },
+    }), flush=True)
 '''
 
 PTY_FIXTURE = r'''import os
@@ -180,14 +192,22 @@ elif mode == "exit":
 '''
 
 
-def _rpc_command(tmp_path: Path, mode: str) -> tuple[list[Path | str], Path]:
+def _rpc_command(
+    tmp_path: Path, mode: str, *arguments: str
+) -> tuple[list[Path | str], Path]:
     script = tmp_path / "rpc_fixture.py"
     script.write_text(RPC_FIXTURE, encoding="utf-8")
     pid_file = tmp_path / f"{mode}.pid"
     if mode in {"allocated-unsent-response", "post-send-failure-response"}:
         os.mkfifo(str(pid_file) + ".control")
         os.mkfifo(str(pid_file) + ".ack")
-    return [Path(sys.executable).resolve(), script, mode, pid_file], pid_file
+    return [
+        Path(sys.executable).resolve(),
+        script,
+        mode,
+        pid_file,
+        *arguments,
+    ], pid_file
 
 
 def _pty_command(
@@ -557,6 +577,91 @@ def test_json_rpc_rejects_unsafe_lines_without_exposing_them(
     assert "account/rateLimits/read" in error.value.safe_message
     assert "exit status" in error.value.safe_message
     assert secret not in error.value.safe_message
+    _assert_process_stopped(pid_file)
+
+
+@pytest.mark.parametrize(
+    ("remote_code", "expected_code"),
+    [
+        (-32601, "rpc_method_not_found"),
+        (-32600, "rpc_authentication_error"),
+        (-32602, "rpc_invalid_params"),
+        (-32001, "rpc_server_overloaded"),
+        (-32603, "rpc_remote_error"),
+    ],
+)
+def test_json_rpc_classifies_only_numeric_remote_error_code_safely(
+    tmp_path, remote_code, expected_code
+):
+    command, pid_file = _rpc_command(
+        tmp_path,
+        "remote-error",
+        json.dumps(remote_code),
+    )
+
+    with JsonRpcProcess(
+        command,
+        env={"PATH": os.environ.get("PATH", "")},
+        cwd=tmp_path,
+        timeout=2.0,
+    ) as rpc:
+        with pytest.raises(ProviderError) as captured:
+            rpc.request("account/rateLimits/read", {})
+
+    rendered = "".join(traceback.format_exception(captured.value))
+    assert captured.value.code == expected_code
+    assert "sentinel-remote-message" not in rendered
+    assert "sentinel-remote-data" not in rendered
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    _assert_process_stopped(pid_file)
+
+
+def test_json_rpc_keeps_invalid_request_for_non_auth_method_unsupported(
+    tmp_path,
+):
+    command, pid_file = _rpc_command(
+        tmp_path,
+        "remote-error",
+        json.dumps(-32600),
+    )
+
+    with JsonRpcProcess(
+        command,
+        env={"PATH": os.environ.get("PATH", "")},
+        cwd=tmp_path,
+        timeout=2.0,
+    ) as rpc:
+        with pytest.raises(ProviderError) as captured:
+            rpc.request("initialize", {})
+
+    assert captured.value.code == "rpc_invalid_request"
+    _assert_process_stopped(pid_file)
+
+
+@pytest.mark.parametrize("remote_code", [True, "-32601", None])
+def test_json_rpc_rejects_malformed_remote_error_code_without_exposing_response(
+    tmp_path, remote_code
+):
+    command, pid_file = _rpc_command(
+        tmp_path,
+        "remote-error",
+        json.dumps(remote_code),
+    )
+
+    with JsonRpcProcess(
+        command,
+        env={"PATH": os.environ.get("PATH", "")},
+        cwd=tmp_path,
+        timeout=2.0,
+    ) as rpc:
+        with pytest.raises(ProviderError) as captured:
+            rpc.request("account/rateLimits/read", {})
+
+    rendered = "".join(traceback.format_exception(captured.value))
+    assert captured.value.code == "rpc_protocol_error"
+    assert "sentinel-remote-message" not in rendered
+    assert "sentinel-remote-data" not in rendered
     _assert_process_stopped(pid_file)
 
 

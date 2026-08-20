@@ -65,6 +65,11 @@ _PASSTHROUGH_VARIABLES = frozenset(
 _MAX_RPC_LINE_BYTES = 1024 * 1024
 _MAX_PTY_OUTPUT_BYTES = 2 * 1024 * 1024
 _MAX_PTY_INPUT_BYTES = 64 * 1024
+_SAFE_REMOTE_ERROR_CODES = {
+    -32601: "rpc_method_not_found",
+    -32602: "rpc_invalid_params",
+    -32001: "rpc_server_overloaded",
+}
 
 
 def provider_environment(
@@ -610,8 +615,32 @@ class JsonRpcProcess:
         self, method: str, response: dict[str, Any]
     ) -> Any:
         if "error" in response:
+            remote_error = response["error"]
+            if (
+                "result" in response
+                or type(remote_error) is not dict
+                or type(remote_error.get("code")) is not int
+                or type(remote_error.get("message")) is not str
+            ):
+                raise self._request_error(
+                    "rpc_protocol_error",
+                    method,
+                    "received a malformed response",
+                )
+            remote_code = remote_error["code"]
+            if remote_code == -32600:
+                safe_code = (
+                    "rpc_authentication_error"
+                    if method == "account/rateLimits/read"
+                    else "rpc_invalid_request"
+                )
+            else:
+                safe_code = _SAFE_REMOTE_ERROR_CODES.get(
+                    remote_code,
+                    "rpc_remote_error",
+                )
             raise self._request_error(
-                "rpc_remote_error", method, "returned an error"
+                safe_code, method, "returned an error"
             )
         if "result" not in response:
             raise self._request_error(
