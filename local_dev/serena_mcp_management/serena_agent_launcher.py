@@ -99,6 +99,12 @@ from local_dev.serena_mcp_management.ui import (
     style_session_tree,
     style_spinner,
 )
+from local_dev.serena_mcp_management.worktree_setup import (
+    WorktreeSetupError,
+    install_worktree_setup_hook,
+    worktree_setup_available,
+    worktree_setup_installed,
+)
 
 
 @dataclass(frozen=True)
@@ -527,6 +533,7 @@ def _main_v2(args: list[str]) -> int:
         rc = _run_preflight_v2(serena_state=serena_state)
         if rc != 0:
             return rc
+        _run_worktree_setup_v2(project_root)
 
     session_choice = _run_session_choice_v2()
 
@@ -1892,6 +1899,58 @@ def _run_preflight_v2(
                 _emit("graphify hook", f"hook install failed (exit {rc})", ok=False)
 
     return 0
+
+
+def _run_worktree_setup_v2(
+    project_root: Path,
+    *,
+    stream: TextIO | None = None,
+    input_fn: Callable[[], str] | None = None,
+) -> None:
+    """Offer an explicit primary-checkout hook for future worktrees."""
+    if os.environ.get("SERENA_AGENT_INTERACTIVE") != "1":
+        return
+    if not worktree_setup_available(project_root):
+        return
+    if worktree_setup_installed(project_root):
+        return
+
+    scopes = [".env.local copy"]
+    if (project_root / ".serena" / "project.yml").is_file():
+        scopes.append("Serena config + shared memories")
+    if (project_root / "graphify-out" / "graph.json").is_file():
+        scopes.append("Graphify query snapshot")
+
+    out = stream if stream is not None else sys.stdout
+    out.write(render_inline_row(
+        "worktree setup",
+        "future linked worktrees: " + " · ".join(scopes),
+        status="info",
+    ))
+    out.flush()
+    if not confirm(
+        "Set up future Git worktrees automatically?",
+        default=False,
+        stream=out,
+        input_fn=input_fn,
+    ):
+        return
+
+    try:
+        install_worktree_setup_hook(project_root)
+    except WorktreeSetupError as exc:
+        out.write(render_inline_row(
+            "worktree setup",
+            f"not installed: {exc}",
+            status="warn",
+        ))
+    else:
+        out.write(render_inline_row(
+            "worktree setup",
+            "installed · " + " · ".join(scopes),
+            status="done",
+        ))
+    out.flush()
 
 
 def _render_preflight_overview_v2(

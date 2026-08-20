@@ -1,5 +1,6 @@
 import io
 import re
+import subprocess
 from pathlib import Path
 from unittest import mock
 
@@ -15,6 +16,10 @@ from local_dev.serena_mcp_management.serena_mcp.diagnostics import GlobalLifecyc
 from local_dev.serena_mcp_management.session_inventory import (
     AgentInventory,
     CountStats,
+)
+from local_dev.serena_mcp_management.worktree_setup import (
+    install_worktree_setup_hook,
+    worktree_setup_installed,
 )
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -1485,6 +1490,171 @@ def test_v2_preflight_graphify_hook_prompt_defaults_to_yes(monkeypatch):
     assert "[Y/n]" in out.getvalue()
 
 
+# --- Future linked-worktree setup ------------------------------------------
+
+
+def _init_worktree_setup_repo(root: Path) -> None:
+    subprocess.run(
+        ["git", "init", "-b", "main", str(root)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_worktree_setup_prompt_defaults_to_no_and_changes_nothing(
+    monkeypatch,
+    tmp_path,
+):
+    """Changing the prompt default must silently install a project Git hook."""
+    _init_worktree_setup_repo(tmp_path)
+    (tmp_path / ".serena").mkdir()
+    (tmp_path / ".serena" / "project.yml").write_text("project_name: sample\n")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    out = io.StringIO()
+
+    launcher._run_worktree_setup_v2(
+        tmp_path,
+        stream=out,
+        input_fn=lambda: "",
+    )
+
+    assert "[y/N]" in out.getvalue()
+    assert worktree_setup_installed(tmp_path) is False
+
+
+def test_worktree_setup_yes_installs_and_reports_selected_asset_scopes(
+    monkeypatch,
+    tmp_path,
+):
+    """Omitting a selected scope must make future worktrees incomplete."""
+    _init_worktree_setup_repo(tmp_path)
+    (tmp_path / ".env.local").write_text("ENV=test\n")
+    (tmp_path / ".serena").mkdir()
+    (tmp_path / ".serena" / "project.yml").write_text("project_name: sample\n")
+    (tmp_path / "graphify-out").mkdir()
+    (tmp_path / "graphify-out" / "graph.json").write_text("{}\n")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    out = io.StringIO()
+
+    launcher._run_worktree_setup_v2(
+        tmp_path,
+        stream=out,
+        input_fn=lambda: "y",
+    )
+
+    visible = _strip_ansi(out.getvalue())
+    assert worktree_setup_installed(tmp_path) is True
+    assert "worktree setup" in visible
+    assert ".env.local" in visible
+    assert "Serena" in visible
+    assert "Graphify" in visible
+
+
+def test_worktree_setup_skips_ineligible_and_already_installed_roots(
+    monkeypatch,
+    tmp_path,
+):
+    """Prompting outside one eligible primary checkout is unwanted mutation risk."""
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / ".serena").mkdir()
+    (plain / ".serena" / "project.yml").write_text("project_name: plain\n")
+    launcher._run_worktree_setup_v2(
+        plain,
+        stream=io.StringIO(),
+        input_fn=lambda: pytest.fail("non-Git root must not prompt"),
+    )
+
+    primary = tmp_path / "primary"
+    linked = tmp_path / "linked"
+    _init_worktree_setup_repo(primary)
+    subprocess.run(
+        ["git", "-C", str(primary), "config", "user.name", "Dotsync Tests"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(primary), "config", "user.email", "dotsync@example.test"],
+        check=True,
+    )
+    (primary / "tracked.txt").write_text("tracked\n")
+    subprocess.run(["git", "-C", str(primary), "add", "tracked.txt"], check=True)
+    subprocess.run(
+        ["git", "-C", str(primary), "commit", "-m", "initial"],
+        check=True,
+        capture_output=True,
+    )
+    (primary / ".serena").mkdir()
+    (primary / ".serena" / "project.yml").write_text("project_name: sample\n")
+    install_worktree_setup_hook(primary)
+    launcher._run_worktree_setup_v2(
+        primary,
+        stream=io.StringIO(),
+        input_fn=lambda: pytest.fail("installed setup must not prompt"),
+    )
+    subprocess.run(
+        ["git", "-C", str(primary), "worktree", "add", "-b", "linked", str(linked)],
+        check=True,
+        capture_output=True,
+    )
+    launcher._run_worktree_setup_v2(
+        linked,
+        stream=io.StringIO(),
+        input_fn=lambda: pytest.fail("linked worktree must not prompt"),
+    )
+
+
+def test_worktree_setup_is_inert_for_noninteractive_launch(monkeypatch, tmp_path):
+    """Removing the interactive gate must mutate hooks in scripted launches."""
+    _init_worktree_setup_repo(tmp_path)
+    (tmp_path / ".serena").mkdir()
+    (tmp_path / ".serena" / "project.yml").write_text("project_name: sample\n")
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "0")
+
+    launcher._run_worktree_setup_v2(
+        tmp_path,
+        stream=io.StringIO(),
+        input_fn=lambda: pytest.fail("noninteractive launch must not prompt"),
+    )
+
+    assert worktree_setup_installed(tmp_path) is False
+
+
+def test_main_runs_worktree_setup_after_preflight_before_session_choice(
+    monkeypatch,
+    tmp_path,
+):
+    """Moving setup before preflight must miss newly created opt-in markers."""
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "1")
+    monkeypatch.setattr(launcher, "find_project_root", lambda cwd: tmp_path)
+    monkeypatch.setattr(launcher, "find_real_binary", lambda client: "/usr/bin/true")
+    monkeypatch.setattr(launcher, "_render_preflight_overview_v2", lambda: None)
+    monkeypatch.setattr(launcher, "serena_opted_in", lambda root: False)
+    monkeypatch.setattr(launcher, "_run_serena_init_v2", lambda **kwargs: "skipped")
+    order: list[str] = []
+    monkeypatch.setattr(
+        launcher,
+        "_run_preflight_v2",
+        lambda **kwargs: order.append("preflight") or 0,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_run_worktree_setup_v2",
+        lambda root: order.append("worktree"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_run_session_choice_v2",
+        lambda: order.append("sessions") or "keep",
+    )
+    monkeypatch.setattr(launcher, "_launch_bare_child", lambda *args, **kwargs: 0)
+
+    assert launcher._main_v2([]) == 0
+    assert order == ["preflight", "worktree", "sessions"]
+
+
 # --- External CLI resolution for prompt actions ------------------------------
 #
 # serena/graphify는 PATH에 없을 수 있다 (serena는 uvx로만 돌고, graphify는
@@ -1575,6 +1745,8 @@ def test_v2_main_keep_launches_bare_when_serena_cli_missing(
                         lambda **kw: "declined", raising=False)
     monkeypatch.setattr(launcher, "_run_preflight_v2",
                         lambda **kw: 0, raising=False)
+    monkeypatch.setattr(launcher, "_run_worktree_setup_v2",
+                        lambda root: None, raising=False)
     monkeypatch.setattr(launcher, "_run_session_choice_v2",
                         lambda **kw: "keep", raising=False)
     monkeypatch.setattr(launcher, "serena_server_command",

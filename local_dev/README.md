@@ -348,6 +348,28 @@ the existing setup prompts. An unavailable network/version probe is
 best-effort and never blocks launch; projects that decline initial Graphify
 setup do not run the local or remote version checks at all.
 
+After Serena/Graphify preflight, an opted-in **primary checkout** may show
+`Set up future Git worktrees automatically? [y/N]`. Accepting installs one
+marker-owned `post-checkout` block; declining changes nothing and may be asked
+again on a later launch. The prompt is not shown in linked worktrees,
+non-interactive launches, non-Git directories, marker-free projects, or after
+the current block is already installed. Existing personal/Graphify hook
+content is preserved, while duplicate or malformed dotsync markers and a
+symlink hook fail closed.
+
+On a future `git worktree add`, that block copies `.env.local` with its file
+mode (never a symlink and never over an existing target), copies Serena's
+`project.yml`/`project.local.yml`, and links `.serena/memories` back to the
+primary checkout. Graphify remains query-only: it copies only `graph.json`,
+`GRAPH_REPORT.md`, `.graphify_python`, optional `reflections/LESSONS.md`, and
+existing `.codex/hooks.json`/`.claude/settings.json`. It does **not** copy
+`.graphify_root`, cache, dated history, manifests, cost data, or query-memory
+files, and it never runs `graphify update` in the linked worktree. Canonical
+automatic graph updates continue through the primary checkout's official
+hooks. Serena and Graphify are checked independently by their exact opt-in
+markers, all targets are create-if-absent, and existing worktrees are not
+retroactively seeded.
+
 An early preflight step checks the **Node.js runtime** — it runs *before* the
 graphify section so the graphify CLI being unavailable (which early-returns that
 section) can't skip it; node and graphify are independent concerns.
