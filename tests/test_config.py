@@ -1,3 +1,5 @@
+import stat
+
 import pytest
 from dotsync.config import (
     Config,
@@ -314,6 +316,51 @@ def test_save_then_load_roundtrip(monkeypatch, tmp_path):
     assert loaded.backup_dir == folder / ".backups"
     assert loaded.backup_keep == DEFAULT_BACKUP_KEEP
     assert loaded.bettertouchtool_presets == list(DEFAULT_BTT_PRESETS)
+
+
+def test_save_preserves_existing_config_permission_mode(tmp_path):
+    folder = tmp_path / "private-config"
+    folder.mkdir()
+    config_path = folder / "dotsync.toml"
+    config_path.write_text('apps = ["zsh"]\n')
+    config_path.chmod(0o600)
+
+    save_config(Config(dir=folder, apps=["ghostty"]))
+
+    assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
+
+
+def test_save_and_load_roundtrip_through_sync_directory_symlink(
+    monkeypatch, tmp_path
+):
+    real_folder = tmp_path / "real-sync"
+    real_folder.mkdir()
+    (real_folder / "dotsync.toml").write_text('apps = ["zsh"]\n')
+    alias = tmp_path / "sync-alias"
+    alias.symlink_to(real_folder, target_is_directory=True)
+    monkeypatch.setenv("DOTSYNC_DIR", str(alias))
+
+    loaded = load_config()
+    loaded.apps = ["ghostty", "zsh"]
+    save_config(loaded)
+    roundtripped = load_config()
+
+    assert roundtripped.dir == alias
+    assert roundtripped.apps == ["ghostty", "zsh"]
+    assert (real_folder / "dotsync.toml").is_file()
+
+
+def test_save_rejects_a_symlinked_config_file(tmp_path):
+    folder = tmp_path / "sync"
+    folder.mkdir()
+    outside = tmp_path / "outside.toml"
+    outside.write_text("CONFIG_SYMLINK_SENTINEL")
+    (folder / "dotsync.toml").symlink_to(outside)
+
+    with pytest.raises(ConfigError, match="regular file"):
+        save_config(Config(dir=folder, apps=["zsh"]))
+
+    assert outside.read_text() == "CONFIG_SYMLINK_SENTINEL"
 
 
 def test_bettertouchtool_presets_roundtrip(monkeypatch, tmp_path):

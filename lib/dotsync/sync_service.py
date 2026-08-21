@@ -302,9 +302,15 @@ class SyncService:
             backup_rotator=self._backup_rotator,
         )
 
+    def validate_config(self) -> None:
+        """Build every configured app without probing or mutating sync state."""
+        for name in self.config.apps:
+            self._app_factory(name, self.config)
+
     def update_apps(self, apps: tuple[str, ...]) -> Config:
         candidate = copy.deepcopy(self.config)
         candidate.apps = list(apps)
+        self.with_config(candidate).validate_config()
         try:
             save_config(candidate)
         except BaseException:

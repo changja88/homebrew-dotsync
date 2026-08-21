@@ -267,7 +267,7 @@ def save_config(cfg: Config) -> None:
 def _atomic_write_config(path: Path, content: str) -> None:
     parent_fd = os.open(
         path.parent,
-        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        os.O_RDONLY | os.O_DIRECTORY,
     )
     temporary_name: str | None = None
     try:
@@ -302,6 +302,11 @@ def _atomic_write_config(path: Path, content: str) -> None:
             raise FileExistsError("could not create a temporary config file")
 
         try:
+            if target_metadata is not None:
+                os.fchmod(
+                    temporary_fd,
+                    stat.S_IMODE(target_metadata.st_mode),
+                )
             with os.fdopen(temporary_fd, "w", encoding="utf-8") as config_file:
                 config_file.write(content)
                 config_file.flush()

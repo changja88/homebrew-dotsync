@@ -10,6 +10,7 @@ from dotsync.config import (
     Config,
     ConfigWriteUncertain,
     load_config,
+    load_config_from,
     save_config,
 )
 from dotsync.plan import AppPlan, Change, plan_tree_mirror
@@ -197,6 +198,28 @@ def test_with_config_builds_an_isolated_candidate_with_existing_dependencies(
     assert service.config.apps == ["zsh"]
     assert [app.name for app in status.apps] == ["ghostty"]
     assert calls == [("status", original_config.dir)]
+
+
+def test_update_apps_builds_real_configured_apps_before_persisting(tmp_path):
+    sync_dir = tmp_path / "configs"
+    sync_dir.mkdir()
+    config = Config(
+        dir=sync_dir,
+        apps=["zsh"],
+        app_options={
+            "bettertouchtool": {
+                "presets": ["../escape"],
+            }
+        },
+    )
+    save_config(config)
+    service = SyncService(config)
+
+    with pytest.raises(ValueError, match="preset"):
+        service.update_apps(("bettertouchtool",))
+
+    assert service.config.apps == ["zsh"]
+    assert load_config_from(sync_dir).apps == ["zsh"]
 
 
 def test_update_apps_invalidates_preview_before_selected_app_is_called(

@@ -16,9 +16,11 @@ import pytest
 
 import dotsync.config as config_module
 import dotsync.private_fs as private_fs_module
+import dotsync.web.api as api_module
 from dotsync.accounts import ManagedAccount, ProviderIdentity
 from dotsync.app_paths import AppPaths
 from dotsync.app_state import AppState, AppStateStore
+from dotsync.apps import build_app
 from dotsync.apps.base import App, FilePair
 from dotsync.config import Config, save_config
 from dotsync.jobs import JobContext, JobView, RegistryClosed
@@ -233,6 +235,11 @@ class _SyncService:
         candidate.config = config
         self.candidates.append(candidate)
         return candidate
+
+    def validate_config(self) -> None:
+        self.calls.append(("validate_config", tuple(self.config.apps)))
+        for name in self.config.apps:
+            build_app(name, self.config)
 
     def preview(self, direction: str, apps: tuple[str, ...]) -> _SyncPreview:
         self.calls.append(("preview", direction, apps))
@@ -496,13 +503,14 @@ def _account(
     *,
     provider: str = "codex",
     label: str = "Personal",
+    identity: ProviderIdentity | None = None,
 ) -> ManagedAccount:
     return ManagedAccount(
         id=str(uuid.uuid4()),
         provider=provider,
         label=label,
         state="logged_out",
-        identity=ProviderIdentity(None, None, None),
+        identity=identity or ProviderIdentity(None, None, None),
         created_at="2026-08-21T00:00:00+00:00",
     )
 
@@ -845,6 +853,150 @@ def test_account_list_includes_only_the_sanitized_cached_usage_snapshot(stack):
     serialized = response.body.decode("utf-8")
     assert "access_token" not in serialized
     assert "refresh_token" not in serialized
+
+
+@pytest.mark.parametrize(
+    "display_name",
+    [
+        "~/Library/Application Support/Codex/auth.json",
+        "localhost:1455/callback?code=oauth-secret",
+    ],
+)
+def test_account_list_redacts_locator_like_display_names(stack, display_name):
+    account = _account(
+        identity=ProviderIdentity(
+            display_name,
+            "person@example.com",
+            "Team",
+        )
+    )
+    stack.accounts.accounts[account.id] = account
+
+    response = stack.client.request("GET", "/api/accounts")
+
+    assert response.status == 200
+    assert response.json()["accounts"][0]["identity"] == {
+        "display_name": None,
+        "email": "person@example.com",
+        "plan": "Team",
+    }
+    assert display_name.encode() not in response.body
+
+
+@pytest.mark.parametrize("route", ["create", "rename"])
+def test_account_mutation_responses_use_the_same_identity_sanitizer(
+    stack, monkeypatch, route
+):
+    unsafe_name = "~/Library/Application Support/Codex/auth.json"
+    unsafe_email = "user@127.0.0.1"
+    unsafe_plan = "localhost:1455/callback?code=oauth-secret"
+    account = _account(
+        identity=ProviderIdentity(unsafe_name, unsafe_email, unsafe_plan)
+    )
+    if route == "create":
+        monkeypatch.setattr(
+            stack.usage,
+            "create_account",
+            lambda provider, label: account,
+        )
+        response = stack.client.request(
+            "POST",
+            "/api/accounts",
+            json_body={"provider": "codex", "label": "Personal"},
+        )
+    else:
+        monkeypatch.setattr(
+            stack.usage,
+            "rename_account",
+            lambda account_id, label: account,
+        )
+        response = stack.client.request(
+            "PATCH",
+            f"/api/accounts/{account.id}",
+            json_body={"label": "Personal"},
+        )
+
+    assert response.status in {200, 201}
+    assert response.json()["account"]["identity"] == {
+        "display_name": None,
+        "email": None,
+        "plan": None,
+    }
+    for sentinel in (unsafe_name, unsafe_email, unsafe_plan):
+        assert sentinel.encode() not in response.body
+
+
+def test_account_dto_preserves_safe_unicode_identity_fields(stack):
+    account = _account(
+        label="개인 계정",
+        identity=ProviderIdentity(
+            "홍길동",
+            "person.name+codex@example.com",
+            "팀 플랜",
+        ),
+    )
+    stack.accounts.accounts[account.id] = account
+
+    response = stack.client.request("GET", "/api/accounts")
+
+    assert response.status == 200
+    assert response.json()["accounts"][0] == {
+        "id": account.id,
+        "provider": "codex",
+        "label": "개인 계정",
+        "state": "logged_out",
+        "identity": {
+            "display_name": "홍길동",
+            "email": "person.name+codex@example.com",
+            "plan": "팀 플랜",
+        },
+        "created_at": "2026-08-21T00:00:00+00:00",
+        "usage": None,
+    }
+
+
+def test_account_dto_redacts_email_with_noncanonical_local_part(stack):
+    unsafe_email = "person.@example.com"
+    account = _account(
+        identity=ProviderIdentity("Safe Name", unsafe_email, "Team")
+    )
+    stack.accounts.accounts[account.id] = account
+
+    response = stack.client.request("GET", "/api/accounts")
+
+    assert response.status == 200
+    assert response.json()["accounts"][0]["identity"] == {
+        "display_name": "Safe Name",
+        "email": None,
+        "plan": "Team",
+    }
+    assert unsafe_email.encode() not in response.body
+
+
+@pytest.mark.parametrize(
+    "created_at",
+    [
+        "~/Library/Application Support/Codex/auth.json",
+        "localhost:1455/callback?code=oauth-secret",
+    ],
+)
+def test_account_dto_rejects_non_timestamp_created_at_without_echo(
+    stack, created_at
+):
+    original = _account()
+    account = ManagedAccount(
+        id=original.id,
+        provider=original.provider,
+        label=original.label,
+        state=original.state,
+        identity=original.identity,
+        created_at=created_at,
+    )
+    stack.accounts.accounts[account.id] = account
+
+    response = stack.client.request("GET", "/api/accounts")
+
+    _assert_fixed_internal_error(response, created_at)
 
 
 def test_account_rename_accepts_only_a_label(stack):
@@ -1240,7 +1392,6 @@ def test_sync_job_result_correlates_with_its_issued_preview(
     [
         ("account_id", "00000000-0000-4000-8000-000000000001"),
         ("provider", "claude"),
-        ("oauth_identity", "https://oauth.invalid/access-token"),
     ],
 )
 def test_account_job_results_must_match_the_managed_account(
@@ -1258,11 +1409,6 @@ def test_account_job_results_must_match_the_managed_account(
     retained = stack.accounts.accounts[account.id]
     result_id = sentinel if mismatch == "account_id" else retained.id
     provider = sentinel if mismatch == "provider" else retained.provider
-    display_name = (
-        sentinel
-        if mismatch == "oauth_identity"
-        else retained.identity.display_name
-    )
     view = JobView(
         id=job_id,
         kind="account_login",
@@ -1276,7 +1422,7 @@ def test_account_job_results_must_match_the_managed_account(
                 "label": retained.label,
                 "state": retained.state,
                 "identity": {
-                    "display_name": display_name,
+                    "display_name": retained.identity.display_name,
                     "email": retained.identity.email,
                     "plan": retained.identity.plan,
                 },
@@ -1290,6 +1436,62 @@ def test_account_job_results_must_match_the_managed_account(
     response = _poll_injected_job(stack, monkeypatch, view)
 
     _assert_fixed_internal_error(response, sentinel)
+
+
+@pytest.mark.parametrize(
+    "display_name",
+    [
+        "~/Library/Application Support/Codex/auth.json",
+        "localhost:1455/callback?code=oauth-secret",
+        "https://oauth.invalid/access-token",
+    ],
+)
+def test_account_job_redacts_unsafe_optional_identity_fields(
+    stack, monkeypatch, display_name
+):
+    account = _account()
+    stack.accounts.accounts[account.id] = account
+    accepted = stack.client.request(
+        "POST",
+        f"/api/accounts/{account.id}/login",
+        json_body={"provider": "codex"},
+    )
+    job_id = accepted.json()["job_id"]
+    assert _wait_for_job(stack, job_id).state == "succeeded"
+    retained = stack.accounts.accounts[account.id]
+    view = JobView(
+        id=job_id,
+        kind="account_login",
+        state="succeeded",
+        account_id=retained.id,
+        progress={"state": "done"},
+        result={
+            "account": {
+                "id": retained.id,
+                "provider": retained.provider,
+                "label": retained.label,
+                "state": retained.state,
+                "identity": {
+                    "display_name": display_name,
+                    "email": "person@example.com",
+                    "plan": "Team",
+                },
+                "created_at": retained.created_at,
+                "usage": None,
+            }
+        },
+        error_code=None,
+    )
+
+    response = _poll_injected_job(stack, monkeypatch, view)
+
+    assert response.status == 200
+    assert response.json()["job"]["result"]["account"]["identity"] == {
+        "display_name": None,
+        "email": "person@example.com",
+        "plan": "Team",
+    }
+    assert display_name.encode() not in response.body
 
 
 @pytest.mark.parametrize(
@@ -1544,6 +1746,118 @@ def test_sync_apps_builds_candidate_before_persisting(stack):
     assert stale.status == 409
     assert _disk_config_apps(stack.sync.config.dir) == ["zsh"]
     _assert_live_sync(stack, sync_dir=stack.sync.config.dir, apps=["zsh"])
+
+
+def test_sync_apps_validates_candidate_buildability_before_persisting(stack):
+    stack.sync.config.app_options = {
+        "bettertouchtool": {"presets": ["../escape"]}
+    }
+    save_config(stack.sync.config)
+    old_digest = _issue_sync_digest(stack)
+    sentinel = "../escape"
+
+    response = stack.client.request(
+        "PATCH",
+        "/api/sync/apps",
+        json_body={"apps": ["bettertouchtool"]},
+    )
+    stale = stack.client.request(
+        "POST", "/api/sync/execute", json_body={"digest": old_digest}
+    )
+
+    _assert_fixed_internal_error(response, sentinel)
+    assert stale.status == 409
+    assert _disk_config_apps(stack.sync.config.dir) == ["zsh"]
+    _assert_live_sync(stack, sync_dir=stack.sync.config.dir, apps=["zsh"])
+
+
+def test_config_reload_failure_disables_sync_before_old_preview_can_publish(
+    stack, monkeypatch
+):
+    save_config(stack.sync.config)
+    old_digest = _issue_sync_digest(stack)
+    release_preview = threading.Event()
+    stack.sync.preview_entered.clear()
+    stack.sync.preview_release = release_preview
+    pending_preview = _start_request(
+        lambda: stack.client.request(
+            "POST",
+            "/api/sync/preview",
+            json_body={"direction": "backup", "apps": ["zsh"]},
+        )
+    )
+    assert stack.sync.preview_entered.wait(timeout=1.0)
+    sentinel = "CONFIG_RELOAD_FAILURE_SENTINEL"
+
+    def fail_replace(*args, **kwargs):
+        raise OSError("replace failed")
+
+    def fail_reload(sync_dir: Path) -> Config:
+        raise RuntimeError(sentinel)
+
+    monkeypatch.setattr(config_module.os, "replace", fail_replace)
+    monkeypatch.setattr(api_module, "load_config_from", fail_reload)
+
+    response = stack.client.request(
+        "PATCH",
+        "/api/sync/apps",
+        json_body={"apps": ["ghostty"]},
+    )
+    release_preview.set()
+    preview = pending_preview.finish()
+    stale = stack.client.request(
+        "POST", "/api/sync/execute", json_body={"digest": old_digest}
+    )
+    status = stack.client.request("GET", "/api/sync/status")
+
+    _assert_fixed_internal_error(response, sentinel)
+    assert preview.status == 409
+    assert stale.status == 409
+    assert status.status == 409
+    assert status.json()["error"]["code"] == "sync_not_configured"
+
+
+def test_config_rebuild_failure_publishes_safe_unavailable(stack, monkeypatch):
+    save_config(stack.sync.config)
+    old_digest = _issue_sync_digest(stack)
+    sentinel = "CONFIG_REBUILD_FAILURE_SENTINEL"
+    original_with_config = stack.sync.with_config
+    authoritative = Config(
+        dir=stack.sync.config.dir,
+        apps=["bettertouchtool"],
+        app_options={"bettertouchtool": {"presets": ["../escape"]}},
+    )
+
+    def fail_replace(*args, **kwargs):
+        raise OSError("replace failed")
+
+    def build_candidate(config: Config):
+        if config.apps == ["bettertouchtool"]:
+            raise ValueError(sentinel)
+        return original_with_config(config)
+
+    monkeypatch.setattr(config_module.os, "replace", fail_replace)
+    monkeypatch.setattr(
+        api_module,
+        "load_config_from",
+        lambda sync_dir: authoritative,
+    )
+    monkeypatch.setattr(stack.sync, "with_config", build_candidate)
+
+    response = stack.client.request(
+        "PATCH",
+        "/api/sync/apps",
+        json_body={"apps": ["ghostty"]},
+    )
+    stale = stack.client.request(
+        "POST", "/api/sync/execute", json_body={"digest": old_digest}
+    )
+    status = stack.client.request("GET", "/api/sync/status")
+
+    _assert_fixed_internal_error(response, sentinel)
+    assert stale.status == 409
+    assert status.status == 409
+    assert status.json()["error"]["code"] == "sync_not_configured"
 
 
 def test_sync_status_omits_real_symlink_error_details_and_absolute_paths(
@@ -1966,6 +2280,78 @@ def test_folder_selection_builds_candidate_before_persisting_app_state(
     assert stale.status == 409
     assert durable_stack.state.state == AppState(sync_dir=str(old_dir))
     _assert_live_sync(durable_stack, sync_dir=old_dir, apps=["zsh"])
+
+
+def test_app_state_reload_failure_publishes_safe_unavailable(
+    durable_stack, tmp_path, monkeypatch
+):
+    selected = tmp_path / "state-reload-selection"
+    selected.mkdir()
+    durable_stack.picker.selected = selected
+    old_digest = _issue_sync_digest(durable_stack)
+    sentinel = "APP_STATE_RELOAD_FAILURE_SENTINEL"
+
+    def fail_replace(*args, **kwargs):
+        raise OSError("replace failed")
+
+    def fail_reload() -> AppState:
+        raise RuntimeError(sentinel)
+
+    monkeypatch.setattr(private_fs_module.os, "replace", fail_replace)
+    monkeypatch.setattr(durable_stack.state, "load", fail_reload)
+
+    response = durable_stack.client.request(
+        "POST", "/api/settings/sync-folder/select"
+    )
+    stale = durable_stack.client.request(
+        "POST", "/api/sync/execute", json_body={"digest": old_digest}
+    )
+    status = durable_stack.client.request("GET", "/api/sync/status")
+
+    _assert_fixed_internal_error(response, sentinel)
+    assert stale.status == 409
+    assert status.status == 409
+    assert status.json()["error"]["code"] == "sync_not_configured"
+
+
+def test_app_state_rebuild_failure_publishes_safe_unavailable(
+    durable_stack, tmp_path, monkeypatch
+):
+    selected = tmp_path / "state-rebuild-selection"
+    selected.mkdir()
+    authoritative = tmp_path / "authoritative-rebuild"
+    authoritative.mkdir()
+    durable_stack.picker.selected = selected
+    durable_stack.initializer.errors[authoritative] = ValueError(
+        "APP_STATE_REBUILD_FAILURE_SENTINEL"
+    )
+    old_digest = _issue_sync_digest(durable_stack)
+
+    def fail_replace(*args, **kwargs):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(private_fs_module.os, "replace", fail_replace)
+    monkeypatch.setattr(
+        durable_stack.state,
+        "load",
+        lambda: AppState(sync_dir=str(authoritative)),
+    )
+
+    response = durable_stack.client.request(
+        "POST", "/api/settings/sync-folder/select"
+    )
+    stale = durable_stack.client.request(
+        "POST", "/api/sync/execute", json_body={"digest": old_digest}
+    )
+    status = durable_stack.client.request("GET", "/api/sync/status")
+
+    _assert_fixed_internal_error(
+        response,
+        "APP_STATE_REBUILD_FAILURE_SENTINEL",
+    )
+    assert stale.status == 409
+    assert status.status == 409
+    assert status.json()["error"]["code"] == "sync_not_configured"
 
 
 def test_folder_selection_accepts_no_http_path_and_cancellation_mutates_nothing(stack):

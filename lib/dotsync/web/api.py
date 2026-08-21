@@ -22,6 +22,7 @@ from dotsync.accounts import (
     AccountStore,
     AccountStoreError,
     ManagedAccount,
+    ProviderIdentity,
     ProviderName,
 )
 from dotsync.app_paths import AppPaths
@@ -114,6 +115,25 @@ _ACCOUNT_STATES = frozenset(
     {"logged_out", "ready", "reauth_required", "unsupported", "error"}
 )
 _SYNC_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+_SAFE_ACCOUNT_TIMESTAMP = re.compile(
+    r"[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T"
+    r"(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]"
+    r"(?:\.[0-9]{1,6})?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])\Z"
+)
+_SAFE_IDENTITY_EMAIL = re.compile(
+    r"[A-Za-z0-9](?:[A-Za-z0-9._%+-]{0,62}[A-Za-z0-9])?@"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*"
+    r"\.[A-Za-z]{2,63}\Z"
+)
+_SAFE_IDENTITY_PUNCTUATION = frozenset(" .,'’()-_+&")
+_UNSAFE_IDENTITY_LOCATORS = (
+    "localhost",
+    "127.0.0.1",
+    "0.0.0.0",
+    "::1",
+    "[::1]",
+)
 _SAFE_USAGE_ERROR_CODES = frozenset(
     {
         "cli_missing",
@@ -693,12 +713,18 @@ class ApiController:
         self._sync_generation += 1
         self._issued_sync_digests.clear()
 
+    def _begin_sync_reconciliation_locked(self) -> None:
+        self._sync = None
+        self._sync_generation += 1
+        self._issued_sync_digests.clear()
+
     def _reconcile_config_locked(
         self,
         current: SyncService,
         *,
         candidate: SyncService | None,
     ) -> None:
+        self._begin_sync_reconciliation_locked()
         disk_config = load_config_from(current.config.dir)
         if candidate is not None and _same_config(
             disk_config, candidate.config
@@ -709,7 +735,7 @@ class ApiController:
         else:
             authoritative = current.with_config(disk_config)
             _validate_sync_candidate(authoritative, disk_config)
-        self._publish_sync_locked(authoritative)
+        self._sync = authoritative
 
     def _reconcile_state_locked(
         self,
@@ -717,6 +743,7 @@ class ApiController:
         *,
         candidate: SyncService | None,
     ) -> None:
+        self._begin_sync_reconciliation_locked()
         state = self._state_store.load()
         if type(state) is not AppState:
             raise TypeError("app state has an unsupported shape")
@@ -734,7 +761,7 @@ class ApiController:
             authoritative_dir = _canonical_safe_directory(Path(state.sync_dir))
             authoritative = self._sync_folder_initializer(authoritative_dir)
             _validate_sync_directory_candidate(authoritative, authoritative_dir)
-        self._publish_sync_locked(authoritative)
+        self._sync = authoritative
 
     def _accepted_job(
         self,
@@ -893,9 +920,16 @@ def _same_config(first: object, second: object) -> bool:
 def _validate_sync_candidate(candidate: object, config: Config) -> None:
     if candidate is None or getattr(candidate, "config", None) is not config:
         raise TypeError("sync service factory returned an unsupported candidate")
-    for method in ("status", "preview", "execute", "with_config"):
+    for method in (
+        "status",
+        "preview",
+        "execute",
+        "with_config",
+        "validate_config",
+    ):
         if not callable(getattr(candidate, method, None)):
             raise TypeError("sync service factory returned an unsupported candidate")
+    candidate.validate_config()
 
 
 def _validate_sync_directory_candidate(candidate: object, sync_dir: Path) -> None:
@@ -1119,15 +1153,10 @@ def _provider(value: object) -> ProviderName:
 
 
 def _label(value: object) -> str:
-    if type(value) is not str or not value or value != value.strip() or len(value) > 80:
-        raise _invalid_request()
-    if any(
-        unicodedata.category(character) in {"Cc", "Cs"}
-        or unicodedata.bidirectional(character) in _DANGEROUS_BIDI_CLASSES
-        for character in value
-    ):
-        raise _invalid_request()
-    return value
+    try:
+        return _validated_account_label(value)
+    except TypeError:
+        raise _invalid_request() from None
 
 
 def _canonical_uuid(value: object) -> str:
@@ -1174,17 +1203,33 @@ def _account_to_dict(
     *,
     usage: UsageSnapshot | None = None,
 ) -> dict[str, object]:
+    if (
+        type(account) is not ManagedAccount
+        or not _is_canonical_uuid(account.id)
+        or account.provider not in _PROVIDERS
+        or account.state not in _ACCOUNT_STATES
+        or type(account.identity) is not ProviderIdentity
+    ):
+        raise TypeError("account has an unsupported shape")
+    label = _validated_account_label(account.label)
+    created_at = _validated_account_created_at(account.created_at)
     return {
         "id": account.id,
         "provider": account.provider,
-        "label": account.label,
+        "label": label,
         "state": account.state,
         "identity": {
-            "display_name": account.identity.display_name,
-            "email": account.identity.email,
-            "plan": account.identity.plan,
+            "display_name": _safe_identity_human_text(
+                account.identity.display_name,
+                maximum=160,
+            ),
+            "email": _safe_identity_email(account.identity.email),
+            "plan": _safe_identity_human_text(
+                account.identity.plan,
+                maximum=80,
+            ),
         },
-        "created_at": account.created_at,
+        "created_at": created_at,
         "usage": _usage_snapshot_to_dict(usage) if usage is not None else None,
     }
 
@@ -1392,11 +1437,8 @@ def _validated_account_result(
         or account["usage"] is not None
     ):
         raise TypeError("account job result does not match its submission")
-    label = account["label"]
-    _safe_job_text(label, maximum=80)
-    if cast(str, label) != cast(str, label).strip():
-        raise TypeError("account job label is not canonical")
-    _safe_job_text(account["created_at"], maximum=64)
+    label = _validated_account_label(account["label"])
+    created_at = _validated_account_created_at(account["created_at"])
     identity_value = account["identity"]
     if type(identity_value) is not dict or set(identity_value) != {
         "display_name",
@@ -1405,20 +1447,23 @@ def _validated_account_result(
     }:
         raise TypeError("account job identity has an unsupported shape")
     identity = cast(dict[str, object], identity_value)
-    _safe_job_text(identity["display_name"], maximum=256, optional=True)
-    _safe_job_text(identity["email"], maximum=320, optional=True)
-    _safe_job_text(identity["plan"], maximum=256, optional=True)
+    display_name = _safe_identity_human_text(
+        identity["display_name"],
+        maximum=160,
+    )
+    email = _safe_identity_email(identity["email"])
+    plan = _safe_identity_human_text(identity["plan"], maximum=80)
     return {
         "id": account["id"],
         "provider": account["provider"],
         "label": label,
         "state": account["state"],
         "identity": {
-            "display_name": identity["display_name"],
-            "email": identity["email"],
-            "plan": identity["plan"],
+            "display_name": display_name,
+            "email": email,
+            "plan": plan,
         },
-        "created_at": account["created_at"],
+        "created_at": created_at,
         "usage": None,
     }
 
@@ -1595,6 +1640,77 @@ def _safe_job_text(
         or value.startswith(("/", "\\"))
     ):
         raise TypeError("job text contains a locator")
+
+
+def _validated_account_label(value: object) -> str:
+    if (
+        type(value) is not str
+        or not value
+        or value != value.strip()
+        or len(value) > 80
+    ):
+        raise TypeError("account label has an unsupported shape")
+    if any(
+        unicodedata.category(character) in {"Cc", "Cs"}
+        or unicodedata.bidirectional(character) in _DANGEROUS_BIDI_CLASSES
+        for character in value
+    ):
+        raise TypeError("account label has unsafe characters")
+    return value
+
+
+def _validated_account_created_at(value: object) -> str:
+    if (
+        type(value) is not str
+        or _SAFE_ACCOUNT_TIMESTAMP.fullmatch(value) is None
+    ):
+        raise TypeError("account created_at has an unsupported shape")
+    return value
+
+
+def _safe_identity_human_text(
+    value: object,
+    *,
+    maximum: int,
+) -> str | None:
+    if value is None:
+        return None
+    if type(value) is not str:
+        raise TypeError("account identity text has an unsupported shape")
+    normalized = unicodedata.normalize("NFC", value).strip()
+    if not normalized or len(normalized) > maximum:
+        return None
+    if any(locator in normalized.casefold() for locator in _UNSAFE_IDENTITY_LOCATORS):
+        return None
+    for character in normalized:
+        category = unicodedata.category(character)
+        if (
+            category[0] not in {"L", "M", "N"}
+            and character not in _SAFE_IDENTITY_PUNCTUATION
+        ):
+            return None
+        if (
+            category in {"Cc", "Cs"}
+            or unicodedata.bidirectional(character) in _DANGEROUS_BIDI_CLASSES
+        ):
+            return None
+    return normalized
+
+
+def _safe_identity_email(value: object) -> str | None:
+    if value is None:
+        return None
+    if type(value) is not str:
+        raise TypeError("account identity email has an unsupported shape")
+    normalized = value.strip()
+    if (
+        not normalized
+        or len(normalized) > 254
+        or ".." in normalized
+        or _SAFE_IDENTITY_EMAIL.fullmatch(normalized) is None
+    ):
+        return None
+    return normalized
 
 
 def _is_canonical_uuid(value: object) -> bool:
