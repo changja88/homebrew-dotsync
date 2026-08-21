@@ -48,8 +48,13 @@ class _StaticResource:
 # these fixed resource names can reach the package-resource loader.
 _STATIC_ROUTES = {
     "/": _StaticResource("index.html", "text/html; charset=utf-8"),
-    "/app.js": _StaticResource("app.js", "text/javascript; charset=utf-8"),
     "/styles.css": _StaticResource("styles.css", "text/css; charset=utf-8"),
+    "/state.mjs": _StaticResource("state.mjs", "text/javascript; charset=utf-8"),
+    "/api-client.mjs": _StaticResource(
+        "api-client.mjs", "text/javascript; charset=utf-8"
+    ),
+    "/render.mjs": _StaticResource("render.mjs", "text/javascript; charset=utf-8"),
+    "/app.mjs": _StaticResource("app.mjs", "text/javascript; charset=utf-8"),
 }
 
 
@@ -518,3 +523,22 @@ def _is_api_path(path: str) -> bool:
 def _load_packaged_asset(name: str) -> bytes:
     static_root = resources.files("dotsync.web").joinpath("static")
     return static_root.joinpath(name).read_bytes()
+
+
+def verify_packaged_assets(names: tuple[str, ...]) -> None:
+    """Fail a state-free installation check when fixed UI assets are absent."""
+    allowed = frozenset(
+        resource.package_name for resource in _STATIC_ROUTES.values()
+    )
+    if (
+        not names
+        or len(set(names)) != len(names)
+        or any(name not in allowed for name in names)
+    ):
+        raise RuntimeError("The DotSync UI installation is incomplete.")
+    try:
+        assets = tuple(_load_packaged_asset(name) for name in names)
+    except (FileNotFoundError, ModuleNotFoundError, OSError):
+        raise RuntimeError("The DotSync UI installation is incomplete.") from None
+    if any(type(asset) is not bytes or not asset for asset in assets):
+        raise RuntimeError("The DotSync UI installation is incomplete.")

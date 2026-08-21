@@ -245,6 +245,21 @@ def test_formula_wraps_libexec_entrypoint_with_pythonpath():
     assert 'bin.install "bin/dotsync"' not in formula
 
 
+def test_formula_libexec_copy_contains_every_production_ui_asset(tmp_path):
+    libexec = tmp_path / "libexec"
+    shutil.copytree(REPO_ROOT / "lib" / "dotsync", libexec / "dotsync")
+    static = libexec / "dotsync" / "web" / "static"
+
+    assert sorted(path.name for path in static.iterdir()) == [
+        "api-client.mjs",
+        "app.mjs",
+        "index.html",
+        "render.mjs",
+        "state.mjs",
+        "styles.css",
+    ]
+
+
 @pytest.mark.no_subprocess_block
 def test_formula_libexec_entrypoint_can_import_dotsync(tmp_path):
     libexec = tmp_path / "libexec"

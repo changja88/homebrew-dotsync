@@ -24,6 +24,7 @@ from dotsync.shellrc import (
 )
 from dotsync.welcome import print_welcome
 from dotsync.sync_service import SyncEvents, SyncService
+from dotsync.ui_app import check_ui_installation, run_browser_ui, run_native_ui
 
 # Existing call sites use this name; alias to the registry's source of truth.
 SUPPORTED_APPS = APP_NAMES
@@ -87,6 +88,24 @@ def _build_parser() -> argparse.ArgumentParser:
 
     apply = sub.add_parser("apply", help="folder → local")
     _add_sync_args(apply)
+
+    ui_parser = sub.add_parser("ui", help="open the local management UI")
+    ui_parser.add_argument(
+        "--no-open",
+        action="store_true",
+        help="start the UI server without opening a browser",
+    )
+    internal_modes = ui_parser.add_mutually_exclusive_group()
+    internal_modes.add_argument(
+        "--native-host",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    internal_modes.add_argument(
+        "--check",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
 
     return p
 
@@ -713,6 +732,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             return cmd_from(args)
         if args.cmd == "apply":
             return cmd_to(args)
+        if args.cmd == "ui":
+            if args.check:
+                check_ui_installation()
+                return 0
+            if args.native_host:
+                try:
+                    return run_native_ui()
+                except Exception:
+                    print("dotsync: native UI failed.", file=sys.stderr)
+                    return 7
+            try:
+                return run_browser_ui(open_browser=not args.no_open)
+            except KeyboardInterrupt:
+                return 130
+            except Exception:
+                print("dotsync: browser UI failed.", file=sys.stderr)
+                return 7
         parser.print_help()
         return 2
     except ConfigError as e:

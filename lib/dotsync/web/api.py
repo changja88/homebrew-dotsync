@@ -1177,6 +1177,36 @@ def _canonical_safe_directory(selected: object) -> Path:
     return canonical
 
 
+def load_persisted_sync_service(
+    *,
+    state_store: AppStateStore,
+    factory: Callable[[], SyncService],
+) -> SyncService | None:
+    """Load a saved SyncService only after no-follow identity revalidation."""
+    state = state_store.load()
+    if state.sync_dir is None:
+        return None
+    canonical = _canonical_safe_directory(Path(state.sync_dir))
+    directory_fd = _open_directory_no_follow(canonical)
+    try:
+        _verify_config_file_no_follow(directory_fd, allow_missing=False)
+        initial_identity = _directory_identity(directory_fd)
+        revalidated_fd = _open_revalidated_sync_directory(
+            canonical,
+            initial_identity,
+        )
+        os.close(revalidated_fd)
+        candidate = _build_sync_directory_candidate(factory, canonical)
+        revalidated_fd = _open_revalidated_sync_directory(
+            canonical,
+            initial_identity,
+        )
+        os.close(revalidated_fd)
+        return candidate
+    finally:
+        os.close(directory_fd)
+
+
 def _config_with_apps(config: object, apps: tuple[str, ...]) -> Config:
     if type(config) is not Config:
         raise TypeError("sync service has an unsupported config")
