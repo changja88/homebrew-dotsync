@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
 import threading
 import unicodedata
 import uuid
@@ -24,7 +26,8 @@ from dotsync.accounts import (
 from dotsync.app_paths import AppPaths
 from dotsync.app_state import AppState, AppStateStore
 from dotsync.apps import APP_NAMES
-from dotsync.config import ConfigError, folder_config_path
+from dotsync.apps.base import AppStatus
+from dotsync.config import ConfigError
 from dotsync.jobs import (
     JobContext,
     JobNotFound,
@@ -34,7 +37,8 @@ from dotsync.jobs import (
     UnknownJobKind,
 )
 from dotsync.providers import LoginProgress
-from dotsync.sync_service import StaleSyncPlan, SyncService
+from dotsync.plan import path_fingerprint
+from dotsync.sync_service import StaleSyncPlan, SyncAppStatus, SyncService, SyncStatus
 from dotsync.usage import (
     OperationConflict,
     UsageResult,
@@ -54,6 +58,61 @@ _DELETE_ACTIONS = frozenset(
     {"logout_and_delete", "remove_local_profile_anyway"}
 )
 _DIRECTIONS = frozenset({"backup", "apply"})
+_SYNC_STATUS_STATES = frozenset({"clean", "dirty", "missing", "unknown"})
+_SYNC_STATUS_DIRECTIONS = frozenset(
+    {"", "local-newer", "folder-newer", "diverged"}
+)
+_API_JOB_KINDS = frozenset(
+    {
+        "account_login",
+        "account_refresh",
+        "account_logout",
+        "account_delete",
+        "account_delete_force_local",
+        "sync_execute",
+    }
+)
+_ACCOUNT_JOB_KINDS = frozenset(
+    {
+        "account_login",
+        "account_refresh",
+        "account_logout",
+        "account_delete",
+        "account_delete_force_local",
+    }
+)
+_JOB_STATES = frozenset(
+    {"queued", "running", "waiting_for_user", "succeeded", "failed"}
+)
+_LOGIN_PROGRESS_STATES = frozenset(
+    {"starting", "waiting_for_browser", "waiting_for_user", "done"}
+)
+_JOB_ERROR_CODES = frozenset(
+    {
+        "cancelled",
+        "cli_missing",
+        "invalid_job_child",
+        "invalid_job_json",
+        "invalid_job_progress",
+        "invalid_job_result",
+        "invalid_job_state",
+        "job_failed",
+        "login_cancelled",
+        "logout_cancelled",
+        "logout_failed",
+        "provider_unavailable",
+        "reauth_required",
+        "refresh_cancelled",
+        "refresh_timeout",
+        "unsafe_account_path",
+        "unsupported_cli_version",
+        "unsupported_usage_layout",
+    }
+)
+_ACCOUNT_STATES = frozenset(
+    {"logged_out", "ready", "reauth_required", "unsupported", "error"}
+)
+_SYNC_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _SAFE_USAGE_ERROR_CODES = frozenset(
     {
         "cli_missing",
@@ -91,6 +150,15 @@ class ApiRequest:
 class _Route:
     shape: tuple[str, ...]
     handlers: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class _ApiJobExpectation:
+    kind: str
+    operation_id: str
+    provider: ProviderName | None = None
+    sync_direction: Literal["backup", "apply"] | None = None
+    sync_apps: tuple[str, ...] = ()
 
 
 class _ApiProblem(RuntimeError):
@@ -173,7 +241,7 @@ class ApiController:
         folder_picker: Callable[[], Path | None],
         sync_folder_initializer: Callable[[Path], SyncService],
         reveal_app_data: Callable[[Path], object],
-        heartbeat: Callable[[], None],
+        heartbeat: Callable[[], bool],
         open_provider_url: Callable[[str], object],
         job_lifecycle_lock: threading.RLock,
         job_registry: JobRegistry | None = None,
@@ -190,10 +258,18 @@ class ApiController:
         self._open_provider_url = open_provider_url
         self._job_lifecycle_lock = job_lifecycle_lock
         self._sync_lock = threading.RLock()
+        self._sync_generation = 0
         self._issued_sync_digests: dict[
-            str, tuple[SyncService, Literal["backup", "apply"], tuple[str, ...]]
+            str,
+            tuple[
+                int,
+                SyncService,
+                Literal["backup", "apply"],
+                tuple[str, ...],
+            ],
         ] = {}
         self._pending_sync_services: dict[str, SyncService] = {}
+        self._api_job_expectations: dict[str, _ApiJobExpectation] = {}
         self.jobs = (
             job_registry
             if job_registry is not None
@@ -319,17 +395,23 @@ class ApiController:
     def _login(self, request: ApiRequest, params: dict[str, str]) -> HttpResponse:
         account_id, provider = self._account_action_request(request, params)
         self._require_account_provider(account_id, provider)
-        return self._accepted_job("account_login", account_id=account_id)
+        return self._accepted_job(
+            "account_login", account_id=account_id, provider=provider
+        )
 
     def _refresh(self, request: ApiRequest, params: dict[str, str]) -> HttpResponse:
         account_id, provider = self._account_action_request(request, params)
         self._require_account_provider(account_id, provider)
-        return self._accepted_job("account_refresh", account_id=account_id)
+        return self._accepted_job(
+            "account_refresh", account_id=account_id, provider=provider
+        )
 
     def _logout(self, request: ApiRequest, params: dict[str, str]) -> HttpResponse:
         account_id, provider = self._account_action_request(request, params)
         self._require_account_provider(account_id, provider)
-        return self._accepted_job("account_logout", account_id=account_id)
+        return self._accepted_job(
+            "account_logout", account_id=account_id, provider=provider
+        )
 
     def _delete_account(
         self, request: ApiRequest, params: dict[str, str]
@@ -348,20 +430,38 @@ class ApiController:
             if action == "logout_and_delete"
             else "account_delete_force_local"
         )
-        return self._accepted_job(kind, account_id=account_id)
+        return self._accepted_job(kind, account_id=account_id, provider=provider)
 
     def _get_job(self, request: ApiRequest, params: dict[str, str]) -> HttpResponse:
         _require_no_body(request)
         job_id = _canonical_uuid(params["job_id"])
-        view = self.jobs.get(job_id)
-        return json_response(200, {"job": _job_view_to_dict(view)})
+        with self._job_lifecycle_lock:
+            view = self.jobs.get(job_id)
+            expectation = self._api_job_expectations.get(job_id)
+        if expectation is None:
+            raise TypeError("job was not issued by the API")
+        return json_response(
+            200,
+            {
+                "job": _job_view_to_dict(
+                    view,
+                    requested_job_id=job_id,
+                    account_store=self._account_store,
+                    expectation=expectation,
+                )
+            },
+        )
 
     def _sync_status(
         self, request: ApiRequest, params: dict[str, str]
     ) -> HttpResponse:
         _require_no_body(request)
-        sync = self._require_sync_service()
-        return json_response(200, {"sync": sync.status().to_dict()})
+        sync, generation = self._capture_sync_service()
+        status = sync.status()
+        with self._sync_lock:
+            if not self._sync_is_current_locked(sync, generation):
+                return _stale_sync_response()
+        return json_response(200, {"sync": _sync_status_to_dict(status)})
 
     def _update_sync_apps(
         self, request: ApiRequest, params: dict[str, str]
@@ -369,9 +469,12 @@ class ApiController:
         body = _required_json_object(request)
         _require_exact_keys(body, {"apps"})
         apps = _apps(body["apps"], allow_empty=True)
-        sync = self._require_sync_service()
+        sync, generation = self._capture_sync_service()
         config = sync.update_apps(apps)
         with self._sync_lock:
+            if not self._sync_is_current_locked(sync, generation):
+                return _stale_sync_response()
+            self._sync_generation += 1
             self._issued_sync_digests.clear()
         return json_response(200, {"apps": list(config.apps)})
 
@@ -384,7 +487,7 @@ class ApiController:
         if type(direction) is not str or direction not in _DIRECTIONS:
             raise _invalid_request()
         apps = _apps(body["apps"], allow_empty=False)
-        sync = self._require_sync_service()
+        sync, generation = self._capture_sync_service()
         configured_apps = getattr(sync.config, "apps", None)
         if type(configured_apps) is not list or any(
             app not in configured_apps for app in apps
@@ -396,7 +499,14 @@ class ApiController:
             return internal_error_response()
         typed_direction = cast(Literal["backup", "apply"], direction)
         with self._sync_lock:
-            self._issued_sync_digests[digest] = (sync, typed_direction, apps)
+            if not self._sync_is_current_locked(sync, generation):
+                return _stale_sync_response()
+            self._issued_sync_digests[digest] = (
+                generation,
+                sync,
+                typed_direction,
+                apps,
+            )
         return json_response(200, {"preview": preview.to_dict()})
 
     def _sync_execute(
@@ -411,7 +521,10 @@ class ApiController:
             issued = self._issued_sync_digests.pop(digest, None)
         if issued is None:
             return _stale_sync_response()
-        sync, direction, apps = issued
+        generation, sync, direction, apps = issued
+        with self._sync_lock:
+            if not self._sync_is_current_locked(sync, generation):
+                return _stale_sync_response()
         try:
             current = sync.preview(direction, apps)
         except (KeyError, OSError, RuntimeError, ValueError):
@@ -419,13 +532,21 @@ class ApiController:
         if current.digest != digest:
             return _stale_sync_response()
         with self._sync_lock:
+            if not self._sync_is_current_locked(sync, generation):
+                return _stale_sync_response()
             self._pending_sync_services[digest] = sync
         try:
-            return self._accepted_job("sync_execute", account_id=digest)
+            return self._accepted_job(
+                "sync_execute",
+                account_id=digest,
+                sync_direction=direction,
+                sync_apps=apps,
+            )
         except BaseException:
             with self._sync_lock:
                 self._pending_sync_services.pop(digest, None)
-                self._issued_sync_digests[digest] = issued
+                if self._sync_is_current_locked(sync, generation):
+                    self._issued_sync_digests[digest] = issued
             raise
 
     def _select_sync_folder(
@@ -436,43 +557,66 @@ class ApiController:
         selected = self._folder_picker()
         if selected is None:
             return json_response(200, {"selected": False})
-        if (
-            not isinstance(selected, Path)
-            or not selected.is_absolute()
-            or selected.is_symlink()
-            or not selected.exists()
-            or not selected.is_dir()
-        ):
+        try:
+            canonical = _canonical_safe_directory(selected)
+            directory_fd = _open_directory_no_follow(canonical)
+        except (OSError, TypeError, ValueError):
             raise _ApiProblem(
                 422,
                 "invalid_sync_folder",
                 "The selected folder is not a safe DotSync folder.",
-            )
-        try:
-            new_sync = self._sync_folder_initializer(selected)
-        except Exception:
-            raise _ApiProblem(
-                422,
-                "invalid_sync_folder",
-                "The selected folder could not be initialized for DotSync.",
             ) from None
-        config_path = folder_config_path(selected)
-        if (
-            new_sync is None
-            or not config_path.is_file()
-            or config_path.is_symlink()
-            or getattr(getattr(new_sync, "config", None), "dir", None) != selected
-        ):
-            raise _ApiProblem(
-                422,
-                "invalid_sync_folder",
-                "The selected folder could not be initialized for DotSync.",
-            )
-        self._state_store.save(AppState(sync_dir=str(selected)))
-        with self._sync_lock:
-            self._sync = new_sync
-            self._issued_sync_digests.clear()
-        return json_response(200, {"selected": True})
+        revalidated_fd: int | None = None
+        try:
+            try:
+                initial_identity = _directory_identity(directory_fd)
+                _verify_config_file_no_follow(directory_fd, allow_missing=True)
+                with self._sync_lock:
+                    generation = self._sync_generation
+                try:
+                    new_sync = self._sync_folder_initializer(canonical)
+                except Exception:
+                    raise _ApiProblem(
+                        422,
+                        "invalid_sync_folder",
+                        "The selected folder could not be initialized for DotSync.",
+                    ) from None
+                revalidated_fd = _open_directory_no_follow(canonical)
+                if _directory_identity(revalidated_fd) != initial_identity:
+                    raise _ApiProblem(
+                        422,
+                        "invalid_sync_folder",
+                        "The selected folder could not be initialized for DotSync.",
+                    )
+                _verify_config_file_no_follow(revalidated_fd, allow_missing=False)
+                if (
+                    new_sync is None
+                    or getattr(getattr(new_sync, "config", None), "dir", None)
+                    != canonical
+                ):
+                    raise _ApiProblem(
+                        422,
+                        "invalid_sync_folder",
+                        "The selected folder could not be initialized for DotSync.",
+                    )
+            except (OSError, TypeError, ValueError):
+                raise _ApiProblem(
+                    422,
+                    "invalid_sync_folder",
+                    "The selected folder could not be initialized for DotSync.",
+                ) from None
+            with self._sync_lock:
+                if generation != self._sync_generation:
+                    return _stale_sync_response()
+                self._state_store.save(AppState(sync_dir=str(canonical)))
+                self._sync = new_sync
+                self._sync_generation += 1
+                self._issued_sync_digests.clear()
+            return json_response(200, {"selected": True})
+        finally:
+            if revalidated_fd is not None:
+                os.close(revalidated_fd)
+            os.close(directory_fd)
 
     def _reveal_app_data(
         self, request: ApiRequest, params: dict[str, str]
@@ -485,7 +629,8 @@ class ApiController:
     def _heartbeat(self, request: ApiRequest, params: dict[str, str]) -> HttpResponse:
         body = _optional_empty_json_object(request)
         _require_exact_keys(body, set())
-        self._heartbeat_callback()
+        if not self._heartbeat_callback():
+            raise RegistryClosed("DotSync is closing")
         return json_response(200, {"status": "ok"})
 
     def _account_action_request(
@@ -510,20 +655,50 @@ class ApiController:
             raise AccountNotFound("account provider mismatch")
         return account
 
-    def _require_sync_service(self) -> SyncService:
+    def _capture_sync_service(self) -> tuple[SyncService, int]:
         with self._sync_lock:
             sync = self._sync
+            generation = self._sync_generation
         if sync is None:
             raise _ApiProblem(
                 409,
                 "sync_not_configured",
                 "Select a DotSync folder before using sync operations.",
             )
-        return sync
+        return sync, generation
 
-    def _accepted_job(self, kind: str, *, account_id: str) -> HttpResponse:
+    def _sync_is_current_locked(
+        self,
+        sync: SyncService,
+        generation: int,
+    ) -> bool:
+        return self._sync is sync and self._sync_generation == generation
+
+    def _accepted_job(
+        self,
+        kind: str,
+        *,
+        account_id: str,
+        provider: ProviderName | None = None,
+        sync_direction: Literal["backup", "apply"] | None = None,
+        sync_apps: tuple[str, ...] = (),
+    ) -> HttpResponse:
+        expectation = _ApiJobExpectation(
+            kind=kind,
+            operation_id=account_id,
+            provider=provider,
+            sync_direction=sync_direction,
+            sync_apps=sync_apps,
+        )
         with self._job_lifecycle_lock:
             job = self.jobs.submit(kind, account_id=account_id)
+            if (
+                not _is_canonical_uuid(job.id)
+                or job.kind != kind
+                or job.account_id != account_id
+            ):
+                raise TypeError("job registry returned an unsupported job")
+            self._api_job_expectations[job.id] = expectation
         return json_response(202, {"job_id": job.id})
 
     def _job_operations(self):
@@ -630,6 +805,77 @@ def _match_route(path: str, query: str) -> tuple[_Route | None, dict[str, str]]:
         if matched:
             return route, params
     return None, {}
+
+
+def _canonical_safe_directory(selected: object) -> Path:
+    if not isinstance(selected, Path) or not selected.is_absolute():
+        raise TypeError("folder picker returned an unsupported path")
+    canonical = Path(os.path.abspath(os.fspath(selected)))
+    if canonical == Path(canonical.anchor):
+        raise ValueError("the filesystem root cannot be a sync folder")
+    return canonical
+
+
+def _open_directory_no_follow(path: Path) -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    current_fd = os.open(path.anchor, flags)
+    try:
+        for component in path.parts[1:]:
+            next_fd = os.open(component, flags, dir_fd=current_fd)
+            try:
+                if not stat.S_ISDIR(os.fstat(next_fd).st_mode):
+                    raise NotADirectoryError(component)
+            except BaseException:
+                os.close(next_fd)
+                raise
+            os.close(current_fd)
+            current_fd = next_fd
+        return current_fd
+    except BaseException:
+        os.close(current_fd)
+        raise
+
+
+def _directory_identity(directory_fd: int) -> tuple[int, int]:
+    metadata = os.fstat(directory_fd)
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise NotADirectoryError("selected path is not a directory")
+    return metadata.st_dev, metadata.st_ino
+
+
+def _verify_config_file_no_follow(
+    directory_fd: int,
+    *,
+    allow_missing: bool,
+) -> None:
+    try:
+        path_metadata = os.stat(
+            "dotsync.toml",
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        if allow_missing:
+            return
+        raise
+    if not stat.S_ISREG(path_metadata.st_mode):
+        raise OSError("dotsync.toml is not a regular file")
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    config_fd = os.open("dotsync.toml", flags, dir_fd=directory_fd)
+    try:
+        opened_metadata = os.fstat(config_fd)
+        if (
+            not stat.S_ISREG(opened_metadata.st_mode)
+            or opened_metadata.st_dev != path_metadata.st_dev
+            or opened_metadata.st_ino != path_metadata.st_ino
+        ):
+            raise OSError("dotsync.toml changed during validation")
+    finally:
+        os.close(config_fd)
 
 
 def _required_json_object(request: ApiRequest) -> dict[str, object]:
@@ -883,16 +1129,362 @@ def _usage_result_to_dict(result: UsageResult) -> dict[str, object]:
     }
 
 
-def _job_view_to_dict(view: JobView) -> dict[str, object]:
+def _sync_status_to_dict(status: SyncStatus) -> dict[str, object]:
+    if type(status) is not SyncStatus or not isinstance(status.sync_dir, Path):
+        raise TypeError("sync status has an unsupported shape")
+    apps: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for app in status.apps:
+        if (
+            type(app) is not SyncAppStatus
+            or app.name not in APP_NAMES
+            or app.name in seen
+            or type(app.status) is not AppStatus
+            or app.status.state not in _SYNC_STATUS_STATES
+            or type(app.status.direction) is not str
+            or app.status.direction not in _SYNC_STATUS_DIRECTIONS
+            or (app.status.state != "dirty" and app.status.direction)
+        ):
+            raise TypeError("sync status has an unsupported shape")
+        seen.add(app.name)
+        apps.append(
+            {
+                "name": app.name,
+                "state": app.status.state,
+                "direction": app.status.direction or None,
+            }
+        )
+    return {
+        "sync_dir": {
+            "scope": "sync-root",
+            "id": path_fingerprint(status.sync_dir),
+        },
+        "apps": apps,
+    }
+
+
+def _job_view_to_dict(
+    view: JobView,
+    *,
+    requested_job_id: str,
+    account_store: AccountStore,
+    expectation: _ApiJobExpectation,
+) -> dict[str, object]:
+    if (
+        type(view) is not JobView
+        or not _is_canonical_uuid(view.id)
+        or view.id != requested_job_id
+        or view.kind not in _API_JOB_KINDS
+        or view.kind != expectation.kind
+        or view.account_id != expectation.operation_id
+        or view.state not in _JOB_STATES
+    ):
+        raise TypeError("job view has an unsupported shape")
+
+    account: ManagedAccount | None = None
+    if view.kind in _ACCOUNT_JOB_KINDS:
+        if not _is_canonical_uuid(view.account_id):
+            raise TypeError("job view has an unsupported account")
+        if view.kind in {"account_login", "account_refresh", "account_logout"}:
+            try:
+                account = account_store.get(cast(str, view.account_id))
+            except (AccountStoreError, KeyError):
+                raise TypeError("job view account correlation failed") from None
+            _validate_job_account(account, cast(str, view.account_id))
+            if account.provider != expectation.provider:
+                raise TypeError("job view provider correlation failed")
+        browser_account_id: str | None = cast(str, view.account_id)
+    else:
+        if (
+            type(view.account_id) is not str
+            or _SYNC_DIGEST.fullmatch(view.account_id) is None
+        ):
+            raise TypeError("sync job view has an unsupported digest")
+        browser_account_id = None
+
+    progress = _job_progress_to_dict(view)
+    result = _job_result_to_dict(view, account, expectation)
+    if view.state == "failed":
+        if (
+            view.result is not None
+            or type(view.error_code) is not str
+            or view.error_code not in _JOB_ERROR_CODES
+        ):
+            raise TypeError("failed job view has an unsupported shape")
+        error_code: str | None = view.error_code
+    else:
+        if view.error_code is not None:
+            raise TypeError("job view has an unexpected error code")
+        error_code = None
+        if view.state != "succeeded" and view.result is not None:
+            raise TypeError("active job view has an unexpected result")
+
     return {
         "id": view.id,
         "kind": view.kind,
         "state": view.state,
-        "account_id": view.account_id,
-        "progress": view.progress,
-        "result": view.result,
-        "error_code": view.error_code,
+        "account_id": browser_account_id,
+        "progress": progress,
+        "result": result,
+        "error_code": error_code,
     }
+
+
+def _job_progress_to_dict(view: JobView) -> dict[str, str]:
+    if type(view.progress) is not dict:
+        raise TypeError("job progress has an unsupported shape")
+    if view.kind != "account_login":
+        if view.progress or view.state == "waiting_for_user":
+            raise TypeError("job progress has an unsupported shape")
+        return {}
+    if not view.progress:
+        if view.state == "waiting_for_user":
+            raise TypeError("login progress is missing its state")
+        return {}
+    if set(view.progress) != {"state"}:
+        raise TypeError("login progress has an unsupported shape")
+    progress_state = view.progress["state"]
+    if progress_state not in _LOGIN_PROGRESS_STATES:
+        raise TypeError("login progress has an unsupported state")
+    is_waiting = progress_state in {"waiting_for_browser", "waiting_for_user"}
+    if view.state == "waiting_for_user" and not is_waiting:
+        raise TypeError("login progress does not match the job state")
+    if view.state == "running" and is_waiting:
+        raise TypeError("login progress does not match the job state")
+    if view.state == "queued":
+        raise TypeError("queued login has unexpected progress")
+    return {"state": progress_state}
+
+
+def _job_result_to_dict(
+    view: JobView,
+    account: ManagedAccount | None,
+    expectation: _ApiJobExpectation,
+) -> dict[str, object] | None:
+    if view.state != "succeeded":
+        if view.result is not None:
+            raise TypeError("non-successful job has an unexpected result")
+        return None
+    if type(view.result) is not dict:
+        raise TypeError("successful job is missing its result")
+    if view.kind in {"account_login", "account_logout"}:
+        if account is None:
+            raise TypeError("account job is missing its account")
+        expected = {"account": _validated_account_to_dict(account)}
+        if view.result != expected:
+            raise TypeError("account job result does not match its account")
+        return expected
+    if view.kind == "account_refresh":
+        if account is None:
+            raise TypeError("refresh job is missing its account")
+        return _validated_refresh_result(view.result, account)
+    if view.kind in {"account_delete", "account_delete_force_local"}:
+        if view.result != {"deleted": True}:
+            raise TypeError("delete job result has an unsupported shape")
+        return {"deleted": True}
+    return _validated_sync_result(view.result, expectation)
+
+
+def _validated_account_to_dict(account: ManagedAccount) -> dict[str, object]:
+    _validate_job_account(account, account.id)
+    if account.state not in _ACCOUNT_STATES:
+        raise TypeError("account job result has an unsupported state")
+    _safe_job_text(account.label, maximum=80)
+    _safe_job_text(account.created_at, maximum=64)
+    _safe_job_text(account.identity.display_name, maximum=256, optional=True)
+    _safe_job_text(account.identity.email, maximum=320, optional=True)
+    _safe_job_text(account.identity.plan, maximum=256, optional=True)
+    return _account_to_dict(account)
+
+
+def _validate_job_account(account: object, account_id: str) -> None:
+    if (
+        type(account) is not ManagedAccount
+        or account.id != account_id
+        or not _is_canonical_uuid(account.id)
+        or account.provider not in _PROVIDERS
+    ):
+        raise TypeError("job account has an unsupported shape")
+
+
+def _validated_refresh_result(
+    result: dict[str, object],
+    account: ManagedAccount,
+) -> dict[str, object]:
+    if set(result) != {"usage", "stale", "error_code"}:
+        raise TypeError("refresh job result has an unsupported shape")
+    stale = result["stale"]
+    error_code = result["error_code"]
+    if type(stale) is not bool or (
+        error_code is not None
+        and (type(error_code) is not str or error_code not in _SAFE_USAGE_ERROR_CODES)
+    ):
+        raise TypeError("refresh job result has an unsupported state")
+    if (error_code is None and stale) or (error_code is not None and not stale):
+        raise TypeError("refresh job result has inconsistent stale state")
+    usage_value = result["usage"]
+    if usage_value is None:
+        if error_code is None:
+            raise TypeError("successful refresh is missing usage")
+        usage = None
+    else:
+        usage = _validated_usage_dict(usage_value, account)
+    return {"usage": usage, "stale": stale, "error_code": error_code}
+
+
+def _validated_usage_dict(
+    value: object,
+    account: ManagedAccount,
+) -> dict[str, object]:
+    expected_keys = {
+        "account_id",
+        "provider",
+        "windows",
+        "observed_at",
+        "source",
+        "provider_version",
+    }
+    if type(value) is not dict or set(value) != expected_keys:
+        raise TypeError("usage job result has an unsupported shape")
+    raw = cast(dict[str, object], value)
+    windows_value = raw["windows"]
+    if type(windows_value) is not list:
+        raise TypeError("usage job windows have an unsupported shape")
+    windows: list[UsageWindow] = []
+    for window_value in windows_value:
+        if type(window_value) is not dict or set(window_value) != {
+            "name",
+            "limit_id",
+            "label",
+            "used_percent",
+            "duration_minutes",
+            "resets_at",
+        }:
+            raise TypeError("usage job window has an unsupported shape")
+        window = cast(dict[str, object], window_value)
+        try:
+            parsed_window = UsageWindow(
+                name=cast(object, window["name"]),
+                limit_id=cast(object, window["limit_id"]),
+                label=cast(object, window["label"]),
+                used_percent=cast(object, window["used_percent"]),
+                duration_minutes=cast(object, window["duration_minutes"]),
+                resets_at=cast(object, window["resets_at"]),
+            )
+        except (TypeError, ValueError):
+            raise TypeError("usage job window has invalid values") from None
+        _safe_job_text(parsed_window.limit_id, maximum=256)
+        _safe_job_text(
+            parsed_window.label,
+            maximum=256,
+            optional=True,
+            allow_empty=True,
+        )
+        windows.append(parsed_window)
+    try:
+        snapshot = UsageSnapshot(
+            account_id=cast(object, raw["account_id"]),
+            provider=cast(object, raw["provider"]),
+            windows=tuple(windows),
+            observed_at=cast(object, raw["observed_at"]),
+            source=cast(object, raw["source"]),
+            provider_version=cast(object, raw["provider_version"]),
+        )
+    except (TypeError, ValueError):
+        raise TypeError("usage job result has invalid values") from None
+    if snapshot.account_id != account.id or snapshot.provider != account.provider:
+        raise TypeError("usage job result does not match its account")
+    _safe_job_text(snapshot.provider_version, maximum=256)
+    return _usage_snapshot_to_dict(snapshot)
+
+
+def _validated_sync_result(
+    result: dict[str, object],
+    expectation: _ApiJobExpectation,
+) -> dict[str, object]:
+    if set(result) != {
+        "direction",
+        "changed",
+        "unchanged",
+        "failed",
+        "duration_ms",
+    }:
+        raise TypeError("sync job result has an unsupported shape")
+    direction = result["direction"]
+    duration_ms = result["duration_ms"]
+    if (
+        direction not in _DIRECTIONS
+        or direction != expectation.sync_direction
+        or type(duration_ms) is not int
+        or duration_ms < 0
+    ):
+        raise TypeError("sync job result has invalid values")
+    groups: list[list[str]] = []
+    all_apps: list[str] = []
+    for field in ("changed", "unchanged", "failed"):
+        value = result[field]
+        if type(value) is not list or any(
+            type(app) is not str or app not in APP_NAMES
+            for app in cast(list[object], value)
+        ):
+            raise TypeError("sync job result has invalid app names")
+        apps = cast(list[str], value)
+        if len(set(apps)) != len(apps):
+            raise TypeError("sync job result has duplicate app names")
+        groups.append(list(apps))
+        all_apps.extend(apps)
+    if len(set(all_apps)) != len(all_apps):
+        raise TypeError("sync job result has overlapping app names")
+    if set(all_apps) != set(expectation.sync_apps):
+        raise TypeError("sync job result does not match its issued apps")
+    return {
+        "direction": direction,
+        "changed": groups[0],
+        "unchanged": groups[1],
+        "failed": groups[2],
+        "duration_ms": duration_ms,
+    }
+
+
+def _safe_job_text(
+    value: object,
+    *,
+    maximum: int,
+    optional: bool = False,
+    allow_empty: bool = False,
+) -> None:
+    if value is None:
+        if optional:
+            return
+        raise TypeError("job text is missing")
+    if (
+        type(value) is not str
+        or len(value) > maximum
+        or (not allow_empty and not value)
+    ):
+        raise TypeError("job text has an unsupported shape")
+    if any(
+        unicodedata.category(character) in {"Cc", "Cs"}
+        or unicodedata.bidirectional(character) in _DANGEROUS_BIDI_CLASSES
+        for character in value
+    ):
+        raise TypeError("job text has unsafe characters")
+    folded = value.casefold()
+    if (
+        "://" in folded
+        or folded.startswith(("file:", "data:", "javascript:", "oauth:", "urn:"))
+        or value.startswith(("/", "\\"))
+    ):
+        raise TypeError("job text contains a locator")
+
+
+def _is_canonical_uuid(value: object) -> bool:
+    if type(value) is not str:
+        return False
+    try:
+        return str(uuid.UUID(value)) == value
+    except ValueError:
+        return False
 
 
 def _stale_sync_response() -> HttpResponse:

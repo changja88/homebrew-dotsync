@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import http.client
 import json
 import socket
 import threading
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,9 +16,11 @@ import pytest
 from dotsync.accounts import ManagedAccount, ProviderIdentity
 from dotsync.app_paths import AppPaths
 from dotsync.app_state import AppState
-from dotsync.jobs import JobContext
+from dotsync.apps.base import App, FilePair
+from dotsync.config import Config
+from dotsync.jobs import JobContext, JobView, RegistryClosed
 from dotsync.providers import LoginProgress
-from dotsync.sync_service import StaleSyncPlan
+from dotsync.sync_service import StaleSyncPlan, SyncService, SyncStatus
 from dotsync.usage import UsageResult, UsageSnapshot, UsageWindow
 from dotsync.web import WebApplication, run_ui_server
 
@@ -145,14 +149,6 @@ class _UsageService:
         self.accounts.accounts.pop(account_id)
 
 
-class _SyncStatus:
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "sync_dir": {"scope": "sync-root", "id": "sha256:safe"},
-            "apps": [],
-        }
-
-
 class _SyncPreview:
     def __init__(self, digest: str, direction: str, apps: tuple[str, ...]) -> None:
         self.digest = digest
@@ -184,18 +180,31 @@ class _SyncService:
         self.next_digest = "a" * 64
         self.stale = False
         self.preview_error: BaseException | None = None
+        self.status_result: SyncStatus | None = None
+        self.preview_entered = threading.Event()
+        self.preview_release: threading.Event | None = None
+        self.update_entered = threading.Event()
+        self.update_release: threading.Event | None = None
 
-    def status(self) -> _SyncStatus:
+    def status(self) -> SyncStatus:
         self.calls.append(("status",))
-        return _SyncStatus()
+        if self.status_result is not None:
+            return self.status_result
+        return SyncStatus(sync_dir=self.config.dir, apps=())
 
     def update_apps(self, apps: tuple[str, ...]):
         self.calls.append(("update_apps", apps))
+        self.update_entered.set()
+        if self.update_release is not None:
+            assert self.update_release.wait(timeout=2.0)
         self.config.apps = list(apps)
         return self.config
 
     def preview(self, direction: str, apps: tuple[str, ...]) -> _SyncPreview:
         self.calls.append(("preview", direction, apps))
+        self.preview_entered.set()
+        if self.preview_release is not None:
+            assert self.preview_release.wait(timeout=2.0)
         if self.preview_error is not None:
             raise self.preview_error
         return _SyncPreview(self.next_digest, direction, apps)
@@ -217,6 +226,31 @@ class _Picker:
         return self.selected
 
 
+class _Initializer:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.paths: list[Path] = []
+        self.services: list[_SyncService] = []
+        self.gates: dict[Path, tuple[threading.Event, threading.Event]] = {}
+        self.actions: dict[Path, object] = {}
+
+    def __call__(self, path: Path) -> _SyncService:
+        self.paths.append(path)
+        self.events.append("folder_initialized")
+        gate = self.gates.get(path)
+        if gate is not None:
+            entered, release = gate
+            entered.set()
+            assert release.wait(timeout=2.0)
+        action = self.actions.get(path)
+        if callable(action):
+            action(path)
+        (path / "dotsync.toml").write_text("apps = []\n")
+        service = _SyncService(path)
+        self.services.append(service)
+        return service
+
+
 class _Response:
     def __init__(self, response: http.client.HTTPResponse) -> None:
         self.status = response.status
@@ -230,6 +264,41 @@ class _Response:
         values = [value for key, value in self.headers if key.lower() == name.lower()]
         assert len(values) <= 1
         return values[0] if values else None
+
+
+@dataclass
+class _PendingResponse:
+    thread: threading.Thread
+    done: threading.Event
+    responses: list[_Response]
+    errors: list[BaseException]
+
+    def finish(self) -> _Response:
+        assert self.done.wait(timeout=2.0)
+        self.thread.join(timeout=2.0)
+        assert not self.thread.is_alive()
+        if self.errors:
+            raise self.errors[0]
+        assert len(self.responses) == 1
+        return self.responses[0]
+
+
+def _start_request(call: Callable[[], _Response]) -> _PendingResponse:
+    done = threading.Event()
+    responses: list[_Response] = []
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            responses.append(call())
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    return _PendingResponse(thread, done, responses, errors)
 
 
 class _Client:
@@ -282,6 +351,7 @@ class _Stack:
     revealed: list[Path]
     opened_urls: list[str]
     initialized_services: list[_SyncService]
+    initializer: _Initializer
 
 
 @pytest.fixture
@@ -295,18 +365,9 @@ def stack(tmp_path):
     sync_dir.mkdir()
     sync = _SyncService(sync_dir)
     picker = _Picker()
-    initialized: list[Path] = []
     revealed: list[Path] = []
     opened_urls: list[str] = []
-    initialized_services: list[_SyncService] = []
-
-    def initialize(path: Path) -> _SyncService:
-        initialized.append(path)
-        events.append("folder_initialized")
-        (path / "dotsync.toml").write_text("apps = []\n")
-        service = _SyncService(path)
-        initialized_services.append(service)
-        return service
+    initializer = _Initializer(events)
 
     application = WebApplication(
         paths=paths,
@@ -315,7 +376,7 @@ def stack(tmp_path):
         usage_service=usage,
         sync_service=sync,
         folder_picker=picker,
-        sync_folder_initializer=initialize,
+        sync_folder_initializer=initializer,
         reveal_app_data=revealed.append,
         open_provider_url=opened_urls.append,
     )
@@ -330,10 +391,11 @@ def stack(tmp_path):
         usage=usage,
         sync=sync,
         picker=picker,
-        initialized=initialized,
+        initialized=initializer.paths,
         revealed=revealed,
         opened_urls=opened_urls,
-        initialized_services=initialized_services,
+        initialized_services=initializer.services,
+        initializer=initializer,
     )
     try:
         yield value
@@ -378,6 +440,23 @@ def _snapshot(account_id: str) -> UsageSnapshot:
 
 def _wait_for_job(stack: _Stack, job_id: str):
     return stack.application.jobs.wait(job_id, timeout=1.0)
+
+
+def _poll_injected_job(stack: _Stack, monkeypatch, view: JobView) -> _Response:
+    monkeypatch.setattr(stack.application.jobs, "get", lambda job_id: view)
+    return stack.client.request("GET", f"/api/jobs/{view.id}")
+
+
+def _assert_fixed_internal_error(response: _Response, *sentinels: str) -> None:
+    assert response.status == 500
+    assert response.json() == {
+        "error": {
+            "code": "internal_error",
+            "message": "DotSync could not complete the request.",
+        }
+    }
+    for sentinel in sentinels:
+        assert sentinel.encode() not in response.body
 
 
 def test_bootstrap_reports_claude_policy_disabled_and_codex_available(stack):
@@ -731,6 +810,266 @@ def test_login_runs_as_job_and_never_exposes_oauth_or_callback_data(stack):
     assert stack.opened_urls == ["https://oauth.invalid/sentinel-callback"]
 
 
+def test_job_polling_rejects_callback_progress_fields(stack, monkeypatch):
+    account = _account()
+    stack.accounts.accounts[account.id] = account
+    callback = "https://oauth.invalid/private-callback"
+    view = JobView(
+        id=str(uuid.uuid4()),
+        kind="account_login",
+        state="waiting_for_user",
+        account_id=account.id,
+        progress={"state": "waiting_for_user", "verification_url": callback},
+        result=None,
+        error_code=None,
+    )
+
+    response = _poll_injected_job(stack, monkeypatch, view)
+
+    _assert_fixed_internal_error(response, callback, "verification_url")
+
+
+def test_job_polling_rejects_unknown_kinds(stack, monkeypatch):
+    account = _account()
+    stack.accounts.accounts[account.id] = account
+    view = JobView(
+        id=str(uuid.uuid4()),
+        kind="provider_private_probe",
+        state="running",
+        account_id=account.id,
+        progress={},
+        result=None,
+        error_code=None,
+    )
+
+    response = _poll_injected_job(stack, monkeypatch, view)
+
+    _assert_fixed_internal_error(response, "provider_private_probe")
+
+
+def test_job_polling_requires_the_returned_view_to_match_the_requested_job(
+    stack, monkeypatch
+):
+    account = _account()
+    stack.accounts.accounts[account.id] = account
+    requested_id = str(uuid.uuid4())
+    mismatched_id = str(uuid.uuid4())
+    view = JobView(
+        id=mismatched_id,
+        kind="account_login",
+        state="running",
+        account_id=account.id,
+        progress={"state": "starting"},
+        result=None,
+        error_code=None,
+    )
+    monkeypatch.setattr(stack.application.jobs, "get", lambda job_id: view)
+
+    response = stack.client.request("GET", f"/api/jobs/{requested_id}")
+
+    _assert_fixed_internal_error(response, mismatched_id)
+
+
+@pytest.mark.parametrize("mismatch", ["account_id", "provider", "kind"])
+def test_job_polling_correlates_views_with_the_original_api_submission(
+    stack, monkeypatch, mismatch
+):
+    submitted_account = _account()
+    stack.accounts.accounts[submitted_account.id] = submitted_account
+    accepted = stack.client.request(
+        "POST",
+        f"/api/accounts/{submitted_account.id}/login",
+        json_body={"provider": "codex"},
+    )
+    job_id = accepted.json()["job_id"]
+    assert _wait_for_job(stack, job_id).state == "succeeded"
+
+    view_account = submitted_account
+    if mismatch == "account_id":
+        view_account = _account(label="Another")
+        stack.accounts.accounts[view_account.id] = view_account
+    elif mismatch == "provider":
+        view_account = _account(provider="claude")
+        view_account = ManagedAccount(
+            id=submitted_account.id,
+            provider=view_account.provider,
+            label=view_account.label,
+            state=view_account.state,
+            identity=view_account.identity,
+            created_at=view_account.created_at,
+        )
+        stack.accounts.accounts[submitted_account.id] = view_account
+    kind = "account_logout" if mismatch == "kind" else "account_login"
+    view = JobView(
+        id=job_id,
+        kind=kind,
+        state="running",
+        account_id=view_account.id,
+        progress={} if kind == "account_logout" else {"state": "starting"},
+        result=None,
+        error_code=None,
+    )
+    monkeypatch.setattr(stack.application.jobs, "get", lambda requested: view)
+
+    response = stack.client.request("GET", f"/api/jobs/{job_id}")
+
+    _assert_fixed_internal_error(response)
+
+
+def test_job_polling_rejects_nested_and_path_sync_results(stack, monkeypatch):
+    private_path = "/Users/private/.codex/auth.json"
+    view = JobView(
+        id=str(uuid.uuid4()),
+        kind="sync_execute",
+        state="succeeded",
+        account_id="a" * 64,
+        progress={},
+        result={
+            "direction": "backup",
+            "changed": [private_path],
+            "unchanged": [],
+            "failed": [],
+            "duration_ms": 1,
+            "provider": {"oauth": "nested-private-token"},
+        },
+        error_code=None,
+    )
+
+    response = _poll_injected_job(stack, monkeypatch, view)
+
+    _assert_fixed_internal_error(
+        response,
+        private_path,
+        "nested-private-token",
+        "oauth",
+    )
+
+
+@pytest.mark.parametrize(
+    ("direction", "changed"),
+    [("apply", ["zsh"]), ("backup", ["ghostty"])],
+)
+def test_sync_job_result_correlates_with_its_issued_preview(
+    stack, monkeypatch, direction, changed
+):
+    preview = stack.client.request(
+        "POST",
+        "/api/sync/preview",
+        json_body={"direction": "backup", "apps": ["zsh"]},
+    )
+    digest = preview.json()["preview"]["digest"]
+    accepted = stack.client.request(
+        "POST", "/api/sync/execute", json_body={"digest": digest}
+    )
+    job_id = accepted.json()["job_id"]
+    assert _wait_for_job(stack, job_id).state == "succeeded"
+    view = JobView(
+        id=job_id,
+        kind="sync_execute",
+        state="succeeded",
+        account_id=digest,
+        progress={},
+        result={
+            "direction": direction,
+            "changed": changed,
+            "unchanged": [],
+            "failed": [],
+            "duration_ms": 1,
+        },
+        error_code=None,
+    )
+    monkeypatch.setattr(stack.application.jobs, "get", lambda requested: view)
+
+    response = stack.client.request("GET", f"/api/jobs/{job_id}")
+
+    _assert_fixed_internal_error(response)
+
+
+@pytest.mark.parametrize(
+    ("mismatch", "sentinel"),
+    [
+        ("account_id", "00000000-0000-4000-8000-000000000001"),
+        ("provider", "claude"),
+        ("oauth_identity", "https://oauth.invalid/access-token"),
+    ],
+)
+def test_account_job_results_must_match_the_managed_account(
+    stack, monkeypatch, mismatch, sentinel
+):
+    account = _account()
+    stack.accounts.accounts[account.id] = account
+    result_id = sentinel if mismatch == "account_id" else account.id
+    provider = sentinel if mismatch == "provider" else account.provider
+    display_name = sentinel if mismatch == "oauth_identity" else None
+    view = JobView(
+        id=str(uuid.uuid4()),
+        kind="account_login",
+        state="succeeded",
+        account_id=account.id,
+        progress={"state": "done"},
+        result={
+            "account": {
+                "id": result_id,
+                "provider": provider,
+                "label": account.label,
+                "state": "ready",
+                "identity": {
+                    "display_name": display_name,
+                    "email": None,
+                    "plan": None,
+                },
+                "created_at": account.created_at,
+                "usage": None,
+            }
+        },
+        error_code=None,
+    )
+
+    response = _poll_injected_job(stack, monkeypatch, view)
+
+    _assert_fixed_internal_error(response, sentinel)
+
+
+@pytest.mark.parametrize(
+    ("field", "sentinel"),
+    [
+        ("account_id", "00000000-0000-4000-8000-000000000002"),
+        ("provider", "claude"),
+    ],
+)
+def test_refresh_job_usage_must_match_the_managed_account(
+    stack, monkeypatch, field, sentinel
+):
+    account = _account()
+    stack.accounts.accounts[account.id] = account
+    usage_account_id = sentinel if field == "account_id" else account.id
+    usage_provider = sentinel if field == "provider" else account.provider
+    view = JobView(
+        id=str(uuid.uuid4()),
+        kind="account_refresh",
+        state="succeeded",
+        account_id=account.id,
+        progress={},
+        result={
+            "usage": {
+                "account_id": usage_account_id,
+                "provider": usage_provider,
+                "windows": [],
+                "observed_at": "2026-08-21T00:00:00Z",
+                "source": "codex_app_server",
+                "provider_version": "1.0.0",
+            },
+            "stale": False,
+            "error_code": None,
+        },
+        error_code=None,
+    )
+
+    response = _poll_injected_job(stack, monkeypatch, view)
+
+    _assert_fixed_internal_error(response, sentinel)
+
+
 @pytest.mark.parametrize("action", ["refresh", "logout"])
 def test_refresh_and_logout_return_202_job_ids(stack, action):
     account = _account()
@@ -746,6 +1085,9 @@ def test_refresh_and_logout_return_202_job_ids(stack, action):
     job_id = accepted.json()["job_id"]
     assert str(uuid.UUID(job_id)) == job_id
     assert _wait_for_job(stack, job_id).state == "succeeded"
+    polled = stack.client.request("GET", f"/api/jobs/{job_id}")
+    assert polled.status == 200
+    assert polled.json()["job"]["kind"] == f"account_{action}"
 
 
 def test_refresh_job_redacts_unknown_provider_error_codes(stack):
@@ -787,8 +1129,11 @@ def test_delete_job_passes_job_context_without_duplicate_cancel_event(
     )
     job_id = accepted.json()["job_id"]
     assert _wait_for_job(stack, job_id).state == "succeeded"
+    polled = stack.client.request("GET", f"/api/jobs/{job_id}")
 
     assert accepted.status == 202
+    assert polled.status == 200
+    assert polled.json()["job"]["result"] == {"deleted": True}
     assert stack.usage.delete_kwargs is not None
     assert stack.usage.delete_kwargs["force_local"] is force_local
     assert isinstance(stack.usage.delete_kwargs["job_context"], JobContext)
@@ -842,11 +1187,53 @@ def test_sync_status_update_and_preview_use_exact_safe_domain_payloads(stack):
     )
 
     assert status.status == 200
-    assert status.json() == {"sync": _SyncStatus().to_dict()}
+    sync_status = status.json()["sync"]
+    assert set(sync_status) == {"sync_dir", "apps"}
+    assert set(sync_status["sync_dir"]) == {"scope", "id"}
+    assert sync_status["sync_dir"]["scope"] == "sync-root"
+    assert sync_status["sync_dir"]["id"].startswith("sha256:")
+    assert sync_status["apps"] == []
     assert updated.status == 200
     assert updated.json() == {"apps": ["ghostty", "zsh"]}
     assert preview.status == 200
     assert preview.json()["preview"]["digest"] == "a" * 64
+
+
+def test_sync_status_omits_real_symlink_error_details_and_absolute_paths(
+    stack, tmp_path
+):
+    sentinel = "SYNC_STATUS_PRIVATE_SENTINEL"
+    outside = tmp_path / sentinel
+    outside.mkdir()
+    stored_parent = stack.sync.config.dir / "zsh"
+    stored_parent.symlink_to(outside, target_is_directory=True)
+
+    class UnsafeStoredPathApp(App):
+        name = "zsh"
+
+        def tracked_files(self, target_dir: Path) -> list[FilePair]:
+            return [
+                FilePair(
+                    local=tmp_path / "local-zshrc",
+                    stored=target_dir / "zsh" / ".zshrc",
+                    label=".zshrc",
+                )
+            ]
+
+    real_service = SyncService(
+        Config(dir=stack.sync.config.dir, apps=["zsh"]),
+        app_factory=lambda name, config: UnsafeStoredPathApp(),
+    )
+    stack.sync.status_result = real_service.status()
+
+    response = stack.client.request("GET", "/api/sync/status")
+
+    assert response.status == 200
+    assert response.json()["sync"]["apps"] == [
+        {"name": "zsh", "state": "unknown", "direction": None}
+    ]
+    assert sentinel.encode() not in response.body
+    assert str(tmp_path).encode() not in response.body
 
 
 @pytest.mark.parametrize("direction", ["from", "to", "Backup", "", 1, None])
@@ -892,8 +1279,11 @@ def test_sync_execute_enqueues_only_the_service_issued_digest(stack):
     )
     job_id = accepted.json()["job_id"]
     view = _wait_for_job(stack, job_id)
+    polled = stack.client.request("GET", f"/api/jobs/{job_id}")
 
     assert accepted.status == 202
+    assert polled.status == 200
+    assert polled.json()["job"]["account_id"] is None
     assert stack.sync.calls[-1] == ("execute", digest)
     assert view.result == {
         "direction": "backup",
@@ -1016,6 +1406,136 @@ def test_sync_execute_digest_is_single_use(stack):
     assert second.status == 409
 
 
+def test_preview_cannot_publish_a_digest_after_folder_transition(stack, tmp_path):
+    release_preview = threading.Event()
+    stack.sync.preview_release = release_preview
+    pending = _start_request(
+        lambda: stack.client.request(
+            "POST",
+            "/api/sync/preview",
+            json_body={"direction": "backup", "apps": ["zsh"]},
+        )
+    )
+    assert stack.sync.preview_entered.wait(timeout=1.0)
+
+    replacement = tmp_path / "replacement-preview"
+    replacement.mkdir()
+    stack.picker.selected = replacement
+    selected = stack.client.request("POST", "/api/settings/sync-folder/select")
+    release_preview.set()
+    response = pending.finish()
+
+    assert selected.status == 200
+    assert response.status == 409
+    assert response.json()["error"]["code"] == "stale_sync_plan"
+    rejected = stack.client.request(
+        "POST",
+        "/api/sync/execute",
+        json_body={"digest": "a" * 64},
+    )
+    assert rejected.status == 409
+
+
+def test_execute_failure_cannot_restore_digest_after_folder_transition(
+    stack, tmp_path, monkeypatch
+):
+    preview = stack.client.request(
+        "POST",
+        "/api/sync/preview",
+        json_body={"direction": "backup", "apps": ["zsh"]},
+    )
+    digest = preview.json()["preview"]["digest"]
+    submit_entered = threading.Event()
+    release_submit = threading.Event()
+
+    def fail_submit(kind: str, *, account_id: str | None = None):
+        submit_entered.set()
+        assert release_submit.wait(timeout=2.0)
+        raise RegistryClosed("closing sentinel")
+
+    monkeypatch.setattr(stack.application.jobs, "submit", fail_submit)
+    pending = _start_request(
+        lambda: stack.client.request(
+            "POST",
+            "/api/sync/execute",
+            json_body={"digest": digest},
+        )
+    )
+    assert submit_entered.wait(timeout=1.0)
+
+    replacement = tmp_path / "replacement-submit"
+    replacement.mkdir()
+    stack.picker.selected = replacement
+    selected = stack.client.request("POST", "/api/settings/sync-folder/select")
+    release_submit.set()
+    failed = pending.finish()
+    retried = stack.client.request(
+        "POST",
+        "/api/sync/execute",
+        json_body={"digest": digest},
+    )
+
+    assert selected.status == 200
+    assert failed.status == 503
+    assert retried.status == 409
+
+
+def test_apps_update_cannot_commit_after_folder_transition(stack, tmp_path):
+    release_update = threading.Event()
+    stack.sync.update_release = release_update
+    pending = _start_request(
+        lambda: stack.client.request(
+            "PATCH",
+            "/api/sync/apps",
+            json_body={"apps": ["ghostty"]},
+        )
+    )
+    assert stack.sync.update_entered.wait(timeout=1.0)
+
+    replacement = tmp_path / "replacement-apps"
+    replacement.mkdir()
+    stack.picker.selected = replacement
+    selected = stack.client.request("POST", "/api/settings/sync-folder/select")
+    release_update.set()
+    response = pending.finish()
+
+    assert selected.status == 200
+    assert response.status == 409
+    assert stack.state.state == AppState(sync_dir=str(replacement))
+    assert stack.initialized_services[-1].config.apps == ["zsh"]
+
+
+def test_older_concurrent_selection_cannot_overwrite_newer_commit(stack, tmp_path):
+    first = tmp_path / "first-selection"
+    second = tmp_path / "second-selection"
+    first.mkdir()
+    second.mkdir()
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    stack.initializer.gates[first] = (first_entered, release_first)
+    stack.picker.selected = first
+    pending_first = _start_request(
+        lambda: stack.client.request("POST", "/api/settings/sync-folder/select")
+    )
+    assert first_entered.wait(timeout=1.0)
+
+    stack.picker.selected = second
+    second_response = stack.client.request(
+        "POST", "/api/settings/sync-folder/select"
+    )
+    release_first.set()
+    first_response = pending_first.finish()
+    status = stack.client.request("GET", "/api/sync/status")
+    expected_id = "sha256:" + hashlib.sha256(
+        str(second.absolute()).encode("utf-8")
+    ).hexdigest()
+
+    assert second_response.status == 200
+    assert first_response.status == 409
+    assert stack.state.state == AppState(sync_dir=str(second))
+    assert status.json()["sync"]["sync_dir"]["id"] == expected_id
+
+
 def test_folder_selection_accepts_no_http_path_and_cancellation_mutates_nothing(stack):
     injected_path = stack.client.request(
         "POST",
@@ -1051,6 +1571,77 @@ def test_folder_selection_initializes_config_before_persisting_backend_path(stac
     assert stack.state.events[-2:] == ["folder_initialized", "state_saved"]
     assert stack.state.state == AppState(sync_dir=str(selected))
     assert (selected / "dotsync.toml").is_file()
+
+
+def test_folder_selection_rejects_a_symlink_in_any_ancestor(stack, tmp_path):
+    real_parent = tmp_path / "real-parent"
+    selected = real_parent / "selected"
+    selected.mkdir(parents=True)
+    alias = tmp_path / "alias-parent"
+    alias.symlink_to(real_parent, target_is_directory=True)
+    stack.picker.selected = alias / "selected"
+
+    response = stack.client.request("POST", "/api/settings/sync-folder/select")
+
+    assert response.status == 422
+    assert response.json()["error"]["code"] == "invalid_sync_folder"
+    assert stack.initialized == []
+    assert stack.state.state == AppState()
+    assert not (selected / "dotsync.toml").exists()
+
+
+def test_folder_selection_does_not_follow_an_existing_config_symlink(
+    stack, tmp_path
+):
+    selected = tmp_path / "config-symlink-selection"
+    selected.mkdir()
+    sentinel = tmp_path / "outside-config"
+    sentinel.write_text("PRIVATE_SENTINEL\n")
+    (selected / "dotsync.toml").symlink_to(sentinel)
+    stack.picker.selected = selected
+
+    response = stack.client.request("POST", "/api/settings/sync-folder/select")
+
+    assert response.status == 422
+    assert response.json()["error"]["code"] == "invalid_sync_folder"
+    assert sentinel.read_text() == "PRIVATE_SENTINEL\n"
+    assert stack.initialized == []
+    assert stack.state.state == AppState()
+
+
+def test_folder_selection_persists_only_the_canonical_validated_path(stack, tmp_path):
+    parent = tmp_path / "canonical-parent"
+    selected = parent / "selected"
+    selected.mkdir(parents=True)
+    (parent / "intermediate").mkdir()
+    noncanonical = parent / "intermediate" / ".." / "selected"
+    stack.picker.selected = noncanonical
+
+    response = stack.client.request("POST", "/api/settings/sync-folder/select")
+
+    assert response.status == 200
+    assert stack.initialized == [selected]
+    assert stack.state.state == AppState(sync_dir=str(selected))
+
+
+def test_folder_selection_rejects_directory_identity_replacement(stack, tmp_path):
+    selected = tmp_path / "replaceable-selection"
+    displaced = tmp_path / "displaced-selection"
+    selected.mkdir()
+
+    def replace_directory(path: Path) -> None:
+        path.rename(displaced)
+        path.mkdir()
+
+    stack.initializer.actions[selected] = replace_directory
+    stack.picker.selected = selected
+
+    response = stack.client.request("POST", "/api/settings/sync-folder/select")
+
+    assert response.status == 422
+    assert response.json()["error"]["code"] == "invalid_sync_folder"
+    assert stack.state.state == AppState()
+    assert stack.sync.config.dir != selected
 
 
 def test_reveal_accepts_no_path_and_uses_only_app_paths_root(stack):

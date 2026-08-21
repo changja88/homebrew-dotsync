@@ -101,10 +101,14 @@ class WebApplication:
     def create_server(self) -> "_DotSyncHTTPServer":
         return _DotSyncHTTPServer(("127.0.0.1", 0), self)
 
-    def record_heartbeat(self) -> None:
-        now = self._monotonic()
-        with self._heartbeat_lock:
-            self._last_heartbeat = now
+    def record_heartbeat(self) -> bool:
+        with self._job_lifecycle_lock:
+            if self._shutdown_complete:
+                return False
+            now = self._monotonic()
+            with self._heartbeat_lock:
+                self._last_heartbeat = now
+            return True
 
     def should_idle_shutdown(self) -> bool:
         now = self._monotonic()
@@ -113,8 +117,7 @@ class WebApplication:
         if idle_for < IDLE_TIMEOUT_SECONDS:
             return False
         try:
-            with self._job_lifecycle_lock:
-                views = self.jobs.list_jobs()
+            views = self.jobs.list_jobs()
         except Exception:
             return False
         if any(view.state not in {"succeeded", "failed"} for view in views):
@@ -154,22 +157,31 @@ class WebApplication:
 
     def shutdown(self) -> None:
         with self._shutdown_lock:
-            if self._shutdown_complete:
-                return
-            self._shutdown_complete = True
             with self._job_lifecycle_lock:
+                if self._shutdown_complete:
+                    return
+                self._shutdown_complete = True
                 self.jobs.shutdown()
 
     def shutdown_if_idle(self) -> bool:
-        """Atomically reject idle shutdown when a job is being submitted."""
+        """Close only after an atomic heartbeat and active-job recheck."""
         with self._shutdown_lock:
-            if self._shutdown_complete:
-                return True
+            with self._job_lifecycle_lock:
+                if self._shutdown_complete:
+                    return True
             now = self._monotonic()
             with self._heartbeat_lock:
                 if now - self._last_heartbeat < IDLE_TIMEOUT_SECONDS:
                     return False
+            try:
+                views = self.jobs.list_jobs()
+            except Exception:
+                return False
+            if any(view.state not in {"succeeded", "failed"} for view in views):
+                return False
             with self._job_lifecycle_lock:
+                if self._shutdown_complete:
+                    return True
                 now = self._monotonic()
                 with self._heartbeat_lock:
                     if now - self._last_heartbeat < IDLE_TIMEOUT_SECONDS:
@@ -182,6 +194,10 @@ class WebApplication:
                     view.state not in {"succeeded", "failed"} for view in views
                 ):
                     return False
+                now = self._monotonic()
+                with self._heartbeat_lock:
+                    if now - self._last_heartbeat < IDLE_TIMEOUT_SECONDS:
+                        return False
                 self._shutdown_complete = True
                 self.jobs.shutdown()
                 return True
@@ -258,6 +274,15 @@ class _DotSyncRequestHandler(BaseHTTPRequestHandler):
     @property
     def _dotsync_server(self) -> _DotSyncHTTPServer:
         return cast(_DotSyncHTTPServer, self.server)
+
+    def parse_request(self) -> bool:
+        if not super().parse_request():
+            return False
+        if self.request_version not in {"HTTP/1.0", "HTTP/1.1"}:
+            self.request_version = "HTTP/1.0"
+            self.send_error(400)
+            return False
+        return True
 
     def _dispatch(self) -> None:
         try:
@@ -362,6 +387,9 @@ class _DotSyncRequestHandler(BaseHTTPRequestHandler):
         message: str | None = None,
         explain: str | None = None,
     ) -> None:
+        # The stdlib suppresses status and headers for HTTP/0.9, including
+        # parser failures raised before it records a modern request version.
+        self.request_version = "HTTP/1.0"
         status = code if 400 <= code <= 599 else 400
         self._send(
             error_response(

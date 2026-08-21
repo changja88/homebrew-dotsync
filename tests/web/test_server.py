@@ -9,6 +9,8 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 from dotsync.accounts import ManagedAccount, ProviderIdentity
 from dotsync.app_paths import AppPaths
 from dotsync.app_state import AppState
@@ -173,6 +175,45 @@ def _raw_request(server, request: bytes) -> _Response:
         return _Response(response)
 
 
+def _raw_response_bytes(server, request: bytes) -> bytes:
+    with socket.create_connection(server.server_address, timeout=2.0) as connection:
+        connection.sendall(request)
+        connection.shutdown(socket.SHUT_WR)
+        chunks: list[bytes] = []
+        while chunk := connection.recv(65_536):
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _assert_fixed_http_error(
+    raw: bytes,
+    *,
+    status_line: str = "HTTP/1.1 400 Bad Request",
+) -> None:
+    head, body = raw.split(b"\r\n\r\n", 1)
+    lines = head.decode("ascii").split("\r\n")
+    headers = {
+        name.lower(): value.strip()
+        for name, value in (line.split(":", 1) for line in lines[1:])
+    }
+
+    assert lines[0] == status_line
+    assert headers["content-security-policy"] == (
+        "default-src 'self'; script-src 'self'; style-src 'self'; "
+        "img-src 'self' data:; connect-src 'self'; object-src 'none'; "
+        "base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+    )
+    assert headers["referrer-policy"] == "no-referrer"
+    assert headers["x-content-type-options"] == "nosniff"
+    assert headers["cache-control"] == "no-store"
+    assert headers["content-type"] == "application/json; charset=utf-8"
+    assert int(headers["content-length"]) == len(body)
+    assert body == (
+        b'{"error":{"code":"bad_request",'
+        b'"message":"The HTTP request could not be accepted."}}'
+    )
+
+
 def _assert_security_headers(response: _Response) -> None:
     assert response.header("Content-Security-Policy") == CONTENT_SECURITY_POLICY
     assert response.header("Referrer-Policy") == "no-referrer"
@@ -189,6 +230,72 @@ def test_server_binds_loopback_with_ephemeral_port(tmp_path):
 
         assert host == "127.0.0.1"
         assert port > 0
+
+
+@pytest.mark.parametrize(
+    ("target", "forbidden_body"),
+    [
+        ("/", b"INDEX_SENTINEL"),
+        ("/api/health", b'"status":"ok"'),
+        ("/missing", b'"code":"not_found"'),
+    ],
+)
+def test_two_word_request_lines_are_forced_to_safe_http_errors(
+    tmp_path, target, forbidden_body
+):
+    application = _application(
+        tmp_path,
+        static_asset_loader=lambda name: b"INDEX_SENTINEL",
+    )
+
+    with run_ui_server(application, poll_interval=0.01) as server:
+        port = server.server_address[1]
+        raw = _raw_response_bytes(
+            server,
+            (
+                f"GET {target}\r\n"
+                f"Host: 127.0.0.1:{port}\r\n"
+                f"X-DotSync-Token: {application.token}\r\n"
+                "\r\n"
+            ).encode("ascii"),
+        )
+
+    _assert_fixed_http_error(raw)
+    assert forbidden_body not in raw
+
+
+@pytest.mark.parametrize(
+    ("request_version", "status_line"),
+    [
+        ("HTTP/0.9", "HTTP/1.1 400 Bad Request"),
+        ("HTTP/1.2", "HTTP/1.1 400 Bad Request"),
+        ("HTTP/2.0", "HTTP/1.1 505 HTTP Version Not Supported"),
+        ("HTTP/10.0", "HTTP/1.1 505 HTTP Version Not Supported"),
+        ("HTTP/1", "HTTP/1.1 400 Bad Request"),
+        ("HTP/1.1", "HTTP/1.1 400 Bad Request"),
+    ],
+)
+def test_unsupported_request_versions_are_forced_to_safe_http_errors(
+    tmp_path, request_version, status_line
+):
+    application = _application(
+        tmp_path,
+        static_asset_loader=lambda name: b"INDEX_SENTINEL",
+    )
+
+    with run_ui_server(application, poll_interval=0.01) as server:
+        port = server.server_address[1]
+        raw = _raw_response_bytes(
+            server,
+            (
+                f"GET / {request_version}\r\n"
+                f"Host: 127.0.0.1:{port}\r\n"
+                "\r\n"
+            ).encode("ascii"),
+        )
+
+    _assert_fixed_http_error(raw, status_line=status_line)
+    assert b"INDEX_SENTINEL" not in raw
 
 
 def test_each_application_generates_a_fresh_256_bit_capability(tmp_path):
@@ -426,6 +533,41 @@ def test_heartbeat_during_job_scan_cancels_the_stale_idle_decision(tmp_path):
     checker.join(timeout=1.0)
 
     assert result == {"shutdown": False}
+
+
+def test_heartbeat_during_final_idle_scan_prevents_registry_closing(tmp_path):
+    clock = _Clock()
+    jobs = _BlockingJobs()
+    application = _application(tmp_path, jobs=jobs, clock=clock)
+    clock.value = 1_800.0
+    shutdown_result: dict[str, bool] = {}
+
+    checker = threading.Thread(
+        target=lambda: shutdown_result.setdefault(
+            "value", application.shutdown_if_idle()
+        )
+    )
+    checker.start()
+    assert jobs.list_entered.wait(timeout=1.0)
+
+    heartbeat_result = application.record_heartbeat()
+    jobs.list_release.set()
+    checker.join(timeout=1.0)
+
+    assert checker.is_alive() is False
+    assert heartbeat_result is True
+    assert shutdown_result == {"value": False}
+    assert jobs.shutdown_called.is_set() is False
+
+
+def test_heartbeat_after_registry_shutdown_observes_closing(tmp_path):
+    jobs = _Jobs()
+    application = _application(tmp_path, jobs=jobs)
+
+    application.shutdown()
+
+    assert application.record_heartbeat() is False
+    assert jobs.shutdown_called.is_set()
 
 
 def test_job_submission_and_idle_shutdown_use_one_atomic_lifecycle_boundary(tmp_path):
