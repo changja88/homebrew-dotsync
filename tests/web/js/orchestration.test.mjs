@@ -45,6 +45,10 @@ class FakeClock {
     this.now = Math.max(this.now, timer.due);
     await timer.callback();
   }
+
+  nextDue() {
+    return Math.min(...[...this.timers.values()].map((timer) => timer.due));
+  }
 }
 
 
@@ -144,6 +148,45 @@ test("the fixed manager handoff accepts only backup or apply and issues that pre
   await handler({ detail: "apply" });
 
   assert.deepEqual(directions, ["apply", "backup"]);
+});
+
+
+test("manager handoff rejects an inherited direction and unsafe object shapes", async () => {
+  const directions = [];
+  const handler = orchestration.createManagerSyncHandoffHandler(async (direction) => {
+    directions.push(direction);
+  });
+  const inheritedDirection = Object.assign(
+    Object.create({ direction: "apply" }),
+    { path: "/tmp/private" },
+  );
+  const accessorDirection = {};
+  Object.defineProperty(accessorDirection, "direction", {
+    enumerable: true,
+    get() {
+      return "apply";
+    },
+  });
+  const customPrototype = Object.assign(
+    Object.create({ inherited: true }),
+    { direction: "apply" },
+  );
+  const nonEnumerableExtra = { direction: "apply" };
+  Object.defineProperty(nonEnumerableExtra, "path", {
+    enumerable: false,
+    value: "/tmp/private",
+  });
+  const symbolExtra = { direction: "apply", [Symbol("path")]: "/tmp/private" };
+  const nullPrototype = Object.assign(Object.create(null), { direction: "apply" });
+
+  await handler({ detail: inheritedDirection });
+  await handler({ detail: accessorDirection });
+  await handler({ detail: customPrototype });
+  await handler({ detail: nonEnumerableExtra });
+  await handler({ detail: symbolExtra });
+  await handler({ detail: nullPrototype });
+
+  assert.deepEqual(directions, []);
 });
 
 
@@ -259,6 +302,44 @@ test("a job suspended after 30 seconds hidden resumes and reconciles when visibl
   await clock.runNext();
 
   assert.deepEqual(updates, ["succeeded"]);
+  assert.deepEqual(finished, ["succeeded"]);
+  assert.equal(clock.timers.size, 0);
+});
+
+
+test("visible before the pending timer reconciles immediately after 30 seconds hidden", async () => {
+  const clock = new FakeClock();
+  let visible = false;
+  const updates = [];
+  const finished = [];
+  const poller = orchestration.createJobPoller({
+    loadJob: async (jobId) => ({
+      job: { id: jobId, state: visible ? "succeeded" : "running" },
+    }),
+    updateJob: (job) => updates.push(job.state),
+    finishJob: async (job) => finished.push(job.state),
+    failJob(error) { throw error; },
+    setTimer: clock.setTimeout,
+    clearTimer: clock.clearTimeout,
+    now: () => clock.now,
+  });
+
+  poller.start("job-visible-order", "account-visible-order");
+  poller.setHidden(true);
+  while (clock.nextDue() < 30_000) {
+    await clock.runNext();
+  }
+  assert.ok(clock.nextDue() > 30_000);
+
+  clock.now = 30_000;
+  visible = true;
+  poller.setHidden(false);
+
+  assert.equal(clock.timers.size, 1);
+  assert.equal(clock.nextDue(), 30_000);
+  assert.equal(clock.scheduledDelays.at(-1), 0);
+  await clock.runNext();
+  assert.equal(updates.at(-1), "succeeded");
   assert.deepEqual(finished, ["succeeded"]);
   assert.equal(clock.timers.size, 0);
 });
