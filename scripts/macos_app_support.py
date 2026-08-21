@@ -18,7 +18,7 @@ import time
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 
 SEMANTIC_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
@@ -72,6 +72,7 @@ class StagingDirectory:
     name: str
     descriptor: int
     identity: NodeIdentity
+    removed: bool = False
 
 
 @dataclass
@@ -132,6 +133,11 @@ class SignalCoordinator:
 
     def __exit__(self, *_exc: object) -> None:
         self._active_process = None
+        if self.interrupted:
+            # assemble() is the terminal supervisor operation. Keep later
+            # managed signals pending while its retained 128+signal status is
+            # handed to main, so a restored default handler cannot replace it.
+            signal.pthread_sigmask(signal.SIG_BLOCK, self.managed_signals)
         for signum, previous_handler in self._previous_handlers.items():
             signal.signal(signum, previous_handler)
 
@@ -149,22 +155,21 @@ class SignalCoordinator:
         if process is not None:
             self._signal_process_group(process.pid, signum)
 
+    def record_pending_signal(self) -> None:
+        pending = signal.sigpending()
+        if self.first_signum is None:
+            for signum in self.managed_signals:
+                if signum in pending:
+                    self.first_signum = signum
+                    self._signal_received_at = time.monotonic()
+                    break
+
     @staticmethod
     def _signal_process_group(process_group: int, signum: int) -> None:
         try:
             os.killpg(process_group, signum)
         except ProcessLookupError:
             pass
-
-    @staticmethod
-    def _process_group_exists(process_group: int) -> bool:
-        try:
-            os.killpg(process_group, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        return True
 
     def attach(self, process: subprocess.Popen[str]) -> None:
         if self._active_process is not None:
@@ -184,34 +189,54 @@ class SignalCoordinator:
             >= self.termination_grace_seconds
         )
 
-    def quiesce_process_group(self, process_group: int) -> None:
+    def quiesce_process_group(
+        self,
+        process_group: int,
+        *,
+        already_escalated: bool = False,
+    ) -> None:
         if not self.interrupted:
             return
+        if already_escalated:
+            return
         assert self.first_signum is not None
-        self._signal_process_group(process_group, self.first_signum)
-        deadline = time.monotonic() + self.termination_grace_seconds
-        while self._process_group_exists(process_group) and time.monotonic() < deadline:
-            time.sleep(0.01)
-        if self._process_group_exists(process_group):
+        try:
+            self._signal_process_group(process_group, self.first_signum)
+        except PermissionError:
+            return
+        assert self._signal_received_at is not None
+        remaining_grace = (
+            self._signal_received_at
+            + self.termination_grace_seconds
+            - time.monotonic()
+        )
+        if remaining_grace > 0:
+            time.sleep(remaining_grace)
+        # The group leader has only been observed with WNOWAIT here. Its PID and
+        # PGID therefore cannot be reused while the last escalation is sent.
+        try:
             self._signal_process_group(process_group, signal.SIGKILL)
-            kill_deadline = time.monotonic() + 2
-            while (
-                self._process_group_exists(process_group)
-                and time.monotonic() < kill_deadline
-            ):
-                time.sleep(0.01)
-        if self._process_group_exists(process_group):
-            raise PackagingError("build tool process group did not terminate")
+        except PermissionError:
+            return
+        time.sleep(0.05)
 
-    def commit(self) -> None:
+    def commit(self, finalize: Callable[[], None] | None = None) -> None:
         previous_mask = signal.pthread_sigmask(
             signal.SIG_BLOCK,
             self.managed_signals,
         )
         try:
+            self.record_pending_signal()
             if self.first_signum is not None:
                 raise SignalInterruption(self.first_signum)
             self._committed = True
+            try:
+                if finalize is not None:
+                    finalize()
+            except BaseException:
+                self._committed = False
+                self.record_pending_signal()
+                raise
         finally:
             signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
 
@@ -529,6 +554,32 @@ def _remove_directory_contents(directory_fd: int, expected_device: int) -> None:
             os.unlink(name, dir_fd=directory_fd)
 
 
+def _remove_directory_contents_except(
+    directory_fd: int,
+    expected_device: int,
+    kept_names: frozenset[str],
+) -> None:
+    for name in os.listdir(directory_fd):
+        if name in kept_names:
+            continue
+        entry_stat = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        _require_device(entry_stat, expected_device)
+        if stat.S_ISDIR(entry_stat.st_mode):
+            child_fd, _ = _open_directory_at(
+                directory_fd,
+                name,
+                expected_device=expected_device,
+                expected_identity=NodeIdentity.from_stat(entry_stat),
+            )
+            try:
+                _remove_directory_contents(child_fd, expected_device)
+            finally:
+                os.close(child_fd)
+            os.rmdir(name, dir_fd=directory_fd)
+        else:
+            os.unlink(name, dir_fd=directory_fd)
+
+
 def _cleanup_owned_stage(
     build_fd: int,
     stage: StagingDirectory,
@@ -542,6 +593,27 @@ def _cleanup_owned_stage(
         raise PackagingError("open staging identity changed")
     _remove_directory_contents(stage.descriptor, expected_device)
     os.rmdir(stage.name, dir_fd=build_fd)
+    stage.removed = True
+
+
+def _remove_owned_empty_stage(
+    build_fd: int,
+    stage: StagingDirectory,
+    expected_device: int,
+) -> None:
+    named_stat = os.stat(stage.name, dir_fd=build_fd, follow_symlinks=False)
+    opened_stat = os.fstat(stage.descriptor)
+    if (
+        not stage.identity.matches(named_stat)
+        or not stage.identity.matches(opened_stat)
+    ):
+        raise PackagingError("empty staging cleanup ownership was lost")
+    _require_device(named_stat, expected_device)
+    _require_device(opened_stat, expected_device)
+    if os.listdir(stage.descriptor):
+        raise PackagingError("staging directory is not empty at publication commit")
+    os.rmdir(stage.name, dir_fd=build_fd)
+    stage.removed = True
 
 
 @contextlib.contextmanager
@@ -564,7 +636,7 @@ def _owned_staging_directory(
         yield stage
     finally:
         cleanup_error: BaseException | None = None
-        if stage is not None:
+        if stage is not None and not stage.removed:
             try:
                 _cleanup_owned_stage(build_fd, stage, expected_device)
             except BaseException as error:
@@ -993,29 +1065,95 @@ def _run_tool(
         os.fchdir(cwd_fd)
 
     process: subprocess.Popen[str] | None = None
+    stdout = ""
     try:
-        process = subprocess.Popen(
-            arguments,
-            pass_fds=tuple(sorted(inherited_fds)),
-            preexec_fn=enter_pinned_directory,
-            stdout=subprocess.PIPE if capture_stdout else sys.stderr,
-            stderr=sys.stderr,
-            text=True,
-            start_new_session=True,
-        )
         if coordinator is not None:
-            coordinator.attach(process)
-        stdout: str | None = None
-        while True:
+            previous_mask = signal.pthread_sigmask(
+                signal.SIG_BLOCK,
+                coordinator.managed_signals,
+            )
             try:
-                stdout, _ = process.communicate(timeout=0.1)
-                break
-            except subprocess.TimeoutExpired:
-                if coordinator is not None and coordinator.should_escalate():
+                coordinator.record_pending_signal()
+                if coordinator.interrupted:
+                    assert coordinator.first_signum is not None
+                    raise SignalInterruption(coordinator.first_signum)
+                process = subprocess.Popen(
+                    arguments,
+                    pass_fds=tuple(sorted(inherited_fds)),
+                    preexec_fn=enter_pinned_directory,
+                    stdout=subprocess.PIPE if capture_stdout else sys.stderr,
+                    stderr=sys.stderr,
+                    text=True,
+                    start_new_session=True,
+                )
+                coordinator.attach(process)
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        else:
+            process = subprocess.Popen(
+                arguments,
+                pass_fds=tuple(sorted(inherited_fds)),
+                preexec_fn=enter_pinned_directory,
+                stdout=subprocess.PIPE if capture_stdout else sys.stderr,
+                stderr=sys.stderr,
+                text=True,
+                start_new_session=True,
+            )
+
+        if coordinator is None:
+            captured_stdout, _ = process.communicate()
+            stdout = captured_stdout if capture_stdout and captured_stdout else ""
+        else:
+            kill_sent = False
+            while True:
+                observed = os.waitid(
+                    os.P_PID,
+                    process.pid,
+                    os.WEXITED | os.WNOHANG | os.WNOWAIT,
+                )
+                if observed is not None:
+                    break
+                if coordinator.should_escalate() and not kill_sent:
                     coordinator._signal_process_group(process.pid, signal.SIGKILL)
-        if coordinator is not None:
-            coordinator.detach(process)
-            coordinator.quiesce_process_group(process.pid)
+                    kill_sent = True
+                time.sleep(0.01)
+
+            previous_mask = signal.pthread_sigmask(
+                signal.SIG_BLOCK,
+                coordinator.managed_signals,
+            )
+            try:
+                coordinator.record_pending_signal()
+                quiesced = False
+                if coordinator.interrupted:
+                    coordinator.quiesce_process_group(
+                        process.pid,
+                        already_escalated=kill_sent,
+                    )
+                    quiesced = True
+                if capture_stdout:
+                    assert process.stdout is not None
+                    stdout = process.stdout.read()
+                coordinator.record_pending_signal()
+                if coordinator.interrupted and not quiesced:
+                    coordinator.quiesce_process_group(
+                        process.pid,
+                        already_escalated=kill_sent,
+                    )
+                reaped = os.waitid(os.P_PID, process.pid, os.WEXITED)
+                if reaped is None or reaped.si_pid != process.pid:
+                    raise PackagingError("build tool leader reap identity changed")
+                if reaped.si_code == os.CLD_EXITED:
+                    process.returncode = reaped.si_status
+                elif reaped.si_code in {os.CLD_KILLED, os.CLD_DUMPED}:
+                    process.returncode = -reaped.si_status
+                else:
+                    raise PackagingError("build tool leader had an invalid exit state")
+                if process.stdout is not None:
+                    process.stdout.close()
+                coordinator.detach(process)
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
             if coordinator.interrupted:
                 assert coordinator.first_signum is not None
                 raise SignalInterruption(coordinator.first_signum)
@@ -1026,7 +1164,7 @@ def _run_tool(
     finally:
         if coordinator is not None and process is not None:
             coordinator.detach(process)
-    return stdout if capture_stdout and stdout is not None else ""
+    return stdout
 
 
 def _resolve_sdk(stage_fd: int, coordinator: SignalCoordinator) -> str:
@@ -1354,71 +1492,119 @@ def _publish_scanned_app(
     build_identity: NodeIdentity,
     stage: StagingDirectory,
     scanned_app: ScannedApp,
+    coordinator: SignalCoordinator,
 ) -> None:
-    _verify_build_binding(repo_fd, build_fd, build_identity)
-    opened_stage_stat = os.fstat(stage.descriptor)
-    if not stage.identity.matches(opened_stage_stat):
-        raise PackagingError("open staging identity changed after scanning")
-    _require_device(opened_stage_stat, build_identity.device)
-    stage_stat = os.stat(stage.name, dir_fd=build_fd, follow_symlinks=False)
-    if not stage.identity.matches(stage_stat):
-        raise PackagingError("staging identity changed after scanning")
-    _require_device(stage_stat, build_identity.device)
-    app_stat = os.stat(FINAL_APP, dir_fd=stage.descriptor, follow_symlinks=False)
-    if not scanned_app.identity.matches(app_stat):
-        raise PackagingError("staged app changed after scanning")
-    if not scanned_app.identity.matches(os.fstat(scanned_app.descriptor)):
-        raise PackagingError("open staged app changed after scanning")
-    _require_device(app_stat, build_identity.device)
-    current_manifest = _scan_directory(
-        scanned_app.descriptor,
-        scanned_app.checkout,
-        build_identity.device,
-    )
-    if current_manifest != scanned_app.manifest:
-        raise PackagingError("staged app descendant manifest changed after scanning")
-    held_app_stat = os.fstat(scanned_app.descriptor)
-    if stat.S_IMODE(held_app_stat.st_mode) != 0o755:
-        raise PackagingError("staged app mode must be exactly 0755")
-    _require_final_absent(build_fd)
-    _rename_no_replace(stage.descriptor, FINAL_APP, build_fd, FINAL_APP)
-    _verify_build_binding(repo_fd, build_fd, build_identity)
-    final_stat = os.stat(FINAL_APP, dir_fd=build_fd, follow_symlinks=False)
-    _require_device(final_stat, build_identity.device)
-    if not stat.S_ISDIR(final_stat.st_mode) or not scanned_app.identity.matches(
-        final_stat
-    ):
-        raise PackagingError("published final app identity does not match the held app")
-    held_app_stat = os.fstat(scanned_app.descriptor)
-    if not scanned_app.identity.matches(held_app_stat):
-        raise PackagingError("published final app held identity changed")
-    if (
-        stat.S_IMODE(final_stat.st_mode) != 0o755
-        or stat.S_IMODE(held_app_stat.st_mode) != 0o755
-    ):
-        raise PackagingError("published final app mode is not exactly 0755")
+    published = False
+    try:
+        _verify_build_binding(repo_fd, build_fd, build_identity)
+        opened_stage_stat = os.fstat(stage.descriptor)
+        if not stage.identity.matches(opened_stage_stat):
+            raise PackagingError("open staging identity changed after scanning")
+        _require_device(opened_stage_stat, build_identity.device)
+        stage_stat = os.stat(stage.name, dir_fd=build_fd, follow_symlinks=False)
+        if not stage.identity.matches(stage_stat):
+            raise PackagingError("staging identity changed after scanning")
+        _require_device(stage_stat, build_identity.device)
+        app_stat = os.stat(FINAL_APP, dir_fd=stage.descriptor, follow_symlinks=False)
+        if not scanned_app.identity.matches(app_stat):
+            raise PackagingError("staged app changed after scanning")
+        if not scanned_app.identity.matches(os.fstat(scanned_app.descriptor)):
+            raise PackagingError("open staged app changed after scanning")
+        _require_device(app_stat, build_identity.device)
+        current_manifest = _scan_directory(
+            scanned_app.descriptor,
+            scanned_app.checkout,
+            build_identity.device,
+        )
+        if current_manifest != scanned_app.manifest:
+            raise PackagingError("staged app descendant manifest changed after scanning")
+        held_app_stat = os.fstat(scanned_app.descriptor)
+        if stat.S_IMODE(held_app_stat.st_mode) != 0o755:
+            raise PackagingError("staged app mode must be exactly 0755")
+        if coordinator.interrupted:
+            assert coordinator.first_signum is not None
+            raise SignalInterruption(coordinator.first_signum)
+        _require_final_absent(build_fd)
+        _rename_no_replace(stage.descriptor, FINAL_APP, build_fd, FINAL_APP)
+        published = True
+        _verify_build_binding(repo_fd, build_fd, build_identity)
+        final_stat = os.stat(FINAL_APP, dir_fd=build_fd, follow_symlinks=False)
+        _require_device(final_stat, build_identity.device)
+        if not stat.S_ISDIR(final_stat.st_mode) or not scanned_app.identity.matches(
+            final_stat
+        ):
+            raise PackagingError(
+                "published final app identity does not match the held app"
+            )
+        held_app_stat = os.fstat(scanned_app.descriptor)
+        if not scanned_app.identity.matches(held_app_stat):
+            raise PackagingError("published final app held identity changed")
+        if (
+            stat.S_IMODE(final_stat.st_mode) != 0o755
+            or stat.S_IMODE(held_app_stat.st_mode) != 0o755
+        ):
+            raise PackagingError("published final app mode is not exactly 0755")
+        coordinator.commit(
+            lambda: _remove_owned_empty_stage(
+                build_fd,
+                stage,
+                build_identity.device,
+            )
+        )
+    except BaseException as publication_error:
+        if published:
+            try:
+                _rollback_published_app_to_stage(
+                    build_fd,
+                    build_identity,
+                    stage,
+                    scanned_app,
+                )
+            except BaseException as rollback_error:
+                if coordinator.interrupted:
+                    assert coordinator.first_signum is not None
+                    raise SignalInterruption(coordinator.first_signum) from rollback_error
+                raise PackagingError(
+                    "published app rollback lost exact ownership"
+                ) from rollback_error
+        raise publication_error
 
 
-def _cleanup_exact_published_app(
+def _rollback_published_app_to_stage(
     build_fd: int,
     build_identity: NodeIdentity,
+    stage: StagingDirectory,
     scanned_app: ScannedApp,
 ) -> None:
     held_stat = os.fstat(scanned_app.descriptor)
-    named_stat = os.stat(FINAL_APP, dir_fd=build_fd, follow_symlinks=False)
+    try:
+        named_stat = os.stat(FINAL_APP, dir_fd=build_fd, follow_symlinks=False)
+    except OSError as error:
+        raise PackagingError("published app rollback ownership was lost") from error
     if (
         not scanned_app.identity.matches(held_stat)
         or not scanned_app.identity.matches(named_stat)
         or not stat.S_ISDIR(named_stat.st_mode)
     ):
-        raise PackagingError("published app cleanup ownership was lost")
+        raise PackagingError("published app rollback ownership was lost")
     _require_device(held_stat, build_identity.device)
     _require_device(named_stat, build_identity.device)
-    _remove_directory_contents(scanned_app.descriptor, build_identity.device)
-    final_stat = os.stat(FINAL_APP, dir_fd=build_fd, follow_symlinks=False)
-    if not scanned_app.identity.matches(final_stat):
-        raise PackagingError("published app binding changed during cleanup")
-    os.rmdir(FINAL_APP, dir_fd=build_fd)
+    stage_stat = os.stat(stage.name, dir_fd=build_fd, follow_symlinks=False)
+    if (
+        not stage.identity.matches(stage_stat)
+        or not stage.identity.matches(os.fstat(stage.descriptor))
+    ):
+        raise PackagingError("published app rollback staging ownership was lost")
+    _require_device(stage_stat, build_identity.device)
+    _rename_no_replace(build_fd, FINAL_APP, stage.descriptor, FINAL_APP)
+    restored_stat = os.stat(
+        FINAL_APP,
+        dir_fd=stage.descriptor,
+        follow_symlinks=False,
+    )
+    if not scanned_app.identity.matches(restored_stat):
+        raise PackagingError("published app rollback binding changed")
+    _cleanup_owned_stage(build_fd, stage, build_identity.device)
 
 
 def _assemble_staged_app(
@@ -1586,12 +1772,20 @@ def _assemble_staged_app(
         expected_device=build_identity.device,
     )
     try:
+        _remove_directory_contents_except(
+            stage.descriptor,
+            build_identity.device,
+            frozenset({FINAL_APP}),
+        )
+        if set(os.listdir(stage.descriptor)) != {FINAL_APP}:
+            raise PackagingError("publication staging contains unexpected entries")
         _publish_scanned_app(
             repo_fd=repo_fd,
             build_fd=build_fd,
             build_identity=build_identity,
             stage=stage,
             scanned_app=scanned_app,
+            coordinator=coordinator,
         )
         return scanned_app
     except BaseException:
@@ -1630,36 +1824,17 @@ def assemble(repo_path: Path) -> Path:
                         version=version,
                         coordinator=coordinator,
                     )
-                _verify_build_binding(repo_fd, build_fd, build_identity)
             except BaseException as error:
                 operation_error = error
-
-            cleanup_error: BaseException | None = None
-            if published_app is not None and (
-                coordinator.interrupted or operation_error is not None
-            ):
-                try:
-                    _cleanup_exact_published_app(
-                        build_fd,
-                        build_identity,
-                        published_app,
-                    )
-                except BaseException as error:
-                    cleanup_error = error
 
             if coordinator.interrupted:
                 assert coordinator.first_signum is not None
                 interruption = SignalInterruption(coordinator.first_signum)
-                if cleanup_error is not None:
-                    raise interruption from cleanup_error
                 if operation_error is not None:
                     raise interruption from operation_error
                 raise interruption
-            if cleanup_error is not None:
-                raise PackagingError("published app cleanup failed") from cleanup_error
             if operation_error is not None:
                 raise operation_error
-            coordinator.commit()
 
         if published_app is not None:
             os.close(published_app.descriptor)

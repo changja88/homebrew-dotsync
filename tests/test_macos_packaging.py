@@ -912,7 +912,7 @@ def test_repeated_signals_during_cleanup_cannot_interrupt_cleanup(tmp_path):
     _write_support_runner(
         runner,
         injection="""
-real_cleanup = module._cleanup_owned_stage
+real_cleanup = module._remove_directory_contents_except
 sent = False
 def signal_then_cleanup(*args, **kwargs):
     global sent
@@ -921,7 +921,7 @@ def signal_then_cleanup(*args, **kwargs):
         os.kill(os.getpid(), signal.SIGTERM)
         os.kill(os.getpid(), signal.SIGHUP)
     return real_cleanup(*args, **kwargs)
-module._cleanup_owned_stage = signal_then_cleanup
+module._remove_directory_contents_except = signal_then_cleanup
 """,
     )
 
@@ -965,6 +965,247 @@ module._rename_no_replace = rename_then_signal
     )
 
     assert result.returncode == 128 + signal.SIGTERM, result.stdout + result.stderr
+    assert not (project / "build" / "DotSync.app").exists()
+    _assert_no_private_staging(project)
+
+
+@pytest.mark.no_subprocess_block
+@pytest.mark.parametrize("post_rename_failure", ["binding", "stat", "mode"])
+def test_post_rename_validation_failure_rolls_back_through_private_stage(
+    tmp_path,
+    post_rename_failure,
+):
+    """Returning publication state to the caller too late must fail this test."""
+    project, env = _fake_build_project(tmp_path)
+    runner = tmp_path / f"post-rename-{post_rename_failure}-runner.py"
+    injections = {
+        "binding": """
+real_verify = module._verify_build_binding
+def fail_published_binding(repo_fd, build_fd, build_identity):
+    real_verify(repo_fd, build_fd, build_identity)
+    try:
+        os.stat(module.FINAL_APP, dir_fd=build_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    raise module.PackagingError("injected post-rename binding failure")
+module._verify_build_binding = fail_published_binding
+""",
+        "stat": """
+real_rename = module._rename_no_replace
+real_stat = module.os.stat
+renamed = False
+failed = False
+def remember_rename(source_fd, source_name, destination_fd, destination_name):
+    global renamed
+    real_rename(source_fd, source_name, destination_fd, destination_name)
+    if source_name == module.FINAL_APP and destination_name == module.FINAL_APP:
+        renamed = True
+def fail_first_final_stat_after_rename(path, *args, **kwargs):
+    global failed
+    if renamed and not failed and path == module.FINAL_APP:
+        failed = True
+        raise OSError(5, "injected post-rename stat failure")
+    return real_stat(path, *args, **kwargs)
+module._rename_no_replace = remember_rename
+module.os.stat = fail_first_final_stat_after_rename
+""",
+        "mode": """
+real_rename = module._rename_no_replace
+def corrupt_mode_after_rename(source_fd, source_name, destination_fd, destination_name):
+    real_rename(source_fd, source_name, destination_fd, destination_name)
+    if source_name == module.FINAL_APP and destination_name == module.FINAL_APP:
+        os.chmod(destination_name, 0o700, dir_fd=destination_fd)
+module._rename_no_replace = corrupt_mode_after_rename
+""",
+    }
+    _write_support_runner(runner, injection=injections[post_rename_failure])
+
+    result = subprocess.run(
+        [sys.executable, str(runner), str(project), str(SUPPORT_SCRIPT)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert result.returncode != 0
+    assert not (project / "build" / "DotSync.app").exists()
+    _assert_no_private_staging(project)
+
+
+@pytest.mark.no_subprocess_block
+def test_signal_between_tools_prevents_the_next_tool_from_spawning(tmp_path):
+    """Removing the retained-signal check before Popen must add a second spawn."""
+    project, env = _fake_build_project(tmp_path)
+    spawn_log = tmp_path / "spawn.log"
+    env["DOTSYNC_TEST_SPAWN_LOG"] = str(spawn_log)
+    runner = tmp_path / "between-tools-signal-runner.py"
+    _write_support_runner(
+        runner,
+        injection="""
+real_popen = module.subprocess.Popen
+def counted_popen(*args, **kwargs):
+    with open(os.environ["DOTSYNC_TEST_SPAWN_LOG"], "a", encoding="utf-8") as log:
+        log.write("spawn\\n")
+    return real_popen(*args, **kwargs)
+module.subprocess.Popen = counted_popen
+
+real_run_tool = module._run_tool
+completed = 0
+def signal_after_first_tool(*args, **kwargs):
+    global completed
+    result = real_run_tool(*args, **kwargs)
+    completed += 1
+    if completed == 1:
+        os.kill(os.getpid(), signal.SIGTERM)
+    return result
+module._run_tool = signal_after_first_tool
+""",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(runner), str(project), str(SUPPORT_SCRIPT)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert result.returncode == 128 + signal.SIGTERM, result.stdout + result.stderr
+    assert spawn_log.read_text(encoding="utf-8").splitlines() == ["spawn"]
+    assert _logged_calls(env) == [
+        ["xcrun", "--sdk", "macosx", "--show-sdk-path"],
+    ]
+    assert not (project / "build" / "DotSync.app").exists()
+    _assert_no_private_staging(project)
+
+
+@pytest.mark.no_subprocess_block
+def test_signal_at_spawn_barrier_is_delivered_only_after_group_attachment(tmp_path):
+    """Removing the spawn signal mask must expose an unattached signal handler."""
+    project, env = _fake_build_project(tmp_path)
+    handler_log = tmp_path / "handler.log"
+    spawn_log = tmp_path / "spawn.log"
+    env["DOTSYNC_TEST_HANDLER_LOG"] = str(handler_log)
+    env["DOTSYNC_TEST_SPAWN_LOG"] = str(spawn_log)
+    runner = tmp_path / "spawn-barrier-signal-runner.py"
+    _write_support_runner(
+        runner,
+        injection="""
+real_handle = module.SignalCoordinator._handle_signal
+def recorded_handle(self, signum, frame):
+    with open(os.environ["DOTSYNC_TEST_HANDLER_LOG"], "a", encoding="utf-8") as log:
+        log.write("attached\\n" if self._active_process is not None else "unattached\\n")
+    return real_handle(self, signum, frame)
+module.SignalCoordinator._handle_signal = recorded_handle
+
+real_popen = module.subprocess.Popen
+sent = False
+def signal_exactly_before_spawn(*args, **kwargs):
+    global sent
+    with open(os.environ["DOTSYNC_TEST_SPAWN_LOG"], "a", encoding="utf-8") as log:
+        log.write("spawn\\n")
+    if not sent:
+        sent = True
+        os.kill(os.getpid(), signal.SIGTERM)
+    return real_popen(*args, **kwargs)
+module.subprocess.Popen = signal_exactly_before_spawn
+""",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(runner), str(project), str(SUPPORT_SCRIPT)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert result.returncode == 128 + signal.SIGTERM, result.stdout + result.stderr
+    assert spawn_log.read_text(encoding="utf-8").splitlines() == ["spawn"]
+    assert handler_log.read_text(encoding="utf-8").splitlines() == ["attached"]
+    assert not (project / "build" / "DotSync.app").exists()
+    _assert_no_private_staging(project)
+
+
+@pytest.mark.no_subprocess_block
+def test_interrupted_process_group_is_quiesced_before_leader_is_reaped(tmp_path):
+    """Replacing waitid(WNOWAIT) with communicate-before-quiesce must fail."""
+    project, env = _fake_build_project(tmp_path)
+    held_marker = tmp_path / "swift-held"
+    release_marker = tmp_path / "release-swift"
+    swift_pid_file = tmp_path / "swift.pid"
+    grandchild_pid_file = tmp_path / "grandchild.pid"
+    ordering_log = tmp_path / "ordering.log"
+    env.update(
+        {
+            "DOTSYNC_TEST_HOLD_SWIFT": "1",
+            "DOTSYNC_TEST_SWIFT_HELD_MARKER": str(held_marker),
+            "DOTSYNC_TEST_RELEASE_SWIFT_MARKER": str(release_marker),
+            "DOTSYNC_TEST_SWIFT_PID_FILE": str(swift_pid_file),
+            "DOTSYNC_TEST_GRANDCHILD_PID_FILE": str(grandchild_pid_file),
+            "DOTSYNC_TEST_ORDERING_LOG": str(ordering_log),
+        }
+    )
+    runner = tmp_path / "process-group-order-runner.py"
+    _write_support_runner(
+        runner,
+        injection="""
+def record(event):
+    with open(os.environ["DOTSYNC_TEST_ORDERING_LOG"], "a", encoding="utf-8") as log:
+        log.write(event + "\\n")
+
+real_waitid = module.os.waitid
+def recorded_waitid(*args, **kwargs):
+    result = real_waitid(*args, **kwargs)
+    if result is not None:
+        flags = args[2] if len(args) > 2 else kwargs["options"]
+        record(
+            "exit-observed-without-reap"
+            if flags & os.WNOWAIT
+            else "leader-reaped"
+        )
+    return result
+module.os.waitid = recorded_waitid
+
+real_quiesce = module.SignalCoordinator.quiesce_process_group
+def recorded_quiesce(self, process_group, **kwargs):
+    record("group-quiesce")
+    return real_quiesce(self, process_group, **kwargs)
+module.SignalCoordinator.quiesce_process_group = recorded_quiesce
+
+real_popen = module.subprocess.Popen
+sent = False
+def signal_first_swift(*args, **kwargs):
+    global sent
+    process = real_popen(*args, **kwargs)
+    command = args[0] if args else kwargs.get("args", [])
+    if command and command[0] == "swift" and not sent:
+        sent = True
+        os.kill(os.getpid(), signal.SIGTERM)
+    return process
+module.subprocess.Popen = signal_first_swift
+""",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(runner), str(project), str(SUPPORT_SCRIPT)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert result.returncode == 128 + signal.SIGTERM, result.stdout + result.stderr
+    events = ordering_log.read_text(encoding="utf-8").splitlines()
+    observed = events.index("exit-observed-without-reap")
+    quiesced = events.index("group-quiesce", observed)
+    reaped = events.index("leader-reaped", quiesced)
+    assert observed < quiesced < reaped
+    swift_pid = int(swift_pid_file.read_text(encoding="utf-8"))
+    grandchild_pid = int(grandchild_pid_file.read_text(encoding="utf-8"))
+    _assert_process_gone(swift_pid)
+    _assert_process_gone(grandchild_pid)
     assert not (project / "build" / "DotSync.app").exists()
     _assert_no_private_staging(project)
 
@@ -1121,6 +1362,7 @@ def test_scan_to_publish_replacement_is_rejected_before_atomic_rename(tmp_path):
                         build_identity=build_identity,
                         stage=stage,
                         scanned_app=scanned,
+                        coordinator=support.SignalCoordinator(),
                     )
                 assert not (repo / "build" / "DotSync.app").exists()
             finally:
@@ -1204,6 +1446,7 @@ def test_descendant_manifest_change_is_rejected_before_publish(tmp_path, mutatio
                         build_identity=build_identity,
                         stage=stage,
                         scanned_app=scanned,
+                        coordinator=support.SignalCoordinator(),
                     )
                 assert not (repo / "build" / "DotSync.app").exists()
             finally:
@@ -1271,6 +1514,7 @@ def test_publish_revalidates_the_open_staging_descriptor(tmp_path, monkeypatch):
                             build_identity=build_identity,
                             stage=stage,
                             scanned_app=scanned,
+                            coordinator=support.SignalCoordinator(),
                         )
                 assert not (repo / "build" / "DotSync.app").exists()
             finally:
@@ -1304,6 +1548,21 @@ def test_post_publish_final_identity_and_mode_are_proven_before_success(
                 dst_dir_fd=destination_fd,
             )
             os.mkdir(destination_name, mode=0o755, dir_fd=destination_fd)
+            replacement_fd = os.open(
+                destination_name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=destination_fd,
+            )
+            try:
+                marker_fd = os.open(
+                    "replacement-marker",
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                    dir_fd=replacement_fd,
+                )
+                os.close(marker_fd)
+            finally:
+                os.close(replacement_fd)
         else:
             os.chmod(destination_name, 0o700, dir_fd=destination_fd)
 
@@ -1335,25 +1594,27 @@ def test_post_publish_final_identity_and_mode_are_proven_before_success(
                         "_rename_no_replace",
                         mutate_after_rename,
                     )
-                    with pytest.raises(
-                        support.PackagingError,
-                        match="published final app",
-                    ):
+                    with pytest.raises(support.PackagingError) as caught:
                         support._publish_scanned_app(
                             repo_fd=repo_fd,
                             build_fd=build_fd,
                             build_identity=build_identity,
                             stage=stage,
                             scanned_app=scanned,
+                            coordinator=support.SignalCoordinator(),
                         )
             finally:
                 os.close(scanned.descriptor)
-        final_stat = os.lstat(repo / "build" / support.FINAL_APP)
         if post_publish_mutation == "identity":
+            assert "rollback lost exact ownership" in str(caught.value)
             assert (repo / "build" / "published-original").is_dir()
-            assert stat.S_IMODE(final_stat.st_mode) == 0o755
+            assert (
+                repo / "build" / support.FINAL_APP / "replacement-marker"
+            ).read_bytes() == b""
         else:
-            assert stat.S_IMODE(final_stat.st_mode) == 0o700
+            assert "published final app mode" in str(caught.value)
+            assert not (repo / "build" / support.FINAL_APP).exists()
+        assert not list((repo / "build").glob(".dotsync-app-stage.*"))
     finally:
         if build_fd >= 0:
             os.close(build_fd)

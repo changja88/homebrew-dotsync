@@ -46,6 +46,13 @@ small create/open interval cannot be identified perfectly from filesystem
 metadata alone; the random name and fail-closed pristine proof narrow that
 unavoidable local boundary.
 
+Publication rollback is identity-bound too: before committed success, any
+validation failure moves the exact held final app back into the private stage
+with a no-replace rename and deletes it only there. If a same-user peer actively
+rebinds `build/DotSync.app` after publication, the builder reports that exact
+ownership was lost and preserves the replacement. It cannot safely find or
+delete the moved owned inode once another actor has removed its known binding.
+
 Every child build tool runs in its own process group. The first SIGINT, SIGTERM,
 or SIGHUP is retained as the final `128 + signal` status, forwarded to the full
 group, and escalated when descendants do not exit. Later signals cannot raise
