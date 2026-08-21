@@ -242,18 +242,29 @@ public actor MenuSummaryPoller {
     }
 
     public func poll(isActive: Bool) async -> MenuSummaryFetchResult? {
-        guard let ownedGeneration = beginPoll(isActive: isActive)
+        guard reservePoll(isActive: isActive)
         else { return nil }
-        return await fetchResult(generation: ownedGeneration)
+        return await fetchResult(generation: beginFetch())
     }
 
     public func poll(
         isActive: Bool,
         requestStarted: @MainActor @Sendable () -> UInt64
     ) async -> MenuSummaryOwnedFetchResult? {
-        guard let ownedGeneration = beginPoll(isActive: isActive)
+        await poll(
+            isActive: isActive,
+            requestStartedAsync: { requestStarted() }
+        )
+    }
+
+    func poll(
+        isActive: Bool,
+        requestStartedAsync: @MainActor @Sendable () async -> UInt64
+    ) async -> MenuSummaryOwnedFetchResult? {
+        guard reservePoll(isActive: isActive)
         else { return nil }
-        let requestOwner = await requestStarted()
+        let requestOwner = await requestStartedAsync()
+        let ownedGeneration = beginFetch()
         let result = await fetchResult(generation: ownedGeneration)
         return MenuSummaryOwnedFetchResult(
             result: result,
@@ -270,16 +281,16 @@ public actor MenuSummaryPoller {
         result.generation == generation
     }
 
-    private func beginPoll(isActive: Bool) -> UInt64? {
-        guard isActive else { return nil }
+    private func reservePoll(isActive: Bool) -> Bool {
+        guard isActive else { return false }
         let now = monotonicNow()
         if let lastAttempt,
            now - lastAttempt < .seconds(60)
         {
-            return nil
+            return false
         }
         lastAttempt = now
-        return beginFetch()
+        return true
     }
 
     private func beginFetch() -> UInt64 {

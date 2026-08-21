@@ -309,6 +309,98 @@ final class AppCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.summary.summary.usage.highestPercent, 73)
     }
 
+    func testAdmittedPollLinearizesOwnerBeforeGenerationAgainstExplicitReload() async throws {
+        let fetcher = LinearizedCoordinatorSummaryFetcher()
+        let ownerBarrier = SummaryRequestOwnerBarrier()
+        let poller = MenuSummaryPoller(fetcher: fetcher)
+        var newestOwner: UInt64 = 0
+        var rejectedOwnerCalls = 0
+        var committedPercentages: [Double] = []
+
+        let admittedPoll: Task<MenuSummaryOwnedFetchResult?, Never> = Task {
+            @MainActor in
+            await poller.poll(
+                isActive: true,
+                requestStartedAsync: {
+                    await ownerBarrier.pauseUntilReleased()
+                    newestOwner &+= 1
+                    return newestOwner
+                }
+            )
+        }
+        await ownerBarrier.waitUntilPaused()
+
+        let rejectedPoll = await poller.poll(
+            isActive: true,
+            requestStarted: {
+                rejectedOwnerCalls += 1
+                newestOwner &+= 1
+                return newestOwner
+            }
+        )
+        XCTAssertNil(rejectedPoll)
+        XCTAssertEqual(rejectedOwnerCalls, 0)
+        let fetchCountAfterRejection = await fetcher.callCount
+        XCTAssertEqual(fetchCountAfterRejection, 0)
+
+        newestOwner &+= 1
+        let explicitOwner = newestOwner
+        let explicitReload = Task {
+            await poller.reload()
+        }
+        await fetcher.waitUntilStarted(call: 1)
+
+        await ownerBarrier.release()
+        await fetcher.waitUntilStarted(call: 2)
+
+        await fetcher.succeed(
+            call: 1,
+            with: coordinatorSummary(percent: 82)
+        )
+        let explicitResult = await explicitReload.value
+        let explicitPercentage = try XCTUnwrap(
+            explicitResult.summary.usage.highestPercent
+        )
+        await commitAfterNewestSummaryCheck(
+            isNewest: {
+                await poller.ownsNewest(explicitResult)
+            },
+            isStillOwned: {
+                explicitOwner == newestOwner
+            },
+            commit: {
+                committedPercentages.append(explicitPercentage)
+            }
+        )
+
+        await fetcher.succeed(
+            call: 2,
+            with: coordinatorSummary(percent: 73)
+        )
+        let admittedCandidate = await admittedPoll.value
+        let admittedResult = try XCTUnwrap(admittedCandidate)
+        let admittedPercentage = try XCTUnwrap(
+            admittedResult.result.summary.usage.highestPercent
+        )
+        await commitAfterNewestSummaryCheck(
+            isNewest: {
+                await poller.ownsNewest(admittedResult.result)
+            },
+            isStillOwned: {
+                admittedResult.requestOwner == newestOwner
+            },
+            commit: {
+                committedPercentages.append(admittedPercentage)
+            }
+        )
+
+        XCTAssertEqual(admittedResult.requestOwner, 2)
+        XCTAssertEqual(newestOwner, 2)
+        let finalFetchCount = await fetcher.callCount
+        XCTAssertEqual(finalFetchCount, 2)
+        XCTAssertEqual(committedPercentages, [73])
+    }
+
     func testSummaryCommitRevalidatesOwnershipAfterFinalActorHop() async {
         let newestCheck = SummaryNewestCheckBarrier()
         var requestIsStillOwned = true
@@ -956,6 +1048,70 @@ private actor CountingCoordinatorSummaryFetcher: MenuSummaryFetching {
     func fetch() async throws -> MenuSummary {
         count += 1
         return .unknown
+    }
+}
+
+private actor SummaryRequestOwnerBarrier {
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+    private var pauseObservers: [CheckedContinuation<Void, Never>] = []
+
+    func pauseUntilReleased() async {
+        await withCheckedContinuation { continuation in
+            precondition(releaseContinuation == nil)
+            releaseContinuation = continuation
+            let observers = pauseObservers
+            pauseObservers.removeAll()
+            observers.forEach { $0.resume() }
+        }
+    }
+
+    func waitUntilPaused() async {
+        guard releaseContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            pauseObservers.append(continuation)
+        }
+    }
+
+    func release() {
+        let continuation = releaseContinuation
+        releaseContinuation = nil
+        continuation?.resume()
+    }
+}
+
+private actor LinearizedCoordinatorSummaryFetcher: MenuSummaryFetching {
+    private var calls = 0
+    private var fetchContinuations: [
+        Int: CheckedContinuation<MenuSummary, any Error>
+    ] = [:]
+    private var startObservers: [
+        Int: [CheckedContinuation<Void, Never>]
+    ] = [:]
+
+    var callCount: Int {
+        calls
+    }
+
+    func fetch() async throws -> MenuSummary {
+        calls += 1
+        let call = calls
+        let observers = startObservers.removeValue(forKey: call) ?? []
+        observers.forEach { $0.resume() }
+        return try await withCheckedThrowingContinuation { continuation in
+            fetchContinuations[call] = continuation
+        }
+    }
+
+    func waitUntilStarted(call: Int) async {
+        guard calls < call else { return }
+        await withCheckedContinuation { continuation in
+            startObservers[call, default: []].append(continuation)
+        }
+    }
+
+    func succeed(call: Int, with summary: MenuSummary) {
+        let continuation = fetchContinuations.removeValue(forKey: call)
+        continuation?.resume(returning: summary)
     }
 }
 
