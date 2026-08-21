@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 import XCTest
 @testable import DotSyncNative
@@ -18,7 +17,7 @@ final class BackendProcessTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    func testStartUsesStdoutHandshakeAndStdinLifetimePipe() throws {
+    func testStartUsesStdoutHandshakeAndStdinLifetimePipe() async throws {
         let fixture = try makeFixture(.valid)
         let backend = BackendProcess(
             testOverride: fixture.executableURL,
@@ -31,9 +30,9 @@ final class BackendProcessTests: XCTestCase {
         XCTAssertTrue(fixture.waitForArguments(timeout: .seconds(1)))
         XCTAssertTrue(fixture.isRunning)
 
-        backend.stop()
+        try await backend.stop()
 
-        XCTAssertTrue(fixture.waitedForControlEOF)
+        XCTAssertTrue(fixture.waitForControlEOF(timeout: .seconds(1)))
         XCTAssertTrue(fixture.waitUntilStopped(timeout: .seconds(1)))
     }
 
@@ -85,7 +84,7 @@ final class BackendProcessTests: XCTestCase {
         XCTAssertTrue(fixture.waitUntilStopped(timeout: .seconds(1)))
     }
 
-    func testDelayedStdoutByteAfterStartNotifiesProtocolErrorExactlyOnce() throws {
+    func testDelayedStdoutByteAfterStartNotifiesProtocolErrorExactlyOnce() async throws {
         let fixture = try makeFixture(.extraStdoutAfterRelease)
         let events = LockedBox<[BackendError]>([])
         let callback = DispatchSemaphore(value: 0)
@@ -103,7 +102,7 @@ final class BackendProcessTests: XCTestCase {
 
         XCTAssertEqual(callback.wait(timeout: .now() + 1), .success)
         XCTAssertTrue(fixture.waitUntilStopped(timeout: .seconds(1)))
-        backend.stop()
+        try await backend.stop()
         XCTAssertEqual(events.value, [.backendProtocolError])
     }
 
@@ -119,7 +118,7 @@ final class BackendProcessTests: XCTestCase {
         XCTAssertTrue(fixture.waitUntilStopped(timeout: .seconds(1)))
     }
 
-    func testChildExitAfterStartUpdatesStateExactlyOnce() throws {
+    func testChildExitAfterStartUpdatesStateExactlyOnce() async throws {
         let fixture = try makeFixture(.exitAfterRelease)
         let events = LockedBox<[BackendError]>([])
         let callback = DispatchSemaphore(value: 0)
@@ -137,11 +136,11 @@ final class BackendProcessTests: XCTestCase {
 
         XCTAssertEqual(callback.wait(timeout: .now() + 1), .success)
         XCTAssertTrue(fixture.waitUntilStopped(timeout: .seconds(1)))
-        backend.stop()
+        try await backend.stop()
         XCTAssertEqual(events.value, [.backendExited])
     }
 
-    func testStopEscalatesFromControlEOFToTermThenKill() throws {
+    func testStopEscalatesFromControlEOFToTermThenKill() async throws {
         let fixture = try makeFixture(.ignoresShutdown)
         let backend = BackendProcess(
             testOverride: fixture.executableURL,
@@ -150,7 +149,7 @@ final class BackendProcessTests: XCTestCase {
         _ = try backend.start()
         let started = DispatchTime.now()
 
-        backend.stop()
+        try await backend.stop()
 
         let elapsed = Double(DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds)
             / 1_000_000_000
@@ -159,30 +158,27 @@ final class BackendProcessTests: XCTestCase {
         XCTAssertTrue(fixture.waitUntilStopped(timeout: .seconds(1)))
     }
 
-    func testStopIsIdempotentWhenCalledConcurrently() throws {
+    func testStopIsIdempotentWhenCalledConcurrently() async throws {
         let fixture = try makeFixture(.valid)
         let backend = BackendProcess(
             testOverride: fixture.executableURL,
             handshakeTimeout: .seconds(1)
         )
         _ = try backend.start()
-        let group = DispatchGroup()
-        let queue = DispatchQueue(label: "BackendProcessTests.stop", attributes: .concurrent)
-
-        for _ in 0..<8 {
-            group.enter()
-            queue.async {
-                backend.stop()
-                group.leave()
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<8 {
+                group.addTask {
+                    try await backend.stop()
+                }
             }
+            try await group.waitForAll()
         }
 
-        XCTAssertEqual(group.wait(timeout: .now() + 2), .success)
         XCTAssertTrue(fixture.waitedForControlEOF)
         XCTAssertTrue(fixture.waitUntilStopped(timeout: .seconds(1)))
     }
 
-    func testConcurrentStartAndStopAreSerialized() throws {
+    func testConcurrentStartAndStopAreSerialized() async throws {
         let fixture = try makeFixture(.handshakeAfterRelease)
         let backend = BackendProcess(
             testOverride: fixture.executableURL,
@@ -203,24 +199,23 @@ final class BackendProcessTests: XCTestCase {
         }
         XCTAssertTrue(fixture.waitForReady(timeout: .seconds(1)))
         let stopAttempted = DispatchSemaphore(value: 0)
-        group.enter()
-        DispatchQueue.global().async {
+        let stopTask = Task {
             stopAttempted.signal()
-            backend.stop()
-            group.leave()
+            try await backend.stop()
         }
         XCTAssertEqual(stopAttempted.wait(timeout: .now() + 1), .success)
 
         try fixture.release()
 
         XCTAssertEqual(group.wait(timeout: .now() + 2), .success)
+        try await stopTask.value
         XCTAssertNotNil(session.value)
         XCTAssertNil(startError.value)
         XCTAssertTrue(fixture.waitedForControlEOF)
         XCTAssertTrue(fixture.waitUntilStopped(timeout: .seconds(1)))
     }
 
-    func testSecondStartIsRejectedWithoutReplacingOwnedChild() throws {
+    func testSecondStartIsRejectedWithoutReplacingOwnedChild() async throws {
         let fixture = try makeFixture(.valid)
         let backend = BackendProcess(
             testOverride: fixture.executableURL,
@@ -231,7 +226,118 @@ final class BackendProcessTests: XCTestCase {
         assertStartError(.backendStartFailed, backend: backend)
 
         XCTAssertTrue(fixture.isRunning)
-        backend.stop()
+        try await backend.stop()
+        XCTAssertTrue(fixture.waitUntilStopped(timeout: .seconds(1)))
+    }
+
+    func testStartDuringStillRunningStopCannotLaunchASecondChild() async throws {
+        let fixture = try makeFixture(.ignoresShutdown)
+        let backend = BackendProcess(
+            testOverride: fixture.executableURL,
+            handshakeTimeout: .seconds(1)
+        )
+        _ = try backend.start()
+        let stopTask = Task {
+            try await backend.stop()
+        }
+        XCTAssertTrue(fixture.waitForTerm(timeout: .seconds(4)))
+
+        assertStartError(.backendStartFailed, backend: backend)
+
+        XCTAssertEqual(fixture.launchCount, 1)
+        try await stopTask.value
+        XCTAssertEqual(fixture.launchCount, 1)
+        XCTAssertTrue(fixture.waitUntilStopped(timeout: .seconds(1)))
+    }
+
+    func testAwaitedStopReapsOnBackgroundExecutorWithoutBlockingMainActor() async throws {
+        let fixture = try makeFixture(.valid)
+        let system = FirstWaitBarrierSystem()
+        let backend = BackendProcess(
+            testOverride: fixture.executableURL,
+            handshakeTimeout: .seconds(1),
+            system: system
+        )
+        _ = try backend.start()
+        let stopTask = Task { @MainActor in
+            try await backend.stop()
+        }
+        XCTAssertEqual(system.waitEntered.wait(timeout: .now() + 1), .success)
+
+        let mainActorAdvanced = await Task { @MainActor in
+            true
+        }.value
+
+        XCTAssertTrue(mainActorAdvanced)
+        system.allowWait.signal()
+        try await stopTask.value
+        XCTAssertTrue(fixture.waitUntilStopped(timeout: .seconds(1)))
+    }
+
+    func testPhysicalExitBeforeStopIntentReportsUnexpectedExitExactlyOnce() async throws {
+        let fixture = try makeFixture(.exitAfterRelease)
+        let terminationReached = DispatchSemaphore(value: 0)
+        let allowTerminationRecord = DispatchSemaphore(value: 0)
+        let events = LockedBox<[BackendError]>([])
+        let callback = DispatchSemaphore(value: 0)
+        let backend = BackendProcess(
+            testOverride: fixture.executableURL,
+            handshakeTimeout: .seconds(1),
+            onUnexpectedExit: { error in
+                events.withValue { $0.append(error) }
+                callback.signal()
+            },
+            system: FoundationBackendProcessSystem(),
+            testHooks: BackendProcessTestHooks(
+                beforeTerminationRecord: {
+                    terminationReached.signal()
+                    allowTerminationRecord.wait()
+                }
+            )
+        )
+        _ = try backend.start()
+        try fixture.release()
+        XCTAssertEqual(terminationReached.wait(timeout: .now() + 1), .success)
+
+        let stopTask = Task {
+            try await backend.stop()
+        }
+
+        XCTAssertEqual(callback.wait(timeout: .now() + 1), .success)
+        allowTerminationRecord.signal()
+        try await stopTask.value
+        XCTAssertTrue(fixture.waitUntilStopped(timeout: .seconds(1)))
+        XCTAssertEqual(events.value, [.backendExited])
+    }
+
+    func testUnconfirmedFinalKillRetainsOwnerUntilBackgroundReaperConfirmsExit() async throws {
+        let fixture = try makeFixture(.ignoresShutdown)
+        let system = FailFirstKillSystem()
+        let backend = BackendProcess(
+            testOverride: fixture.executableURL,
+            handshakeTimeout: .seconds(1),
+            system: system
+        )
+        _ = try backend.start()
+
+        do {
+            try await backend.stop()
+            XCTFail("Expected normalized unconfirmed-exit failure")
+        } catch {
+            XCTAssertEqual(error as? BackendError, .backendExited)
+            XCTAssertEqual(error.localizedDescription, "backend_exited")
+            XCTAssertFalse(error.localizedDescription.contains(fixture.directoryURL.path))
+        }
+        let retainedStop = Task {
+            try await backend.stop()
+        }
+        XCTAssertEqual(system.retryEntered.wait(timeout: .now() + 2), .success)
+
+        assertStartError(.backendStartFailed, backend: backend)
+
+        XCTAssertEqual(fixture.launchCount, 1)
+        system.allowRetry.signal()
+        try await retainedStop.value
         XCTAssertTrue(fixture.waitUntilStopped(timeout: .seconds(1)))
     }
 
@@ -245,11 +351,11 @@ final class BackendProcessTests: XCTestCase {
 
         backend = nil
 
-        XCTAssertTrue(fixture.waitedForControlEOF)
+        XCTAssertTrue(fixture.waitForControlEOF(timeout: .seconds(1)))
         XCTAssertTrue(fixture.waitUntilStopped(timeout: .seconds(1)))
     }
 
-    func testStderrIsDiscardedAndSensitiveEnvironmentIsRemoved() throws {
+    func testStderrIsDiscardedAndSensitiveEnvironmentIsRemoved() async throws {
         let fixture = try makeFixture(.stderrFlood)
         let backend = BackendProcess(
             testOverride: fixture.executableURL,
@@ -288,7 +394,7 @@ final class BackendProcessTests: XCTestCase {
             ]
         )
         XCTAssertTrue(fixture.waitForArguments(timeout: .seconds(1)))
-        backend.stop()
+        try await backend.stop()
         XCTAssertTrue(fixture.waitUntilStopped(timeout: .seconds(1)))
     }
 
@@ -337,6 +443,7 @@ private final class NativeHostFixture {
     let directoryURL: URL
     let executableURL: URL
     private let argumentsURL: URL
+    private let launchesURL: URL
     private let controlEOFURL: URL
     private let pidURL: URL
     private let readyURL: URL
@@ -353,6 +460,7 @@ private final class NativeHostFixture {
         directoryURL = directory
         executableURL = directory.appendingPathComponent("native-host-fixture")
         argumentsURL = directory.appendingPathComponent("arguments-ok")
+        launchesURL = directory.appendingPathComponent("launches")
         controlEOFURL = directory.appendingPathComponent("control-eof")
         pidURL = directory.appendingPathComponent("pid")
         readyURL = directory.appendingPathComponent("ready")
@@ -377,6 +485,13 @@ private final class NativeHostFixture {
         FileManager.default.fileExists(atPath: termURL.path)
     }
 
+    var launchCount: Int {
+        guard let data = try? Data(contentsOf: launchesURL),
+              let source = String(data: data, encoding: .utf8)
+        else { return 0 }
+        return source.split(separator: "\n").count
+    }
+
     var isRunning: Bool {
         guard let pid = processID else { return false }
         return kill(pid, 0) == 0
@@ -386,8 +501,16 @@ private final class NativeHostFixture {
         waitForFile(argumentsURL, timeout: timeout)
     }
 
+    func waitForControlEOF(timeout: Duration) -> Bool {
+        waitForFile(controlEOFURL, timeout: timeout)
+    }
+
     func waitForReady(timeout: Duration) -> Bool {
         waitForFile(readyURL, timeout: timeout)
+    }
+
+    func waitForTerm(timeout: Duration) -> Bool {
+        waitForFile(termURL, timeout: timeout)
     }
 
     func release() throws {
@@ -433,6 +556,7 @@ private final class NativeHostFixture {
         let preamble = """
         #!/bin/sh
         printf '%s' "$$" > '\(pidURL.path)'
+        printf 'x\\n' >> '\(launchesURL.path)'
         if [ "$#" -eq 2 ] && [ "$1" = "ui" ] && [ "$2" = "--native-host" ]; then
             : > '\(argumentsURL.path)'
         fi
@@ -507,6 +631,83 @@ private final class NativeHostFixture {
             : > '\(controlEOFURL.path)'
             """
         }
+    }
+}
+
+private final class FirstWaitBarrierSystem: BackendProcessSystem,
+    @unchecked Sendable {
+    let waitEntered = DispatchSemaphore(value: 0)
+    let allowWait = DispatchSemaphore(value: 0)
+    private let base = FoundationBackendProcessSystem()
+    private let lock = NSLock()
+    private var blockedFirstWait = false
+
+    func isRunning(_ process: Process) -> Bool {
+        base.isRunning(process)
+    }
+
+    func waitForExit(
+        _ process: Process,
+        signal: DispatchSemaphore,
+        timeout: Duration
+    ) -> Bool {
+        lock.lock()
+        let shouldBlock = !blockedFirstWait
+        blockedFirstWait = true
+        lock.unlock()
+        if shouldBlock {
+            waitEntered.signal()
+            allowWait.wait()
+        }
+        return base.waitForExit(process, signal: signal, timeout: timeout)
+    }
+
+    func sendTerminate(_ process: Process) -> Bool {
+        base.sendTerminate(process)
+    }
+
+    func sendKill(_ process: Process) -> Bool {
+        base.sendKill(process)
+    }
+}
+
+private final class FailFirstKillSystem: BackendProcessSystem,
+    @unchecked Sendable {
+    let retryEntered = DispatchSemaphore(value: 0)
+    let allowRetry = DispatchSemaphore(value: 0)
+    private let base = FoundationBackendProcessSystem()
+    private let lock = NSLock()
+    private var killAttempts = 0
+
+    func isRunning(_ process: Process) -> Bool {
+        base.isRunning(process)
+    }
+
+    func waitForExit(
+        _ process: Process,
+        signal: DispatchSemaphore,
+        timeout: Duration
+    ) -> Bool {
+        base.waitForExit(process, signal: signal, timeout: timeout)
+    }
+
+    func sendTerminate(_ process: Process) -> Bool {
+        base.sendTerminate(process)
+    }
+
+    func sendKill(_ process: Process) -> Bool {
+        lock.lock()
+        killAttempts += 1
+        let attempt = killAttempts
+        lock.unlock()
+        if attempt == 1 {
+            return false
+        }
+        if attempt == 2 {
+            retryEntered.signal()
+            allowRetry.wait()
+        }
+        return base.sendKill(process)
     }
 }
 

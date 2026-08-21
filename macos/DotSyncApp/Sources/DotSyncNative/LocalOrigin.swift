@@ -65,30 +65,17 @@ public struct LocalOrigin: Equatable, Sendable,
     }
 
     public func accepts(_ url: URL) -> Bool {
-        guard let candidate = URLComponents(
-            url: url,
-            resolvingAgainstBaseURL: false
-        ),
-        let expected = URLComponents(
-            url: baseURL,
-            resolvingAgainstBaseURL: false
-        ),
-        candidate.scheme == "http",
-        candidate.host == "127.0.0.1",
-        candidate.port == expected.port,
-        candidate.user == nil,
-        candidate.password == nil,
-        candidate.fragment == nil,
-        candidate.path.isEmpty || candidate.path == "/"
-        else { return false }
-        if candidate.queryItems == nil { return true }
+        guard let port = baseURL.port else { return false }
+        let serialized = url.absoluteString
+        let root = "http://127.0.0.1:\(port)"
+        if serialized == root || serialized == root + "/" { return true }
         return Surface.allCases.contains { surface in
             Destination.allCases.contains { destination in
-                candidate.queryItems == [
-                    URLQueryItem(name: "token", value: token),
-                    URLQueryItem(name: "surface", value: surface.rawValue),
-                    URLQueryItem(name: "destination", value: destination.rawValue),
-                ]
+                guard let expected = try? launchURL(
+                    surface: surface,
+                    destination: destination
+                ) else { return false }
+                return serialized == expected.absoluteString
             }
         }
     }
