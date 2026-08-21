@@ -10,6 +10,7 @@ import tomllib
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -21,11 +22,11 @@ from dotsync.accounts import ManagedAccount, ProviderIdentity
 from dotsync.app_paths import AppPaths
 from dotsync.app_state import AppState, AppStateStore
 from dotsync.apps import build_app
-from dotsync.apps.base import App, FilePair
+from dotsync.apps.base import App, AppStatus, FilePair
 from dotsync.config import Config, save_config
 from dotsync.jobs import JobContext, JobView, RegistryClosed
 from dotsync.providers import LoginProgress
-from dotsync.sync_service import StaleSyncPlan, SyncService, SyncStatus
+from dotsync.sync_service import StaleSyncPlan, SyncAppStatus, SyncService, SyncStatus
 from dotsync.usage import UsageResult, UsageSnapshot, UsageWindow
 from dotsync.web import WebApplication, run_ui_server
 
@@ -415,6 +416,8 @@ def stack(tmp_path):
     revealed: list[Path] = []
     opened_urls: list[str] = []
     initializer = _Initializer(events)
+    observed_now = datetime(2026, 8, 21, 9, 0, tzinfo=timezone.utc)
+    utc_clock = lambda: observed_now
 
     application = WebApplication(
         paths=paths,
@@ -426,6 +429,7 @@ def stack(tmp_path):
         sync_folder_initializer=initializer,
         reveal_app_data=revealed.append,
         open_provider_url=opened_urls.append,
+        utc_clock=utc_clock,
     )
     server = run_ui_server(application, poll_interval=0.01)
     value = _Stack(
@@ -515,22 +519,28 @@ def _account(
     )
 
 
-def _snapshot(account_id: str) -> UsageSnapshot:
+def _snapshot(
+    account_id: str,
+    *,
+    used_percent: float = 42.0,
+    observed_at: str = "2026-08-21T00:00:00Z",
+    provider: str = "codex",
+) -> UsageSnapshot:
     return UsageSnapshot(
         account_id=account_id,
-        provider="codex",
+        provider=provider,
         windows=(
             UsageWindow(
                 name="five_hour",
                 limit_id="codex",
                 label=None,
-                used_percent=42.0,
+                used_percent=used_percent,
                 duration_minutes=300,
                 resets_at="2026-08-21T05:00:00Z",
             ),
         ),
-        observed_at="2026-08-21T00:00:00Z",
-        source="codex_app_server",
+        observed_at=observed_at,
+        source="codex_app_server" if provider == "codex" else "claude_usage",
         provider_version="1.0.0",
     )
 
@@ -597,6 +607,414 @@ def _assert_live_sync(
         json_body={"direction": "backup", "apps": [excluded]},
     )
     assert rejected.status == 400
+
+
+def _set_sync_status(stack: _Stack, *states: str) -> None:
+    names = ("zsh", "ghostty", "codex", "herdr")
+    stack.sync.status_result = SyncStatus(
+        sync_dir=stack.sync.config.dir,
+        apps=tuple(
+            SyncAppStatus(
+                name=name,
+                status=AppStatus(
+                    state=state,
+                    direction="local-newer" if state == "dirty" else "",
+                ),
+            )
+            for name, state in zip(names[: len(states)], states, strict=True)
+        ),
+    )
+
+
+def _add_account_with_snapshot(
+    stack: _Stack,
+    *,
+    provider: str = "codex",
+    label: str = "Personal",
+    used_percent: float = 42.0,
+    observed_at: str = "2026-08-21T09:00:00Z",
+) -> ManagedAccount:
+    account = _account(provider=provider, label=label)
+    stack.accounts.accounts[account.id] = account
+    stack.usage.cached_snapshots[account.id] = _snapshot(
+        account.id,
+        used_percent=used_percent,
+        observed_at=observed_at,
+        provider=provider,
+    )
+    return account
+
+
+def test_menu_summary_reads_cache_without_provider_work_or_identity_leakage(stack):
+    account = _add_account_with_snapshot(
+        stack,
+        label="Codex Personal",
+        used_percent=72.0,
+    )
+    _set_sync_status(stack, "dirty")
+    assert stack.client.request("GET", "/api/sync/status").status == 200
+    stack.usage.calls.clear()
+    stack.sync.calls.clear()
+    prior_state_events = list(stack.state.events)
+
+    response = stack.client.request("GET", "/api/menu-summary")
+
+    assert response.status == 200
+    assert response.json() == {
+        "usage": {"state": "fresh", "highest_percent": 72.0},
+        "sync": {"state": "fresh", "attention_count": 1},
+        "observed_at": "2026-08-21T09:00:00Z",
+    }
+    encoded = response.body.decode()
+    assert account.id not in encoded
+    assert account.label not in encoded
+    assert str(stack.paths.root) not in encoded
+    assert stack.usage.calls == [("list",), ("cached_usage", account.id)]
+    assert stack.sync.calls == []
+    assert stack.application.jobs.list_jobs() == []
+    assert stack.state.events == prior_state_events
+
+
+def test_menu_summary_fails_closed_for_cache_exception_without_error_detail(
+    stack, monkeypatch
+):
+    _add_account_with_snapshot(stack, label="No cache")
+
+    def fail_cache(account_id: str):
+        raise ValueError("secret-cache-detail")
+
+    monkeypatch.setattr(stack.usage, "cached_usage", fail_cache)
+
+    response = stack.client.request("GET", "/api/menu-summary")
+
+    assert response.status == 200
+    assert response.json()["usage"] == {
+        "state": "unknown",
+        "highest_percent": None,
+    }
+    assert "secret-cache-detail" not in response.body.decode()
+
+
+def test_menu_summary_reports_unknown_without_a_managed_codex_account(stack):
+    response = stack.client.request("GET", "/api/menu-summary")
+
+    assert response.status == 200
+    assert response.json() == {
+        "usage": {"state": "unknown", "highest_percent": None},
+        "sync": {"state": "unknown", "attention_count": None},
+        "observed_at": None,
+    }
+
+
+def test_menu_summary_marks_an_old_cached_snapshot_stale(stack):
+    _add_account_with_snapshot(
+        stack,
+        used_percent=64.0,
+        observed_at="2026-08-21T08:44:59Z",
+    )
+
+    response = stack.client.request("GET", "/api/menu-summary")
+
+    assert response.status == 200
+    assert response.json() == {
+        "usage": {"state": "stale", "highest_percent": 64.0},
+        "sync": {"state": "unknown", "attention_count": None},
+        "observed_at": "2026-08-21T08:44:59Z",
+    }
+
+
+def test_menu_summary_marks_mixed_fresh_and_missing_accounts_stale(stack):
+    cached = _add_account_with_snapshot(stack, used_percent=35.0)
+    missing = _account(label="Missing")
+    stack.accounts.accounts[missing.id] = missing
+
+    response = stack.client.request("GET", "/api/menu-summary")
+
+    assert response.status == 200
+    assert response.json()["usage"] == {
+        "state": "stale",
+        "highest_percent": 35.0,
+    }
+    assert stack.usage.calls == [
+        ("list",),
+        ("cached_usage", cached.id),
+        ("cached_usage", missing.id),
+    ]
+
+
+@pytest.mark.parametrize("used_percent", [0.0, 100.0])
+def test_menu_summary_preserves_valid_percentage_boundaries(stack, used_percent):
+    _add_account_with_snapshot(stack, used_percent=used_percent)
+
+    response = stack.client.request("GET", "/api/menu-summary")
+
+    assert response.status == 200
+    assert response.json()["usage"] == {
+        "state": "fresh",
+        "highest_percent": used_percent,
+    }
+
+
+@pytest.mark.parametrize("invalid_percentage", [float("nan"), float("inf")])
+def test_menu_summary_fails_closed_for_non_finite_cached_percentages(
+    stack, invalid_percentage
+):
+    account = _add_account_with_snapshot(stack)
+    snapshot = stack.usage.cached_snapshots[account.id]
+    object.__setattr__(snapshot.windows[0], "used_percent", invalid_percentage)
+
+    response = stack.client.request("GET", "/api/menu-summary")
+
+    assert response.status == 200
+    assert response.json()["usage"] == {
+        "state": "unknown",
+        "highest_percent": None,
+    }
+
+
+@pytest.mark.parametrize("invalid_cache", [object(), {"used_percent": 72.0}])
+def test_menu_summary_fails_closed_for_wrong_cached_dto_types(stack, invalid_cache):
+    account = _account()
+    stack.accounts.accounts[account.id] = account
+    stack.usage.cached_snapshots[account.id] = invalid_cache
+
+    response = stack.client.request("GET", "/api/menu-summary")
+
+    assert response.status == 200
+    assert response.json()["usage"] == {
+        "state": "unknown",
+        "highest_percent": None,
+    }
+
+
+def test_menu_summary_ignores_synthetic_claude_records(stack):
+    claude = _add_account_with_snapshot(
+        stack,
+        provider="claude",
+        label="Claude Secret",
+        used_percent=99.0,
+    )
+    codex = _add_account_with_snapshot(stack, used_percent=18.0)
+
+    response = stack.client.request("GET", "/api/menu-summary")
+
+    assert response.status == 200
+    assert response.json()["usage"] == {
+        "state": "fresh",
+        "highest_percent": 18.0,
+    }
+    assert stack.usage.calls == [("list",), ("cached_usage", codex.id)]
+    assert claude.id not in response.body.decode()
+    assert claude.label not in response.body.decode()
+
+
+def test_menu_summary_counts_non_clean_apps_without_retaining_names(stack):
+    _set_sync_status(stack, "clean", "dirty", "missing", "unknown")
+    assert stack.client.request("GET", "/api/sync/status").status == 200
+
+    response = stack.client.request("GET", "/api/menu-summary")
+
+    assert response.status == 200
+    assert response.json()["sync"] == {
+        "state": "fresh",
+        "attention_count": 3,
+    }
+    encoded = response.body.decode()
+    for name in ("zsh", "ghostty", "codex", "herdr"):
+        assert name not in encoded
+
+
+def test_menu_summary_keeps_newest_concurrent_explicit_sync_observation(
+    stack, monkeypatch
+):
+    older_clock_entered = threading.Event()
+    release_older_clock = threading.Event()
+    call_lock = threading.Lock()
+    status_calls = 0
+    clock_calls = 0
+
+    def status():
+        nonlocal status_calls
+        with call_lock:
+            status_calls += 1
+            call = status_calls
+        state = "dirty" if call == 1 else "clean"
+        return SyncStatus(
+            sync_dir=stack.sync.config.dir,
+            apps=(
+                SyncAppStatus(
+                    name="zsh",
+                    status=AppStatus(
+                        state=state,
+                        direction="local-newer" if state == "dirty" else "",
+                    ),
+                ),
+            ),
+        )
+
+    def clock():
+        nonlocal clock_calls
+        with call_lock:
+            clock_calls += 1
+            call = clock_calls
+        if call == 1:
+            older_clock_entered.set()
+            assert release_older_clock.wait(timeout=2.0)
+            return datetime(2026, 8, 21, 8, 59, tzinfo=timezone.utc)
+        return datetime(2026, 8, 21, 9, 0, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(stack.sync, "status", status)
+    stack.application._api._clock = clock
+    older = _start_request(
+        lambda: stack.client.request("GET", "/api/sync/status")
+    )
+    assert older_clock_entered.wait(timeout=2.0)
+
+    newer = stack.client.request("GET", "/api/sync/status")
+    release_older_clock.set()
+    older_response = older.finish()
+    summary = stack.client.request("GET", "/api/menu-summary")
+
+    assert newer.status == 200
+    assert older_response.status == 200
+    assert summary.json()["sync"] == {
+        "state": "fresh",
+        "attention_count": 0,
+    }
+    assert summary.json()["observed_at"] == "2026-08-21T09:00:00Z"
+
+
+def test_menu_summary_marks_a_sync_observation_older_than_fifteen_minutes_stale(
+    stack,
+):
+    _set_sync_status(stack, "clean")
+    assert stack.client.request("GET", "/api/sync/status").status == 200
+    stack.application._api._clock = lambda: datetime(
+        2026, 8, 21, 9, 15, 1, tzinfo=timezone.utc
+    )
+
+    response = stack.client.request("GET", "/api/menu-summary")
+
+    assert response.status == 200
+    assert response.json()["sync"] == {
+        "state": "stale",
+        "attention_count": 0,
+    }
+
+
+def test_menu_summary_does_not_record_an_invalid_sync_status(stack):
+    stack.sync.status_result = object()
+
+    status = stack.client.request("GET", "/api/sync/status")
+    summary = stack.client.request("GET", "/api/menu-summary")
+
+    assert status.status == 500
+    assert summary.status == 200
+    assert summary.json()["sync"] == {
+        "state": "unknown",
+        "attention_count": None,
+    }
+
+
+def test_menu_summary_fails_closed_when_sync_observation_read_raises(
+    stack, monkeypatch
+):
+    _set_sync_status(stack, "dirty")
+    assert stack.client.request("GET", "/api/sync/status").status == 200
+
+    def fail_observation():
+        raise RuntimeError("private-sync-detail")
+
+    monkeypatch.setattr(
+        stack.application._api,
+        "_safe_sync_attention_observation",
+        fail_observation,
+        raising=False,
+    )
+
+    response = stack.client.request("GET", "/api/menu-summary")
+
+    assert response.status == 200
+    assert response.json()["sync"] == {
+        "state": "unknown",
+        "attention_count": None,
+    }
+    assert "private-sync-detail" not in response.body.decode()
+
+
+def test_menu_summary_fails_closed_when_utc_clock_raises(stack):
+    _add_account_with_snapshot(stack, used_percent=88.0)
+
+    def fail_clock():
+        raise RuntimeError("private-clock-detail")
+
+    stack.application._api._clock = fail_clock
+
+    response = stack.client.request("GET", "/api/menu-summary")
+
+    assert response.status == 200
+    assert response.json() == {
+        "usage": {"state": "unknown", "highest_percent": None},
+        "sync": {"state": "unknown", "attention_count": None},
+        "observed_at": None,
+    }
+    assert "private-clock-detail" not in response.body.decode()
+
+
+def test_menu_summary_invalidates_sync_observation_after_app_transition(stack):
+    _set_sync_status(stack, "clean")
+    assert stack.client.request("GET", "/api/sync/status").status == 200
+
+    updated = stack.client.request(
+        "PATCH",
+        "/api/sync/apps",
+        json_body={"apps": ["zsh", "ghostty"]},
+    )
+    summary = stack.client.request("GET", "/api/menu-summary")
+
+    assert updated.status == 200
+    assert summary.json()["sync"] == {
+        "state": "unknown",
+        "attention_count": None,
+    }
+
+
+def test_menu_summary_invalidates_sync_observation_after_folder_transition(
+    stack, tmp_path
+):
+    _set_sync_status(stack, "clean")
+    assert stack.client.request("GET", "/api/sync/status").status == 200
+    selected_dir = tmp_path / "replacement-sync"
+    selected_dir.mkdir()
+    stack.picker.selected = selected_dir
+
+    selected = stack.client.request("POST", "/api/settings/sync-folder/select")
+    summary = stack.client.request("GET", "/api/menu-summary")
+
+    assert selected.status == 200
+    assert summary.json()["sync"] == {
+        "state": "unknown",
+        "attention_count": None,
+    }
+
+
+def test_menu_summary_invalidates_sync_observation_after_execute_transition(stack):
+    _set_sync_status(stack, "clean")
+    assert stack.client.request("GET", "/api/sync/status").status == 200
+    digest = _issue_sync_digest(stack)
+
+    accepted = stack.client.request(
+        "POST",
+        "/api/sync/execute",
+        json_body={"digest": digest},
+    )
+    summary = stack.client.request("GET", "/api/menu-summary")
+
+    assert accepted.status == 202
+    assert summary.json()["sync"] == {
+        "state": "unknown",
+        "attention_count": None,
+    }
 
 
 def test_bootstrap_reports_claude_policy_disabled_and_codex_available(stack):

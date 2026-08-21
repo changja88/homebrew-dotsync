@@ -7,11 +7,12 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
-from typing import Any, cast
-from urllib.parse import quote, urlsplit
+from typing import Any, Literal, cast
+from urllib.parse import urlencode, urlsplit
 
 from dotsync.accounts import AccountStore
 from dotsync.app_paths import AppPaths
@@ -70,8 +71,11 @@ class WebApplication:
         job_registry: JobRegistry | None = None,
         static_asset_loader: Callable[[str], bytes] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
+        utc_clock: Callable[[], datetime] | None = None,
+        idle_shutdown_enabled: bool = True,
     ) -> None:
         self.token = secrets.token_urlsafe(32)
+        self.idle_shutdown_enabled = idle_shutdown_enabled
         self._monotonic = monotonic
         self._heartbeat_lock = threading.Lock()
         self._last_heartbeat = monotonic()
@@ -92,6 +96,7 @@ class WebApplication:
             open_provider_url=open_provider_url,
             job_lifecycle_lock=self._job_lifecycle_lock,
             job_registry=job_registry,
+            clock=utc_clock,
         )
 
     @property
@@ -111,6 +116,8 @@ class WebApplication:
             return True
 
     def should_idle_shutdown(self) -> bool:
+        if not self.idle_shutdown_enabled:
+            return False
         now = self._monotonic()
         with self._heartbeat_lock:
             idle_for = now - self._last_heartbeat
@@ -165,6 +172,8 @@ class WebApplication:
 
     def shutdown_if_idle(self) -> bool:
         """Close only after an atomic heartbeat and active-job recheck."""
+        if not self.idle_shutdown_enabled:
+            return False
         with self._shutdown_lock:
             with self._job_lifecycle_lock:
                 if self._shutdown_complete:
@@ -426,10 +435,33 @@ class RunningUIServer:
         return cast(tuple[str, int], self._server.server_address)
 
     @property
+    def origin(self) -> str:
+        host, port = self.server_address
+        return f"http://{host}:{port}"
+
+    def launch_url_for(
+        self,
+        *,
+        surface: Literal["popover", "manager"] = "manager",
+        destination: Literal[
+            "overview", "accounts", "sync", "settings"
+        ] = "overview",
+    ) -> str:
+        query = urlencode(
+            {
+                "token": self._server.application.token,
+                "surface": surface,
+                "destination": destination,
+            }
+        )
+        return f"{self.origin}/?{query}"
+
+    @property
     def launch_url(self) -> str:
-        port = self.server_address[1]
-        token = quote(self._server.application.token, safe="")
-        return f"http://127.0.0.1:{port}/?token={token}"
+        return self.launch_url_for(
+            surface="manager",
+            destination="overview",
+        )
 
     def wait(self, *, timeout: float | None = None) -> bool:
         return self._stopped.wait(timeout=timeout)

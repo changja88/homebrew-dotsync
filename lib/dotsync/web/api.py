@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import ipaddress
 import json
+import math
 import os
 import re
 import socket
@@ -14,6 +15,7 @@ import unicodedata
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from email.message import Message
 from pathlib import Path
 from typing import BinaryIO, Literal, cast
@@ -157,6 +159,8 @@ _SAFE_USAGE_ERROR_CODES = frozenset(
     }
 )
 _CLAUDE_POLICY_MESSAGE = "Claude account management is disabled by current policy."
+_SUMMARY_STATES = frozenset({"fresh", "stale", "unknown"})
+_SUMMARY_FRESH_FOR_SECONDS = 15 * 60
 
 
 @dataclass(frozen=True)
@@ -201,6 +205,7 @@ class _ApiProblem(RuntimeError):
 
 _ROUTES = (
     _Route(("api", "bootstrap"), {"GET": "_bootstrap"}),
+    _Route(("api", "menu-summary"), {"GET": "_menu_summary"}),
     _Route(("api", "health"), {"GET": "_health"}),
     _Route(("api", "accounts"), {"GET": "_list_accounts", "POST": "_create_account"}),
     _Route(
@@ -275,6 +280,7 @@ class ApiController:
         open_provider_url: Callable[[str], object],
         job_lifecycle_lock: threading.RLock,
         job_registry: JobRegistry | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._paths = paths
         self._state_store = state_store
@@ -287,8 +293,10 @@ class ApiController:
         self._heartbeat_callback = heartbeat
         self._open_provider_url = open_provider_url
         self._job_lifecycle_lock = job_lifecycle_lock
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._sync_lock = threading.RLock()
         self._sync_generation = 0
+        self._sync_attention_observation: tuple[int, datetime] | None = None
         self._issued_sync_digests: dict[
             str,
             tuple[
@@ -383,6 +391,25 @@ class ApiController:
     def _health(self, request: ApiRequest, params: dict[str, str]) -> HttpResponse:
         _require_no_body(request)
         return json_response(200, {"status": "ok"})
+
+    def _menu_summary(
+        self, request: ApiRequest, params: dict[str, str]
+    ) -> HttpResponse:
+        _require_no_body(request)
+        try:
+            sync_observation = self._safe_sync_attention_observation()
+        except BaseException:
+            sync_observation = None
+        try:
+            now = self._clock()
+        except BaseException:
+            now = None
+        summary = _build_menu_summary(
+            usage=self._usage,
+            sync_observation=sync_observation,
+            now=now,
+        )
+        return json_response(200, summary)
 
     def _list_accounts(
         self, request: ApiRequest, params: dict[str, str]
@@ -487,10 +514,29 @@ class ApiController:
         _require_no_body(request)
         sync, generation = self._capture_sync_service()
         status = sync.status()
+        status_data = _sync_status_to_dict(status)
+        try:
+            observed_at = _validated_summary_now(self._clock())
+        except BaseException:
+            observed_at = None
         with self._sync_lock:
             if not self._sync_is_current_locked(sync, generation):
                 return _stale_sync_response()
-        return json_response(200, {"sync": _sync_status_to_dict(status)})
+            if observed_at is None:
+                self._sync_attention_observation = None
+            else:
+                current_observation = self._sync_attention_observation
+                if (
+                    current_observation is None
+                    or observed_at >= current_observation[1]
+                ):
+                    self._sync_attention_observation = (
+                        sum(
+                            app.status.state != "clean" for app in status.apps
+                        ),
+                        observed_at,
+                    )
+        return json_response(200, {"sync": status_data})
 
     def _update_sync_apps(
         self, request: ApiRequest, params: dict[str, str]
@@ -577,6 +623,7 @@ class ApiController:
             if not self._sync_is_current_locked(sync, generation):
                 return _stale_sync_response()
             self._pending_sync_services[digest] = sync
+            self._sync_attention_observation = None
         try:
             return self._accepted_job(
                 "sync_execute",
@@ -733,15 +780,21 @@ class ApiController:
     ) -> bool:
         return self._sync is sync and self._sync_generation == generation
 
+    def _safe_sync_attention_observation(self) -> tuple[int, datetime] | None:
+        with self._sync_lock:
+            return self._sync_attention_observation
+
     def _publish_sync_locked(self, sync: SyncService | None) -> None:
         self._sync = sync
         self._sync_generation += 1
         self._issued_sync_digests.clear()
+        self._sync_attention_observation = None
 
     def _begin_sync_reconciliation_locked(self) -> None:
         self._sync = None
         self._sync_generation += 1
         self._issued_sync_digests.clear()
+        self._sync_attention_observation = None
 
     def _reconcile_config_locked(
         self,
@@ -898,6 +951,198 @@ class ApiController:
             "failed": list(result.failed),
             "duration_ms": result.duration_ms,
         }
+
+
+def _build_menu_summary(
+    *,
+    usage: UsageService,
+    sync_observation: tuple[int, datetime] | None,
+    now: object,
+) -> dict[str, object]:
+    try:
+        current = _validated_summary_now(now)
+    except BaseException:
+        return {
+            "usage": {"state": "unknown", "highest_percent": None},
+            "sync": {"state": "unknown", "attention_count": None},
+            "observed_at": None,
+        }
+
+    usage_summary, usage_observed_at = _build_usage_menu_summary(
+        usage,
+        now=current,
+    )
+    sync_summary, sync_observed_at = _build_sync_menu_summary(
+        sync_observation,
+        now=current,
+    )
+    observations = tuple(
+        observed
+        for observed in (usage_observed_at, sync_observed_at)
+        if observed is not None
+    )
+    if (
+        usage_summary["state"] not in _SUMMARY_STATES
+        or sync_summary["state"] not in _SUMMARY_STATES
+    ):
+        raise TypeError("menu summary state is invalid")
+    return {
+        "usage": usage_summary,
+        "sync": sync_summary,
+        "observed_at": (
+            _summary_timestamp(max(observations)) if observations else None
+        ),
+    }
+
+
+def _build_usage_menu_summary(
+    usage: UsageService,
+    *,
+    now: datetime,
+) -> tuple[dict[str, object], datetime | None]:
+    try:
+        accounts = usage.list_accounts()
+        if type(accounts) is not list:
+            raise TypeError("account list has an unsupported shape")
+        codex_accounts: list[ManagedAccount] = []
+        for account in accounts:
+            if (
+                type(account) is not ManagedAccount
+                or account.provider not in _PROVIDERS
+                or not _is_canonical_uuid(account.id)
+            ):
+                raise TypeError("account has an unsupported shape")
+            if account.provider == "codex":
+                codex_accounts.append(account)
+    except BaseException:
+        return {"state": "unknown", "highest_percent": None}, None
+
+    if not codex_accounts:
+        return {"state": "unknown", "highest_percent": None}, None
+
+    percentages: list[float] = []
+    observations: list[datetime] = []
+    incomplete = False
+    for account in codex_accounts:
+        try:
+            snapshot = usage.cached_usage(account.id)
+            percentage, observed_at = _validated_cached_summary_snapshot(
+                snapshot,
+                account_id=account.id,
+            )
+        except BaseException:
+            incomplete = True
+            continue
+        percentages.append(percentage)
+        observations.append(observed_at)
+        if (now - observed_at).total_seconds() > _SUMMARY_FRESH_FOR_SECONDS:
+            incomplete = True
+
+    if not percentages:
+        return {"state": "unknown", "highest_percent": None}, None
+    return (
+        {
+            "state": "stale" if incomplete else "fresh",
+            "highest_percent": max(percentages),
+        },
+        max(observations),
+    )
+
+
+def _validated_cached_summary_snapshot(
+    snapshot: object,
+    *,
+    account_id: str,
+) -> tuple[float, datetime]:
+    if type(snapshot) is not UsageSnapshot:
+        raise TypeError("cached usage has an unsupported shape")
+    validated_windows: list[UsageWindow] = []
+    for window in snapshot.windows:
+        if type(window) is not UsageWindow:
+            raise TypeError("cached usage has an unsupported window")
+        validated_windows.append(
+            UsageWindow(
+                name=window.name,
+                limit_id=window.limit_id,
+                label=window.label,
+                used_percent=window.used_percent,
+                duration_minutes=window.duration_minutes,
+                resets_at=window.resets_at,
+            )
+        )
+    validated = UsageSnapshot(
+        account_id=snapshot.account_id,
+        provider=snapshot.provider,
+        windows=tuple(validated_windows),
+        observed_at=snapshot.observed_at,
+        source=snapshot.source,
+        provider_version=snapshot.provider_version,
+    )
+    if (
+        validated.account_id != account_id
+        or validated.provider != "codex"
+        or not validated.windows
+    ):
+        raise TypeError("cached usage does not match its account")
+    percentages = tuple(window.used_percent for window in validated.windows)
+    if any(
+        type(value) is not float
+        or not math.isfinite(value)
+        or not 0.0 <= value <= 100.0
+        for value in percentages
+    ):
+        raise TypeError("cached usage percentage is invalid")
+    return max(percentages), _parse_summary_timestamp(validated.observed_at)
+
+
+def _build_sync_menu_summary(
+    observation: tuple[int, datetime] | None,
+    *,
+    now: datetime,
+) -> tuple[dict[str, object], datetime | None]:
+    try:
+        if (
+            type(observation) is not tuple
+            or len(observation) != 2
+            or type(observation[0]) is not int
+            or observation[0] < 0
+        ):
+            raise TypeError("sync observation has an unsupported shape")
+        observed_at = _validated_summary_now(observation[1])
+    except BaseException:
+        return {"state": "unknown", "attention_count": None}, None
+    state = (
+        "stale"
+        if (now - observed_at).total_seconds() > _SUMMARY_FRESH_FOR_SECONDS
+        else "fresh"
+    )
+    return {"state": state, "attention_count": observation[0]}, observed_at
+
+
+def _validated_summary_now(value: object) -> datetime:
+    if type(value) is not datetime or value.tzinfo is None:
+        raise TypeError("summary clock must return an aware datetime")
+    try:
+        offset = value.utcoffset()
+    except BaseException as error:
+        raise TypeError("summary clock returned an invalid datetime") from error
+    if offset is None:
+        raise TypeError("summary clock must return an aware datetime")
+    return value.astimezone(timezone.utc)
+
+
+def _parse_summary_timestamp(value: object) -> datetime:
+    if type(value) is not str:
+        raise TypeError("summary observation time must be a string")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (OverflowError, ValueError) as error:
+        raise ValueError("summary observation time is invalid") from error
+    return _validated_summary_now(parsed)
+
+
+def _summary_timestamp(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _match_route(path: str, query: str) -> tuple[_Route | None, dict[str, str]]:

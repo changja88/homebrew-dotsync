@@ -109,6 +109,7 @@ def _application(
     clock: _Clock | None = None,
     static_asset_loader=None,
     account_store=None,
+    idle_shutdown_enabled: bool = True,
 ) -> WebApplication:
     paths = AppPaths(tmp_path / "app-data")
     return WebApplication(
@@ -124,6 +125,7 @@ def _application(
         job_registry=jobs or _Jobs(),
         static_asset_loader=static_asset_loader,
         monotonic=clock or time.monotonic,
+        idle_shutdown_enabled=idle_shutdown_enabled,
     )
 
 
@@ -460,9 +462,33 @@ def test_launch_url_contains_token_but_server_does_not_open_a_browser(tmp_path):
     application = _application(tmp_path, static_asset_loader=lambda name: b"ui")
 
     with run_ui_server(application, poll_interval=0.01) as server:
-        assert server.launch_url == (
-            f"http://127.0.0.1:{server.server_address[1]}/?token={application.token}"
+        assert server.origin == f"http://127.0.0.1:{server.server_address[1]}"
+        assert server.launch_url == server.launch_url_for(
+            surface="manager",
+            destination="overview",
         )
+        assert server.launch_url == (
+            f"{server.origin}/?token={application.token}"
+            "&surface=manager&destination=overview"
+        )
+        assert server.launch_url_for(surface="popover", destination="sync") == (
+            f"{server.origin}/?token={application.token}"
+            "&surface=popover&destination=sync"
+        )
+
+
+def test_native_mode_never_uses_browser_idle_shutdown(tmp_path):
+    clock = _Clock()
+    application = _application(
+        tmp_path,
+        clock=clock,
+        idle_shutdown_enabled=False,
+    )
+
+    clock.value = 30 * 60 * 2
+
+    assert application.idle_shutdown_enabled is False
+    assert application.should_idle_shutdown() is False
 
 
 def test_heartbeat_resets_idle_deadline(tmp_path):
