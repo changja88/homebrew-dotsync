@@ -13,7 +13,7 @@ from typing import Callable, Literal
 from dotsync.apps import build_app
 from dotsync.apps.base import App, AppStatus
 from dotsync.backup import new_backup_session, rotate_backups
-from dotsync.config import Config, save_config
+from dotsync.config import Config, load_config_from, save_config
 from dotsync.plan import AppPlan, path_fingerprint
 
 SyncDirection = Literal["backup", "apply"]
@@ -292,10 +292,29 @@ class SyncService:
         self._previews.pop(digest, None)
         return result
 
+    def with_config(self, config: Config) -> "SyncService":
+        """Build an unpublished service candidate with the same dependencies."""
+        return SyncService(
+            config,
+            events=self._events,
+            app_factory=self._app_factory,
+            backup_session_factory=self._backup_session_factory,
+            backup_rotator=self._backup_rotator,
+        )
+
     def update_apps(self, apps: tuple[str, ...]) -> Config:
+        candidate = copy.deepcopy(self.config)
+        candidate.apps = list(apps)
+        try:
+            save_config(candidate)
+        except BaseException:
+            try:
+                self.config = load_config_from(self.config.dir)
+            finally:
+                self._previews.clear()
+            raise
+        self.config = candidate
         self._previews.clear()
-        self.config.apps = list(apps)
-        save_config(self.config)
         return self.config
 
     def _build_preview(

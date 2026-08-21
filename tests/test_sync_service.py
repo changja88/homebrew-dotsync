@@ -1,10 +1,17 @@
 import json
 import os
+import stat
 from pathlib import Path
 
 import pytest
 
-from dotsync.config import Config, load_config, save_config
+import dotsync.config as config_module
+from dotsync.config import (
+    Config,
+    ConfigWriteUncertain,
+    load_config,
+    save_config,
+)
 from dotsync.plan import AppPlan, Change, plan_tree_mirror
 from dotsync.sync_service import (
     StaleSyncPlan,
@@ -123,6 +130,73 @@ def test_update_apps_persists_selected_order(sync_setup):
 
     assert updated.apps == ["ghostty", "zsh"]
     assert load_config().apps == ["ghostty", "zsh"]
+
+
+def test_update_apps_restores_authoritative_config_when_replace_fails(
+    sync_setup, monkeypatch
+):
+    service, _, _ = sync_setup
+
+    def fail_before_replace(*args, **kwargs):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(config_module.os, "replace", fail_before_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        service.update_apps(("ghostty",))
+
+    assert service.config.apps == ["zsh"]
+    assert load_config().apps == ["zsh"]
+
+
+def test_update_apps_adopts_replaced_config_after_uncertain_directory_fsync(
+    sync_setup, monkeypatch
+):
+    service, _, _ = sync_setup
+    real_fsync = config_module.os.fsync
+
+    def fail_directory_fsync(descriptor: int) -> None:
+        if stat.S_ISDIR(config_module.os.fstat(descriptor).st_mode):
+            raise OSError("directory fsync failed")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(config_module.os, "fsync", fail_directory_fsync)
+
+    with pytest.raises(ConfigWriteUncertain):
+        service.update_apps(("ghostty",))
+
+    assert service.config.apps == ["ghostty"]
+    assert load_config().apps == ["ghostty"]
+
+
+def test_with_config_builds_an_isolated_candidate_with_existing_dependencies(
+    tmp_path,
+):
+    calls: list[tuple[str, Path]] = []
+
+    class CandidateApp:
+        def status(self, sync_dir: Path):
+            from dotsync.apps.base import AppStatus
+
+            calls.append(("status", sync_dir))
+            return AppStatus("clean")
+
+    original_config = Config(dir=tmp_path / "sync", apps=["zsh"])
+    service = SyncService(
+        original_config,
+        app_factory=lambda name, config: CandidateApp(),
+    )
+    candidate_config = Config(dir=original_config.dir, apps=["ghostty"])
+
+    candidate = service.with_config(candidate_config)
+    status = candidate.status()
+
+    assert candidate is not service
+    assert candidate.config is candidate_config
+    assert service.config is original_config
+    assert service.config.apps == ["zsh"]
+    assert [app.name for app in status.apps] == ["ghostty"]
+    assert calls == [("status", original_config.dir)]
 
 
 def test_update_apps_invalidates_preview_before_selected_app_is_called(

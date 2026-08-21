@@ -20,6 +20,8 @@ Backups default to:
 from __future__ import annotations
 import json
 import os
+import secrets
+import stat
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,6 +48,10 @@ def supported_apps() -> set[str]:
 
 class ConfigError(Exception):
     """Raised when config is missing or invalid."""
+
+
+class ConfigWriteUncertain(OSError):
+    """Raised after config replacement when directory durability is uncertain."""
 
 
 def folder_config_path(folder: Path) -> Path:
@@ -105,6 +111,11 @@ def load_config() -> Config:
             "  • run dotsync from inside the sync folder (or any subdir)\n"
             "  • run `dotsync init --dir <path> --yes` to create a new one"
         )
+    return load_config_from(folder)
+
+
+def load_config_from(folder: Path) -> Config:
+    """Load one explicitly selected sync folder without global discovery."""
     if not folder.is_absolute():
         raise ConfigError(f"{ENV_VAR} must be an absolute path, got: {folder}")
     if not folder.exists():
@@ -250,4 +261,80 @@ def save_config(cfg: Config) -> None:
             lines.append(f"{key} = {_toml_value(val)}")
         lines.append("")
 
-    folder_config_path(cfg.dir).write_text("\n".join(lines))
+    _atomic_write_config(folder_config_path(cfg.dir), "\n".join(lines))
+
+
+def _atomic_write_config(path: Path, content: str) -> None:
+    parent_fd = os.open(
+        path.parent,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+    temporary_name: str | None = None
+    try:
+        try:
+            target_metadata = os.stat(
+                path.name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            target_metadata = None
+        if target_metadata is not None and not stat.S_ISREG(
+            target_metadata.st_mode
+        ):
+            raise ConfigError("dotsync.toml must be a regular file")
+
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        for _ in range(100):
+            temporary_name = f".dotsync.toml.{secrets.token_hex(16)}"
+            try:
+                temporary_fd = os.open(
+                    temporary_name,
+                    flags,
+                    0o666,
+                    dir_fd=parent_fd,
+                )
+            except FileExistsError:
+                temporary_name = None
+                continue
+            break
+        else:
+            raise FileExistsError("could not create a temporary config file")
+
+        try:
+            with os.fdopen(temporary_fd, "w", encoding="utf-8") as config_file:
+                config_file.write(content)
+                config_file.flush()
+                os.fsync(config_file.fileno())
+            os.replace(
+                temporary_name,
+                path.name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            temporary_name = None
+            try:
+                os.fsync(parent_fd)
+            except OSError:
+                raise ConfigWriteUncertain(
+                    "config replacement durability is uncertain"
+                ) from None
+            final_fd = os.open(
+                path.name,
+                os.O_RDONLY | os.O_NOFOLLOW,
+                dir_fd=parent_fd,
+            )
+            try:
+                if not stat.S_ISREG(os.fstat(final_fd).st_mode):
+                    raise ConfigError("dotsync.toml must be a regular file")
+            finally:
+                os.close(final_fd)
+        except BaseException:
+            if temporary_name is not None:
+                try:
+                    os.unlink(temporary_name, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    pass
+            raise
+    finally:
+        os.close(parent_fd)
