@@ -212,7 +212,7 @@ final class WebSurfaceTests: XCTestCase {
         XCTAssertNil(queue.beginDispatch())
         XCTAssertNil(
             firstAttempt.flatMap {
-                queue.complete($0, evaluationSucceeded: false)
+                queue.completeEvaluation($0, succeeded: false)
             }
         )
         XCTAssertEqual(queue.pendingHandoffs, [apply, backup])
@@ -223,8 +223,12 @@ final class WebSurfaceTests: XCTestCase {
         XCTAssertEqual(retryAttempt?.handoff, apply)
         XCTAssertEqual(
             retryAttempt.flatMap {
-                queue.complete($0, evaluationSucceeded: true)
+                queue.completeEvaluation($0, succeeded: true)
             },
+            nil
+        )
+        XCTAssertEqual(
+            queue.acknowledgeReceipt(),
             1
         )
         XCTAssertEqual(queue.pendingHandoffs, [backup])
@@ -233,8 +237,12 @@ final class WebSurfaceTests: XCTestCase {
         XCTAssertEqual(secondAttempt?.handoff, backup)
         XCTAssertEqual(
             secondAttempt.flatMap {
-                queue.complete($0, evaluationSucceeded: true)
+                queue.completeEvaluation($0, succeeded: true)
             },
+            nil
+        )
+        XCTAssertEqual(
+            queue.acknowledgeReceipt(),
             2
         )
         XCTAssertTrue(queue.pendingHandoffs.isEmpty)
@@ -252,7 +260,7 @@ final class WebSurfaceTests: XCTestCase {
 
         XCTAssertNil(
             terminatedAttempt.flatMap {
-                queue.complete($0, evaluationSucceeded: true)
+                queue.completeEvaluation($0, succeeded: true)
             }
         )
         XCTAssertEqual(queue.pendingHandoffs, [apply, backup])
@@ -263,13 +271,95 @@ final class WebSurfaceTests: XCTestCase {
         XCTAssertNotEqual(replacementAttempt, terminatedAttempt)
         XCTAssertEqual(
             replacementAttempt.flatMap {
-                queue.complete($0, evaluationSucceeded: true)
+                queue.completeEvaluation($0, succeeded: true)
             },
+            nil
+        )
+        XCTAssertEqual(
+            queue.acknowledgeReceipt(),
             4
         )
 
         queue.merge([apply, backup])
         XCTAssertEqual(queue.pendingHandoffs, [backup])
+    }
+
+    func testSuccessfulEvaluationCannotDequeueWithoutPackagedListenerReceipt() {
+        let queue = ManagerHandoffDispatchQueue()
+        let apply = ManagerSyncHandoff(sequence: 7, direction: .apply)
+
+        queue.merge([apply])
+        queue.pageDidBecomeReady()
+        let attempt = queue.beginDispatch()
+
+        XCTAssertNil(
+            attempt.flatMap {
+                queue.completeEvaluation($0, succeeded: true)
+            }
+        )
+        XCTAssertEqual(queue.pendingHandoffs, [apply])
+        XCTAssertNil(queue.beginDispatch())
+        XCTAssertEqual(queue.acknowledgeReceipt(), 7)
+        XCTAssertTrue(queue.pendingHandoffs.isEmpty)
+    }
+
+    func testListenerReadinessStopsAfterExactlyThreeUnacknowledgedProbes() {
+        let readiness = ManagerListenerReadiness(maximumProbeAttempts: 3)
+        readiness.pageDidBecomeUnavailable()
+        readiness.pageDidFinish()
+
+        let first = readiness.beginProbe()
+        XCTAssertEqual(
+            first.flatMap {
+                readiness.completeProbe($0, evaluationSucceeded: true)
+            },
+            .retry
+        )
+        let second = readiness.beginProbe()
+        XCTAssertEqual(
+            second.flatMap {
+                readiness.completeProbe($0, evaluationSucceeded: true)
+            },
+            .retry
+        )
+        let third = readiness.beginProbe()
+        XCTAssertEqual(
+            third.flatMap {
+                readiness.completeProbe($0, evaluationSucceeded: true)
+            },
+            .exhausted
+        )
+
+        XCTAssertNil(readiness.beginProbe())
+        XCTAssertFalse(readiness.isReady)
+    }
+
+    func testReplacementPageRejectsStaleProbeAndDeliversRetainedHandoffAfterReadyAck() {
+        let readiness = ManagerListenerReadiness(maximumProbeAttempts: 3)
+        let queue = ManagerHandoffDispatchQueue()
+        let apply = ManagerSyncHandoff(sequence: 11, direction: .apply)
+        queue.merge([apply])
+
+        readiness.pageDidBecomeUnavailable()
+        readiness.pageDidFinish()
+        let oldPageProbe = readiness.beginProbe()
+        readiness.pageDidBecomeUnavailable()
+        queue.pageDidBecomeUnavailable()
+        readiness.pageDidFinish()
+
+        XCTAssertEqual(
+            oldPageProbe.flatMap {
+                readiness.completeProbe($0, evaluationSucceeded: true)
+            },
+            .ignored
+        )
+        XCTAssertEqual(queue.pendingHandoffs, [apply])
+        XCTAssertNil(queue.beginDispatch())
+
+        readiness.listenerDidAcknowledge()
+        XCTAssertTrue(readiness.isReady)
+        queue.pageDidBecomeReady()
+        XCTAssertEqual(queue.beginDispatch()?.handoff, apply)
     }
 
     private func makeOrigin() throws -> LocalOrigin {

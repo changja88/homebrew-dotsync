@@ -124,10 +124,24 @@ test("production app posts only through the exact dotsyncNative bridge", async (
   await import("../../../lib/dotsync/web/static/app.mjs?bridge-contract");
   const click = documentListeners.get("click");
   assert.equal(typeof click, "function");
-  assert.equal(typeof windowListeners.get("dotsync:manager-sync-preview"), "function");
+  const syncHandoff = windowListeners.get("dotsync:manager-sync-preview");
+  assert.equal(typeof syncHandoff, "function");
+  assert.deepEqual(exactMessages, [
+    { action: "manager_sync_listener_ready" },
+  ]);
+
+  await syncHandoff({ detail: { direction: "apply" } });
+  assert.deepEqual(exactMessages, [
+    { action: "manager_sync_listener_ready" },
+    { action: "open_manager", destination: "sync", direction: "apply" },
+    { action: "manager_sync_handoff_received" },
+  ]);
 
   await click({ target: nativeActionTarget("open_manager", "accounts") });
   assert.deepEqual(exactMessages, [
+    { action: "manager_sync_listener_ready" },
+    { action: "open_manager", destination: "sync", direction: "apply" },
+    { action: "manager_sync_handoff_received" },
     { action: "open_manager", destination: "accounts" },
   ]);
   assert.deepEqual(aliasMessages, []);
@@ -135,6 +149,9 @@ test("production app posts only through the exact dotsyncNative bridge", async (
   delete window.webkit.messageHandlers.dotsyncNative;
   await click({ target: nativeActionTarget("open_manager", "settings") });
   assert.deepEqual(exactMessages, [
+    { action: "manager_sync_listener_ready" },
+    { action: "open_manager", destination: "sync", direction: "apply" },
+    { action: "manager_sync_handoff_received" },
     { action: "open_manager", destination: "accounts" },
   ]);
   assert.deepEqual(aliasMessages, []);

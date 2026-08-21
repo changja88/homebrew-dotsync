@@ -73,6 +73,7 @@ final class AppCoordinator: ObservableObject {
     private var pollingTask: Task<Void, Never>?
     private var summaryPoller: MenuSummaryPoller?
     private var summaryOwner: UInt64 = 0
+    private var summaryRequestOwner: UInt64 = 0
     private var handoffSequence: UInt64 = 0
     private var isActive = true
     private var isQuitting = false
@@ -149,11 +150,13 @@ final class AppCoordinator: ObservableObject {
             summaryOwner &+= 1
             let owner = summaryOwner
             summaryPoller = poller
+            let requestOwner = beginSummaryRequest()
             if let result = await poller.poll(isActive: isActive) {
                 await acceptSummary(
                     result,
                     from: poller,
-                    owner: owner
+                    owner: owner,
+                    requestOwner: requestOwner
                 )
             }
             startPollingIfNeeded()
@@ -298,29 +301,55 @@ final class AppCoordinator: ObservableObject {
             return
         }
         let owner = summaryOwner
+        let requestOwner = beginSummaryRequest()
         let result = await summaryPoller.reload()
-        await acceptSummary(result, from: summaryPoller, owner: owner)
+        await acceptSummary(
+            result,
+            from: summaryPoller,
+            owner: owner,
+            requestOwner: requestOwner
+        )
     }
 
     private func pollSummaryIfDue() async {
         guard let summaryPoller
         else { return }
         let owner = summaryOwner
+        let requestOwner = beginSummaryRequest()
         guard let result = await summaryPoller.poll(isActive: isActive)
         else { return }
-        await acceptSummary(result, from: summaryPoller, owner: owner)
+        await acceptSummary(
+            result,
+            from: summaryPoller,
+            owner: owner,
+            requestOwner: requestOwner
+        )
     }
 
     private func acceptSummary(
         _ result: MenuSummaryFetchResult,
         from poller: MenuSummaryPoller,
-        owner: UInt64
+        owner: UInt64,
+        requestOwner: UInt64
     ) async {
-        guard owner == summaryOwner,
-              summaryPoller === poller,
-              await poller.ownsNewest(result)
-        else { return }
-        summary = MenuSummaryModel(summary: result.summary)
+        await commitAfterNewestSummaryCheck(
+            isNewest: {
+                await poller.ownsNewest(result)
+            },
+            isStillOwned: {
+                owner == self.summaryOwner
+                    && requestOwner == self.summaryRequestOwner
+                    && self.summaryPoller === poller
+            },
+            commit: {
+                self.summary = MenuSummaryModel(summary: result.summary)
+            }
+        )
+    }
+
+    private func beginSummaryRequest() -> UInt64 {
+        summaryRequestOwner &+= 1
+        return summaryRequestOwner
     }
 
     private func startPollingIfNeeded() {
@@ -348,6 +377,16 @@ final class AppCoordinator: ObservableObject {
             ? .installationRequired
             : .backendUnavailable
     }
+}
+
+@MainActor
+func commitAfterNewestSummaryCheck(
+    isNewest: () async -> Bool,
+    isStillOwned: () -> Bool,
+    commit: () -> Void
+) async {
+    guard await isNewest(), isStillOwned() else { return }
+    commit()
 }
 
 private struct UnknownSummaryFetcher: MenuSummaryFetching {

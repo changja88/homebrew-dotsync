@@ -265,6 +265,33 @@ final class AppCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.summary.summary.usage.highestPercent, 82)
     }
 
+    func testSummaryCommitRevalidatesOwnershipAfterFinalActorHop() async {
+        let newestCheck = SummaryNewestCheckBarrier()
+        var requestIsStillOwned = true
+        var committed = false
+
+        let staleCommit = Task { @MainActor in
+            await commitAfterNewestSummaryCheck(
+                isNewest: {
+                    await newestCheck.pauseThenReturnNewest()
+                },
+                isStillOwned: {
+                    requestIsStillOwned
+                },
+                commit: {
+                    committed = true
+                }
+            )
+        }
+        await newestCheck.waitUntilPaused()
+
+        requestIsStillOwned = false
+        await newestCheck.release()
+        await staleCommit.value
+
+        XCTAssertFalse(committed)
+    }
+
     func testOldSessionSummaryCannotOverwriteReplacementSessionResult() async throws {
         let oldFetcher = ControllableCoordinatorSummaryFetcher()
         let newFetcher = ControllableCoordinatorSummaryFetcher()
@@ -381,6 +408,8 @@ final class AppCoordinatorTests: XCTestCase {
             XCTFail(
                 "Popover fixture launch did not finish; "
                     + "launches=\(fixture.launches), "
+                    + "url=\(popoverWebView.url?.absoluteString ?? "nil"), "
+                    + "loading=\(popoverWebView.isLoading), "
                     + "queryErased=\(popoverWebView.url?.query == nil)"
             )
             return
@@ -883,6 +912,33 @@ private actor CountingCoordinatorSummaryFetcher: MenuSummaryFetching {
     func fetch() async throws -> MenuSummary {
         count += 1
         return .unknown
+    }
+}
+
+private actor SummaryNewestCheckBarrier {
+    private var checkContinuation: CheckedContinuation<Bool, Never>?
+    private var observerContinuations: [CheckedContinuation<Void, Never>] = []
+
+    func pauseThenReturnNewest() async -> Bool {
+        await withCheckedContinuation { continuation in
+            checkContinuation = continuation
+            let observers = observerContinuations
+            observerContinuations.removeAll()
+            observers.forEach { $0.resume() }
+        }
+    }
+
+    func waitUntilPaused() async {
+        guard checkContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            observerContinuations.append(continuation)
+        }
+    }
+
+    func release() {
+        let continuation = checkContinuation
+        checkContinuation = nil
+        continuation?.resume(returning: true)
     }
 }
 

@@ -34,23 +34,43 @@ public enum NativeCommand: Equatable, Sendable {
     case quitApp
 }
 
+enum AppBridgeMessage: Equatable, Sendable {
+    case command(NativeCommand)
+    case managerSyncListenerReady
+    case managerSyncHandoffReceived
+}
+
 public enum AppBridge {
     public static func decode(_ body: Any) throws -> NativeCommand {
+        guard case let .command(command) = try decodeMessage(body)
+        else { throw BackendError.backendProtocolError }
+        return command
+    }
+
+    static func decodeMessage(_ body: Any) throws -> AppBridgeMessage {
         guard let object = body as? [String: Any],
               let action = object["action"] as? String
         else { throw BackendError.backendProtocolError }
 
         switch action {
         case "open_manager":
-            return try decodeManagerRequest(object)
+            return .command(try decodeManagerRequest(object))
         case "refresh_summary":
             guard Set(object.keys) == Set(["action"])
             else { throw BackendError.backendProtocolError }
-            return .refreshSummary
+            return .command(.refreshSummary)
         case "quit_app":
             guard Set(object.keys) == Set(["action"])
             else { throw BackendError.backendProtocolError }
-            return .quitApp
+            return .command(.quitApp)
+        case "manager_sync_listener_ready":
+            guard Set(object.keys) == Set(["action"])
+            else { throw BackendError.backendProtocolError }
+            return .managerSyncListenerReady
+        case "manager_sync_handoff_received":
+            guard Set(object.keys) == Set(["action"])
+            else { throw BackendError.backendProtocolError }
+            return .managerSyncHandoffReceived
         default:
             throw BackendError.backendProtocolError
         }

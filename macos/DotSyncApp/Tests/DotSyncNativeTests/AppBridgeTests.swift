@@ -54,6 +54,30 @@ final class AppBridgeTests: XCTestCase {
         )
     }
 
+    func testBridgeAcceptsOnlyExactNonDataManagerListenerSignals() throws {
+        XCTAssertEqual(
+            try AppBridge.decodeMessage([
+                "action": "manager_sync_listener_ready",
+            ]),
+            .managerSyncListenerReady
+        )
+        XCTAssertEqual(
+            try AppBridge.decodeMessage([
+                "action": "manager_sync_handoff_received",
+            ]),
+            .managerSyncHandoffReceived
+        )
+
+        for body in [
+            ["action": "manager_sync_listener_ready", "direction": "apply"],
+            ["action": "manager_sync_handoff_received", "sequence": 1],
+        ] {
+            XCTAssertThrowsError(try AppBridge.decodeMessage(body)) { error in
+                XCTAssertEqual(error as? BackendError, .backendProtocolError)
+            }
+        }
+    }
+
     func testBridgeRejectsMissingAndUnknownManagerValues() {
         let bodies: [Any] = [
             ["action": "open_manager"],

@@ -21,6 +21,8 @@ struct ManagerHandoffDispatchAttempt: Equatable {
 final class ManagerHandoffDispatchQueue {
     private(set) var pendingHandoffs: [ManagerSyncHandoff] = []
     private var activeAttempt: ManagerHandoffDispatchAttempt?
+    private var activeEvaluationSucceeded = false
+    private var activeReceiptAcknowledged = false
     private var nextAttemptIdentifier: UInt64 = 0
     private var highestAcknowledgedSequence: UInt64 = 0
     private var isPageReady = false
@@ -42,7 +44,7 @@ final class ManagerHandoffDispatchQueue {
 
     func pageDidBecomeUnavailable() {
         isPageReady = false
-        activeAttempt = nil
+        clearActiveAttempt()
     }
 
     func beginDispatch() -> ManagerHandoffDispatchAttempt? {
@@ -56,24 +58,130 @@ final class ManagerHandoffDispatchQueue {
             handoff: handoff
         )
         activeAttempt = attempt
+        activeEvaluationSucceeded = false
+        activeReceiptAcknowledged = false
         return attempt
     }
 
-    func complete(
+    func completeEvaluation(
         _ attempt: ManagerHandoffDispatchAttempt,
-        evaluationSucceeded: Bool
+        succeeded: Bool
     ) -> UInt64? {
         guard activeAttempt == attempt else { return nil }
-        activeAttempt = nil
-        guard evaluationSucceeded,
-              pendingHandoffs.first == attempt.handoff
-        else {
+        guard succeeded else {
+            clearActiveAttempt()
             isPageReady = false
             return nil
         }
+        activeEvaluationSucceeded = true
+        return finishAcknowledgedAttemptIfReady()
+    }
+
+    func acknowledgeReceipt() -> UInt64? {
+        guard activeAttempt != nil else { return nil }
+        activeReceiptAcknowledged = true
+        return finishAcknowledgedAttemptIfReady()
+    }
+
+    private func finishAcknowledgedAttemptIfReady() -> UInt64? {
+        guard activeEvaluationSucceeded,
+              activeReceiptAcknowledged,
+              let attempt = activeAttempt,
+              pendingHandoffs.first == attempt.handoff
+        else { return nil }
         pendingHandoffs.removeFirst()
         highestAcknowledgedSequence = attempt.handoff.sequence
+        clearActiveAttempt()
         return attempt.handoff.sequence
+    }
+
+    private func clearActiveAttempt() {
+        activeAttempt = nil
+        activeEvaluationSucceeded = false
+        activeReceiptAcknowledged = false
+    }
+}
+
+struct ManagerListenerReadinessProbe: Equatable {
+    let pageGeneration: UInt64
+    let attemptNumber: Int
+}
+
+enum ManagerListenerReadinessProbeCompletion: Equatable {
+    case ignored
+    case retry
+    case exhausted
+    case failed
+    case ready
+}
+
+@MainActor
+final class ManagerListenerReadiness {
+    private let maximumProbeAttempts: Int
+    private var pageGeneration: UInt64 = 0
+    private var probeAttempts = 0
+    private var activeProbe: ManagerListenerReadinessProbe?
+    private var documentDidFinish = false
+    private var listenerAcknowledged = false
+
+    init(maximumProbeAttempts: Int) {
+        precondition(maximumProbeAttempts > 0)
+        self.maximumProbeAttempts = maximumProbeAttempts
+    }
+
+    var isDocumentReady: Bool {
+        documentDidFinish
+    }
+
+    var isReady: Bool {
+        documentDidFinish && listenerAcknowledged
+    }
+
+    func pageDidBecomeUnavailable() {
+        pageGeneration &+= 1
+        probeAttempts = 0
+        activeProbe = nil
+        documentDidFinish = false
+        listenerAcknowledged = false
+    }
+
+    func pageDidFinish() {
+        documentDidFinish = true
+    }
+
+    func listenerDidAcknowledge() {
+        listenerAcknowledged = true
+        activeProbe = nil
+    }
+
+    func beginProbe() -> ManagerListenerReadinessProbe? {
+        guard documentDidFinish,
+              !listenerAcknowledged,
+              activeProbe == nil,
+              probeAttempts < maximumProbeAttempts
+        else { return nil }
+        probeAttempts += 1
+        let probe = ManagerListenerReadinessProbe(
+            pageGeneration: pageGeneration,
+            attemptNumber: probeAttempts
+        )
+        activeProbe = probe
+        return probe
+    }
+
+    func completeProbe(
+        _ probe: ManagerListenerReadinessProbe,
+        evaluationSucceeded: Bool
+    ) -> ManagerListenerReadinessProbeCompletion {
+        guard activeProbe == probe else { return .ignored }
+        activeProbe = nil
+        guard evaluationSucceeded else { return .failed }
+        if listenerAcknowledged {
+            return .ready
+        }
+        return probeAttempts == maximumProbeAttempts
+            ? .exhausted
+            : .retry
     }
 }
 
@@ -267,9 +375,10 @@ public struct WebSurface: NSViewRepresentable {
         private let policy: WebNavigationPolicy
         private weak var webView: WKWebView?
         private var launchContext: LaunchContext?
-        private var listenerReady = false
-        private var listenerConfirmedReady = false
-        private var readinessProbeInFlight = false
+        private let listenerReadiness = ManagerListenerReadiness(
+            maximumProbeAttempts: 3
+        )
+        private var readinessRetryTask: Task<Void, Never>?
         private var pageGeneration: UInt64 = 0
         private let handoffQueue = ManagerHandoffDispatchQueue()
         private var handoffAcknowledged: @MainActor (UInt64) -> Void
@@ -331,9 +440,29 @@ public struct WebSurface: NSViewRepresentable {
             didReceive message: WKScriptMessage
         ) {
             guard message.name == WebSurface.bridgeName,
-                  let command = try? AppBridge.decode(message.body)
+                  message.frameInfo.isMainFrame,
+                  let frameURL = message.frameInfo.request.url,
+                  origin.accepts(frameURL),
+                  let bridgeMessage = try? AppBridge.decodeMessage(message.body)
             else { return }
-            commandHandler(command)
+            switch bridgeMessage {
+            case let .command(command):
+                commandHandler(command)
+            case .managerSyncListenerReady:
+                guard launchContext == LaunchContext(
+                    surface: .manager,
+                    destination: .sync
+                ) else { return }
+                listenerReadiness.listenerDidAcknowledge()
+                readinessRetryTask?.cancel()
+                readinessRetryTask = nil
+                if listenerReadiness.isReady {
+                    handoffQueue.pageDidBecomeReady()
+                    dispatchPendingHandoffIfReady()
+                }
+            case .managerSyncHandoffReceived:
+                acknowledgeReceivedHandoff()
+            }
         }
 
         public func webView(
@@ -381,8 +510,10 @@ public struct WebSurface: NSViewRepresentable {
                 markPageUnavailable()
                 return
             }
-            listenerReady = true
-            handoffQueue.pageDidBecomeReady()
+            listenerReadiness.pageDidFinish()
+            if listenerReadiness.isReady {
+                handoffQueue.pageDidBecomeReady()
+            }
             dispatchPendingHandoffIfReady()
         }
 
@@ -436,14 +567,14 @@ public struct WebSurface: NSViewRepresentable {
         }
 
         private func dispatchPendingHandoffIfReady() {
-            guard listenerReady,
+            guard listenerReadiness.isDocumentReady,
                   let webView,
                   launchContext == LaunchContext(
                     surface: .manager,
                     destination: .sync
                   )
             else { return }
-            guard listenerConfirmedReady else {
+            guard listenerReadiness.isReady else {
                 probeListenerReadiness(in: webView)
                 return
             }
@@ -451,42 +582,48 @@ public struct WebSurface: NSViewRepresentable {
         }
 
         private func probeListenerReadiness(in webView: WKWebView) {
-            guard !readinessProbeInFlight else { return }
-            readinessProbeInFlight = true
+            guard let probe = listenerReadiness.beginProbe() else { return }
             let ownedPageGeneration = pageGeneration
             webView.evaluateJavaScript(
-                #"document.readyState === "complete""#
-            ) { [weak self] result, error in
+                #"window.dispatchEvent(new Event("dotsync:manager-sync-listener-probe"));"#
+            ) { [weak self] _, error in
                 let probeFailed = error != nil
-                let pageIsReady = !probeFailed && (result as? Bool) == true
                 Task { @MainActor [weak self] in
                     guard let self,
                           self.pageGeneration == ownedPageGeneration
                     else { return }
-                    self.readinessProbeInFlight = false
-                    guard !probeFailed else {
+                    switch self.listenerReadiness.completeProbe(
+                        probe,
+                        evaluationSucceeded: !probeFailed
+                    ) {
+                    case .failed:
                         self.markPageUnavailable()
-                        return
-                    }
-                    if pageIsReady {
-                        self.listenerConfirmedReady = true
-                        self.dispatchPendingHandoffIfReady()
-                    } else {
+                    case .retry:
                         self.scheduleReadinessProbe(
                             for: ownedPageGeneration
                         )
+                    case .ready:
+                        self.dispatchPendingHandoffIfReady()
+                    case .ignored, .exhausted:
+                        break
                     }
                 }
             }
         }
 
         private func scheduleReadinessProbe(for ownedPageGeneration: UInt64) {
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .milliseconds(10))
+            readinessRetryTask?.cancel()
+            readinessRetryTask = Task { @MainActor [weak self] in
+                do {
+                    try await Task.sleep(for: .milliseconds(10))
+                } catch {
+                    return
+                }
                 guard let self,
                       self.pageGeneration == ownedPageGeneration,
-                      self.listenerReady
+                      self.listenerReadiness.isDocumentReady
                 else { return }
+                self.readinessRetryTask = nil
                 self.dispatchPendingHandoffIfReady()
             }
         }
@@ -502,23 +639,31 @@ public struct WebSurface: NSViewRepresentable {
                     guard let self,
                           self.pageGeneration == ownedPageGeneration
                     else { return }
-                    if let sequence = self.handoffQueue.complete(
+                    if let sequence = self.handoffQueue.completeEvaluation(
                         attempt,
-                        evaluationSucceeded: evaluationSucceeded
+                        succeeded: evaluationSucceeded
                     ) {
                         self.handoffAcknowledged(sequence)
                         self.dispatchPendingHandoffIfReady()
                     } else if !evaluationSucceeded {
-                        self.listenerReady = false
+                        self.markPageUnavailable()
                     }
                 }
             }
         }
 
+        private func acknowledgeReceivedHandoff() {
+            guard listenerReadiness.isReady,
+                  let sequence = handoffQueue.acknowledgeReceipt()
+            else { return }
+            handoffAcknowledged(sequence)
+            dispatchPendingHandoffIfReady()
+        }
+
         private func markPageUnavailable() {
-            listenerReady = false
-            listenerConfirmedReady = false
-            readinessProbeInFlight = false
+            readinessRetryTask?.cancel()
+            readinessRetryTask = nil
+            listenerReadiness.pageDidBecomeUnavailable()
             pageGeneration &+= 1
             handoffQueue.pageDidBecomeUnavailable()
         }
