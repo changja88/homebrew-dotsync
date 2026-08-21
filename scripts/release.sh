@@ -104,9 +104,8 @@ PLACEHOLDER="0000000000000000000000000000000000000000000000000000000000000000"
 sed -i.bak -E "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"$NEW\"/" pyproject.toml
 # lib/dotsync/__init__.py
 sed -i.bak -E "s/^__version__ = \"[0-9]+\.[0-9]+\.[0-9]+\"/__version__ = \"$NEW\"/" lib/dotsync/__init__.py
-# Formula url + test assertion
+# Formula url
 sed -i.bak -E "s|/v[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz|/v${NEW}.tar.gz|" Formula/dotsync.rb
-sed -i.bak -E "s/dotsync [0-9]+\.[0-9]+\.[0-9]+/dotsync $NEW/" Formula/dotsync.rb
 # reset sha256 to placeholder (patched with the real value in step 7)
 sed -i.bak -E "s/sha256 \"[a-f0-9]{64}\"/sha256 \"$PLACEHOLDER\"/" Formula/dotsync.rb
 rm -f pyproject.toml.bak lib/dotsync/__init__.py.bak Formula/dotsync.rb.bak
@@ -114,7 +113,6 @@ rm -f pyproject.toml.bak lib/dotsync/__init__.py.bak Formula/dotsync.rb.bak
 grep -q "^version = \"$NEW\"" pyproject.toml || die "version bump failed in pyproject.toml"
 grep -q "^__version__ = \"$NEW\"" lib/dotsync/__init__.py || die "version bump failed in lib/dotsync/__init__.py"
 grep -q "/v${NEW}.tar.gz" Formula/dotsync.rb || die "url bump failed in Formula/dotsync.rb"
-grep -q "dotsync $NEW" Formula/dotsync.rb || die "test assertion bump failed in Formula/dotsync.rb"
 grep -q "sha256 \"$PLACEHOLDER\"" Formula/dotsync.rb || die "sha256 placeholder reset failed in Formula/dotsync.rb"
 ok "pyproject.toml, lib/dotsync/__init__.py, Formula/dotsync.rb updated"
 

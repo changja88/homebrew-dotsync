@@ -46,6 +46,7 @@ class Dotsync < Formula
   end
 
   test do
-    assert_match "dotsync 0.2.1", shell_output("#{bin}/dotsync --version")
+    assert_match "dotsync #{version}", shell_output("#{bin}/dotsync --version")
+    system bin/"dotsync", "ui", "--check"
   end
 end

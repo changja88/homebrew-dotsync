@@ -5,12 +5,15 @@ This file gives Codex persistent project guidance for this repository.
 ## Repository Identity
 
 This repository is the `changja88/homebrew-dotsync` Homebrew tap. It contains
-two closely related deliverables:
+three closely related deliverables:
 
 - `dotsync`, a Python CLI under `lib/dotsync/` with entry points at
   `bin/dotsync` and `dotsync.cli:main`.
 - `Formula/dotsync.rb`, the Homebrew formula used by
   `brew install changja88/dotsync/dotsync`.
+- `macos/DotSyncApp/`, the native macOS 13+ menu-bar host for the Formula
+  backend. Local builds are development artifacts until the public Cask gate
+  is satisfied.
 
 `dotsync` is a macOS-only CLI for syncing selected app configuration files
 between local app locations and one user-chosen sync folder.
@@ -32,7 +35,10 @@ between local app locations and one user-chosen sync folder.
 ## Core Architecture
 
 - `lib/dotsync/cli.py` owns argparse command dispatch for `welcome`, `init`,
-  `config`, `apps`, `status`, `backup`, and `apply`.
+  `config`, `apps`, `status`, `backup`, `apply`, and `ui`.
+- `macos/DotSyncApp/` owns native lifecycle, backend supervision, strict WebKit
+  hosting, and the menu-bar/management-window shell; Python retains the domain
+  rules.
 - `lib/dotsync/config.py` owns sync-folder discovery and `dotsync.toml`
   persistence. Config lives only at `<sync folder>/dotsync.toml`.
 - `lib/dotsync/backup.py` creates `apply` backups inside the sync folder, normally
@@ -59,11 +65,24 @@ between local app locations and one user-chosen sync folder.
   explicitly requested.
 - `dotsync` itself must not make network calls. External tools invoked by a
   user's existing app CLI are acceptable when already part of app behavior.
-- The tool must not create files outside the user-selected sync folder, except
-  for the explicit, consent-based shell rc update handled by `shellrc.py` and
-  `cli.py`.
+- The original config-sync commands must not create files outside the
+  user-selected sync folder, except for the explicit, consent-based shell rc
+  update handled by `shellrc.py` and `cli.py`, and the local-file backup/write
+  behavior of an explicitly confirmed `apply`.
 - Never create `~/.dotsync`, `~/.config/dotsync`, or any hidden global pointer
   file for application state.
+- UI account metadata and usage caches may live only under
+  `~/Library/Application Support/DotSync/`.
+- Codex credentials for a managed account may live only in that account's
+  DotSync-owned `CODEX_HOME` under the Application Support root. Account and
+  usage operations must never write the default `~/.codex`, `~/.claude`, or
+  `~/.claude.json` profiles.
+- Future profile-scoped Claude Keychain behavior remains internal. Public
+  Claude account operations stay policy-disabled until explicit Anthropic
+  permission is recorded; do not replace them with private OAuth, cookies, or
+  direct provider HTTP calls.
+- Native Swift code may supervise the Formula backend and render safe DTOs,
+  but must never inspect Claude or Codex provider homes.
 - Public command names are important: `backup` means local app config to sync
   folder; `apply` means sync folder to local app config. The internal app
   plugin methods still use `sync_from` and `sync_to`.
@@ -140,6 +159,12 @@ The README has English and Korean sections. Keep them in parity; do not update
 only one language.
 
 ## Release Notes
+
+Local `DotSync.app` builds are unsigned development artifacts only. They must
+not be published, described as Cask-ready, or used to generate a public Cask.
+A public Cask change requires the real universal archive to pass Developer ID
+signing, notarization, Gatekeeper verification, and checksum calculation. Never
+invent or bypass those results.
 
 Release flow:
 

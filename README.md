@@ -14,6 +14,19 @@ dotsync consolidates your macOS app configs (Claude Code, Codex CLI, Herdr, Ghos
 
 ### Install
 
+#### Menu-bar app target (not published yet)
+
+The final one-command app install will be:
+
+```bash
+brew install --cask changja88/dotsync/dotsync-app
+```
+
+**Release status:** the signed and notarized Cask is not public yet, so the command
+above is the target install command, not a currently available package. Until a
+real universal archive passes signing, notarization, Gatekeeper, and checksum
+verification, install the supported Formula instead:
+
 ```bash
 brew install changja88/dotsync/dotsync
 dotsync welcome     # prints the welcome banner with quickstart hints
@@ -33,6 +46,41 @@ dotsync reuses it — no duplicate install. Otherwise Homebrew pulls in
 > is not avoided.
 
 > Always start with **`dotsync init`** — it picks the sync folder. After that, `backup` / `apply` work from anywhere.
+
+#### What the app provides
+
+The macOS 13+ app uses the installed Formula as its backend dependency. It provides
+the approved compact menu-bar popover and a full management window for accounts,
+usage, Config Sync, and settings.
+
+- Add two or more isolated Codex subscription accounts. Every account starts with
+  an explicit fresh official-CLI login in a DotSync-owned `CODEX_HOME`; usage is
+  read through the official `codex app-server` interface. Login and Refresh are
+  explicit actions—opening or closing either window never refreshes a provider.
+- Claude account and usage actions are policy-disabled. DotSync does not fall back
+  to private OAuth endpoints, browser cookies, or private provider HTTP APIs.
+- Account metadata, managed Codex credentials, and cached usage live under
+  `~/Library/Application Support/DotSync/`. Account and usage operations never
+  write `~/.claude`, `~/.claude.json`, or the default `~/.codex` profile. The app
+  is not affiliated with Anthropic or OpenAI.
+- Config Sync remains a separate, explicit feature. Backup previews local-to-folder
+  changes. Apply shows a destructive overwrite warning, previews folder-to-local
+  changes, requires confirmation, and backs up local files before writing them.
+  This confirmed config-sync behavior is the intentional exception to the
+  provider-profile no-write rule; account screens never invoke Apply.
+- Closing the management window leaves the menu-bar app running. Quit is an
+  explicit menu action. Installation does not launch the app automatically, and
+  version 1 has no launch-at-login or automatic provider refresh.
+
+If the app cannot start its backend, verify the Formula installation without
+creating app state or contacting a provider:
+
+```bash
+dotsync ui --check
+```
+
+Developers may create an unsigned local artifact with `make build-app`; it is not a
+public Cask or release archive.
 
 ### Usage
 
@@ -92,7 +140,7 @@ dotsync init --yes --quiet --no-hints
 dotsync init --yes --no-shell-init
 ```
 
-**dotsync creates no files or directories anywhere on your machine outside the sync folder you chose.** All settings live in `<sync folder>/dotsync.toml`, and backups accumulate in `<sync folder>/.backups/`. The single exception — opt-in by design — is the one-line `export DOTSYNC_DIR="…"` that `init` writes into your shell rc (see below); pass `--no-shell-init` to disable.
+**The configuration-sync CLI creates no state outside the sync folder you chose.** Its settings live in `<sync folder>/dotsync.toml`, and backups accumulate in `<sync folder>/.backups/`. The single setup exception—opt-in by design—is the one-line `export DOTSYNC_DIR="…"` that `init` writes into your shell rc (see below); pass `--no-shell-init` to disable. A confirmed `apply` is the separate run-time exception that backs up and writes selected local app configs. The account/usage app data described above lives only under Application Support.
 
 #### How does dotsync find the sync folder?
 
@@ -286,6 +334,19 @@ dotsync는 macOS의 앱 설정(Claude Code, Codex CLI, Herdr, Ghostty, BetterTou
 
 ### 설치
 
+#### 메뉴 막대 앱 목표 (아직 미공개)
+
+최종 원커맨드 앱 설치 명령은 다음과 같다.
+
+```bash
+brew install --cask changja88/dotsync/dotsync-app
+```
+
+**릴리스 상태:** 서명·공증된 Cask는 아직 공개되지 않았다. 따라서 위 명령은
+최종 목표 설치 명령이며 현재 받을 수 있는 패키지가 아니다. 실제 universal
+archive가 서명, 공증, Gatekeeper, checksum 검증을 통과하기 전까지는 현재 지원되는
+Formula를 설치한다.
+
 ```bash
 brew install changja88/dotsync/dotsync
 dotsync welcome     # ASCII 환영 배너와 첫 시작 안내 출력
@@ -302,6 +363,40 @@ Python 3.12 또는 3.13 이 canonical 경로 (`/opt/homebrew/bin/python3.{12,13}
 > brew 가 자기 `python@3.12` 를 설치한다. 동작은 정상이지만 중복 설치는 발생.
 
 > 첫 단계는 항상 **`dotsync init`** — sync 폴더를 정한다. 그 다음 `backup` / `apply`가 동작한다.
+
+#### 앱이 제공하는 기능
+
+macOS 13+ 앱은 설치된 Formula를 backend dependency로 사용한다. 승인된 compact
+menu-bar popover와 계정, 사용량, Config Sync, 설정을 다루는 전체 관리 창을 제공한다.
+
+- 두 개 이상의 격리된 Codex 정액제 계정을 추가할 수 있다. 각 계정은 DotSync가
+  소유한 `CODEX_HOME`에서 공식 CLI로 새 로그인을 명시적으로 시작하며, 사용량은
+  공식 `codex app-server` 인터페이스로 읽는다. 로그인과 Refresh는 명시적 동작이고,
+  창을 열거나 닫는 것만으로 provider refresh가 실행되지 않는다.
+- Claude 계정·사용량 동작은 정책상 비활성화돼 있다. private OAuth endpoint,
+  browser cookie, private provider HTTP API로 우회하지 않는다.
+- 계정 metadata, 관리 Codex credential, 사용량 cache는
+  `~/Library/Application Support/DotSync/` 아래에만 둔다. 계정·사용량 동작은
+  `~/.claude`, `~/.claude.json`, 기본 `~/.codex` profile을 쓰지 않는다. 이 앱은
+  Anthropic 또는 OpenAI와 제휴한 제품이 아니다.
+- Config Sync는 별도의 명시적 기능이다. Backup은 로컬→폴더 변경을 preview하고,
+  Apply는 로컬 설정 덮어쓰기 경고와 폴더→로컬 변경 preview를 보여준 뒤 확인을
+  요구하며 쓰기 전에 로컬 파일을 백업한다. 이 확인된 config-sync 동작만
+  provider-profile no-write 규칙의 의도된 예외이고, 계정 화면은 Apply를 호출하지
+  않는다.
+- 관리 창을 닫아도 menu-bar 앱은 계속 실행된다. Quit은 명시적 메뉴 동작이다.
+  설치 후 앱을 자동으로 실행하지 않으며, 버전 1에는 launch-at-login과 자동
+  provider refresh가 없다.
+
+앱이 backend를 시작하지 못할 때는 app state를 만들거나 provider에 접속하지 않는
+Formula 설치 진단을 실행한다.
+
+```bash
+dotsync ui --check
+```
+
+개발자는 `make build-app`으로 unsigned 로컬 artifact를 만들 수 있지만, 이것은 공개
+Cask나 release archive가 아니다.
 
 ### 사용법
 
@@ -360,7 +455,7 @@ dotsync init --yes --quiet --no-hints
 dotsync init --yes --no-shell-init
 ```
 
-**dotsync는 사용자가 지정한 sync 폴더 외에는 컴퓨터 어디에도 파일/디렉토리를 만들지 않는다.** 모든 설정은 `<sync 폴더>/dotsync.toml`에만 저장되고, 백업도 `<sync 폴더>/.backups/`에 쌓인다. 단 하나의 예외는 — 설계상 opt-in으로 — `init`이 셸 rc에 추가하는 `export DOTSYNC_DIR="…"` 한 줄이다 (아래 참고). `--no-shell-init`으로 끌 수 있다.
+**설정 동기화 CLI는 사용자가 지정한 sync 폴더 밖에 자체 상태를 만들지 않는다.** 설정은 `<sync 폴더>/dotsync.toml`에 저장되고, 백업도 `<sync 폴더>/.backups/`에 쌓인다. 설정 단계의 유일한 예외는 설계상 opt-in인 `init`의 셸 rc 한 줄 `export DOTSYNC_DIR="…"`이다(아래 참고). `--no-shell-init`으로 끌 수 있다. 실행 시에는 확인된 `apply`만 선택한 로컬 앱 설정을 백업하고 쓰는 별도 예외다. 위 계정·사용량 앱 데이터는 Application Support 아래에만 둔다.
 
 #### dotsync는 sync 폴더를 어떻게 찾나?
 

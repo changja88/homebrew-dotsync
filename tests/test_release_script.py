@@ -35,7 +35,8 @@ FORMULA = (
     '  url "https://github.com/changja88/homebrew-dotsync/archive/refs/tags/v0.1.19.tar.gz"\n'
     f'  sha256 "{OLD_SHA}"\n'
     "  test do\n"
-    '    assert_match "dotsync 0.1.19", shell_output("#{bin}/dotsync --version")\n'
+    '    assert_match "dotsync #{version}", shell_output("#{bin}/dotsync --version")\n'
+    '    system bin/"dotsync", "ui", "--check"\n'
     "  end\n"
     "end\n"
 )
@@ -162,6 +163,8 @@ def test_release_completes_and_never_publishes_placeholder_when_gh_fails(sandbox
     assert result.returncode == 0, result.stdout + result.stderr
     assert FAKE_TARBALL_SHA in formula
     assert "v0.1.20" in formula  # url bumped
+    assert 'assert_match "dotsync #{version}"' in formula
+    assert 'system bin/"dotsync", "ui", "--check"' in formula
     assert _origin_has_tag(sandbox, "v0.1.20")
 
 
