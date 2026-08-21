@@ -12,6 +12,7 @@ from dotsync.config import (
     find_sync_folder,
     folder_config_path,
     default_backup_dir,
+    initialize_config_file,
     DEFAULT_BACKUP_KEEP,
     DEFAULT_BTT_PRESETS,
 )
@@ -373,6 +374,85 @@ def test_save_preserves_latest_mode_changed_after_temporary_write(
     assert not thread.is_alive()
     assert errors == []
     assert stat.S_IMODE(config_path.stat().st_mode) == 0o640
+
+
+def test_save_rejects_target_replaced_during_late_mode_transfer(
+    monkeypatch, tmp_path
+):
+    folder = tmp_path / "late-target-replacement"
+    folder.mkdir()
+    config_path = folder / "dotsync.toml"
+    displaced = folder / "original.toml"
+    replacement = 'apps = ["concurrent"]\n'
+    config_path.write_text('apps = ["zsh"]\n')
+    config_path.chmod(0o600)
+    real_fchmod = config_module.os.fchmod
+
+    def replace_target(descriptor: int, mode: int) -> None:
+        config_path.rename(displaced)
+        config_path.write_text(replacement)
+        real_fchmod(descriptor, mode)
+
+    monkeypatch.setattr(config_module.os, "fchmod", replace_target)
+
+    with pytest.raises(ConfigError, match="changed during save"):
+        save_config(Config(dir=folder, apps=["ghostty"]))
+
+    assert config_path.read_text() == replacement
+    assert displaced.read_text() == 'apps = ["zsh"]\n'
+    assert sorted(path.name for path in folder.iterdir()) == [
+        "dotsync.toml",
+        "original.toml",
+    ]
+
+
+def test_initializer_closes_staging_descriptor_when_cleanup_unlink_fails(
+    monkeypatch, tmp_path
+):
+    folder = tmp_path / "initializer-close"
+    folder.mkdir()
+    directory_fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+    real_open = config_module.os.open
+    real_close = config_module.os.close
+    opened_staging: list[int] = []
+    closed: list[int] = []
+
+    def record_open(path, flags, mode=0o777, *, dir_fd=None):
+        descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+        if dir_fd == directory_fd:
+            opened_staging.append(descriptor)
+        return descriptor
+
+    def fail_file_fsync(descriptor: int) -> None:
+        if stat.S_ISREG(config_module.os.fstat(descriptor).st_mode):
+            raise OSError("file fsync failed")
+
+    def fail_cleanup_unlink(name: str, *, dir_fd=None) -> None:
+        raise OSError("cleanup unlink failed")
+
+    def record_close(descriptor: int) -> None:
+        closed.append(descriptor)
+        real_close(descriptor)
+
+    monkeypatch.setattr(config_module.os, "open", record_open)
+    monkeypatch.setattr(config_module.os, "fsync", fail_file_fsync)
+    monkeypatch.setattr(config_module.os, "unlink", fail_cleanup_unlink)
+    monkeypatch.setattr(config_module.os, "close", record_close)
+
+    try:
+        with pytest.raises(OSError):
+            initialize_config_file(
+                directory_fd,
+                Config(dir=folder, apps=["zsh"]),
+            )
+
+        assert len(opened_staging) == 1
+        assert opened_staging[0] in closed
+    finally:
+        for descriptor in opened_staging:
+            if descriptor not in closed:
+                real_close(descriptor)
+        real_close(directory_fd)
 
 
 def test_save_applies_existing_set_id_mode_after_writing(monkeypatch, tmp_path):

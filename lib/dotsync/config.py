@@ -273,25 +273,46 @@ def _serialize_config(cfg: Config) -> str:
 def initialize_config_file(directory_fd: int, cfg: Config) -> None:
     """Create a missing config through one already-validated directory."""
     content = _serialize_config(cfg).encode("utf-8")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-    descriptor = os.open(
-        FOLDER_CONFIG_FILENAME,
-        flags,
-        0o666,
-        dir_fd=directory_fd,
-    )
-    initialized = False
+    staging_name, descriptor = _open_initializer_staging_file(directory_fd)
     try:
         _write_all(descriptor, content)
         os.fsync(descriptor)
         os.fsync(directory_fd)
-        initialized = True
+        os.link(
+            staging_name,
+            FOLDER_CONFIG_FILENAME,
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        os.unlink(staging_name, dir_fd=directory_fd)
+        staging_name = ""
+        os.fsync(directory_fd)
     finally:
-        if not initialized:
-            _unlink_created_config_if_current(directory_fd, descriptor)
-        os.close(descriptor)
+        try:
+            if staging_name:
+                _unlink_initializer_staging(directory_fd, staging_name)
+        finally:
+            os.close(descriptor)
+
+
+def _open_initializer_staging_file(directory_fd: int) -> tuple[str, int]:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    for _ in range(100):
+        staging_name = f".dotsync.toml.init.{secrets.token_hex(16)}"
+        try:
+            descriptor = os.open(
+                staging_name,
+                flags,
+                0o666,
+                dir_fd=directory_fd,
+            )
+        except FileExistsError:
+            continue
+        return staging_name, descriptor
+    raise FileExistsError("could not create a config initializer staging file")
 
 
 def _write_all(descriptor: int, content: bytes) -> None:
@@ -303,23 +324,15 @@ def _write_all(descriptor: int, content: bytes) -> None:
         offset += written
 
 
-def _unlink_created_config_if_current(
+def _unlink_initializer_staging(
     directory_fd: int,
-    descriptor: int,
+    staging_name: str,
 ) -> None:
-    created = os.fstat(descriptor)
     try:
-        current = os.stat(
-            FOLDER_CONFIG_FILENAME,
-            dir_fd=directory_fd,
-            follow_symlinks=False,
-        )
-    except FileNotFoundError:
-        return
-    if (current.st_dev, current.st_ino) != (created.st_dev, created.st_ino):
+        os.unlink(staging_name, dir_fd=directory_fd)
+    except OSError:
         return
     try:
-        os.unlink(FOLDER_CONFIG_FILENAME, dir_fd=directory_fd)
         os.fsync(directory_fd)
     except OSError:
         pass
@@ -369,6 +382,12 @@ def _atomic_write_config(path: Path, content: str) -> None:
                 os.fsync(temporary_fd)
             os.close(temporary_fd)
             temporary_fd = None
+            if not _config_target_identity_is_current(
+                parent_fd,
+                path.name,
+                target_fd,
+            ):
+                raise ConfigError("dotsync.toml changed during save")
             os.replace(
                 temporary_name,
                 path.name,

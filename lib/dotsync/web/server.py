@@ -64,7 +64,7 @@ class WebApplication:
         usage_service: UsageService,
         sync_service: SyncService | None,
         folder_picker: Callable[[], Path | None],
-        sync_folder_initializer: Callable[[Path], SyncService],
+        sync_folder_initializer: Callable[[], SyncService],
         reveal_app_data: Callable[[Path], object],
         open_provider_url: Callable[[str], object],
         job_registry: JobRegistry | None = None,

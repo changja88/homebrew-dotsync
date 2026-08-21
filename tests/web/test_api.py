@@ -22,7 +22,7 @@ from dotsync.app_paths import AppPaths
 from dotsync.app_state import AppState, AppStateStore
 from dotsync.apps import build_app
 from dotsync.apps.base import App, FilePair
-from dotsync.config import Config, load_config_from, save_config
+from dotsync.config import Config, save_config
 from dotsync.jobs import JobContext, JobView, RegistryClosed
 from dotsync.providers import LoginProgress
 from dotsync.sync_service import StaleSyncPlan, SyncService, SyncStatus
@@ -31,6 +31,9 @@ from dotsync.web import WebApplication, run_ui_server
 
 
 _UNSET = object()
+_DEEPLY_PERCENT_ENCODED_LOCATOR = (
+    "https%2525253A%2525252F%2525252Foauth.invalid%2525252Ftoken"
+)
 
 
 class _StateStore:
@@ -270,30 +273,29 @@ class _Picker:
 class _Initializer:
     def __init__(self, events: list[str]) -> None:
         self.events = events
-        self.paths: list[Path] = []
         self.services: list[_SyncService] = []
-        self.gates: dict[Path, tuple[threading.Event, threading.Event]] = {}
-        self.actions: dict[Path, object] = {}
-        self.errors: dict[Path, BaseException] = {}
+        self.effects: list[object] = []
+        self.arguments: list[tuple[object, ...]] = []
 
-    def __call__(self, path: Path) -> _SyncService:
-        self.paths.append(path)
-        self.events.append("folder_initialized")
-        gate = self.gates.get(path)
-        if gate is not None:
+    def __call__(self, *arguments: object) -> _SyncService:
+        self.arguments.append(arguments)
+        effect = self.effects.pop(0) if self.effects else None
+        if (
+            type(effect) is tuple
+            and len(effect) == 2
+            and all(isinstance(item, threading.Event) for item in effect)
+        ):
+            gate = effect
             entered, release = gate
             entered.set()
             assert release.wait(timeout=2.0)
-        error = self.errors.get(path)
-        if error is not None:
-            raise error
-        action = self.actions.get(path)
-        if callable(action):
-            action(path)
-        config = load_config_from(path)
-        service = _SyncService(path)
-        service.config = config
+        elif isinstance(effect, BaseException):
+            raise effect
+        elif callable(effect):
+            effect(*arguments)
+        service = _SyncService(Path("/dev/null"))
         self.services.append(service)
+        self.events.append("folder_candidate_built")
         return service
 
 
@@ -393,7 +395,6 @@ class _Stack:
     usage: _UsageService
     sync: _SyncService
     picker: _Picker
-    initialized: list[Path]
     revealed: list[Path]
     opened_urls: list[str]
     initialized_services: list[_SyncService]
@@ -437,7 +438,6 @@ def stack(tmp_path):
         usage=usage,
         sync=sync,
         picker=picker,
-        initialized=initializer.paths,
         revealed=revealed,
         opened_urls=opened_urls,
         initialized_services=initializer.services,
@@ -488,7 +488,6 @@ def durable_stack(tmp_path):
         usage=usage,
         sync=sync,
         picker=picker,
-        initialized=initializer.paths,
         revealed=revealed,
         opened_urls=opened_urls,
         initialized_services=initializer.services,
@@ -873,6 +872,7 @@ def test_account_list_includes_only_the_sanitized_cached_usage_snapshot(stack):
         "?code=oauth-secret",
         "profiles/codex",
         "https%3A%2F%2Foauth.invalid%2Faccess-token",
+        _DEEPLY_PERCENT_ENCODED_LOCATOR,
     ],
 )
 def test_account_list_redacts_locator_like_display_names(stack, display_name):
@@ -969,8 +969,16 @@ def test_account_dto_preserves_safe_unicode_identity_fields(stack):
 
 
 @pytest.mark.parametrize("route", ["create", "rename"])
-def test_account_mutations_reject_locator_shaped_required_labels(stack, route):
-    unsafe_label = "https://oauth.invalid/access-token"
+@pytest.mark.parametrize(
+    "unsafe_label",
+    [
+        "https://oauth.invalid/access-token",
+        _DEEPLY_PERCENT_ENCODED_LOCATOR,
+    ],
+)
+def test_account_mutations_reject_locator_shaped_required_labels(
+    stack, route, unsafe_label
+):
     if route == "create":
         response = stack.client.request(
             "POST",
@@ -996,8 +1004,16 @@ def test_account_mutations_reject_locator_shaped_required_labels(stack, route):
     assert stack.usage.calls == []
 
 
-def test_account_list_rejects_locator_shaped_required_label_without_echo(stack):
-    unsafe_label = "https://oauth.invalid/access-token"
+@pytest.mark.parametrize(
+    "unsafe_label",
+    [
+        "https://oauth.invalid/access-token",
+        _DEEPLY_PERCENT_ENCODED_LOCATOR,
+    ],
+)
+def test_account_list_rejects_locator_shaped_required_label_without_echo(
+    stack, unsafe_label
+):
     account = _account(label=unsafe_label)
     stack.accounts.accounts[account.id] = account
 
@@ -1507,6 +1523,7 @@ def test_account_job_results_must_match_the_managed_account(
         "?code=oauth-secret",
         "profiles/codex",
         "https%3A%2F%2Foauth.invalid%2Faccess-token",
+        _DEEPLY_PERCENT_ENCODED_LOCATOR,
     ],
 )
 def test_account_job_redacts_unsafe_optional_identity_fields(
@@ -1604,10 +1621,16 @@ def test_account_job_preserves_safe_unicode_punctuation(stack, monkeypatch):
     }
 
 
+@pytest.mark.parametrize(
+    "unsafe_label",
+    [
+        "https://oauth.invalid/access-token",
+        _DEEPLY_PERCENT_ENCODED_LOCATOR,
+    ],
+)
 def test_account_job_rejects_locator_shaped_required_label_without_echo(
-    stack, monkeypatch
+    stack, monkeypatch, unsafe_label
 ):
-    unsafe_label = "https://oauth.invalid/access-token"
     account = _account()
     stack.accounts.accounts[account.id] = account
     accepted = stack.client.request(
@@ -2326,7 +2349,7 @@ def test_older_concurrent_selection_cannot_overwrite_newer_commit(stack, tmp_pat
     second.mkdir()
     first_entered = threading.Event()
     release_first = threading.Event()
-    stack.initializer.gates[first] = (first_entered, release_first)
+    stack.initializer.effects.append((first_entered, release_first))
     stack.picker.selected = first
     pending_first = _start_request(
         lambda: stack.client.request("POST", "/api/settings/sync-folder/select")
@@ -2424,7 +2447,7 @@ def test_folder_selection_builds_candidate_before_persisting_app_state(
     durable_stack.picker.selected = selected
     old_digest = _issue_sync_digest(durable_stack)
     sentinel = "SYNC_FOLDER_INITIALIZER_SENTINEL"
-    durable_stack.initializer.errors[selected] = RuntimeError(sentinel)
+    durable_stack.initializer.effects.append(RuntimeError(sentinel))
 
     response = durable_stack.client.request(
         "POST", "/api/settings/sync-folder/select"
@@ -2480,9 +2503,10 @@ def test_app_state_rebuild_failure_publishes_safe_unavailable(
     selected.mkdir()
     authoritative = tmp_path / "authoritative-rebuild"
     authoritative.mkdir()
+    save_config(Config(dir=authoritative, apps=["zsh"]))
     durable_stack.picker.selected = selected
-    durable_stack.initializer.errors[authoritative] = ValueError(
-        "APP_STATE_REBUILD_FAILURE_SENTINEL"
+    durable_stack.initializer.effects.extend(
+        [None, ValueError("APP_STATE_REBUILD_FAILURE_SENTINEL")]
     )
     old_digest = _issue_sync_digest(durable_stack)
 
@@ -2528,7 +2552,7 @@ def test_folder_selection_accepts_no_http_path_and_cancellation_mutates_nothing(
     assert cancelled.status == 200
     assert cancelled.json() == {"selected": False}
     assert stack.picker.calls == 1
-    assert stack.initialized == []
+    assert stack.initialized_services == []
     assert stack.state.state == AppState()
 
 
@@ -2544,8 +2568,10 @@ def test_folder_selection_initializes_config_before_persisting_backend_path(stac
 
     assert response.status == 200
     assert response.json() == {"selected": True}
-    assert stack.initialized == [selected]
-    assert stack.state.events[-2:] == ["folder_initialized", "state_saved"]
+    assert [
+        service.config.dir for service in stack.initialized_services
+    ] == [selected]
+    assert stack.state.events[-2:] == ["folder_candidate_built", "state_saved"]
     assert stack.state.state == AppState(sync_dir=str(selected))
     assert (selected / "dotsync.toml").is_file()
 
@@ -2574,7 +2600,7 @@ def test_folder_selection_cleans_up_failed_anchored_config_initialization(
     assert response.status == 422
     assert response.json()["error"]["code"] == "invalid_sync_folder"
     assert not (selected / "dotsync.toml").exists()
-    assert stack.initialized == []
+    assert stack.initialized_services == []
     assert stack.state.state == AppState()
 
 
@@ -2594,12 +2620,13 @@ def test_folder_selection_cleanup_keeps_a_replaced_config_entry(
         nonlocal replaced
         if (
             not replaced
-            and stat.S_ISREG(config_module.os.fstat(descriptor).st_mode)
+            and stat.S_ISDIR(config_module.os.fstat(descriptor).st_mode)
+            and config_path.exists()
         ):
             replaced = True
             config_path.rename(displaced)
             config_path.write_text(replacement)
-            raise OSError("file fsync failed")
+            raise OSError("directory fsync failed")
         real_fsync(descriptor)
 
     monkeypatch.setattr(
@@ -2616,7 +2643,51 @@ def test_folder_selection_cleanup_keeps_a_replaced_config_entry(
     assert response.json()["error"]["code"] == "invalid_sync_folder"
     assert config_path.read_text() == replacement
     assert displaced.is_file()
-    assert stack.initialized == []
+    assert stack.initialized_services == []
+    assert stack.state.state == AppState()
+
+
+def test_folder_selection_cleanup_never_unlinks_a_last_moment_replacement(
+    stack, tmp_path, monkeypatch
+):
+    selected = tmp_path / "replacement-at-cleanup"
+    selected.mkdir()
+    config_path = selected / "dotsync.toml"
+    displaced = selected / "request-created-config"
+    replacement = "LAST_MOMENT_REPLACEMENT\n"
+    stack.picker.selected = selected
+    real_fsync = config_module.os.fsync
+    real_unlink = config_module.os.unlink
+    replacement_installed = False
+
+    def fail_file_fsync(descriptor: int) -> None:
+        if stat.S_ISREG(config_module.os.fstat(descriptor).st_mode):
+            raise OSError("file fsync failed")
+        real_fsync(descriptor)
+
+    def replace_entry_before_cleanup(
+        name: str, *, dir_fd: int | None = None
+    ) -> None:
+        nonlocal replacement_installed
+        if not replacement_installed:
+            if config_path.exists():
+                config_path.rename(displaced)
+            config_path.write_text(replacement)
+            replacement_installed = True
+        real_unlink(name, dir_fd=dir_fd)
+
+    monkeypatch.setattr(config_module.os, "fsync", fail_file_fsync)
+    monkeypatch.setattr(config_module.os, "unlink", replace_entry_before_cleanup)
+
+    response = stack.client.request(
+        "POST", "/api/settings/sync-folder/select"
+    )
+
+    assert response.status == 422
+    assert response.json()["error"]["code"] == "invalid_sync_folder"
+    assert replacement_installed
+    assert config_path.read_text() == replacement
+    assert stack.initialized_services == []
     assert stack.state.state == AppState()
 
 
@@ -2632,7 +2703,7 @@ def test_folder_selection_rejects_a_symlink_in_any_ancestor(stack, tmp_path):
 
     assert response.status == 422
     assert response.json()["error"]["code"] == "invalid_sync_folder"
-    assert stack.initialized == []
+    assert stack.initialized_services == []
     assert stack.state.state == AppState()
     assert not (selected / "dotsync.toml").exists()
 
@@ -2652,7 +2723,7 @@ def test_folder_selection_does_not_follow_an_existing_config_symlink(
     assert response.status == 422
     assert response.json()["error"]["code"] == "invalid_sync_folder"
     assert sentinel.read_text() == "PRIVATE_SENTINEL\n"
-    assert stack.initialized == []
+    assert stack.initialized_services == []
     assert stack.state.state == AppState()
 
 
@@ -2667,7 +2738,9 @@ def test_folder_selection_persists_only_the_canonical_validated_path(stack, tmp_
     response = stack.client.request("POST", "/api/settings/sync-folder/select")
 
     assert response.status == 200
-    assert stack.initialized == [selected]
+    assert [
+        service.config.dir for service in stack.initialized_services
+    ] == [selected]
     assert stack.state.state == AppState(sync_dir=str(selected))
 
 
@@ -2675,15 +2748,21 @@ def test_folder_selection_rejects_directory_identity_replacement(stack, tmp_path
     selected = tmp_path / "replaceable-selection"
     displaced = tmp_path / "displaced-selection"
     selected.mkdir()
-
-    def replace_directory(path: Path) -> None:
-        path.rename(displaced)
-        path.mkdir()
-
-    stack.initializer.actions[selected] = replace_directory
+    candidate_entered = threading.Event()
+    release_candidate = threading.Event()
+    stack.initializer.effects.append((candidate_entered, release_candidate))
     stack.picker.selected = selected
 
-    response = stack.client.request("POST", "/api/settings/sync-folder/select")
+    pending = _start_request(
+        lambda: stack.client.request(
+            "POST", "/api/settings/sync-folder/select"
+        )
+    )
+    assert candidate_entered.wait(timeout=1.0)
+    selected.rename(displaced)
+    selected.mkdir()
+    release_candidate.set()
+    response = pending.finish()
 
     assert response.status == 422
     assert response.json()["error"]["code"] == "invalid_sync_folder"
@@ -2703,9 +2782,8 @@ def test_folder_selection_never_initializes_through_replaced_picker_path(
     sentinel.write_text("OUTSIDE_SENTINEL\n")
     initializer_entered = threading.Event()
     release_initializer = threading.Event()
-    stack.initializer.gates[selected] = (
-        initializer_entered,
-        release_initializer,
+    stack.initializer.effects.append(
+        (initializer_entered, release_initializer)
     )
     stack.picker.selected = selected
     pending = _start_request(
@@ -2726,6 +2804,39 @@ def test_folder_selection_never_initializes_through_replaced_picker_path(
     assert sorted(path.name for path in outside.iterdir()) == ["keep.txt"]
     assert not (outside / "dotsync.toml").exists()
     assert stack.state.state == AppState()
+
+
+def test_folder_selection_does_not_expose_picker_path_to_candidate_factory(
+    stack, tmp_path
+):
+    selected = tmp_path / "candidate-input-selection"
+    displaced = tmp_path / "candidate-input-displaced"
+    outside = tmp_path / "candidate-input-outside"
+    selected.mkdir()
+    outside.mkdir()
+    stack.picker.selected = selected
+
+    def mutate_through_supplied_path(*arguments: object) -> None:
+        if len(arguments) != 1 or not isinstance(arguments[0], Path):
+            return
+        path = arguments[0]
+        path.rename(displaced)
+        path.symlink_to(outside, target_is_directory=True)
+        (path / "factory-write.txt").write_text("OUTSIDE_WRITE\n")
+
+    stack.initializer.effects.append(mutate_through_supplied_path)
+
+    response = stack.client.request(
+        "POST", "/api/settings/sync-folder/select"
+    )
+
+    assert response.status == 200
+    assert response.json() == {"selected": True}
+    assert selected.is_dir()
+    assert not selected.is_symlink()
+    assert list(outside.iterdir()) == []
+    assert stack.initializer.arguments == [()]
+    assert stack.state.state == AppState(sync_dir=str(selected))
 
 
 def test_reveal_accepts_no_path_and_uses_only_app_paths_root(stack):

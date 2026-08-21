@@ -139,6 +139,10 @@ _SAFE_HUMAN_SYMBOLS = frozenset("+")
 _URI_SCHEME_PREFIX = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
 _PERCENT_ESCAPE = re.compile(r"%[0-9A-Fa-f]{2}")
 _HOST_TOKEN = re.compile(r"[A-Za-z0-9.-]+")
+# Candidate callbacks receive no picker path. Validation uses this non-directory
+# root so even a misbehaving build-time collaborator cannot traverse a selected
+# path that may have been concurrently replaced.
+_CANDIDATE_BUILD_ROOT = Path("/dev/null")
 _SAFE_USAGE_ERROR_CODES = frozenset(
     {
         "cli_missing",
@@ -265,7 +269,7 @@ class ApiController:
         usage_service: UsageService,
         sync_service: SyncService | None,
         folder_picker: Callable[[], Path | None],
-        sync_folder_initializer: Callable[[Path], SyncService],
+        sync_folder_initializer: Callable[[], SyncService],
         reveal_app_data: Callable[[Path], object],
         heartbeat: Callable[[], bool],
         open_provider_url: Callable[[str], object],
@@ -633,10 +637,10 @@ class ApiController:
                 )
                 os.close(revalidated_fd)
                 revalidated_fd = None
-                # Anchored creation is complete. This injected boundary is
-                # intentionally read/build-only; it must not persist by path.
-                new_sync = self._sync_folder_initializer(canonical)
-                _validate_sync_directory_candidate(new_sync, canonical)
+                new_sync = _build_sync_directory_candidate(
+                    self._sync_folder_initializer,
+                    canonical,
+                )
                 revalidated_fd = _open_revalidated_sync_directory(
                     canonical,
                     initial_identity,
@@ -780,8 +784,10 @@ class ApiController:
             authoritative = current
         else:
             authoritative_dir = _canonical_safe_directory(Path(state.sync_dir))
-            authoritative = self._sync_folder_initializer(authoritative_dir)
-            _validate_sync_directory_candidate(authoritative, authoritative_dir)
+            authoritative = _build_sync_directory_candidate(
+                self._sync_folder_initializer,
+                authoritative_dir,
+            )
         self._sync = authoritative
 
     def _accepted_job(
@@ -939,6 +945,11 @@ def _same_config(first: object, second: object) -> bool:
 
 
 def _validate_sync_candidate(candidate: object, config: Config) -> None:
+    _validate_sync_candidate_shape(candidate, config)
+    candidate.validate_config()
+
+
+def _validate_sync_candidate_shape(candidate: object, config: Config) -> None:
     if candidate is None or getattr(candidate, "config", None) is not config:
         raise TypeError("sync service factory returned an unsupported candidate")
     for method in (
@@ -950,14 +961,38 @@ def _validate_sync_candidate(candidate: object, config: Config) -> None:
     ):
         if not callable(getattr(candidate, method, None)):
             raise TypeError("sync service factory returned an unsupported candidate")
-    candidate.validate_config()
 
 
 def _validate_sync_directory_candidate(candidate: object, sync_dir: Path) -> None:
     config = getattr(candidate, "config", None)
     if type(config) is not Config or config.dir != sync_dir:
         raise TypeError("sync folder initializer returned an unsupported candidate")
-    _validate_sync_candidate(candidate, config)
+    _validate_sync_candidate_shape(candidate, config)
+
+
+def _build_sync_directory_candidate(
+    factory: Callable[[], SyncService],
+    sync_dir: Path,
+) -> SyncService:
+    config = load_config_from(sync_dir)
+    construction_config = _candidate_construction_config(config)
+    candidate = factory()
+    candidate.config = construction_config
+    _validate_sync_candidate(candidate, construction_config)
+    candidate.config = config
+    _validate_sync_directory_candidate(candidate, sync_dir)
+    return candidate
+
+
+def _candidate_construction_config(config: Config) -> Config:
+    return Config(
+        dir=_CANDIDATE_BUILD_ROOT,
+        apps=list(config.apps),
+        backup_dir=_CANDIDATE_BUILD_ROOT,
+        backup_keep=config.backup_keep,
+        bettertouchtool_presets=list(config.bettertouchtool_presets),
+        app_options=copy.deepcopy(config.app_options),
+    )
 
 
 def _service_uses_directory(service: object, value: object) -> bool:
@@ -1768,7 +1803,7 @@ def _unsafe_account_human_text(required: bool) -> None:
 
 def _contains_structural_locator(value: str) -> bool:
     probe = unicodedata.normalize("NFKC", value)
-    for _ in range(3):
+    while True:
         if _is_structural_locator_probe(probe):
             return True
         if _PERCENT_ESCAPE.search(probe) is None:
@@ -1781,7 +1816,6 @@ def _contains_structural_locator(value: str) -> bool:
         if decoded == probe:
             return False
         probe = decoded
-    return _is_structural_locator_probe(probe)
 
 
 def _is_structural_locator_probe(value: str) -> bool:

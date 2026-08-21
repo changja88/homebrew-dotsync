@@ -118,7 +118,7 @@ def _application(
         usage_service=object(),
         sync_service=None,
         folder_picker=lambda: None,
-        sync_folder_initializer=lambda path: None,
+        sync_folder_initializer=lambda: None,
         reveal_app_data=lambda path: None,
         open_provider_url=lambda url: None,
         job_registry=jobs or _Jobs(),
