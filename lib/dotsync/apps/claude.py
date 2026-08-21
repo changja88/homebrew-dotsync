@@ -674,6 +674,8 @@ class ClaudeApp(App):
                 change.source,
                 change.dest,
                 "create directory",
+                source_manifest=change.source_manifest,
+                dest_manifest=change.dest_manifest,
             )
         return change
 

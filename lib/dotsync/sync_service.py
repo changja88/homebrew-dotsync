@@ -14,12 +14,25 @@ from dotsync.apps import build_app
 from dotsync.apps.base import App, AppStatus
 from dotsync.backup import new_backup_session, rotate_backups
 from dotsync.config import Config, save_config
-from dotsync.plan import AppPlan
+from dotsync.plan import AppPlan, path_fingerprint
 
 SyncDirection = Literal["backup", "apply"]
 AppFactory = Callable[[str, Config], App]
 BackupSessionFactory = Callable[[Path], Path]
 BackupRotator = Callable[[Path, int], None]
+
+
+def _canonical_json(data: dict[str, object]) -> str:
+    return json.dumps(
+        data,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _digest_json(data: dict[str, object]) -> str:
+    return hashlib.sha256(_canonical_json(data).encode("utf-8")).hexdigest()
 
 
 class StaleSyncPlan(RuntimeError):
@@ -55,11 +68,62 @@ class SyncStatus:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "sync_dir": str(self.sync_dir),
+            "sync_dir": {
+                "scope": "sync-root",
+                "id": path_fingerprint(self.sync_dir),
+            },
             "apps": [
                 app.to_dict(relative_to=self.sync_dir) for app in self.apps
             ],
         }
+
+
+@dataclass(frozen=True)
+class _ConfigSnapshot:
+    sync_dir: Path
+    apps: tuple[str, ...]
+    backup_dir: Path | None
+    backup_keep: int
+    bettertouchtool_presets: tuple[str, ...]
+    app_options_json: str
+
+    @classmethod
+    def capture(cls, config: Config) -> "_ConfigSnapshot":
+        return cls(
+            sync_dir=config.dir,
+            apps=tuple(config.apps),
+            backup_dir=config.backup_dir,
+            backup_keep=config.backup_keep,
+            bettertouchtool_presets=tuple(config.bettertouchtool_presets),
+            app_options_json=_canonical_json(copy.deepcopy(config.app_options)),
+        )
+
+    @property
+    def revision(self) -> str:
+        return _digest_json(
+            {
+                "dir": str(self.sync_dir.absolute()),
+                "apps": list(self.apps),
+                "backup_dir": (
+                    str(self.backup_dir.absolute())
+                    if self.backup_dir is not None
+                    else None
+                ),
+                "backup_keep": self.backup_keep,
+                "bettertouchtool_presets": list(self.bettertouchtool_presets),
+                "app_options": self.app_options_json,
+            }
+        )
+
+    def to_config(self) -> Config:
+        return Config(
+            dir=self.sync_dir,
+            apps=list(self.apps),
+            backup_dir=self.backup_dir,
+            backup_keep=self.backup_keep,
+            bettertouchtool_presets=list(self.bettertouchtool_presets),
+            app_options=json.loads(self.app_options_json),
+        )
 
 
 @dataclass(frozen=True)
@@ -69,6 +133,7 @@ class SyncPreview:
     plans: tuple[AppPlan, ...]
     digest: str
     _plan_data: dict[str, object] = field(repr=False)
+    _config_snapshot: _ConfigSnapshot = field(repr=False)
 
     def to_dict(self) -> dict[str, object]:
         result = copy.deepcopy(self._plan_data)
@@ -136,25 +201,24 @@ def serialize_sync_plan(
     apps: tuple[str, ...],
     plans: tuple[AppPlan, ...],
     sync_dir: Path,
+    config_revision: str = "",
 ) -> dict[str, object]:
     """Build the canonical, JSON-safe filesystem plan used for validation."""
     return {
         "direction": direction,
         "apps": list(apps),
+        "config_revision": config_revision,
         "plans": [plan.to_dict(relative_to=sync_dir) for plan in plans],
-        "sync_dir": str(sync_dir.absolute()),
+        "sync_dir": {
+            "scope": "sync-root",
+            "id": path_fingerprint(sync_dir),
+        },
     }
 
 
 def sync_plan_digest(plan_data: dict[str, object]) -> str:
     """Hash canonical UTF-8 JSON for a serialized sync plan."""
-    encoded = json.dumps(
-        plan_data,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return _digest_json(plan_data)
 
 
 class SyncService:
@@ -191,7 +255,12 @@ class SyncService:
     def preview(
         self, direction: SyncDirection, apps: tuple[str, ...]
     ) -> SyncPreview:
-        preview = self._build_preview(direction=direction, apps=apps)
+        config_snapshot = _ConfigSnapshot.capture(self.config)
+        preview = self._build_preview(
+            direction=direction,
+            apps=apps,
+            config_snapshot=config_snapshot,
+        )
         self._previews[preview.digest] = preview
         return preview
 
@@ -202,11 +271,19 @@ class SyncService:
                 "sync preview is unavailable; create a new preview before executing"
             )
 
+        if _ConfigSnapshot.capture(self.config) != expected._config_snapshot:
+            self._previews.pop(digest, None)
+            raise StaleSyncPlan(
+                "sync preview is stale; create a new preview before executing"
+            )
+
         current = self._build_preview(
             direction=expected.direction,
             apps=expected.apps,
+            config_snapshot=expected._config_snapshot,
         )
         if current.digest != digest or current._plan_data != expected._plan_data:
+            self._previews.pop(digest, None)
             raise StaleSyncPlan(
                 "sync preview is stale; create a new preview before executing"
             )
@@ -216,29 +293,36 @@ class SyncService:
         return result
 
     def update_apps(self, apps: tuple[str, ...]) -> Config:
+        self._previews.clear()
         self.config.apps = list(apps)
         save_config(self.config)
         return self.config
 
     def _build_preview(
-        self, *, direction: SyncDirection, apps: tuple[str, ...]
+        self,
+        *,
+        direction: SyncDirection,
+        apps: tuple[str, ...],
+        config_snapshot: _ConfigSnapshot,
     ) -> SyncPreview:
         if direction not in ("backup", "apply"):
             raise ValueError(f"unknown sync direction: {direction}")
+        config = config_snapshot.to_config()
         plan_direction = "from" if direction == "backup" else "to"
         plans: list[AppPlan] = []
         for name in apps:
-            app = self._app_factory(name, self.config)
+            app = self._app_factory(name, config)
             if plan_direction == "from":
-                plans.append(app.plan_from(self.config.dir))
+                plans.append(app.plan_from(config.dir))
             else:
-                plans.append(app.plan_to(self.config.dir))
+                plans.append(app.plan_to(config.dir))
         plan_tuple = tuple(plans)
         plan_data = serialize_sync_plan(
             direction=direction,
             apps=apps,
             plans=plan_tuple,
-            sync_dir=self.config.dir,
+            sync_dir=config.dir,
+            config_revision=config_snapshot.revision,
         )
         return SyncPreview(
             direction=direction,
@@ -246,9 +330,11 @@ class SyncService:
             plans=plan_tuple,
             digest=sync_plan_digest(plan_data),
             _plan_data=plan_data,
+            _config_snapshot=config_snapshot,
         )
 
     def _execute_preview(self, preview: SyncPreview) -> SyncExecutionResult:
+        config = preview._config_snapshot.to_config()
         unchanged_by_plan = {
             plan.app: bool(plan.changes) and not plan.has_changes
             for plan in preview.plans
@@ -262,7 +348,7 @@ class SyncService:
         backup_dir: Path | None = None
 
         for index, name in enumerate(preview.apps, 1):
-            app = self._app_factory(name, self.config)
+            app = self._app_factory(name, config)
             self._events.app_started(
                 name, app, index=index, total=len(preview.apps)
             )
@@ -273,14 +359,14 @@ class SyncService:
                 continue
             try:
                 if preview.direction == "apply" and backup_dir is None:
-                    assert self.config.backup_dir is not None
-                    backup_dir = self._backup_session_factory(self.config.backup_dir)
+                    assert config.backup_dir is not None
+                    backup_dir = self._backup_session_factory(config.backup_dir)
                     self._events.backup_created(backup_dir)
                 if preview.direction == "backup":
-                    app.sync_from(self.config.dir)
+                    app.sync_from(config.dir)
                 else:
                     assert backup_dir is not None
-                    app.sync_to(self.config.dir, backup_dir)
+                    app.sync_to(config.dir, backup_dir)
                 changed.append(name)
                 self._events.app_succeeded(app)
             except (FileNotFoundError, RuntimeError) as error:
@@ -292,8 +378,8 @@ class SyncService:
             self._events.app_finished(app)
 
         if backup_dir is not None:
-            assert self.config.backup_dir is not None
-            self._backup_rotator(self.config.backup_dir, self.config.backup_keep)
+            assert config.backup_dir is not None
+            self._backup_rotator(config.backup_dir, config.backup_keep)
 
         return SyncExecutionResult(
             direction=preview.direction,
