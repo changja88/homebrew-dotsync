@@ -23,10 +23,12 @@ combines only those executables, and writes `build/DotSync.app`. The result is a
 unsigned local development artifact. The script does not create an archive,
 sign, notarize, upload, publish, or generate a Cask.
 
-Assembly happens in a private staging directory. A failed rebuild removes that
-staging directory and leaves any pre-existing valid `build/DotSync.app`
-unchanged; a verified rebuild replaces the previous app only at the final
-publication step.
+Assembly requires a clean `build/DotSync.app` output path. If any file,
+directory, or link already exists there, the build fails immediately and never
+deletes or replaces that entry; remove a previous generated app yourself before
+building again. A clean build assembles in a private staging directory, removes
+that staging directory on failure, and publishes the verified app with one
+no-replace rename.
 
 The public Cask remains blocked until a real release archive passes Developer ID
 signing, notarization, Gatekeeper, and checksum verification. The eventual Cask

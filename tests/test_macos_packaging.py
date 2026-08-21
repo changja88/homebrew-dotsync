@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import errno
+import importlib.util
 import os
 import plistlib
 import shutil
 import stat
 import subprocess
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -63,9 +66,14 @@ printf '%s\n' "/fake/MacOSX.sdk"
     _write_executable(
         fake_bin / "swift",
         r'''
+if [[ -n "${DOTSYNC_TEST_REPLACE_BUILD_ROOT:-}" && ! -e "$DOTSYNC_TEST_ROOT_REPLACED_MARKER" ]]; then
+  mv "$DOTSYNC_TEST_PROJECT/build" "$DOTSYNC_TEST_PROJECT/detached-build"
+  ln -s "$DOTSYNC_TEST_EXTERNAL_BUILD" "$DOTSYNC_TEST_PROJECT/build"
+  : > "$DOTSYNC_TEST_ROOT_REPLACED_MARKER"
+fi
 [[ "$#" == 11 || "$#" == 12 ]] || exit 80
 [[ "$1" == "build" ]] || exit 80
-[[ "$2" == "--package-path" && "$3" == "macos/DotSyncApp" ]] || exit 80
+[[ "$2" == "--package-path" && "$3" == "$DOTSYNC_TEST_PROJECT/macos/DotSyncApp" ]] || exit 80
 [[ "$4" == "--configuration" && "$5" == "release" ]] || exit 80
 [[ "$6" == "--triple" ]] || exit 80
 triple="$7"
@@ -74,9 +82,9 @@ triple="$7"
 [[ "${10}" == "--scratch-path" ]] || exit 80
 scratch="${11}"
 if [[ "$triple" == arm64-* ]]; then
-  [[ "$scratch" == */build/swift-arm64 ]] || exit 80
+  [[ "$scratch" == swift-arm64 ]] || exit 80
 else
-  [[ "$scratch" == */build/swift-x86_64 ]] || exit 80
+  [[ "$scratch" == swift-x86_64 ]] || exit 80
 fi
 show="false"
 if [[ "$#" == 12 ]]; then
@@ -110,11 +118,11 @@ if [[ "$1" == "-create" ]]; then
   [[ "$#" == 5 ]] || exit 80
   first="$2"
   second="$3"
-  [[ "$first" == */build/swift-arm64/fake-bin/DotSync ]] || exit 80
-  [[ "$second" == */build/swift-x86_64/fake-bin/DotSync ]] || exit 80
+  [[ "$first" == */swift-arm64/fake-bin/DotSync ]] || exit 80
+  [[ "$second" == */swift-x86_64/fake-bin/DotSync ]] || exit 80
   [[ "$4" == "-output" ]] || exit 80
   output="$5"
-  [[ "$output" == */build/.dotsync-app-stage.????????/DotSync.app/Contents/MacOS/DotSync ]] || exit 80
+  [[ "$output" == DotSync ]] || exit 80
   if [[ "${DOTSYNC_TEST_FAIL_TOOL:-}" == "lipo-create" ]]; then exit 91; fi
   {
     printf 'universal:'
@@ -127,7 +135,7 @@ if [[ "$1" == "-create" ]]; then
 else
   [[ "$#" == 4 ]] || exit 80
   input="$1"
-  [[ "$input" == */build/.dotsync-app-stage.????????/DotSync.app/Contents/MacOS/DotSync ]] || exit 80
+  [[ "$input" == DotSync ]] || exit 80
   [[ "$2" == "-verify_arch" ]] || exit 80
   [[ "$3" == "arm64" && "$4" == "x86_64" ]] || exit 80
   if [[ "${DOTSYNC_TEST_FAIL_TOOL:-}" == "lipo-verify" ]]; then exit 92; fi
@@ -140,12 +148,16 @@ fi
         r'''
 [[ "$#" == 2 ]] || exit 80
 [[ "$1" == "-S" ]] || exit 80
-[[ "$2" == */build/.dotsync-app-stage.????????/DotSync.app/Contents/MacOS/DotSync ]] || exit 80
-stage_root="${2%%/DotSync.app/*}"
-bundle="${2%%/Contents/MacOS/DotSync}"
+[[ "$2" == DotSync ]] || exit 80
+stages=("$DOTSYNC_TEST_PROJECT"/build/.dotsync-app-stage.*)
+[[ "${#stages[@]}" == 1 && -d "${stages[0]}" ]] || exit 80
+stage_root="${stages[0]}"
+bundle="$stage_root/DotSync.app"
 [[ "$(stat -f %Lp "$stage_root")" == "700" ]] || exit 80
 printf 'strip\t%s\t%s\n' "$1" "$2" >> "$DOTSYNC_TEST_CALL_LOG"
 if [[ "${DOTSYNC_TEST_FAIL_TOOL:-}" == "strip" ]]; then exit 93; fi
+/bin/cp "$2" "$2.stripped"
+/bin/mv "$2.stripped" "$2"
 case "${DOTSYNC_TEST_INJECT_BUNDLE_ENTRY:-}" in
   symlink) ln -s "$DOTSYNC_TEST_EXTERNAL_TARGET" "$bundle/Contents/injected-link" ;;
   special) mkfifo "$bundle/Contents/injected-fifo" ;;
@@ -153,6 +165,7 @@ case "${DOTSYNC_TEST_INJECT_BUNDLE_ENTRY:-}" in
     printf '%s' 'unreadable' > "$bundle/Contents/unreadable-file"
     chmod 000 "$bundle/Contents/unreadable-file"
     ;;
+  hardlink) ln "$DOTSYNC_TEST_EXTERNAL_TARGET" "$bundle/Contents/injected-hardlink" ;;
   "") ;;
   *) exit 95 ;;
 esac
@@ -163,7 +176,7 @@ esac
         r'''
 [[ "$#" == 2 ]] || exit 80
 [[ "$1" == "-lint" ]] || exit 80
-[[ "$2" == */build/.dotsync-app-stage.????????/DotSync.app/Contents/Info.plist ]] || exit 80
+[[ "$2" == Info.plist ]] || exit 80
 printf 'plutil\t%s\t%s\n' "$1" "$2" >> "$DOTSYNC_TEST_CALL_LOG"
 if [[ "${DOTSYNC_TEST_FAIL_TOOL:-}" == "plutil" ]]; then exit 94; fi
 /usr/bin/plutil "$@"
@@ -173,6 +186,7 @@ if [[ "${DOTSYNC_TEST_FAIL_TOOL:-}" == "plutil" ]]; then exit 94; fi
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "DOTSYNC_TEST_CALL_LOG": str(call_log),
+        "DOTSYNC_TEST_PROJECT": str(project),
         "PYTHON": sys.executable,
     }
     return project, env
@@ -208,18 +222,14 @@ def _logged_calls(env: dict[str, str]) -> list[list[str]]:
     ]
 
 
-def _force_scanner_failure(project: Path, env: dict[str, str]) -> None:
-    real_python = env["PYTHON"]
-    wrapper = project.parent / "scanner-failure-python"
-    _write_executable(
-        wrapper,
-        f'''
-if [[ "$1" == "-c" ]]; then exec "{real_python}" "$@"; fi
-if [[ "${{2:-}}" == "scan" ]]; then exit 96; fi
-exec "{real_python}" "$@"
-''',
-    )
-    env["PYTHON"] = str(wrapper)
+def _load_support_module():
+    module_name = f"dotsync_macos_app_support_{os.urandom(4).hex()}"
+    spec = importlib.util.spec_from_file_location(module_name, SUPPORT_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_info_plist_template_defines_menu_bar_only_macos13_app():
@@ -241,8 +251,8 @@ def test_local_build_assembles_only_the_two_exact_macos13_architectures(tmp_path
 
     app = project / "build" / "DotSync.app"
     executable = app / "Contents" / "MacOS" / "DotSync"
-    plist = plistlib.loads((app / "Contents" / "Info.plist").read_bytes())
     assert result.returncode == 0, result.stdout + result.stderr
+    plist = plistlib.loads((app / "Contents" / "Info.plist").read_bytes())
     assert result.stdout == f"{app}\n"
     assert executable.is_file()
     assert os.access(executable, os.X_OK)
@@ -261,7 +271,7 @@ def test_local_build_assembles_only_the_two_exact_macos13_architectures(tmp_path
     arm_args = [
         "build",
         "--package-path",
-        "macos/DotSyncApp",
+        str(project / "macos" / "DotSyncApp"),
         "--configuration",
         "release",
         "--triple",
@@ -269,39 +279,32 @@ def test_local_build_assembles_only_the_two_exact_macos13_architectures(tmp_path
         "--sdk",
         "/fake/MacOSX.sdk",
         "--scratch-path",
-        str(project / "build" / "swift-arm64"),
+        "swift-arm64",
     ]
     x86_args = arm_args.copy()
     x86_args[6] = "x86_64-apple-macosx13.0"
-    x86_args[10] = str(project / "build" / "swift-x86_64")
-    assert calls[1:5] == [
+    x86_args[10] = "swift-x86_64"
+    arm_binary_path = calls[5][2]
+    x86_binary_path = calls[5][3]
+    assert arm_binary_path.endswith("/swift-arm64/fake-bin/DotSync")
+    assert x86_binary_path.endswith("/swift-x86_64/fake-bin/DotSync")
+    assert calls == [
+        ["xcrun", "--sdk", "macosx", "--show-sdk-path"],
         ["swift", *arm_args],
         ["swift", *arm_args, "--show-bin-path"],
         ["swift", *x86_args],
         ["swift", *x86_args, "--show-bin-path"],
-    ]
-    lipo_create = calls[5]
-    staged_executable = Path(lipo_create[5])
-    assert lipo_create == [
-        "lipo",
-        "-create",
-        str(project / "build" / "swift-arm64" / "fake-bin" / "DotSync"),
-        str(project / "build" / "swift-x86_64" / "fake-bin" / "DotSync"),
-        "-output",
-        str(staged_executable),
-    ]
-    assert calls[6] == ["strip", "-S", str(staged_executable)]
-    assert calls[7] == [
-        "lipo",
-        str(staged_executable),
-        "-verify_arch",
-        "arm64",
-        "x86_64",
-    ]
-    assert calls[8] == [
-        "plutil",
-        "-lint",
-        str(staged_executable.parents[1] / "Info.plist"),
+        [
+            "lipo",
+            "-create",
+            arm_binary_path,
+            x86_binary_path,
+            "-output",
+            "DotSync",
+        ],
+        ["strip", "-S", "DotSync"],
+        ["lipo", "DotSync", "-verify_arch", "arm64", "x86_64"],
+        ["plutil", "-lint", "Info.plist"],
     ]
 
 
@@ -405,6 +408,27 @@ def test_local_build_rejects_symlinked_final_app_without_touching_target(tmp_pat
 
 
 @pytest.mark.no_subprocess_block
+def test_build_root_replacement_never_writes_or_deletes_external_target(tmp_path):
+    project, env = _fake_build_project(tmp_path)
+    external_build = tmp_path / "external-build"
+    external_build.mkdir()
+    sentinel = external_build / "sentinel.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    env["DOTSYNC_TEST_REPLACE_BUILD_ROOT"] = "1"
+    env["DOTSYNC_TEST_EXTERNAL_BUILD"] = str(external_build)
+    env["DOTSYNC_TEST_ROOT_REPLACED_MARKER"] = str(tmp_path / "root-replaced")
+
+    result = _run_fake_build(project, env)
+
+    assert result.returncode != 0
+    assert {path.name for path in external_build.iterdir()} == {"sentinel.txt"}
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+    detached_build = project / "detached-build"
+    assert not (detached_build / "DotSync.app").exists()
+    assert not list(detached_build.glob(".dotsync-app-stage.*"))
+
+
+@pytest.mark.no_subprocess_block
 @pytest.mark.parametrize(
     "payload",
     [
@@ -485,34 +509,69 @@ def test_local_build_rejects_exact_checkout_bytes_with_binary_trailing_data(tmp_
 
 
 @pytest.mark.no_subprocess_block
-def test_failed_rebuild_preserves_preexisting_valid_final_app(tmp_path):
+def test_existing_final_app_is_refused_before_tools_and_preserved_byte_for_byte(
+    tmp_path,
+):
     project, env = _fake_build_project(tmp_path)
     previous_app = project / "build" / "DotSync.app"
     previous_app.mkdir(parents=True)
-    marker = previous_app / "previous-valid-build.txt"
-    marker.write_text("keep", encoding="utf-8")
-    env["DOTSYNC_TEST_BINARY_PAYLOAD"] = "/Users/example/.codex/auth.json"
+    for index in range(100):
+        existing_file = previous_app / f"existing-{index:03d}.txt"
+        existing_file.write_text(f"keep-{index}", encoding="utf-8")
+        existing_file.chmod(0o444)
+    before = {
+        path.name: (path.read_bytes(), stat.S_IMODE(path.stat().st_mode), path.stat().st_ino)
+        for path in previous_app.iterdir()
+    }
 
     result = _run_fake_build(project, env)
 
     assert result.returncode != 0
-    assert marker.read_text(encoding="utf-8") == "keep"
+    after = {
+        path.name: (path.read_bytes(), stat.S_IMODE(path.stat().st_mode), path.stat().st_ino)
+        for path in previous_app.iterdir()
+    }
+    assert after == before
+    call_log = Path(env["DOTSYNC_TEST_CALL_LOG"])
+    assert not call_log.exists() or call_log.read_bytes() == b""
     _assert_no_private_staging(project)
 
 
 @pytest.mark.no_subprocess_block
-def test_successful_rebuild_replaces_preexisting_valid_final_app(tmp_path):
+@pytest.mark.parametrize("entry_kind", ["file", "symlink", "fifo"])
+def test_every_non_directory_final_entry_is_refused_and_preserved(
+    tmp_path,
+    entry_kind,
+):
     project, env = _fake_build_project(tmp_path)
-    previous_app = project / "build" / "DotSync.app"
-    previous_app.mkdir(parents=True)
-    marker = previous_app / "previous-valid-build.txt"
-    marker.write_text("replace", encoding="utf-8")
+    build_root = project / "build"
+    build_root.mkdir()
+    final_entry = build_root / "DotSync.app"
+    external = tmp_path / "external-target"
+    external.write_text("keep", encoding="utf-8")
+    if entry_kind == "file":
+        final_entry.write_text("existing-final", encoding="utf-8")
+    elif entry_kind == "symlink":
+        final_entry.symlink_to(external)
+    else:
+        os.mkfifo(final_entry)
+    before = os.lstat(final_entry)
 
     result = _run_fake_build(project, env)
 
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert not marker.exists()
-    assert (previous_app / "Contents" / "MacOS" / "DotSync").is_file()
+    assert result.returncode != 0
+    after = os.lstat(final_entry)
+    assert (after.st_dev, after.st_ino, after.st_mode, after.st_nlink) == (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+        before.st_nlink,
+    )
+    assert external.read_text(encoding="utf-8") == "keep"
+    if entry_kind == "file":
+        assert final_entry.read_text(encoding="utf-8") == "existing-final"
+    call_log = Path(env["DOTSYNC_TEST_CALL_LOG"])
+    assert not call_log.exists() or call_log.read_bytes() == b""
     _assert_no_private_staging(project)
 
 
@@ -561,15 +620,254 @@ def test_scanner_rejects_symlink_without_following_or_leaving_residue(tmp_path):
 
 
 @pytest.mark.no_subprocess_block
-def test_scanner_process_failure_is_fail_closed_and_cleans_staging(tmp_path):
+def test_scanner_rejects_hardlink_without_changing_external_inode(tmp_path):
     project, env = _fake_build_project(tmp_path)
-    _force_scanner_failure(project, env)
+    external = tmp_path / "external-hardlink-source"
+    external.write_text("keep", encoding="utf-8")
+    inode_before = external.stat().st_ino
+    env["DOTSYNC_TEST_INJECT_BUNDLE_ENTRY"] = "hardlink"
+    env["DOTSYNC_TEST_EXTERNAL_TARGET"] = str(external)
 
     result = _run_fake_build(project, env)
 
     assert result.returncode != 0
+    assert external.read_text(encoding="utf-8") == "keep"
+    assert external.stat().st_ino == inode_before
+    assert external.stat().st_nlink == 1
     assert not (project / "build" / "DotSync.app").exists()
     _assert_no_private_staging(project)
+
+
+def test_scanner_rejects_injected_descendant_device_mismatch(tmp_path, monkeypatch):
+    support = _load_support_module()
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "payload").write_bytes(b"safe")
+    bundle_fd = os.open(bundle, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    expected_device = os.fstat(bundle_fd).st_dev
+    real_stat = support.os.stat
+    real_fstat = support.os.fstat
+
+    def mismatched(node_stat):
+        return SimpleNamespace(
+            st_dev=expected_device + 1,
+            st_ino=node_stat.st_ino,
+            st_mode=node_stat.st_mode,
+            st_nlink=node_stat.st_nlink,
+        )
+
+    def injected_stat(path, *args, **kwargs):
+        node_stat = real_stat(path, *args, **kwargs)
+        return mismatched(node_stat) if path == "payload" else node_stat
+
+    def injected_fstat(descriptor):
+        node_stat = real_fstat(descriptor)
+        return mismatched(node_stat) if stat.S_ISREG(node_stat.st_mode) else node_stat
+
+    try:
+        with monkeypatch.context() as patch_context:
+            patch_context.setattr(support.os, "stat", injected_stat)
+            patch_context.setattr(support.os, "fstat", injected_fstat)
+            with pytest.raises(support.PackagingError, match="device boundary"):
+                support._scan_directory(bundle_fd, b"checkout", expected_device)
+    finally:
+        os.close(bundle_fd)
+
+
+def test_scan_to_publish_replacement_is_rejected_before_atomic_rename(tmp_path):
+    support = _load_support_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    repo_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    build_fd = -1
+    try:
+        repo_device = os.fstat(repo_fd).st_dev
+        build_fd, build_identity = support._prepare_build_root(repo_fd, repo_device)
+        with support._owned_staging_directory(
+            build_fd,
+            build_identity.device,
+        ) as stage:
+            app_fd = support._create_directory(
+                stage.descriptor,
+                support.FINAL_APP,
+                build_identity.device,
+                0o755,
+            )
+            os.close(app_fd)
+            scanned = support._open_and_scan_staged_app(
+                stage.descriptor,
+                checkout=b"checkout",
+                expected_device=build_identity.device,
+            )
+            try:
+                os.rename(
+                    support.FINAL_APP,
+                    "scanned-app",
+                    src_dir_fd=stage.descriptor,
+                    dst_dir_fd=stage.descriptor,
+                )
+                replacement_fd = support._create_directory(
+                    stage.descriptor,
+                    support.FINAL_APP,
+                    build_identity.device,
+                    0o755,
+                )
+                os.close(replacement_fd)
+
+                with pytest.raises(support.PackagingError, match="changed after scanning"):
+                    support._publish_scanned_app(
+                        repo_fd=repo_fd,
+                        build_fd=build_fd,
+                        build_identity=build_identity,
+                        stage=stage,
+                        scanned_app=scanned,
+                    )
+                assert not (repo / "build" / "DotSync.app").exists()
+            finally:
+                os.close(scanned.descriptor)
+    finally:
+        if build_fd >= 0:
+            os.close(build_fd)
+        os.close(repo_fd)
+
+
+def test_publish_revalidates_the_open_staging_descriptor(tmp_path, monkeypatch):
+    support = _load_support_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    repo_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    build_fd = -1
+    try:
+        build_fd, build_identity = support._prepare_build_root(
+            repo_fd,
+            os.fstat(repo_fd).st_dev,
+        )
+        with support._owned_staging_directory(
+            build_fd,
+            build_identity.device,
+        ) as stage:
+            app_fd = support._create_directory(
+                stage.descriptor,
+                support.FINAL_APP,
+                build_identity.device,
+                0o755,
+            )
+            os.close(app_fd)
+            scanned = support._open_and_scan_staged_app(
+                stage.descriptor,
+                checkout=b"checkout",
+                expected_device=build_identity.device,
+            )
+            real_fstat = support.os.fstat
+
+            def replaced_staging_descriptor(descriptor):
+                node_stat = real_fstat(descriptor)
+                if descriptor != stage.descriptor:
+                    return node_stat
+                return SimpleNamespace(
+                    st_dev=node_stat.st_dev,
+                    st_ino=node_stat.st_ino + 1,
+                    st_mode=node_stat.st_mode,
+                    st_nlink=node_stat.st_nlink,
+                )
+
+            try:
+                with monkeypatch.context() as patch_context:
+                    patch_context.setattr(
+                        support.os,
+                        "fstat",
+                        replaced_staging_descriptor,
+                    )
+                    with pytest.raises(
+                        support.PackagingError,
+                        match="open staging identity changed",
+                    ):
+                        support._publish_scanned_app(
+                            repo_fd=repo_fd,
+                            build_fd=build_fd,
+                            build_identity=build_identity,
+                            stage=stage,
+                            scanned_app=scanned,
+                        )
+                assert not (repo / "build" / "DotSync.app").exists()
+            finally:
+                os.close(scanned.descriptor)
+    finally:
+        if build_fd >= 0:
+            os.close(build_fd)
+        os.close(repo_fd)
+
+
+def test_stage_open_failure_after_creation_still_removes_owned_stage(
+    tmp_path,
+    monkeypatch,
+):
+    support = _load_support_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    repo_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    build_fd = -1
+    real_open_directory = support._open_directory_at
+    failed_once = False
+
+    def fail_first_stage_open(parent_fd, child_name, **kwargs):
+        nonlocal failed_once
+        if child_name.startswith(".dotsync-app-stage.") and not failed_once:
+            failed_once = True
+            raise OSError(errno.EIO, "injected stage open failure")
+        return real_open_directory(parent_fd, child_name, **kwargs)
+
+    try:
+        build_fd, build_identity = support._prepare_build_root(
+            repo_fd,
+            os.fstat(repo_fd).st_dev,
+        )
+        with monkeypatch.context() as patch_context:
+            patch_context.setattr(support, "_open_directory_at", fail_first_stage_open)
+            with pytest.raises(OSError, match="injected stage open failure"):
+                with support._owned_staging_directory(
+                    build_fd,
+                    build_identity.device,
+                ):
+                    pytest.fail("stage setup unexpectedly completed")
+        assert not list((repo / "build").glob(".dotsync-app-stage.*"))
+    finally:
+        if build_fd >= 0:
+            os.close(build_fd)
+        os.close(repo_fd)
+
+
+def test_staging_cleanup_error_forces_failure(tmp_path, monkeypatch):
+    support = _load_support_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    repo_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    build_fd = -1
+    stage_name = ""
+
+    def fail_cleanup(*args, **kwargs):
+        raise OSError(errno.EIO, "injected cleanup failure")
+
+    try:
+        build_fd, build_identity = support._prepare_build_root(
+            repo_fd,
+            os.fstat(repo_fd).st_dev,
+        )
+        with monkeypatch.context() as patch_context:
+            patch_context.setattr(support, "_cleanup_owned_stage", fail_cleanup)
+            with pytest.raises(support.PackagingError, match="staging cleanup failed"):
+                with support._owned_staging_directory(
+                    build_fd,
+                    build_identity.device,
+                ) as stage:
+                    stage_name = stage.name
+        assert (repo / "build" / stage_name).is_dir()
+    finally:
+        if stage_name:
+            shutil.rmtree(repo / "build" / stage_name, ignore_errors=True)
+        if build_fd >= 0:
+            os.close(build_fd)
+        os.close(repo_fd)
 
 
 @pytest.mark.no_subprocess_block
