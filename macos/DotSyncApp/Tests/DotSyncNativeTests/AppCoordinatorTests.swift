@@ -265,6 +265,50 @@ final class AppCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.summary.summary.usage.highestPercent, 82)
     }
 
+    func testCadenceRejectedPollDoesNotInvalidateInFlightInitialSummary() async throws {
+        let fetcher = ControllableCoordinatorSummaryFetcher()
+        let coordinator = AppCoordinator(
+            backend: FakeBackendProcess(),
+            summaryFetcherFactory: { _ in fetcher }
+        )
+        let initial = Task { @MainActor in
+            await coordinator.start()
+        }
+        try await eventually { fetcher.callCount == 1 }
+
+        await coordinator.pollSummaryIfDue()
+        XCTAssertEqual(fetcher.callCount, 1)
+        fetcher.succeed(call: 1, with: coordinatorSummary(percent: 41))
+        await initial.value
+
+        XCTAssertEqual(coordinator.summary.summary.usage.highestPercent, 41)
+    }
+
+    func testCadenceRejectedPollDoesNotInvalidateInFlightExplicitSummary() async throws {
+        let fetcher = ControllableCoordinatorSummaryFetcher()
+        let coordinator = AppCoordinator(
+            backend: FakeBackendProcess(),
+            summaryFetcherFactory: { _ in fetcher }
+        )
+        let initial = Task { @MainActor in
+            await coordinator.start()
+        }
+        try await eventually { fetcher.callCount == 1 }
+        fetcher.succeed(call: 1, with: coordinatorSummary(percent: 12))
+        await initial.value
+
+        let reload = Task { @MainActor in
+            await coordinator.handle(.refreshSummary)
+        }
+        try await eventually { fetcher.callCount == 2 }
+        await coordinator.pollSummaryIfDue()
+        XCTAssertEqual(fetcher.callCount, 2)
+        fetcher.succeed(call: 2, with: coordinatorSummary(percent: 73))
+        await reload.value
+
+        XCTAssertEqual(coordinator.summary.summary.usage.highestPercent, 73)
+    }
+
     func testSummaryCommitRevalidatesOwnershipAfterFinalActorHop() async {
         let newestCheck = SummaryNewestCheckBarrier()
         var requestIsStillOwned = true

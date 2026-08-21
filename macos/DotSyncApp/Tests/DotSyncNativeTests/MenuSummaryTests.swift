@@ -376,6 +376,47 @@ final class MenuSummaryClientTests: XCTestCase {
         XCTAssertEqual(fetchCount, 2)
     }
 
+    @MainActor
+    func testOnlyPermittedPollAcquiresOwnershipAndSupersedesPriorFetch() async throws {
+        let fetcher = CountingSummaryFetcher()
+        let clock = ManualSummaryMonotonicClock()
+        let poller = MenuSummaryPoller(
+            fetcher: fetcher,
+            monotonicNow: { clock.now }
+        )
+        var nextOwner: UInt64 = 0
+        let acquireOwner: @MainActor @Sendable () -> UInt64 = {
+            nextOwner += 1
+            return nextOwner
+        }
+
+        let firstCandidate = await poller.poll(
+            isActive: true,
+            requestStarted: acquireOwner
+        )
+        let first = try XCTUnwrap(firstCandidate)
+        clock.advance(by: .seconds(30))
+        let rejected = await poller.poll(
+            isActive: true,
+            requestStarted: acquireOwner
+        )
+        clock.advance(by: .seconds(30))
+        let permittedCandidate = await poller.poll(
+            isActive: true,
+            requestStarted: acquireOwner
+        )
+        let permitted = try XCTUnwrap(permittedCandidate)
+        let firstIsNewest = await poller.ownsNewest(first.result)
+        let permittedIsNewest = await poller.ownsNewest(permitted.result)
+
+        XCTAssertEqual(first.requestOwner, 1)
+        XCTAssertNil(rejected)
+        XCTAssertEqual(permitted.requestOwner, 2)
+        XCTAssertEqual(nextOwner, 2)
+        XCTAssertFalse(firstIsNewest)
+        XCTAssertTrue(permittedIsNewest)
+    }
+
     private func assertProtocolError(
         _ operation: () async throws -> MenuSummary,
         file: StaticString = #filePath,

@@ -199,50 +199,56 @@ final class WebSurfaceTests: XCTestCase {
         XCTAssertTrue(contentController.handlers.first === bridge)
     }
 
-    func testHandoffQueueRetainsFailedEvaluationAndAcknowledgesInSequenceOrder() {
+    func testHandoffQueueRetainsEveryNonTrueEvaluationAndAcknowledgesInSequenceOrder() {
         let queue = ManagerHandoffDispatchQueue()
         let apply = ManagerSyncHandoff(sequence: 1, direction: .apply)
         let backup = ManagerSyncHandoff(sequence: 2, direction: .backup)
 
-        queue.merge([backup, apply])
-        queue.pageDidBecomeReady()
-        let firstAttempt = queue.beginDispatch()
+        queue.merge([backup, apply, apply])
+        for (result, error) in [
+            (nil, nil),
+            (false, nil),
+            (1, nil),
+            ("true", nil),
+            (true, NSError(domain: "fixture", code: 1)),
+        ] as [(Any?, Error?)] {
+            queue.pageDidBecomeReady()
+            let rejectedAttempt = queue.beginDispatch()
+            XCTAssertEqual(rejectedAttempt?.handoff, apply)
+            XCTAssertNil(
+                rejectedAttempt.flatMap {
+                    queue.completeEvaluation(
+                        $0,
+                        acknowledged: exactJavaScriptTrue(
+                            result,
+                            error: error
+                        )
+                    )
+                }
+            )
+            XCTAssertEqual(queue.pendingHandoffs, [apply, backup])
+            XCTAssertNil(queue.beginDispatch())
+        }
 
-        XCTAssertEqual(firstAttempt?.handoff, apply)
-        XCTAssertNil(queue.beginDispatch())
-        XCTAssertNil(
-            firstAttempt.flatMap {
-                queue.completeEvaluation($0, succeeded: false)
-            }
-        )
-        XCTAssertEqual(queue.pendingHandoffs, [apply, backup])
-        XCTAssertNil(queue.beginDispatch())
-
         queue.pageDidBecomeReady()
-        let retryAttempt = queue.beginDispatch()
-        XCTAssertEqual(retryAttempt?.handoff, apply)
+        let applyAttempt = queue.beginDispatch()
         XCTAssertEqual(
-            retryAttempt.flatMap {
-                queue.completeEvaluation($0, succeeded: true)
+            applyAttempt.flatMap {
+                queue.completeEvaluation(
+                    $0,
+                    acknowledged: exactJavaScriptTrue(true, error: nil)
+                )
             },
-            nil
-        )
-        XCTAssertEqual(
-            queue.acknowledgeReceipt(),
             1
         )
         XCTAssertEqual(queue.pendingHandoffs, [backup])
 
-        let secondAttempt = queue.beginDispatch()
-        XCTAssertEqual(secondAttempt?.handoff, backup)
+        let backupAttempt = queue.beginDispatch()
+        XCTAssertEqual(backupAttempt?.handoff, backup)
         XCTAssertEqual(
-            secondAttempt.flatMap {
-                queue.completeEvaluation($0, succeeded: true)
+            backupAttempt.flatMap {
+                queue.completeEvaluation($0, acknowledged: true)
             },
-            nil
-        )
-        XCTAssertEqual(
-            queue.acknowledgeReceipt(),
             2
         )
         XCTAssertTrue(queue.pendingHandoffs.isEmpty)
@@ -260,7 +266,7 @@ final class WebSurfaceTests: XCTestCase {
 
         XCTAssertNil(
             terminatedAttempt.flatMap {
-                queue.completeEvaluation($0, succeeded: true)
+                queue.completeEvaluation($0, acknowledged: true)
             }
         )
         XCTAssertEqual(queue.pendingHandoffs, [apply, backup])
@@ -271,12 +277,8 @@ final class WebSurfaceTests: XCTestCase {
         XCTAssertNotEqual(replacementAttempt, terminatedAttempt)
         XCTAssertEqual(
             replacementAttempt.flatMap {
-                queue.completeEvaluation($0, succeeded: true)
+                queue.completeEvaluation($0, acknowledged: true)
             },
-            nil
-        )
-        XCTAssertEqual(
-            queue.acknowledgeReceipt(),
             4
         )
 
@@ -284,26 +286,21 @@ final class WebSurfaceTests: XCTestCase {
         XCTAssertEqual(queue.pendingHandoffs, [backup])
     }
 
-    func testSuccessfulEvaluationCannotDequeueWithoutPackagedListenerReceipt() {
-        let queue = ManagerHandoffDispatchQueue()
-        let apply = ManagerSyncHandoff(sequence: 7, direction: .apply)
-
-        queue.merge([apply])
-        queue.pageDidBecomeReady()
-        let attempt = queue.beginDispatch()
-
-        XCTAssertNil(
-            attempt.flatMap {
-                queue.completeEvaluation($0, succeeded: true)
-            }
+    func testOnlyExactBooleanTrueIsAnEvaluationAcknowledgment() {
+        XCTAssertTrue(exactJavaScriptTrue(true, error: nil))
+        XCTAssertFalse(exactJavaScriptTrue(false, error: nil))
+        XCTAssertFalse(exactJavaScriptTrue(nil, error: nil))
+        XCTAssertFalse(exactJavaScriptTrue(1, error: nil))
+        XCTAssertFalse(exactJavaScriptTrue("true", error: nil))
+        XCTAssertFalse(
+            exactJavaScriptTrue(
+                true,
+                error: NSError(domain: "fixture", code: 1)
+            )
         )
-        XCTAssertEqual(queue.pendingHandoffs, [apply])
-        XCTAssertNil(queue.beginDispatch())
-        XCTAssertEqual(queue.acknowledgeReceipt(), 7)
-        XCTAssertTrue(queue.pendingHandoffs.isEmpty)
     }
 
-    func testListenerReadinessStopsAfterExactlyThreeUnacknowledgedProbes() {
+    func testReceiverReadinessStopsAfterExactlyThreeNonTrueProbes() {
         let readiness = ManagerListenerReadiness(maximumProbeAttempts: 3)
         readiness.pageDidBecomeUnavailable()
         readiness.pageDidFinish()
@@ -311,21 +308,21 @@ final class WebSurfaceTests: XCTestCase {
         let first = readiness.beginProbe()
         XCTAssertEqual(
             first.flatMap {
-                readiness.completeProbe($0, evaluationSucceeded: true)
+                readiness.completeProbe($0, receiverAvailable: false)
             },
             .retry
         )
         let second = readiness.beginProbe()
         XCTAssertEqual(
             second.flatMap {
-                readiness.completeProbe($0, evaluationSucceeded: true)
+                readiness.completeProbe($0, receiverAvailable: false)
             },
             .retry
         )
         let third = readiness.beginProbe()
         XCTAssertEqual(
             third.flatMap {
-                readiness.completeProbe($0, evaluationSucceeded: true)
+                readiness.completeProbe($0, receiverAvailable: false)
             },
             .exhausted
         )
@@ -334,7 +331,7 @@ final class WebSurfaceTests: XCTestCase {
         XCTAssertFalse(readiness.isReady)
     }
 
-    func testReplacementPageRejectsStaleProbeAndDeliversRetainedHandoffAfterReadyAck() {
+    func testReplacementPageRejectsStaleProbeAndDeliversRetainedHandoffAfterExactTrueProbe() {
         let readiness = ManagerListenerReadiness(maximumProbeAttempts: 3)
         let queue = ManagerHandoffDispatchQueue()
         let apply = ManagerSyncHandoff(sequence: 11, direction: .apply)
@@ -349,14 +346,20 @@ final class WebSurfaceTests: XCTestCase {
 
         XCTAssertEqual(
             oldPageProbe.flatMap {
-                readiness.completeProbe($0, evaluationSucceeded: true)
+                readiness.completeProbe($0, receiverAvailable: true)
             },
             .ignored
         )
         XCTAssertEqual(queue.pendingHandoffs, [apply])
         XCTAssertNil(queue.beginDispatch())
 
-        readiness.listenerDidAcknowledge()
+        let replacementProbe = readiness.beginProbe()
+        XCTAssertEqual(
+            replacementProbe.flatMap {
+                readiness.completeProbe($0, receiverAvailable: true)
+            },
+            .ready
+        )
         XCTAssertTrue(readiness.isReady)
         queue.pageDidBecomeReady()
         XCTAssertEqual(queue.beginDispatch()?.handoff, apply)

@@ -206,6 +206,16 @@ public struct MenuSummaryFetchResult: Equatable, Sendable {
     }
 }
 
+public struct MenuSummaryOwnedFetchResult: Equatable, Sendable {
+    public let result: MenuSummaryFetchResult
+    public let requestOwner: UInt64
+
+    fileprivate init(result: MenuSummaryFetchResult, requestOwner: UInt64) {
+        self.result = result
+        self.requestOwner = requestOwner
+    }
+}
+
 public actor MenuSummaryPoller {
     public typealias MonotonicNow = @Sendable () -> Duration
 
@@ -232,6 +242,35 @@ public actor MenuSummaryPoller {
     }
 
     public func poll(isActive: Bool) async -> MenuSummaryFetchResult? {
+        guard let ownedGeneration = beginPoll(isActive: isActive)
+        else { return nil }
+        return await fetchResult(generation: ownedGeneration)
+    }
+
+    public func poll(
+        isActive: Bool,
+        requestStarted: @MainActor @Sendable () -> UInt64
+    ) async -> MenuSummaryOwnedFetchResult? {
+        guard let ownedGeneration = beginPoll(isActive: isActive)
+        else { return nil }
+        let requestOwner = await requestStarted()
+        let result = await fetchResult(generation: ownedGeneration)
+        return MenuSummaryOwnedFetchResult(
+            result: result,
+            requestOwner: requestOwner
+        )
+    }
+
+    public func reload() async -> MenuSummaryFetchResult {
+        lastAttempt = monotonicNow()
+        return await fetchResult(generation: beginFetch())
+    }
+
+    public func ownsNewest(_ result: MenuSummaryFetchResult) -> Bool {
+        result.generation == generation
+    }
+
+    private func beginPoll(isActive: Bool) -> UInt64? {
         guard isActive else { return nil }
         let now = monotonicNow()
         if let lastAttempt,
@@ -240,21 +279,16 @@ public actor MenuSummaryPoller {
             return nil
         }
         lastAttempt = now
-        return await fetchResult()
+        return beginFetch()
     }
 
-    public func reload() async -> MenuSummaryFetchResult {
-        lastAttempt = monotonicNow()
-        return await fetchResult()
-    }
-
-    public func ownsNewest(_ result: MenuSummaryFetchResult) -> Bool {
-        result.generation == generation
-    }
-
-    private func fetchResult() async -> MenuSummaryFetchResult {
+    private func beginFetch() -> UInt64 {
         generation &+= 1
-        let ownedGeneration = generation
+        return generation
+    }
+
+    private func fetchResult(generation ownedGeneration: UInt64) async
+        -> MenuSummaryFetchResult {
         let summary: MenuSummary
         do {
             summary = try await fetcher.fetch()

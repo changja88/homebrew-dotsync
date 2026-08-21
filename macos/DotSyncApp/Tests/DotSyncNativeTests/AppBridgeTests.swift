@@ -54,27 +54,14 @@ final class AppBridgeTests: XCTestCase {
         )
     }
 
-    func testBridgeAcceptsOnlyExactNonDataManagerListenerSignals() throws {
-        XCTAssertEqual(
-            try AppBridge.decodeMessage([
-                "action": "manager_sync_listener_ready",
-            ]),
-            .managerSyncListenerReady
-        )
-        XCTAssertEqual(
-            try AppBridge.decodeMessage([
-                "action": "manager_sync_handoff_received",
-            ]),
-            .managerSyncHandoffReceived
-        )
-
+    func testRemovedLifecycleMessagesCannotDecodeAsNativeCommands() {
         for body in [
+            ["action": "manager_sync_listener_ready"],
+            ["action": "manager_sync_handoff_received"],
             ["action": "manager_sync_listener_ready", "direction": "apply"],
             ["action": "manager_sync_handoff_received", "sequence": 1],
         ] {
-            XCTAssertThrowsError(try AppBridge.decodeMessage(body)) { error in
-                XCTAssertEqual(error as? BackendError, .backendProtocolError)
-            }
+            assertProtocolError(body)
         }
     }
 
@@ -125,14 +112,14 @@ final class AppBridgeTests: XCTestCase {
         }
     }
 
-    func testSyncHandoffJavaScriptUsesOnlyFixedEnumMappings() {
+    func testSyncHandoffReceiverJavaScriptUsesOnlyFixedEnumMappings() {
         XCTAssertEqual(
-            ManagerSyncDirection.backup.eventJavaScript,
-            #"window.dispatchEvent(new CustomEvent("dotsync:manager-sync-preview",{detail:{direction:"backup"}}));"#
+            ManagerSyncDirection.backup.receiverJavaScript,
+            #"window.__dotsyncReceiveManagerSyncHandoff("backup") === true"#
         )
         XCTAssertEqual(
-            ManagerSyncDirection.apply.eventJavaScript,
-            #"window.dispatchEvent(new CustomEvent("dotsync:manager-sync-preview",{detail:{direction:"apply"}}));"#
+            ManagerSyncDirection.apply.receiverJavaScript,
+            #"window.__dotsyncReceiveManagerSyncHandoff("apply") === true"#
         )
     }
 

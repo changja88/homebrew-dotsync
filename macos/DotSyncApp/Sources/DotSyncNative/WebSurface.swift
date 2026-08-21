@@ -21,8 +21,6 @@ struct ManagerHandoffDispatchAttempt: Equatable {
 final class ManagerHandoffDispatchQueue {
     private(set) var pendingHandoffs: [ManagerSyncHandoff] = []
     private var activeAttempt: ManagerHandoffDispatchAttempt?
-    private var activeEvaluationSucceeded = false
-    private var activeReceiptAcknowledged = false
     private var nextAttemptIdentifier: UInt64 = 0
     private var highestAcknowledgedSequence: UInt64 = 0
     private var isPageReady = false
@@ -58,35 +56,20 @@ final class ManagerHandoffDispatchQueue {
             handoff: handoff
         )
         activeAttempt = attempt
-        activeEvaluationSucceeded = false
-        activeReceiptAcknowledged = false
         return attempt
     }
 
     func completeEvaluation(
         _ attempt: ManagerHandoffDispatchAttempt,
-        succeeded: Bool
+        acknowledged: Bool
     ) -> UInt64? {
         guard activeAttempt == attempt else { return nil }
-        guard succeeded else {
+        guard acknowledged else {
             clearActiveAttempt()
             isPageReady = false
             return nil
         }
-        activeEvaluationSucceeded = true
-        return finishAcknowledgedAttemptIfReady()
-    }
-
-    func acknowledgeReceipt() -> UInt64? {
-        guard activeAttempt != nil else { return nil }
-        activeReceiptAcknowledged = true
-        return finishAcknowledgedAttemptIfReady()
-    }
-
-    private func finishAcknowledgedAttemptIfReady() -> UInt64? {
-        guard activeEvaluationSucceeded,
-              activeReceiptAcknowledged,
-              let attempt = activeAttempt,
+        guard let attempt = activeAttempt,
               pendingHandoffs.first == attempt.handoff
         else { return nil }
         pendingHandoffs.removeFirst()
@@ -97,9 +80,15 @@ final class ManagerHandoffDispatchQueue {
 
     private func clearActiveAttempt() {
         activeAttempt = nil
-        activeEvaluationSucceeded = false
-        activeReceiptAcknowledged = false
     }
+}
+
+func exactJavaScriptTrue(_ result: Any?, error: Error?) -> Bool {
+    guard error == nil,
+          let number = result as? NSNumber,
+          CFGetTypeID(number) == CFBooleanGetTypeID()
+    else { return false }
+    return number.boolValue
 }
 
 struct ManagerListenerReadinessProbe: Equatable {
@@ -111,7 +100,6 @@ enum ManagerListenerReadinessProbeCompletion: Equatable {
     case ignored
     case retry
     case exhausted
-    case failed
     case ready
 }
 
@@ -122,7 +110,7 @@ final class ManagerListenerReadiness {
     private var probeAttempts = 0
     private var activeProbe: ManagerListenerReadinessProbe?
     private var documentDidFinish = false
-    private var listenerAcknowledged = false
+    private var receiverAvailable = false
 
     init(maximumProbeAttempts: Int) {
         precondition(maximumProbeAttempts > 0)
@@ -134,7 +122,7 @@ final class ManagerListenerReadiness {
     }
 
     var isReady: Bool {
-        documentDidFinish && listenerAcknowledged
+        documentDidFinish && receiverAvailable
     }
 
     func pageDidBecomeUnavailable() {
@@ -142,21 +130,16 @@ final class ManagerListenerReadiness {
         probeAttempts = 0
         activeProbe = nil
         documentDidFinish = false
-        listenerAcknowledged = false
+        receiverAvailable = false
     }
 
     func pageDidFinish() {
         documentDidFinish = true
     }
 
-    func listenerDidAcknowledge() {
-        listenerAcknowledged = true
-        activeProbe = nil
-    }
-
     func beginProbe() -> ManagerListenerReadinessProbe? {
         guard documentDidFinish,
-              !listenerAcknowledged,
+              !receiverAvailable,
               activeProbe == nil,
               probeAttempts < maximumProbeAttempts
         else { return nil }
@@ -171,12 +154,12 @@ final class ManagerListenerReadiness {
 
     func completeProbe(
         _ probe: ManagerListenerReadinessProbe,
-        evaluationSucceeded: Bool
+        receiverAvailable: Bool
     ) -> ManagerListenerReadinessProbeCompletion {
         guard activeProbe == probe else { return .ignored }
         activeProbe = nil
-        guard evaluationSucceeded else { return .failed }
-        if listenerAcknowledged {
+        if receiverAvailable {
+            self.receiverAvailable = true
             return .ready
         }
         return probeAttempts == maximumProbeAttempts
@@ -443,26 +426,9 @@ public struct WebSurface: NSViewRepresentable {
                   message.frameInfo.isMainFrame,
                   let frameURL = message.frameInfo.request.url,
                   origin.accepts(frameURL),
-                  let bridgeMessage = try? AppBridge.decodeMessage(message.body)
+                  let command = try? AppBridge.decode(message.body)
             else { return }
-            switch bridgeMessage {
-            case let .command(command):
-                commandHandler(command)
-            case .managerSyncListenerReady:
-                guard launchContext == LaunchContext(
-                    surface: .manager,
-                    destination: .sync
-                ) else { return }
-                listenerReadiness.listenerDidAcknowledge()
-                readinessRetryTask?.cancel()
-                readinessRetryTask = nil
-                if listenerReadiness.isReady {
-                    handoffQueue.pageDidBecomeReady()
-                    dispatchPendingHandoffIfReady()
-                }
-            case .managerSyncHandoffReceived:
-                acknowledgeReceivedHandoff()
-            }
+            commandHandler(command)
         }
 
         public func webView(
@@ -585,26 +551,31 @@ public struct WebSurface: NSViewRepresentable {
             guard let probe = listenerReadiness.beginProbe() else { return }
             let ownedPageGeneration = pageGeneration
             webView.evaluateJavaScript(
-                #"window.dispatchEvent(new Event("dotsync:manager-sync-listener-probe"));"#
-            ) { [weak self] _, error in
-                let probeFailed = error != nil
+                #"typeof window.__dotsyncReceiveManagerSyncHandoff === "function""#
+            ) { [weak self] result, error in
+                let receiverAvailable = exactJavaScriptTrue(
+                    result,
+                    error: error
+                )
                 Task { @MainActor [weak self] in
                     guard let self,
                           self.pageGeneration == ownedPageGeneration
                     else { return }
                     switch self.listenerReadiness.completeProbe(
                         probe,
-                        evaluationSucceeded: !probeFailed
+                        receiverAvailable: receiverAvailable
                     ) {
-                    case .failed:
-                        self.markPageUnavailable()
                     case .retry:
                         self.scheduleReadinessProbe(
                             for: ownedPageGeneration
                         )
                     case .ready:
+                        self.handoffQueue.pageDidBecomeReady()
                         self.dispatchPendingHandoffIfReady()
-                    case .ignored, .exhausted:
+                    case .exhausted:
+                        self.readinessRetryTask?.cancel()
+                        self.readinessRetryTask = nil
+                    case .ignored:
                         break
                     }
                 }
@@ -632,32 +603,24 @@ public struct WebSurface: NSViewRepresentable {
             guard let attempt = handoffQueue.beginDispatch() else { return }
             let ownedPageGeneration = pageGeneration
             webView.evaluateJavaScript(
-                attempt.handoff.direction.eventJavaScript
-            ) { [weak self] _, error in
-                let evaluationSucceeded = error == nil
+                attempt.handoff.direction.receiverJavaScript
+            ) { [weak self] result, error in
+                let acknowledged = exactJavaScriptTrue(result, error: error)
                 Task { @MainActor [weak self] in
                     guard let self,
                           self.pageGeneration == ownedPageGeneration
                     else { return }
                     if let sequence = self.handoffQueue.completeEvaluation(
                         attempt,
-                        succeeded: evaluationSucceeded
+                        acknowledged: acknowledged
                     ) {
                         self.handoffAcknowledged(sequence)
                         self.dispatchPendingHandoffIfReady()
-                    } else if !evaluationSucceeded {
+                    } else if !acknowledged {
                         self.markPageUnavailable()
                     }
                 }
             }
-        }
-
-        private func acknowledgeReceivedHandoff() {
-            guard listenerReadiness.isReady,
-                  let sequence = handoffQueue.acknowledgeReceipt()
-            else { return }
-            handoffAcknowledged(sequence)
-            dispatchPendingHandoffIfReady()
         }
 
         private func markPageUnavailable() {

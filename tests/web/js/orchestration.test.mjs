@@ -141,11 +141,14 @@ test("the fixed manager handoff accepts only backup or apply and issues that pre
     directions.push(direction);
   });
 
-  await handler({ detail: { direction: "apply" } });
-  await handler({ detail: { direction: "backup" } });
-  await handler({ detail: { direction: "restore" } });
-  await handler({ detail: { direction: "apply", path: "/tmp/private" } });
-  await handler({ detail: "apply" });
+  assert.equal(handler({ detail: { direction: "apply" } }), true);
+  assert.equal(handler({ detail: { direction: "backup" } }), true);
+  assert.equal(handler({ detail: { direction: "restore" } }), false);
+  assert.equal(
+    handler({ detail: { direction: "apply", path: "/tmp/private" } }),
+    false,
+  );
+  assert.equal(handler({ detail: "apply" }), false);
 
   assert.deepEqual(directions, ["apply", "backup"]);
 });

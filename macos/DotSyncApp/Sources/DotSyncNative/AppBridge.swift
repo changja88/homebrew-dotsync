@@ -4,12 +4,12 @@ public enum ManagerSyncDirection: String, Equatable, Sendable {
     case backup
     case apply
 
-    public var eventJavaScript: String {
+    public var receiverJavaScript: String {
         switch self {
         case .backup:
-            return #"window.dispatchEvent(new CustomEvent("dotsync:manager-sync-preview",{detail:{direction:"backup"}}));"#
+            return #"window.__dotsyncReceiveManagerSyncHandoff("backup") === true"#
         case .apply:
-            return #"window.dispatchEvent(new CustomEvent("dotsync:manager-sync-preview",{detail:{direction:"apply"}}));"#
+            return #"window.__dotsyncReceiveManagerSyncHandoff("apply") === true"#
         }
     }
 }
@@ -34,43 +34,23 @@ public enum NativeCommand: Equatable, Sendable {
     case quitApp
 }
 
-enum AppBridgeMessage: Equatable, Sendable {
-    case command(NativeCommand)
-    case managerSyncListenerReady
-    case managerSyncHandoffReceived
-}
-
 public enum AppBridge {
     public static func decode(_ body: Any) throws -> NativeCommand {
-        guard case let .command(command) = try decodeMessage(body)
-        else { throw BackendError.backendProtocolError }
-        return command
-    }
-
-    static func decodeMessage(_ body: Any) throws -> AppBridgeMessage {
         guard let object = body as? [String: Any],
               let action = object["action"] as? String
         else { throw BackendError.backendProtocolError }
 
         switch action {
         case "open_manager":
-            return .command(try decodeManagerRequest(object))
+            return try decodeManagerRequest(object)
         case "refresh_summary":
             guard Set(object.keys) == Set(["action"])
             else { throw BackendError.backendProtocolError }
-            return .command(.refreshSummary)
+            return .refreshSummary
         case "quit_app":
             guard Set(object.keys) == Set(["action"])
             else { throw BackendError.backendProtocolError }
-            return .command(.quitApp)
-        case "manager_sync_listener_ready":
-            guard Set(object.keys) == Set(["action"])
-            else { throw BackendError.backendProtocolError }
-            return .managerSyncListenerReady
-        case "manager_sync_handoff_received":
-            guard Set(object.keys) == Set(["action"])
-            else { throw BackendError.backendProtocolError }
-            return .managerSyncHandoffReceived
+            return .quitApp
         default:
             throw BackendError.backendProtocolError
         }

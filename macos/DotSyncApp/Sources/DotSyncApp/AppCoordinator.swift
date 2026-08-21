@@ -150,13 +150,15 @@ final class AppCoordinator: ObservableObject {
             summaryOwner &+= 1
             let owner = summaryOwner
             summaryPoller = poller
-            let requestOwner = beginSummaryRequest()
-            if let result = await poller.poll(isActive: isActive) {
+            if let ownedResult = await poller.poll(
+                isActive: isActive,
+                requestStarted: { self.beginSummaryRequest() }
+            ) {
                 await acceptSummary(
-                    result,
+                    ownedResult.result,
                     from: poller,
                     owner: owner,
-                    requestOwner: requestOwner
+                    requestOwner: ownedResult.requestOwner
                 )
             }
             startPollingIfNeeded()
@@ -311,18 +313,20 @@ final class AppCoordinator: ObservableObject {
         )
     }
 
-    private func pollSummaryIfDue() async {
+    func pollSummaryIfDue() async {
         guard let summaryPoller
         else { return }
         let owner = summaryOwner
-        let requestOwner = beginSummaryRequest()
-        guard let result = await summaryPoller.poll(isActive: isActive)
+        guard let ownedResult = await summaryPoller.poll(
+            isActive: isActive,
+            requestStarted: { self.beginSummaryRequest() }
+        )
         else { return }
         await acceptSummary(
-            result,
+            ownedResult.result,
             from: summaryPoller,
             owner: owner,
-            requestOwner: requestOwner
+            requestOwner: ownedResult.requestOwner
         )
     }
 
