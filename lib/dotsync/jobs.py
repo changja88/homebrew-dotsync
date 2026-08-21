@@ -99,14 +99,16 @@ class JobContext:
         update_progress: Callable[[dict[str, str], bool], None],
         register_child: Callable[[_ChildProcess], None],
         unregister_child: Callable[[_ChildProcess], None],
-        mark_point_of_no_return: Callable[[], None],
+        acquire_point_of_no_return: Callable[[], bool],
+        resume_beyond_point_of_no_return: Callable[[], None],
     ) -> None:
         self.account_id = account_id
         self.cancel_event = cancel_event
         self._update_progress = update_progress
         self._register_child = register_child
         self._unregister_child = unregister_child
-        self._mark_point_of_no_return = mark_point_of_no_return
+        self._acquire_point_of_no_return = acquire_point_of_no_return
+        self._resume_beyond_point_of_no_return = resume_beyond_point_of_no_return
 
     def report(self, progress: dict[str, str]) -> None:
         self._update_progress(progress, False)
@@ -120,9 +122,13 @@ class JobContext:
     def unregister_child(self, process: _ChildProcess) -> None:
         self._unregister_child(process)
 
-    def mark_point_of_no_return(self) -> None:
-        """Keep a committed operation's real outcome after late cancellation."""
-        self._mark_point_of_no_return()
+    def acquire_point_of_no_return(self) -> bool:
+        """Atomically win a new irreversible operation against cancellation."""
+        return self._acquire_point_of_no_return()
+
+    def resume_beyond_point_of_no_return(self) -> None:
+        """Resume recovery that became irreversible before this job started."""
+        self._resume_beyond_point_of_no_return()
 
 
 _MAX_WORKERS = 4
@@ -345,8 +351,11 @@ class JobRegistry:
                 ),
                 register_child=lambda child: self._register_child(job_id, child),
                 unregister_child=lambda child: self._unregister_child(job_id, child),
-                mark_point_of_no_return=lambda: self._mark_point_of_no_return(
-                    job_id
+                acquire_point_of_no_return=(
+                    lambda: self._acquire_point_of_no_return(job_id)
+                ),
+                resume_beyond_point_of_no_return=(
+                    lambda: self._resume_beyond_point_of_no_return(job_id)
                 ),
             )
             self._condition.notify_all()
@@ -377,7 +386,18 @@ class JobRegistry:
             else:
                 self._finish_locked(record, result=result)
 
-    def _mark_point_of_no_return(self, job_id: str) -> None:
+    def _acquire_point_of_no_return(self, job_id: str) -> bool:
+        with self._condition:
+            record = self._jobs.get(job_id)
+            if record is None or record.state in _TERMINAL_STATES:
+                raise _JobFailure("invalid_job_state")
+            if record.cancel_event.is_set():
+                return False
+            record.point_of_no_return = True
+            self._condition.notify_all()
+            return True
+
+    def _resume_beyond_point_of_no_return(self, job_id: str) -> None:
         with self._condition:
             record = self._jobs.get(job_id)
             if record is None or record.state in _TERMINAL_STATES:

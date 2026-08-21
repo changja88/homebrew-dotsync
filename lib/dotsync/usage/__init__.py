@@ -2,9 +2,10 @@
 
 from .cache import UsageCache, UsageCacheError
 from .model import UsageSnapshot, UsageWindow
-from .service import OperationConflict, UsageResult, UsageService
+from .service import DeletionJobContext, OperationConflict, UsageResult, UsageService
 
 __all__ = [
+    "DeletionJobContext",
     "OperationConflict",
     "UsageCache",
     "UsageCacheError",

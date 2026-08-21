@@ -241,7 +241,7 @@ def test_point_of_no_return_preserves_success_after_late_cancellation():
     from dotsync.jobs import JobRegistry
 
     def committed_operation(context):
-        context.mark_point_of_no_return()
+        assert context.acquire_point_of_no_return() is True
         context.cancel_event.set()
         return {"status": "deleted"}
 
@@ -262,7 +262,7 @@ def test_preexisting_point_of_no_return_finishes_recovery_despite_cancellation()
 
     def recover_committed_deletion(context):
         context.cancel_event.set()
-        context.mark_point_of_no_return()
+        context.resume_beyond_point_of_no_return()
         return {"status": "deleted"}
 
     registry = JobRegistry({"delete": recover_committed_deletion})
@@ -283,7 +283,7 @@ def test_point_of_no_return_preserves_real_failure_after_late_cancellation():
     sentinel = "SENTINEL_RECOVERY_FAILURE"
 
     def interrupted_committed_operation(context):
-        context.mark_point_of_no_return()
+        assert context.acquire_point_of_no_return() is True
         context.cancel_event.set()
         raise RuntimeError(sentinel)
 
@@ -507,7 +507,7 @@ def test_forced_shutdown_does_not_report_committed_job_as_cancelled(monkeypatch)
     release_committed_job = threading.Event()
 
     def committed_noncooperative(context):
-        context.mark_point_of_no_return()
+        assert context.acquire_point_of_no_return() is True
         entered.set()
         release_committed_job.wait()
         return {"status": "deleted"}

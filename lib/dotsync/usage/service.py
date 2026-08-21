@@ -9,7 +9,7 @@ import weakref
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Iterator
+from typing import Iterator, Protocol
 
 from dotsync.accounts import (
     AccountNotFound,
@@ -40,6 +40,20 @@ from .model import UsageSnapshot
 
 class OperationConflict(RuntimeError):
     """Raised when an operation is already running for one account."""
+
+
+class DeletionJobContext(Protocol):
+    """Job-owned cancellation boundary required by asynchronous deletion."""
+
+    cancel_event: threading.Event
+
+    def acquire_point_of_no_return(self) -> bool:
+        """Atomically acquire a new deletion's irreversible boundary."""
+        raise NotImplementedError
+
+    def resume_beyond_point_of_no_return(self) -> None:
+        """Record that recovered deletion state is already irreversible."""
+        raise NotImplementedError
 
 
 @dataclass(frozen=True)
@@ -215,12 +229,23 @@ class UsageService:
         *,
         force_local: bool = False,
         cancel_event: threading.Event | None = None,
-        mark_point_of_no_return: Callable[[], None] | None = None,
+        job_context: DeletionJobContext | None = None,
     ) -> None:
+        """Delete one account through either a direct or job-owned boundary.
+
+        Direct synchronous callers may pass ``cancel_event``. A registered job
+        passes its context as ``job_context`` instead so cancellation and the
+        point of no return are decided atomically by the job registry.
+        """
         if type(force_local) is not bool:
             raise TypeError("force_local must be a boolean")
+        if cancel_event is not None and job_context is not None:
+            raise TypeError("pass either cancel_event or job_context, not both")
+        effective_cancel_event = (
+            job_context.cancel_event if job_context is not None else cancel_event
+        )
         with self._account_operation(account_id):
-            if self._recover_deletion(account_id, mark_point_of_no_return):
+            if self._recover_deletion(account_id, job_context):
                 return
             account = self._accounts.get(account_id)
             profile_root = self._paths.account_root(account.provider, account.id)
@@ -230,36 +255,40 @@ class UsageService:
 
             try:
                 provider = self._provider_for(account)
-                with self._provider_operation("logout", cancel_event):
-                    provider.logout(account, cancel_event=cancel_event)
+                with self._provider_operation("logout", effective_cancel_event):
+                    provider.logout(account, cancel_event=effective_cancel_event)
             except ProviderError as error:
-                if _is_cancellation(error, cancel_event) or not force_local:
+                if (
+                    _is_cancellation(error, effective_cancel_event)
+                    or not force_local
+                ):
                     raise
-            if cancel_event is not None and cancel_event.is_set():
-                raise _cancelled_provider_error("logout")
 
             # Point of no return: cancellation is honored through this check.
             # Once the deletion transaction begins, it must either commit or
             # remain explicitly retryable; it must never report cancellation
             # after moving account data out of the live trees.
-            if mark_point_of_no_return is not None:
-                mark_point_of_no_return()
+            if job_context is not None:
+                if not job_context.acquire_point_of_no_return():
+                    raise _cancelled_provider_error("logout")
+            elif (
+                effective_cancel_event is not None
+                and effective_cancel_event.is_set()
+            ):
+                raise _cancelled_provider_error("logout")
             deletion = AccountDeletion.begin(self._paths, account)
             self._commit_deletion(deletion)
 
     def _recover_deletion(
         self,
         account_id: str,
-        mark_point_of_no_return: Callable[[], None] | None,
+        job_context: DeletionJobContext | None,
     ) -> bool:
         deletion = AccountDeletion.load(self._paths, account_id)
         if deletion is None:
             return False
-        if (
-            isinstance(deletion, AccountDeletion)
-            and mark_point_of_no_return is not None
-        ):
-            mark_point_of_no_return()
+        if isinstance(deletion, AccountDeletion) and job_context is not None:
+            job_context.resume_beyond_point_of_no_return()
         try:
             fsync_private_directory(self._paths.root, root=self._paths.root)
         except OSError:
@@ -268,8 +297,8 @@ class UsageService:
             ) from None
         if isinstance(deletion, ManifestlessDeletionRoot):
             metadata_exists = self._metadata_exists(account_id)
-            if not metadata_exists and mark_point_of_no_return is not None:
-                mark_point_of_no_return()
+            if not metadata_exists and job_context is not None:
+                job_context.resume_beyond_point_of_no_return()
             deletion.cleanup_if_empty()
             return not metadata_exists
         if self._metadata_exists(account_id):
