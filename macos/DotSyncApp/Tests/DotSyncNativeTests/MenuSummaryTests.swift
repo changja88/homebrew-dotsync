@@ -325,29 +325,55 @@ final class MenuSummaryClientTests: XCTestCase {
 
     func testPollerRunsAtMostEverySixtySecondsOnlyWhileActiveAndExplicitReloadBypassesCadence() async throws {
         let fetcher = CountingSummaryFetcher()
-        let poller = MenuSummaryPoller(fetcher: fetcher)
-        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let clock = ManualSummaryMonotonicClock()
+        let poller = MenuSummaryPoller(
+            fetcher: fetcher,
+            monotonicNow: { clock.now }
+        )
 
-        let inactive = await poller.poll(at: start, isActive: false)
-        let first = await poller.poll(at: start, isActive: true)
-        let tooSoon = await poller.poll(
-            at: start.addingTimeInterval(59.999),
-            isActive: true
-        )
-        let atBoundary = await poller.poll(
-            at: start.addingTimeInterval(60),
-            isActive: true
-        )
-        let explicit = await poller.reload(
-            at: start.addingTimeInterval(61)
-        )
+        let inactive = await poller.poll(isActive: false)
+        let first = await poller.poll(isActive: true)
+        clock.advance(by: .seconds(59) + .milliseconds(999))
+        let tooSoon = await poller.poll(isActive: true)
+        clock.advance(by: .milliseconds(1))
+        let atBoundary = await poller.poll(isActive: true)
+        clock.advance(by: .seconds(1))
+        let explicit = await poller.reload()
         XCTAssertNil(inactive)
         XCTAssertNotNil(first)
         XCTAssertNil(tooSoon)
         XCTAssertNotNil(atBoundary)
-        XCTAssertEqual(explicit, .unknown)
+        XCTAssertEqual(explicit.summary, .unknown)
         let fetchCount = await fetcher.count
         XCTAssertEqual(fetchCount, 3)
+    }
+
+    func testPollerCadenceDoesNotDriftAcrossForwardAndBackwardWallClockChanges() async {
+        let fetcher = CountingSummaryFetcher()
+        let clock = ManualSummaryMonotonicClock()
+        let poller = MenuSummaryPoller(
+            fetcher: fetcher,
+            monotonicNow: { clock.now }
+        )
+        var wallClock = Date(timeIntervalSince1970: 1_800_000_000)
+
+        let initial = await poller.poll(isActive: true)
+        XCTAssertNotNil(initial)
+        wallClock = wallClock.addingTimeInterval(86_400)
+        clock.advance(by: .seconds(30))
+        let afterForwardJump = await poller.poll(isActive: true)
+        XCTAssertNil(afterForwardJump)
+        wallClock = wallClock.addingTimeInterval(-172_800)
+        clock.advance(by: .seconds(29))
+        let afterBackwardJump = await poller.poll(isActive: true)
+        XCTAssertNil(afterBackwardJump)
+        clock.advance(by: .seconds(1))
+        let atMonotonicBoundary = await poller.poll(isActive: true)
+        XCTAssertNotNil(atMonotonicBoundary)
+
+        XCTAssertEqual(wallClock, Date(timeIntervalSince1970: 1_799_913_600))
+        let fetchCount = await fetcher.count
+        XCTAssertEqual(fetchCount, 2)
     }
 
     private func assertProtocolError(
@@ -416,5 +442,18 @@ private actor CountingSummaryFetcher: MenuSummaryFetching {
     func fetch() async throws -> MenuSummary {
         count += 1
         return .unknown
+    }
+}
+
+private final class ManualSummaryMonotonicClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var instant = Duration.zero
+
+    var now: Duration {
+        lock.withLock { instant }
+    }
+
+    func advance(by duration: Duration) {
+        lock.withLock { instant += duration }
     }
 }

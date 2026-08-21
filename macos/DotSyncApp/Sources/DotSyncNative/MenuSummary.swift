@@ -196,36 +196,75 @@ final class MenuSummarySessionDelegate: NSObject, URLSessionTaskDelegate,
     }
 }
 
+public struct MenuSummaryFetchResult: Equatable, Sendable {
+    public let generation: UInt64
+    public let summary: MenuSummary
+
+    fileprivate init(generation: UInt64, summary: MenuSummary) {
+        self.generation = generation
+        self.summary = summary
+    }
+}
+
 public actor MenuSummaryPoller {
+    public typealias MonotonicNow = @Sendable () -> Duration
+
     private let fetcher: any MenuSummaryFetching
-    private var lastAttempt: Date?
+    private let monotonicNow: MonotonicNow
+    private var lastAttempt: Duration?
+    private var generation: UInt64 = 0
 
     public init(fetcher: any MenuSummaryFetching) {
+        let clock = ContinuousClock()
+        let origin = clock.now
         self.fetcher = fetcher
+        self.monotonicNow = {
+            origin.duration(to: clock.now)
+        }
     }
 
-    public func poll(at now: Date, isActive: Bool) async -> MenuSummary? {
+    public init(
+        fetcher: any MenuSummaryFetching,
+        monotonicNow: @escaping MonotonicNow
+    ) {
+        self.fetcher = fetcher
+        self.monotonicNow = monotonicNow
+    }
+
+    public func poll(isActive: Bool) async -> MenuSummaryFetchResult? {
         guard isActive else { return nil }
+        let now = monotonicNow()
         if let lastAttempt,
-           now.timeIntervalSince(lastAttempt) < 60
+           now - lastAttempt < .seconds(60)
         {
             return nil
         }
         lastAttempt = now
-        return await fetchOrUnknown()
+        return await fetchResult()
     }
 
-    public func reload(at now: Date) async -> MenuSummary {
-        lastAttempt = now
-        return await fetchOrUnknown()
+    public func reload() async -> MenuSummaryFetchResult {
+        lastAttempt = monotonicNow()
+        return await fetchResult()
     }
 
-    private func fetchOrUnknown() async -> MenuSummary {
+    public func ownsNewest(_ result: MenuSummaryFetchResult) -> Bool {
+        result.generation == generation
+    }
+
+    private func fetchResult() async -> MenuSummaryFetchResult {
+        generation &+= 1
+        let ownedGeneration = generation
+        let summary: MenuSummary
         do {
-            return try await fetcher.fetch()
+            summary = try await fetcher.fetch()
         } catch {
-            return .unknown
+            summary = .unknown
         }
+        return MenuSummaryFetchResult(
+            generation: ownedGeneration,
+            summary: summary
+        )
     }
 }
 

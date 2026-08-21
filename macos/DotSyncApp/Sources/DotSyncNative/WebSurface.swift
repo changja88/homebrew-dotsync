@@ -12,6 +12,71 @@ public struct ManagerSyncHandoff: Equatable, Sendable {
     }
 }
 
+struct ManagerHandoffDispatchAttempt: Equatable {
+    let identifier: UInt64
+    let handoff: ManagerSyncHandoff
+}
+
+@MainActor
+final class ManagerHandoffDispatchQueue {
+    private(set) var pendingHandoffs: [ManagerSyncHandoff] = []
+    private var activeAttempt: ManagerHandoffDispatchAttempt?
+    private var nextAttemptIdentifier: UInt64 = 0
+    private var highestAcknowledgedSequence: UInt64 = 0
+    private var isPageReady = false
+
+    func merge(_ handoffs: [ManagerSyncHandoff]) {
+        var knownSequences = Set(pendingHandoffs.map(\.sequence))
+        for handoff in handoffs
+        where handoff.sequence > highestAcknowledgedSequence
+            && knownSequences.insert(handoff.sequence).inserted
+        {
+            pendingHandoffs.append(handoff)
+        }
+        pendingHandoffs.sort { $0.sequence < $1.sequence }
+    }
+
+    func pageDidBecomeReady() {
+        isPageReady = true
+    }
+
+    func pageDidBecomeUnavailable() {
+        isPageReady = false
+        activeAttempt = nil
+    }
+
+    func beginDispatch() -> ManagerHandoffDispatchAttempt? {
+        guard isPageReady,
+              activeAttempt == nil,
+              let handoff = pendingHandoffs.first
+        else { return nil }
+        nextAttemptIdentifier &+= 1
+        let attempt = ManagerHandoffDispatchAttempt(
+            identifier: nextAttemptIdentifier,
+            handoff: handoff
+        )
+        activeAttempt = attempt
+        return attempt
+    }
+
+    func complete(
+        _ attempt: ManagerHandoffDispatchAttempt,
+        evaluationSucceeded: Bool
+    ) -> UInt64? {
+        guard activeAttempt == attempt else { return nil }
+        activeAttempt = nil
+        guard evaluationSucceeded,
+              pendingHandoffs.first == attempt.handoff
+        else {
+            isPageReady = false
+            return nil
+        }
+        pendingHandoffs.removeFirst()
+        highestAcknowledgedSequence = attempt.handoff.sequence
+        return attempt.handoff.sequence
+    }
+}
+
 @MainActor
 public final class WebNavigationPolicy {
     private let origin: LocalOrigin
@@ -119,7 +184,8 @@ public struct WebSurface: NSViewRepresentable {
     private let processPool: WKProcessPool
     private let surface: LocalOrigin.Surface
     private let destination: LocalOrigin.Destination
-    private let handoff: ManagerSyncHandoff?
+    private let handoffs: [ManagerSyncHandoff]
+    private let handoffAcknowledged: @MainActor (UInt64) -> Void
     private let commandHandler: @MainActor (NativeCommand) -> Void
 
     public init(
@@ -127,19 +193,25 @@ public struct WebSurface: NSViewRepresentable {
         processPool: WKProcessPool,
         surface: LocalOrigin.Surface,
         destination: LocalOrigin.Destination = .overview,
-        handoff: ManagerSyncHandoff? = nil,
+        handoffs: [ManagerSyncHandoff] = [],
+        handoffAcknowledged: @escaping @MainActor (UInt64) -> Void = { _ in },
         commandHandler: @escaping @MainActor (NativeCommand) -> Void
     ) {
         self.origin = origin
         self.processPool = processPool
         self.surface = surface
         self.destination = destination
-        self.handoff = handoff
+        self.handoffs = handoffs
+        self.handoffAcknowledged = handoffAcknowledged
         self.commandHandler = commandHandler
     }
 
     public func makeCoordinator() -> Coordinator {
-        Coordinator(origin: origin, commandHandler: commandHandler)
+        Coordinator(
+            origin: origin,
+            handoffAcknowledged: handoffAcknowledged,
+            commandHandler: commandHandler
+        )
     }
 
     public func makeNSView(context: Context) -> WKWebView {
@@ -154,7 +226,8 @@ public struct WebSurface: NSViewRepresentable {
         context.coordinator.update(
             surface: surface,
             destination: destination,
-            handoff: handoff,
+            handoffs: handoffs,
+            handoffAcknowledged: handoffAcknowledged,
             commandHandler: commandHandler
         )
         return webView
@@ -164,7 +237,8 @@ public struct WebSurface: NSViewRepresentable {
         context.coordinator.update(
             surface: surface,
             destination: destination,
-            handoff: handoff,
+            handoffs: handoffs,
+            handoffAcknowledged: handoffAcknowledged,
             commandHandler: commandHandler
         )
     }
@@ -194,16 +268,21 @@ public struct WebSurface: NSViewRepresentable {
         private weak var webView: WKWebView?
         private var launchContext: LaunchContext?
         private var listenerReady = false
-        private var lastHandoffSequence: UInt64?
-        private var pendingHandoff: ManagerSyncDirection?
+        private var listenerConfirmedReady = false
+        private var readinessProbeInFlight = false
+        private var pageGeneration: UInt64 = 0
+        private let handoffQueue = ManagerHandoffDispatchQueue()
+        private var handoffAcknowledged: @MainActor (UInt64) -> Void
         private var commandHandler: @MainActor (NativeCommand) -> Void
 
         fileprivate init(
             origin: LocalOrigin,
+            handoffAcknowledged: @escaping @MainActor (UInt64) -> Void,
             commandHandler: @escaping @MainActor (NativeCommand) -> Void
         ) {
             self.origin = origin
             self.policy = WebNavigationPolicy(origin: origin)
+            self.handoffAcknowledged = handoffAcknowledged
             self.commandHandler = commandHandler
         }
 
@@ -213,21 +292,19 @@ public struct WebSurface: NSViewRepresentable {
 
         fileprivate func detach() {
             webView = nil
-            listenerReady = false
-            pendingHandoff = nil
+            markPageUnavailable()
         }
 
         fileprivate func update(
             surface: LocalOrigin.Surface,
             destination: LocalOrigin.Destination,
-            handoff: ManagerSyncHandoff?,
+            handoffs: [ManagerSyncHandoff],
+            handoffAcknowledged: @escaping @MainActor (UInt64) -> Void,
             commandHandler: @escaping @MainActor (NativeCommand) -> Void
         ) {
             self.commandHandler = commandHandler
-            if handoff?.sequence != lastHandoffSequence {
-                lastHandoffSequence = handoff?.sequence
-                pendingHandoff = handoff?.direction
-            }
+            self.handoffAcknowledged = handoffAcknowledged
+            handoffQueue.merge(handoffs)
 
             let requested = LaunchContext(
                 surface: surface,
@@ -239,7 +316,7 @@ public struct WebSurface: NSViewRepresentable {
             }
 
             launchContext = requested
-            listenerReady = false
+            markPageUnavailable()
             guard let webView,
                   let launchURL = try? origin.launchURL(
                     surface: surface,
@@ -291,14 +368,42 @@ public struct WebSurface: NSViewRepresentable {
 
         public func webView(
             _ webView: WKWebView,
+            didStartProvisionalNavigation navigation: WKNavigation!
+        ) {
+            markPageUnavailable()
+        }
+
+        public func webView(
+            _ webView: WKWebView,
             didFinish navigation: WKNavigation!
         ) {
             guard let url = webView.url, origin.accepts(url) else {
-                listenerReady = false
+                markPageUnavailable()
                 return
             }
             listenerReady = true
+            handoffQueue.pageDidBecomeReady()
             dispatchPendingHandoffIfReady()
+        }
+
+        public func webView(
+            _ webView: WKWebView,
+            didFail navigation: WKNavigation!,
+            withError error: Error
+        ) {
+            markPageUnavailable()
+        }
+
+        public func webView(
+            _ webView: WKWebView,
+            didFailProvisionalNavigation navigation: WKNavigation!,
+            withError error: Error
+        ) {
+            markPageUnavailable()
+        }
+
+        public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            markPageUnavailable()
         }
 
         public func webView(
@@ -333,16 +438,89 @@ public struct WebSurface: NSViewRepresentable {
         private func dispatchPendingHandoffIfReady() {
             guard listenerReady,
                   let webView,
-                  let pendingHandoff,
                   launchContext == LaunchContext(
                     surface: .manager,
                     destination: .sync
                   )
             else { return }
-            self.pendingHandoff = nil
-            webView.evaluateJavaScript(pendingHandoff.eventJavaScript) {
-                _, _ in
+            guard listenerConfirmedReady else {
+                probeListenerReadiness(in: webView)
+                return
             }
+            dispatchReadyHandoff(in: webView)
+        }
+
+        private func probeListenerReadiness(in webView: WKWebView) {
+            guard !readinessProbeInFlight else { return }
+            readinessProbeInFlight = true
+            let ownedPageGeneration = pageGeneration
+            webView.evaluateJavaScript(
+                #"document.readyState === "complete""#
+            ) { [weak self] result, error in
+                let probeFailed = error != nil
+                let pageIsReady = !probeFailed && (result as? Bool) == true
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          self.pageGeneration == ownedPageGeneration
+                    else { return }
+                    self.readinessProbeInFlight = false
+                    guard !probeFailed else {
+                        self.markPageUnavailable()
+                        return
+                    }
+                    if pageIsReady {
+                        self.listenerConfirmedReady = true
+                        self.dispatchPendingHandoffIfReady()
+                    } else {
+                        self.scheduleReadinessProbe(
+                            for: ownedPageGeneration
+                        )
+                    }
+                }
+            }
+        }
+
+        private func scheduleReadinessProbe(for ownedPageGeneration: UInt64) {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(10))
+                guard let self,
+                      self.pageGeneration == ownedPageGeneration,
+                      self.listenerReady
+                else { return }
+                self.dispatchPendingHandoffIfReady()
+            }
+        }
+
+        private func dispatchReadyHandoff(in webView: WKWebView) {
+            guard let attempt = handoffQueue.beginDispatch() else { return }
+            let ownedPageGeneration = pageGeneration
+            webView.evaluateJavaScript(
+                attempt.handoff.direction.eventJavaScript
+            ) { [weak self] _, error in
+                let evaluationSucceeded = error == nil
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          self.pageGeneration == ownedPageGeneration
+                    else { return }
+                    if let sequence = self.handoffQueue.complete(
+                        attempt,
+                        evaluationSucceeded: evaluationSucceeded
+                    ) {
+                        self.handoffAcknowledged(sequence)
+                        self.dispatchPendingHandoffIfReady()
+                    } else if !evaluationSucceeded {
+                        self.listenerReady = false
+                    }
+                }
+            }
+        }
+
+        private func markPageUnavailable() {
+            listenerReady = false
+            listenerConfirmedReady = false
+            readinessProbeInFlight = false
+            pageGeneration &+= 1
+            handoffQueue.pageDidBecomeUnavailable()
         }
     }
 }

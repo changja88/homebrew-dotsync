@@ -199,6 +199,79 @@ final class WebSurfaceTests: XCTestCase {
         XCTAssertTrue(contentController.handlers.first === bridge)
     }
 
+    func testHandoffQueueRetainsFailedEvaluationAndAcknowledgesInSequenceOrder() {
+        let queue = ManagerHandoffDispatchQueue()
+        let apply = ManagerSyncHandoff(sequence: 1, direction: .apply)
+        let backup = ManagerSyncHandoff(sequence: 2, direction: .backup)
+
+        queue.merge([backup, apply])
+        queue.pageDidBecomeReady()
+        let firstAttempt = queue.beginDispatch()
+
+        XCTAssertEqual(firstAttempt?.handoff, apply)
+        XCTAssertNil(queue.beginDispatch())
+        XCTAssertNil(
+            firstAttempt.flatMap {
+                queue.complete($0, evaluationSucceeded: false)
+            }
+        )
+        XCTAssertEqual(queue.pendingHandoffs, [apply, backup])
+        XCTAssertNil(queue.beginDispatch())
+
+        queue.pageDidBecomeReady()
+        let retryAttempt = queue.beginDispatch()
+        XCTAssertEqual(retryAttempt?.handoff, apply)
+        XCTAssertEqual(
+            retryAttempt.flatMap {
+                queue.complete($0, evaluationSucceeded: true)
+            },
+            1
+        )
+        XCTAssertEqual(queue.pendingHandoffs, [backup])
+
+        let secondAttempt = queue.beginDispatch()
+        XCTAssertEqual(secondAttempt?.handoff, backup)
+        XCTAssertEqual(
+            secondAttempt.flatMap {
+                queue.complete($0, evaluationSucceeded: true)
+            },
+            2
+        )
+        XCTAssertTrue(queue.pendingHandoffs.isEmpty)
+    }
+
+    func testHandoffQueueInvalidatesProcessAttemptWithoutDroppingOrDuplicatingIt() {
+        let queue = ManagerHandoffDispatchQueue()
+        let apply = ManagerSyncHandoff(sequence: 4, direction: .apply)
+        let backup = ManagerSyncHandoff(sequence: 5, direction: .backup)
+
+        queue.merge([apply, backup, apply])
+        queue.pageDidBecomeReady()
+        let terminatedAttempt = queue.beginDispatch()
+        queue.pageDidBecomeUnavailable()
+
+        XCTAssertNil(
+            terminatedAttempt.flatMap {
+                queue.complete($0, evaluationSucceeded: true)
+            }
+        )
+        XCTAssertEqual(queue.pendingHandoffs, [apply, backup])
+
+        queue.pageDidBecomeReady()
+        let replacementAttempt = queue.beginDispatch()
+        XCTAssertEqual(replacementAttempt?.handoff, apply)
+        XCTAssertNotEqual(replacementAttempt, terminatedAttempt)
+        XCTAssertEqual(
+            replacementAttempt.flatMap {
+                queue.complete($0, evaluationSucceeded: true)
+            },
+            4
+        )
+
+        queue.merge([apply, backup])
+        XCTAssertEqual(queue.pendingHandoffs, [backup])
+    }
+
     private func makeOrigin() throws -> LocalOrigin {
         try LocalOrigin(
             origin: "http://127.0.0.1:49152",

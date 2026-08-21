@@ -41,7 +41,7 @@ final class AppCoordinator: ObservableObject {
     @Published private(set) var session: BackendSession?
     @Published private(set) var summary = MenuSummaryModel()
     @Published private(set) var managerDestination = LocalOrigin.Destination.overview
-    @Published private(set) var managerHandoff: ManagerSyncHandoff?
+    @Published private(set) var managerHandoffs: [ManagerSyncHandoff] = []
     @Published private(set) var recoveryIssue: BackendRecoveryIssue?
     @Published private(set) var isManagerPresented = false
     @Published private(set) var isTerminated = false
@@ -66,11 +66,13 @@ final class AppCoordinator: ObservableObject {
     private let summaryFetcherFactory: SummaryFetcherFactory
     private let terminator: @MainActor () -> Void
     private let installationHelpOpener: @MainActor () -> Void
-    private let now: @Sendable () -> Date
     private var windowOpener: @MainActor () -> Void
     private var startTask: Task<Result<BackendSession, BackendError>, Never>?
+    private var retryTask: Task<UInt64, Never>?
+    private var retrySequence: UInt64 = 0
     private var pollingTask: Task<Void, Never>?
     private var summaryPoller: MenuSummaryPoller?
+    private var summaryOwner: UInt64 = 0
     private var handoffSequence: UInt64 = 0
     private var isActive = true
     private var isQuitting = false
@@ -82,15 +84,13 @@ final class AppCoordinator: ObservableObject {
         },
         terminator: @escaping @MainActor () -> Void = {},
         installationHelpOpener: @escaping @MainActor () -> Void = {},
-        windowOpener: @escaping @MainActor () -> Void = {},
-        now: @escaping @Sendable () -> Date = { Date() }
+        windowOpener: @escaping @MainActor () -> Void = {}
     ) {
         self.backend = backend
         self.summaryFetcherFactory = summaryFetcherFactory
         self.terminator = terminator
         self.installationHelpOpener = installationHelpOpener
         self.windowOpener = windowOpener
-        self.now = now
     }
 
     static func production() -> AppCoordinator {
@@ -146,9 +146,15 @@ final class AppCoordinator: ObservableObject {
             let poller = MenuSummaryPoller(
                 fetcher: summaryFetcherFactory(session.origin)
             )
+            summaryOwner &+= 1
+            let owner = summaryOwner
             summaryPoller = poller
-            if let value = await poller.poll(at: now(), isActive: isActive) {
-                summary = MenuSummaryModel(summary: value)
+            if let result = await poller.poll(isActive: isActive) {
+                await acceptSummary(
+                    result,
+                    from: poller,
+                    owner: owner
+                )
             }
             startPollingIfNeeded()
         case let .failure(error):
@@ -171,16 +177,23 @@ final class AppCoordinator: ObservableObject {
         managerDestination = request.destination
         switch request {
         case .destination:
-            managerHandoff = nil
+            break
         case let .sync(direction):
             handoffSequence &+= 1
-            managerHandoff = ManagerSyncHandoff(
-                sequence: handoffSequence,
-                direction: direction
+            managerHandoffs.append(
+                ManagerSyncHandoff(
+                    sequence: handoffSequence,
+                    direction: direction
+                )
             )
         }
         isManagerPresented = true
         windowOpener()
+    }
+
+    func acknowledgeManagerHandoff(sequence: UInt64) {
+        guard managerHandoffs.first?.sequence == sequence else { return }
+        managerHandoffs.removeFirst()
     }
 
     func managerDidClose() {
@@ -213,6 +226,7 @@ final class AppCoordinator: ObservableObject {
     func backendExited(_ error: BackendError) {
         pollingTask?.cancel()
         pollingTask = nil
+        summaryOwner &+= 1
         summaryPoller = nil
         session = nil
         summary = MenuSummaryModel()
@@ -220,6 +234,26 @@ final class AppCoordinator: ObservableObject {
     }
 
     func retry() async {
+        guard !isTerminated, !isQuitting else { return }
+        if let retryTask {
+            _ = await retryTask.value
+            return
+        }
+
+        retrySequence &+= 1
+        let sequence = retrySequence
+        let operation = Task { @MainActor in
+            await self.performRetry()
+            return sequence
+        }
+        retryTask = operation
+        let completedSequence = await operation.value
+        if completedSequence == sequence {
+            retryTask = nil
+        }
+    }
+
+    private func performRetry() async {
         guard !isTerminated, !isQuitting else { return }
         pollingTask?.cancel()
         pollingTask = nil
@@ -230,6 +264,7 @@ final class AppCoordinator: ObservableObject {
             return
         }
         session = nil
+        summaryOwner &+= 1
         summaryPoller = nil
         recoveryIssue = nil
         await start()
@@ -247,6 +282,7 @@ final class AppCoordinator: ObservableObject {
         do {
             try await backend.stopBackend()
             session = nil
+            summaryOwner &+= 1
             summaryPoller = nil
             isTerminated = true
             terminator()
@@ -261,18 +297,30 @@ final class AppCoordinator: ObservableObject {
             summary = MenuSummaryModel()
             return
         }
-        let value = await summaryPoller.reload(at: now())
-        summary = MenuSummaryModel(summary: value)
+        let owner = summaryOwner
+        let result = await summaryPoller.reload()
+        await acceptSummary(result, from: summaryPoller, owner: owner)
     }
 
     private func pollSummaryIfDue() async {
-        guard let summaryPoller,
-              let value = await summaryPoller.poll(
-                at: now(),
-                isActive: isActive
-              )
+        guard let summaryPoller
         else { return }
-        summary = MenuSummaryModel(summary: value)
+        let owner = summaryOwner
+        guard let result = await summaryPoller.poll(isActive: isActive)
+        else { return }
+        await acceptSummary(result, from: summaryPoller, owner: owner)
+    }
+
+    private func acceptSummary(
+        _ result: MenuSummaryFetchResult,
+        from poller: MenuSummaryPoller,
+        owner: UInt64
+    ) async {
+        guard owner == summaryOwner,
+              summaryPoller === poller,
+              await poller.ownsNewest(result)
+        else { return }
+        summary = MenuSummaryModel(summary: result.summary)
     }
 
     private func startPollingIfNeeded() {

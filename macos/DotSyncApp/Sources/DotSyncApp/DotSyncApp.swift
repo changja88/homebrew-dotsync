@@ -94,7 +94,10 @@ struct ManagerRoot: View {
                 processPool: coordinator.processPool,
                 surface: .manager,
                 destination: coordinator.managerDestination,
-                handoff: coordinator.managerHandoff
+                handoffs: coordinator.managerHandoffs,
+                handoffAcknowledged: { sequence in
+                    coordinator.acknowledgeManagerHandoff(sequence: sequence)
+                }
             ) { command in
                 Task { await coordinator.handle(command) }
             }
