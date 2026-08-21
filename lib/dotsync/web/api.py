@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import copy
+import ipaddress
 import json
 import os
 import re
+import socket
 import stat
 import threading
 import unicodedata
@@ -15,6 +17,7 @@ from dataclasses import dataclass
 from email.message import Message
 from pathlib import Path
 from typing import BinaryIO, Literal, cast
+from urllib.parse import unquote, urlsplit
 
 from dotsync.accounts import (
     AccountConflict,
@@ -29,7 +32,13 @@ from dotsync.app_paths import AppPaths
 from dotsync.app_state import AppState, AppStateStore
 from dotsync.apps import APP_NAMES
 from dotsync.apps.base import AppStatus
-from dotsync.config import Config, ConfigError, load_config_from, save_config
+from dotsync.config import (
+    Config,
+    ConfigError,
+    initialize_config_file,
+    load_config_from,
+    save_config,
+)
 from dotsync.jobs import (
     JobContext,
     JobNotFound,
@@ -126,14 +135,10 @@ _SAFE_IDENTITY_EMAIL = re.compile(
     r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*"
     r"\.[A-Za-z]{2,63}\Z"
 )
-_SAFE_IDENTITY_PUNCTUATION = frozenset(" .,'’()-_+&")
-_UNSAFE_IDENTITY_LOCATORS = (
-    "localhost",
-    "127.0.0.1",
-    "0.0.0.0",
-    "::1",
-    "[::1]",
-)
+_SAFE_HUMAN_SYMBOLS = frozenset("+")
+_URI_SCHEME_PREFIX = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
+_PERCENT_ESCAPE = re.compile(r"%[0-9A-Fa-f]{2}")
+_HOST_TOKEN = re.compile(r"[A-Za-z0-9.-]+")
 _SAFE_USAGE_ERROR_CODES = frozenset(
     {
         "cli_missing",
@@ -603,7 +608,10 @@ class ApiController:
         try:
             try:
                 initial_identity = _directory_identity(directory_fd)
-                _verify_config_file_no_follow(directory_fd, allow_missing=True)
+                config_exists = _verify_config_file_no_follow(
+                    directory_fd,
+                    allow_missing=True,
+                )
             except (OSError, TypeError, ValueError):
                 raise _ApiProblem(
                     422,
@@ -614,12 +622,25 @@ class ApiController:
                 current = self._sync
                 generation = self._sync_generation
             try:
+                if not config_exists:
+                    initialize_config_file(
+                        directory_fd,
+                        _initial_selected_config(current, canonical),
+                    )
+                revalidated_fd = _open_revalidated_sync_directory(
+                    canonical,
+                    initial_identity,
+                )
+                os.close(revalidated_fd)
+                revalidated_fd = None
+                # Anchored creation is complete. This injected boundary is
+                # intentionally read/build-only; it must not persist by path.
                 new_sync = self._sync_folder_initializer(canonical)
-                revalidated_fd = _open_directory_no_follow(canonical)
-                if _directory_identity(revalidated_fd) != initial_identity:
-                    raise OSError("selected folder identity changed")
-                _verify_config_file_no_follow(revalidated_fd, allow_missing=False)
                 _validate_sync_directory_candidate(new_sync, canonical)
+                revalidated_fd = _open_revalidated_sync_directory(
+                    canonical,
+                    initial_identity,
+                )
             except BaseException as error:
                 with self._sync_lock:
                     if (
@@ -947,6 +968,22 @@ def _service_uses_directory(service: object, value: object) -> bool:
     )
 
 
+def _initial_selected_config(
+    current: SyncService | None,
+    sync_dir: Path,
+) -> Config:
+    current_config = getattr(current, "config", None)
+    if type(current_config) is not Config:
+        return Config(dir=sync_dir, apps=[])
+    return Config(
+        dir=sync_dir,
+        apps=list(current_config.apps),
+        backup_keep=current_config.backup_keep,
+        bettertouchtool_presets=list(current_config.bettertouchtool_presets),
+        app_options=copy.deepcopy(current_config.app_options),
+    )
+
+
 def _open_directory_no_follow(path: Path) -> int:
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     if hasattr(os, "O_CLOEXEC"):
@@ -976,11 +1013,26 @@ def _directory_identity(directory_fd: int) -> tuple[int, int]:
     return metadata.st_dev, metadata.st_ino
 
 
+def _open_revalidated_sync_directory(
+    path: Path,
+    expected_identity: tuple[int, int],
+) -> int:
+    descriptor = _open_directory_no_follow(path)
+    try:
+        if _directory_identity(descriptor) != expected_identity:
+            raise OSError("selected folder identity changed")
+        _verify_config_file_no_follow(descriptor, allow_missing=False)
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
 def _verify_config_file_no_follow(
     directory_fd: int,
     *,
     allow_missing: bool,
-) -> None:
+) -> bool:
     try:
         path_metadata = os.stat(
             "dotsync.toml",
@@ -989,7 +1041,7 @@ def _verify_config_file_no_follow(
         )
     except FileNotFoundError:
         if allow_missing:
-            return
+            return False
         raise
     if not stat.S_ISREG(path_metadata.st_mode):
         raise OSError("dotsync.toml is not a regular file")
@@ -1007,6 +1059,7 @@ def _verify_config_file_no_follow(
             raise OSError("dotsync.toml changed during validation")
     finally:
         os.close(config_fd)
+    return True
 
 
 def _required_json_object(request: ApiRequest) -> dict[str, object]:
@@ -1643,20 +1696,13 @@ def _safe_job_text(
 
 
 def _validated_account_label(value: object) -> str:
-    if (
-        type(value) is not str
-        or not value
-        or value != value.strip()
-        or len(value) > 80
-    ):
-        raise TypeError("account label has an unsupported shape")
-    if any(
-        unicodedata.category(character) in {"Cc", "Cs"}
-        or unicodedata.bidirectional(character) in _DANGEROUS_BIDI_CLASSES
-        for character in value
-    ):
-        raise TypeError("account label has unsafe characters")
-    return value
+    validated = _validated_account_human_text(
+        value,
+        maximum=80,
+        required=True,
+    )
+    assert validated is not None
+    return validated
 
 
 def _validated_account_created_at(value: object) -> str:
@@ -1673,28 +1719,119 @@ def _safe_identity_human_text(
     *,
     maximum: int,
 ) -> str | None:
+    return _validated_account_human_text(
+        value,
+        maximum=maximum,
+        required=False,
+    )
+
+
+def _validated_account_human_text(
+    value: object,
+    *,
+    maximum: int,
+    required: bool,
+) -> str | None:
     if value is None:
+        if required:
+            raise TypeError("required account text is missing")
         return None
     if type(value) is not str:
-        raise TypeError("account identity text has an unsupported shape")
+        raise TypeError("account text has an unsupported shape")
+    if required and value != value.strip():
+        raise TypeError("required account text is not canonical")
     normalized = unicodedata.normalize("NFC", value).strip()
     if not normalized or len(normalized) > maximum:
-        return None
-    if any(locator in normalized.casefold() for locator in _UNSAFE_IDENTITY_LOCATORS):
-        return None
+        return _unsafe_account_human_text(required)
+    if _contains_structural_locator(normalized):
+        return _unsafe_account_human_text(required)
     for character in normalized:
         category = unicodedata.category(character)
         if (
-            category[0] not in {"L", "M", "N"}
-            and character not in _SAFE_IDENTITY_PUNCTUATION
-        ):
-            return None
-        if (
             category in {"Cc", "Cs"}
             or unicodedata.bidirectional(character) in _DANGEROUS_BIDI_CLASSES
+            or (
+                category[0] not in {"L", "M", "N", "P"}
+                and category != "Zs"
+                and character not in _SAFE_HUMAN_SYMBOLS
+            )
         ):
-            return None
+            return _unsafe_account_human_text(required)
     return normalized
+
+
+def _unsafe_account_human_text(required: bool) -> None:
+    if required:
+        raise TypeError("required account text is unsafe")
+    return None
+
+
+def _contains_structural_locator(value: str) -> bool:
+    probe = unicodedata.normalize("NFKC", value)
+    for _ in range(3):
+        if _is_structural_locator_probe(probe):
+            return True
+        if _PERCENT_ESCAPE.search(probe) is None:
+            return False
+        try:
+            decoded = unquote(probe, encoding="utf-8", errors="strict")
+        except UnicodeError:
+            return True
+        decoded = unicodedata.normalize("NFKC", decoded)
+        if decoded == probe:
+            return False
+        probe = decoded
+    return _is_structural_locator_probe(probe)
+
+
+def _is_structural_locator_probe(value: str) -> bool:
+    candidate = value.strip()
+    if not candidate:
+        return False
+    if candidate.startswith("~") or any(
+        separator in candidate for separator in ("/", "\\", "?", "#")
+    ):
+        return True
+    scheme = _URI_SCHEME_PREFIX.match(candidate)
+    if scheme is not None:
+        remainder = candidate[scheme.end() :]
+        if not remainder or not remainder[0].isspace():
+            return True
+    if _is_forbidden_locator_host(candidate):
+        return True
+    if any(
+        _is_forbidden_locator_host(token)
+        for token in _HOST_TOKEN.findall(candidate)
+    ):
+        return True
+    if any(character.isspace() for character in candidate):
+        return False
+    try:
+        parsed = urlsplit(f"//{candidate}")
+        port = parsed.port
+    except ValueError:
+        return ":" in candidate
+    return parsed.hostname is not None and port is not None
+
+
+def _is_forbidden_locator_host(value: str) -> bool:
+    candidate = value.strip().strip("[]").rstrip(".")
+    if not candidate:
+        return False
+    try:
+        address = ipaddress.ip_address(candidate)
+    except ValueError:
+        try:
+            address = ipaddress.ip_address(socket.inet_aton(candidate))
+        except OSError:
+            address = None
+    if address is not None:
+        return address.is_loopback or address.is_unspecified
+    try:
+        hostname = candidate.encode("idna").decode("ascii").casefold()
+    except UnicodeError:
+        hostname = candidate.casefold()
+    return "localhost" in hostname.split(".")
 
 
 def _safe_identity_email(value: object) -> str | None:

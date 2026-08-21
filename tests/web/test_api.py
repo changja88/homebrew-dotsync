@@ -22,7 +22,7 @@ from dotsync.app_paths import AppPaths
 from dotsync.app_state import AppState, AppStateStore
 from dotsync.apps import build_app
 from dotsync.apps.base import App, FilePair
-from dotsync.config import Config, save_config
+from dotsync.config import Config, load_config_from, save_config
 from dotsync.jobs import JobContext, JobView, RegistryClosed
 from dotsync.providers import LoginProgress
 from dotsync.sync_service import StaleSyncPlan, SyncService, SyncStatus
@@ -290,8 +290,9 @@ class _Initializer:
         action = self.actions.get(path)
         if callable(action):
             action(path)
-        (path / "dotsync.toml").write_text('apps = ["zsh"]\n')
+        config = load_config_from(path)
         service = _SyncService(path)
+        service.config = config
         self.services.append(service)
         return service
 
@@ -860,6 +861,18 @@ def test_account_list_includes_only_the_sanitized_cached_usage_snapshot(stack):
     [
         "~/Library/Application Support/Codex/auth.json",
         "localhost:1455/callback?code=oauth-secret",
+        "127.0.0.2",
+        "127.255.255.254",
+        "127.1",
+        "0x7f000001",
+        "::1",
+        "[::1]",
+        "LOCALHOST.",
+        "profile.localhost",
+        "oauth.invalid:443",
+        "?code=oauth-secret",
+        "profiles/codex",
+        "https%3A%2F%2Foauth.invalid%2Faccess-token",
     ],
 )
 def test_account_list_redacts_locator_like_display_names(stack, display_name):
@@ -928,11 +941,11 @@ def test_account_mutation_responses_use_the_same_identity_sanitizer(
 
 def test_account_dto_preserves_safe_unicode_identity_fields(stack):
     account = _account(
-        label="개인 계정",
+        label="개인 계정 — 업무",
         identity=ProviderIdentity(
-            "홍길동",
+            "Jean–Luc Picard",
             "person.name+codex@example.com",
-            "팀 플랜",
+            "Pro — Annual",
         ),
     )
     stack.accounts.accounts[account.id] = account
@@ -943,16 +956,54 @@ def test_account_dto_preserves_safe_unicode_identity_fields(stack):
     assert response.json()["accounts"][0] == {
         "id": account.id,
         "provider": "codex",
-        "label": "개인 계정",
+        "label": "개인 계정 — 업무",
         "state": "logged_out",
         "identity": {
-            "display_name": "홍길동",
+            "display_name": "Jean–Luc Picard",
             "email": "person.name+codex@example.com",
-            "plan": "팀 플랜",
+            "plan": "Pro — Annual",
         },
         "created_at": "2026-08-21T00:00:00+00:00",
         "usage": None,
     }
+
+
+@pytest.mark.parametrize("route", ["create", "rename"])
+def test_account_mutations_reject_locator_shaped_required_labels(stack, route):
+    unsafe_label = "https://oauth.invalid/access-token"
+    if route == "create":
+        response = stack.client.request(
+            "POST",
+            "/api/accounts",
+            json_body={"provider": "codex", "label": unsafe_label},
+        )
+    else:
+        account = _account()
+        stack.accounts.accounts[account.id] = account
+        response = stack.client.request(
+            "PATCH",
+            f"/api/accounts/{account.id}",
+            json_body={"label": unsafe_label},
+        )
+
+    assert response.status == 400
+    assert response.json() == {
+        "error": {
+            "code": "invalid_request",
+            "message": "The request body or route identifier is invalid.",
+        }
+    }
+    assert stack.usage.calls == []
+
+
+def test_account_list_rejects_locator_shaped_required_label_without_echo(stack):
+    unsafe_label = "https://oauth.invalid/access-token"
+    account = _account(label=unsafe_label)
+    stack.accounts.accounts[account.id] = account
+
+    response = stack.client.request("GET", "/api/accounts")
+
+    _assert_fixed_internal_error(response, unsafe_label)
 
 
 def test_account_dto_redacts_email_with_noncanonical_local_part(stack):
@@ -1444,6 +1495,18 @@ def test_account_job_results_must_match_the_managed_account(
         "~/Library/Application Support/Codex/auth.json",
         "localhost:1455/callback?code=oauth-secret",
         "https://oauth.invalid/access-token",
+        "127.0.0.2",
+        "127.255.255.254",
+        "127.1",
+        "0x7f000001",
+        "::1",
+        "[::1]",
+        "LOCALHOST.",
+        "profile.localhost",
+        "oauth.invalid:443",
+        "?code=oauth-secret",
+        "profiles/codex",
+        "https%3A%2F%2Foauth.invalid%2Faccess-token",
     ],
 )
 def test_account_job_redacts_unsafe_optional_identity_fields(
@@ -1492,6 +1555,96 @@ def test_account_job_redacts_unsafe_optional_identity_fields(
         "plan": "Team",
     }
     assert display_name.encode() not in response.body
+
+
+def test_account_job_preserves_safe_unicode_punctuation(stack, monkeypatch):
+    account = _account()
+    stack.accounts.accounts[account.id] = account
+    accepted = stack.client.request(
+        "POST",
+        f"/api/accounts/{account.id}/login",
+        json_body={"provider": "codex"},
+    )
+    job_id = accepted.json()["job_id"]
+    assert _wait_for_job(stack, job_id).state == "succeeded"
+    retained = stack.accounts.accounts[account.id]
+    view = JobView(
+        id=job_id,
+        kind="account_login",
+        state="succeeded",
+        account_id=retained.id,
+        progress={"state": "done"},
+        result={
+            "account": {
+                "id": retained.id,
+                "provider": retained.provider,
+                "label": "Work — Personal",
+                "state": retained.state,
+                "identity": {
+                    "display_name": "Jean–Luc Picard",
+                    "email": "person@example.com",
+                    "plan": "Pro — Annual",
+                },
+                "created_at": retained.created_at,
+                "usage": None,
+            }
+        },
+        error_code=None,
+    )
+
+    response = _poll_injected_job(stack, monkeypatch, view)
+
+    assert response.status == 200
+    retained_account = response.json()["job"]["result"]["account"]
+    assert retained_account["label"] == "Work — Personal"
+    assert retained_account["identity"] == {
+        "display_name": "Jean–Luc Picard",
+        "email": "person@example.com",
+        "plan": "Pro — Annual",
+    }
+
+
+def test_account_job_rejects_locator_shaped_required_label_without_echo(
+    stack, monkeypatch
+):
+    unsafe_label = "https://oauth.invalid/access-token"
+    account = _account()
+    stack.accounts.accounts[account.id] = account
+    accepted = stack.client.request(
+        "POST",
+        f"/api/accounts/{account.id}/login",
+        json_body={"provider": "codex"},
+    )
+    job_id = accepted.json()["job_id"]
+    assert _wait_for_job(stack, job_id).state == "succeeded"
+    retained = stack.accounts.accounts[account.id]
+    view = JobView(
+        id=job_id,
+        kind="account_login",
+        state="succeeded",
+        account_id=retained.id,
+        progress={"state": "done"},
+        result={
+            "account": {
+                "id": retained.id,
+                "provider": retained.provider,
+                "label": unsafe_label,
+                "state": retained.state,
+                "identity": {
+                    "display_name": "Safe Name",
+                    "email": "person@example.com",
+                    "plan": "Team",
+                },
+                "created_at": retained.created_at,
+                "usage": None,
+            }
+        },
+        error_code=None,
+    )
+
+    response = _poll_injected_job(stack, monkeypatch, view)
+
+    _assert_fixed_internal_error(response, unsafe_label)
 
 
 @pytest.mark.parametrize(
@@ -2234,9 +2387,15 @@ def test_folder_selection_reconciles_new_state_after_ambiguous_app_state_fsync(
     old_digest = _issue_sync_digest(durable_stack)
     sentinel = "APP_STATE_DIRECTORY_FSYNC_SENTINEL"
     real_fsync = private_fs_module.os.fsync
+    state_directory = durable_stack.paths.root.stat()
 
     def fail_directory_fsync(descriptor: int) -> None:
-        if stat.S_ISDIR(private_fs_module.os.fstat(descriptor).st_mode):
+        metadata = private_fs_module.os.fstat(descriptor)
+        if (
+            stat.S_ISDIR(metadata.st_mode)
+            and (metadata.st_dev, metadata.st_ino)
+            == (state_directory.st_dev, state_directory.st_ino)
+        ):
             raise OSError(sentinel)
         real_fsync(descriptor)
 
@@ -2391,6 +2550,76 @@ def test_folder_selection_initializes_config_before_persisting_backend_path(stac
     assert (selected / "dotsync.toml").is_file()
 
 
+@pytest.mark.parametrize("failure_kind", ["file", "directory"])
+def test_folder_selection_cleans_up_failed_anchored_config_initialization(
+    stack, tmp_path, monkeypatch, failure_kind
+):
+    selected = tmp_path / f"failed-{failure_kind}-initialization"
+    selected.mkdir()
+    stack.picker.selected = selected
+    real_fsync = config_module.os.fsync
+
+    def fail_selected_fsync(descriptor: int) -> None:
+        is_directory = stat.S_ISDIR(config_module.os.fstat(descriptor).st_mode)
+        if (failure_kind == "directory") == is_directory:
+            raise OSError(f"{failure_kind} fsync failed")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(config_module.os, "fsync", fail_selected_fsync)
+
+    response = stack.client.request(
+        "POST", "/api/settings/sync-folder/select"
+    )
+
+    assert response.status == 422
+    assert response.json()["error"]["code"] == "invalid_sync_folder"
+    assert not (selected / "dotsync.toml").exists()
+    assert stack.initialized == []
+    assert stack.state.state == AppState()
+
+
+def test_folder_selection_cleanup_keeps_a_replaced_config_entry(
+    stack, tmp_path, monkeypatch
+):
+    selected = tmp_path / "replaced-config-during-cleanup"
+    selected.mkdir()
+    config_path = selected / "dotsync.toml"
+    displaced = selected / "created-config"
+    replacement = "CONCURRENT_REPLACEMENT\n"
+    stack.picker.selected = selected
+    real_fsync = config_module.os.fsync
+    replaced = False
+
+    def replace_config_before_fsync_failure(descriptor: int) -> None:
+        nonlocal replaced
+        if (
+            not replaced
+            and stat.S_ISREG(config_module.os.fstat(descriptor).st_mode)
+        ):
+            replaced = True
+            config_path.rename(displaced)
+            config_path.write_text(replacement)
+            raise OSError("file fsync failed")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(
+        config_module.os,
+        "fsync",
+        replace_config_before_fsync_failure,
+    )
+
+    response = stack.client.request(
+        "POST", "/api/settings/sync-folder/select"
+    )
+
+    assert response.status == 422
+    assert response.json()["error"]["code"] == "invalid_sync_folder"
+    assert config_path.read_text() == replacement
+    assert displaced.is_file()
+    assert stack.initialized == []
+    assert stack.state.state == AppState()
+
+
 def test_folder_selection_rejects_a_symlink_in_any_ancestor(stack, tmp_path):
     real_parent = tmp_path / "real-parent"
     selected = real_parent / "selected"
@@ -2460,6 +2689,43 @@ def test_folder_selection_rejects_directory_identity_replacement(stack, tmp_path
     assert response.json()["error"]["code"] == "invalid_sync_folder"
     assert stack.state.state == AppState()
     assert stack.sync.config.dir != selected
+
+
+def test_folder_selection_never_initializes_through_replaced_picker_path(
+    stack, tmp_path
+):
+    selected = tmp_path / "replace-before-initialization"
+    displaced = tmp_path / "validated-selection"
+    outside = tmp_path / "outside-sentinel"
+    selected.mkdir()
+    outside.mkdir()
+    sentinel = outside / "keep.txt"
+    sentinel.write_text("OUTSIDE_SENTINEL\n")
+    initializer_entered = threading.Event()
+    release_initializer = threading.Event()
+    stack.initializer.gates[selected] = (
+        initializer_entered,
+        release_initializer,
+    )
+    stack.picker.selected = selected
+    pending = _start_request(
+        lambda: stack.client.request(
+            "POST", "/api/settings/sync-folder/select"
+        )
+    )
+    assert initializer_entered.wait(timeout=1.0)
+
+    selected.rename(displaced)
+    selected.symlink_to(outside, target_is_directory=True)
+    release_initializer.set()
+    response = pending.finish()
+
+    assert response.status == 422
+    assert response.json()["error"]["code"] == "invalid_sync_folder"
+    assert sentinel.read_text() == "OUTSIDE_SENTINEL\n"
+    assert sorted(path.name for path in outside.iterdir()) == ["keep.txt"]
+    assert not (outside / "dotsync.toml").exists()
+    assert stack.state.state == AppState()
 
 
 def test_reveal_accepts_no_path_and_uses_only_app_paths_root(stack):

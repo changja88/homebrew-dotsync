@@ -1,6 +1,9 @@
+import os
 import stat
+import threading
 
 import pytest
+import dotsync.config as config_module
 from dotsync.config import (
     Config,
     ConfigError,
@@ -328,6 +331,103 @@ def test_save_preserves_existing_config_permission_mode(tmp_path):
     save_config(Config(dir=folder, apps=["ghostty"]))
 
     assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
+
+
+def test_save_preserves_latest_mode_changed_after_temporary_write(
+    monkeypatch, tmp_path
+):
+    folder = tmp_path / "concurrent-mode-change"
+    folder.mkdir()
+    config_path = folder / "dotsync.toml"
+    config_path.write_text('apps = ["zsh"]\n')
+    config_path.chmod(0o600)
+    temporary_write_fsynced = threading.Event()
+    release_save = threading.Event()
+    real_fsync = config_module.os.fsync
+
+    def pause_after_temporary_write(descriptor: int) -> None:
+        real_fsync(descriptor)
+        if (
+            stat.S_ISREG(config_module.os.fstat(descriptor).st_mode)
+            and not temporary_write_fsynced.is_set()
+        ):
+            temporary_write_fsynced.set()
+            assert release_save.wait(timeout=2.0)
+
+    monkeypatch.setattr(config_module.os, "fsync", pause_after_temporary_write)
+    errors: list[BaseException] = []
+
+    def save() -> None:
+        try:
+            save_config(Config(dir=folder, apps=["ghostty"]))
+        except BaseException as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=save)
+    thread.start()
+    assert temporary_write_fsynced.wait(timeout=1.0)
+    config_path.chmod(0o640)
+    release_save.set()
+    thread.join(timeout=2.0)
+
+    assert not thread.is_alive()
+    assert errors == []
+    assert stat.S_IMODE(config_path.stat().st_mode) == 0o640
+
+
+def test_save_applies_existing_set_id_mode_after_writing(monkeypatch, tmp_path):
+    folder = tmp_path / "set-id-config"
+    folder.mkdir()
+    config_path = folder / "dotsync.toml"
+    config_path.write_text('apps = ["zsh"]\n')
+    config_path.chmod(0o755)
+    target_identity = (config_path.stat().st_dev, config_path.stat().st_ino)
+    real_fstat = config_module.os.fstat
+    real_fchmod = config_module.os.fchmod
+    real_write = config_module.os.write
+    writes_completed = False
+    applied_modes: list[int] = []
+
+    def report_set_id_target_mode(descriptor: int):
+        metadata = real_fstat(descriptor)
+        if (metadata.st_dev, metadata.st_ino) != target_identity:
+            return metadata
+        values = list(metadata)
+        values[stat.ST_MODE] |= stat.S_ISUID
+        return os.stat_result(values)
+
+    def record_write(descriptor: int, content: bytes) -> int:
+        nonlocal writes_completed
+        written = real_write(descriptor, content)
+        writes_completed = True
+        return written
+
+    def apply_representable_mode(descriptor: int, mode: int) -> None:
+        assert writes_completed
+        applied_modes.append(mode)
+        real_fchmod(descriptor, mode & ~stat.S_ISUID)
+
+    monkeypatch.setattr(config_module.os, "fstat", report_set_id_target_mode)
+    monkeypatch.setattr(config_module.os, "write", record_write)
+    monkeypatch.setattr(config_module.os, "fchmod", apply_representable_mode)
+
+    save_config(Config(dir=folder, apps=["ghostty"]))
+
+    assert applied_modes == [0o4755]
+    assert stat.S_IMODE(config_path.stat().st_mode) == 0o755
+    assert 'apps = ["ghostty"]' in config_path.read_text()
+
+
+def test_save_new_config_uses_requested_mode_filtered_by_umask(tmp_path):
+    folder = tmp_path / "new-config-mode"
+    folder.mkdir()
+    previous_umask = os.umask(0o027)
+    try:
+        save_config(Config(dir=folder, apps=["zsh"]))
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE((folder / "dotsync.toml").stat().st_mode) == 0o640
 
 
 def test_save_and_load_roundtrip_through_sync_directory_symlink(
