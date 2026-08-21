@@ -241,6 +241,55 @@ def test_serialized_plan_uses_safe_scopes_without_local_path_disclosure(tmp_path
     assert "../" not in serialized
 
 
+def test_serialized_plan_omits_arbitrary_details_without_mutating_cli_plan(tmp_path):
+    sync_dir = tmp_path / "configs"
+    sync_dir.mkdir()
+    details = (
+        "/Users/leaked-user/private\n"
+        "../escape ../../vault\n"
+        "raw-link-target=/Volumes/private-target\n"
+        "TOP-SECRET complete file contents\n"
+        "control:\x00\tend"
+    )
+    plan = AppPlan(
+        "zsh",
+        "from",
+        [
+            Change(
+                "settings.json",
+                "unknown",
+                sync_dir / "source.json",
+                sync_dir / "zsh" / "settings.json",
+                details,
+            )
+        ],
+    )
+
+    data = serialize_sync_plan(
+        direction="backup",
+        apps=("zsh",),
+        plans=(plan,),
+        sync_dir=sync_dir,
+        config_revision="a" * 64,
+    )
+    serialized = json.dumps(data, ensure_ascii=False, sort_keys=True)
+    serialized_change = data["plans"][0]["changes"][0]
+
+    assert "details" not in serialized_change
+    for private_value in (
+        "/Users/leaked-user/private",
+        "leaked-user",
+        "../escape",
+        "../../vault",
+        "/Volumes/private-target",
+        "TOP-SECRET",
+        "complete file contents",
+        "control:",
+    ):
+        assert private_value not in serialized
+    assert plan.changes[0].details == details
+
+
 def test_execute_rejects_retargeted_symlink_before_apply_mutation(tmp_path):
     sync_dir = tmp_path / "configs"
     sync_dir.mkdir()

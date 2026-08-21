@@ -53,11 +53,6 @@ class Change:
                 relative_to=base,
                 manifest=self.dest_manifest,
             ),
-            "details": _safe_details(
-                self.details,
-                paths=(self.source, self.dest),
-                sync_root=base,
-            ),
             "file_changes": list(self.file_changes),
             "diffable": self.diffable,
         }
@@ -122,26 +117,6 @@ def _path_reference(path: Path, *, sync_root: Path) -> dict[str, str]:
         return {"scope": "local", "id": local_identifier}
 
     return {"scope": "external", "id": path_fingerprint(path)}
-
-
-def _safe_details(
-    details: str,
-    *,
-    paths: tuple[Path | None, ...],
-    sync_root: Path,
-) -> str:
-    """Replace known absolute plan paths while preserving human context."""
-    replacements: dict[str, str] = {}
-    for path in (*paths, sync_root, Path.home()):
-        if path is None:
-            continue
-        absolute = path.absolute()
-        reference = _path_reference(absolute, sync_root=sync_root)
-        replacements[str(absolute)] = f"<{reference['scope']}:{reference['id']}>"
-    safe = details
-    for raw in sorted(replacements, key=len, reverse=True):
-        safe = safe.replace(raw, replacements[raw])
-    return safe
 
 
 def _path_snapshot(
