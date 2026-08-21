@@ -29,11 +29,29 @@ deletes or replaces that entry; remove a previous generated app yourself before
 building again. A clean build assembles in a private staging directory, removes
 that owned staging directory on ordinary failure or SIGINT, SIGTERM, and SIGHUP,
 and publishes the verified app with one no-replace rename. Package sources and
-the plist template are copied into that pinned stage before build tools run, so
-later checkout-path changes cannot redirect the build. If another actor replaces
-a just-created build or staging name before identity adoption, the script fails
-and deliberately leaves the unowned replacement untouched rather than deleting
-it.
+the plist template are manifested before copying, copied through pinned
+descriptors, and compared with both a second source manifest and the private
+snapshot. The complete package and plist snapshot is revalidated immediately
+before and after every Swift build and `--show-bin-path` call, so source changes
+during copying and tool-side input mutations fail before another architecture
+runs.
+
+New build and staging directories begin under 128-bit random private names. The
+first filesystem observation after `mkdir` is a no-follow open, followed by an
+empty-directory, link, mode, device, binding, and creation-time proof. A failed
+proof means no ownership was established: the script does not chmod or delete
+that name. As with any same-user filesystem protocol, a peer that learns the
+random name and substitutes an indistinguishable empty directory inside that
+small create/open interval cannot be identified perfectly from filesystem
+metadata alone; the random name and fail-closed pristine proof narrow that
+unavoidable local boundary.
+
+Every child build tool runs in its own process group. The first SIGINT, SIGTERM,
+or SIGHUP is retained as the final `128 + signal` status, forwarded to the full
+group, and escalated when descendants do not exit. Later signals cannot raise
+through cleanup. A signal during staging cleanup or immediately after the
+no-replace publication removes the exact held app and leaves neither staging nor
+final output behind.
 
 The public Cask remains blocked until a real release archive passes Developer ID
 signing, notarization, Gatekeeper, and checksum verification. The eventual Cask

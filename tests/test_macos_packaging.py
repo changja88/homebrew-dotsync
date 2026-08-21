@@ -86,6 +86,12 @@ if [[ -n "${DOTSYNC_TEST_REPLACE_CHECKOUT_INPUTS:-}" && ! -e "$DOTSYNC_TEST_INPU
   : > "$DOTSYNC_TEST_INPUTS_REPLACED_MARKER"
 fi
 if [[ -n "${DOTSYNC_TEST_HOLD_SWIFT:-}" ]]; then
+  if [[ -n "${DOTSYNC_TEST_SWIFT_PID_FILE:-}" ]]; then
+    printf '%s\n' "$$" > "$DOTSYNC_TEST_SWIFT_PID_FILE"
+  fi
+  if [[ -n "${DOTSYNC_TEST_GRANDCHILD_PID_FILE:-}" ]]; then
+    /bin/sh -c 'trap "" INT TERM HUP; printf "%s\n" "$$" > "$1"; while true; do sleep 0.05; done' sh "$DOTSYNC_TEST_GRANDCHILD_PID_FILE" &
+  fi
   : > "$DOTSYNC_TEST_SWIFT_HELD_MARKER"
   while [[ ! -e "$DOTSYNC_TEST_RELEASE_SWIFT_MARKER" ]]; do
     sleep 0.05
@@ -95,6 +101,10 @@ fi
 [[ "$1" == "build" ]] || exit 80
 [[ "$2" == "--package-path" && "$3" == "package" ]] || exit 80
 grep -qx 'snapshot-package' "$3/Package.swift" || exit 80
+if [[ -n "${DOTSYNC_TEST_MUTATE_PACKAGE_SNAPSHOT:-}" && ! -e "$DOTSYNC_TEST_PACKAGE_MUTATED_MARKER" ]]; then
+  printf '%s\n' 'unexpected source' > "$3/Injected.swift"
+  : > "$DOTSYNC_TEST_PACKAGE_MUTATED_MARKER"
+fi
 [[ "$4" == "--configuration" && "$5" == "release" ]] || exit 80
 [[ "$6" == "--triple" ]] || exit 80
 triple="$7"
@@ -259,6 +269,58 @@ def _load_support_module():
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _wait_for_path(path: Path, process: subprocess.Popen[str], *, label: str) -> None:
+    deadline = time.monotonic() + 10
+    while not path.exists():
+        if process.poll() is not None:
+            stdout, stderr = process.communicate()
+            pytest.fail(f"build exited before {label}: {stdout}{stderr}")
+        if time.monotonic() >= deadline:
+            process.kill()
+            process.wait()
+            pytest.fail(f"timed out waiting for {label}")
+        time.sleep(0.01)
+
+
+def _assert_process_gone(process_id: int) -> None:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.kill(process_id, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.01)
+    pytest.fail(f"process {process_id} survived build termination")
+
+
+def _write_support_runner(
+    path: Path,
+    *,
+    injection: str,
+) -> None:
+    path.write_text(
+        """
+import importlib.util
+import os
+from pathlib import Path
+import signal
+import sys
+
+project = Path(sys.argv[1])
+support_path = Path(sys.argv[2])
+spec = importlib.util.spec_from_file_location("packaging_support_runner", support_path)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+
+INJECTION
+
+raise SystemExit(module.main(["assemble", str(project)]))
+""".replace("INJECTION", injection),
+        encoding="utf-8",
+    )
 
 
 def test_info_plist_template_defines_menu_bar_only_macos13_app():
@@ -479,6 +541,83 @@ def test_checkout_package_and_plist_replacement_cannot_change_snapshotted_build(
         (project / "build" / "DotSync.app" / "Contents" / "Info.plist").read_bytes()
     )
     assert plist["CFBundleShortVersionString"] == "0.3.0"
+
+
+def test_source_addition_during_snapshot_copy_is_rejected(tmp_path, monkeypatch):
+    """Removing the post-copy source manifest comparison must fail this test."""
+    support = _load_support_module()
+    project, _ = _fake_build_project(tmp_path)
+    repo_fd = os.open(project, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    build_fd = -1
+    added = False
+    real_copy = support._copy_snapshot_file
+
+    def copy_then_add_source(*args, **kwargs):
+        nonlocal added
+        result = real_copy(*args, **kwargs)
+        if not added and args[2] == "Package.swift":
+            added = True
+            (project / "macos" / "DotSyncApp" / "Added.swift").write_text(
+                "added during copy\n",
+                encoding="utf-8",
+            )
+        return result
+
+    try:
+        build_fd, build_identity = support._prepare_build_root(
+            repo_fd,
+            os.fstat(repo_fd).st_dev,
+        )
+        with support._owned_staging_directory(
+            build_fd,
+            build_identity.device,
+        ) as stage:
+            with monkeypatch.context() as patch_context:
+                patch_context.setattr(support, "_copy_snapshot_file", copy_then_add_source)
+                with pytest.raises(
+                    support.PackagingError,
+                    match="source.*changed|changed.*source",
+                ):
+                    support._snapshot_build_inputs(
+                        repo_fd,
+                        os.fstat(repo_fd).st_dev,
+                        stage,
+                    )
+    finally:
+        if build_fd >= 0:
+            os.close(build_fd)
+        os.close(repo_fd)
+
+
+@pytest.mark.no_subprocess_block
+def test_first_swift_mutation_stops_before_show_bin_or_second_architecture(tmp_path):
+    """Removing per-Swift-call snapshot validation must fail this test."""
+    project, env = _fake_build_project(tmp_path)
+    env["DOTSYNC_TEST_MUTATE_PACKAGE_SNAPSHOT"] = "1"
+    env["DOTSYNC_TEST_PACKAGE_MUTATED_MARKER"] = str(tmp_path / "package-mutated")
+
+    result = _run_fake_build(project, env)
+
+    assert result.returncode != 0
+    assert _logged_calls(env) == [
+        ["xcrun", "--sdk", "macosx", "--show-sdk-path"],
+        [
+            "swift",
+            "build",
+            "--package-path",
+            "package",
+            "--configuration",
+            "release",
+            "--triple",
+            "arm64-apple-macosx13.0",
+            "--sdk",
+            "/fake/MacOSX.sdk",
+            "--scratch-path",
+            "swift-arm64",
+        ],
+    ]
+    assert not (project / "build" / "DotSync.app").exists()
+    _assert_no_private_staging(project)
 
 
 @pytest.mark.no_subprocess_block
@@ -714,6 +853,118 @@ def test_sigterm_during_child_tool_unwinds_stage_cleanup_with_signal_status(tmp_
     stdout, stderr = process.communicate(timeout=10)
 
     assert returncode == 128 + signal.SIGTERM, stdout + stderr
+    assert not (project / "build" / "DotSync.app").exists()
+    _assert_no_private_staging(project)
+
+
+@pytest.mark.no_subprocess_block
+def test_repeated_signals_terminate_the_tool_process_group_and_keep_first_status(
+    tmp_path,
+):
+    """Dropping process-group escalation or first-signal retention must fail."""
+    project, env = _fake_build_project(tmp_path)
+    held_marker = tmp_path / "swift-held"
+    release_marker = tmp_path / "release-swift"
+    swift_pid_file = tmp_path / "swift.pid"
+    grandchild_pid_file = tmp_path / "grandchild.pid"
+    env.update(
+        {
+            "DOTSYNC_TEST_HOLD_SWIFT": "1",
+            "DOTSYNC_TEST_SWIFT_HELD_MARKER": str(held_marker),
+            "DOTSYNC_TEST_RELEASE_SWIFT_MARKER": str(release_marker),
+            "DOTSYNC_TEST_SWIFT_PID_FILE": str(swift_pid_file),
+            "DOTSYNC_TEST_GRANDCHILD_PID_FILE": str(grandchild_pid_file),
+        }
+    )
+    process = subprocess.Popen(
+        ["bash", "scripts/build_macos_app.sh"],
+        cwd=project,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    _wait_for_path(held_marker, process, label="Swift hold marker")
+    _wait_for_path(swift_pid_file, process, label="Swift pid")
+    _wait_for_path(grandchild_pid_file, process, label="Swift grandchild pid")
+    swift_pid = int(swift_pid_file.read_text(encoding="utf-8"))
+    grandchild_pid = int(grandchild_pid_file.read_text(encoding="utf-8"))
+
+    process.send_signal(signal.SIGTERM)
+    _assert_process_gone(swift_pid)
+    if process.poll() is None:
+        process.send_signal(signal.SIGHUP)
+    returncode = process.wait(timeout=10)
+    stdout, stderr = process.communicate(timeout=10)
+
+    assert returncode == 128 + signal.SIGTERM, stdout + stderr
+    _assert_process_gone(swift_pid)
+    _assert_process_gone(grandchild_pid)
+    assert not (project / "build" / "DotSync.app").exists()
+    _assert_no_private_staging(project)
+
+
+@pytest.mark.no_subprocess_block
+def test_repeated_signals_during_cleanup_cannot_interrupt_cleanup(tmp_path):
+    """Making cleanup signal-reentrant must fail this real-process test."""
+    project, env = _fake_build_project(tmp_path)
+    runner = tmp_path / "cleanup-signal-runner.py"
+    _write_support_runner(
+        runner,
+        injection="""
+real_cleanup = module._cleanup_owned_stage
+sent = False
+def signal_then_cleanup(*args, **kwargs):
+    global sent
+    if not sent:
+        sent = True
+        os.kill(os.getpid(), signal.SIGTERM)
+        os.kill(os.getpid(), signal.SIGHUP)
+    return real_cleanup(*args, **kwargs)
+module._cleanup_owned_stage = signal_then_cleanup
+""",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(runner), str(project), str(SUPPORT_SCRIPT)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert result.returncode == 128 + signal.SIGTERM, result.stdout + result.stderr
+    assert not (project / "build" / "DotSync.app").exists()
+    _assert_no_private_staging(project)
+
+
+@pytest.mark.no_subprocess_block
+def test_signal_immediately_after_publish_rolls_back_exact_final(tmp_path):
+    """Removing post-rename rollback must fail this real-process test."""
+    project, env = _fake_build_project(tmp_path)
+    runner = tmp_path / "post-rename-signal-runner.py"
+    _write_support_runner(
+        runner,
+        injection="""
+real_rename = module._rename_no_replace
+def rename_then_signal(source_fd, source_name, destination_fd, destination_name):
+    real_rename(source_fd, source_name, destination_fd, destination_name)
+    if source_name == module.FINAL_APP and destination_name == module.FINAL_APP:
+        os.kill(os.getpid(), signal.SIGTERM)
+        os.kill(os.getpid(), signal.SIGHUP)
+module._rename_no_replace = rename_then_signal
+""",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(runner), str(project), str(SUPPORT_SCRIPT)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert result.returncode == 128 + signal.SIGTERM, result.stdout + result.stderr
     assert not (project / "build" / "DotSync.app").exists()
     _assert_no_private_staging(project)
 
@@ -1109,7 +1360,7 @@ def test_post_publish_final_identity_and_mode_are_proven_before_success(
         os.close(repo_fd)
 
 
-def test_stage_open_failure_after_creation_still_removes_owned_stage(
+def test_stage_first_open_failure_preserves_the_unadopted_private_entry(
     tmp_path,
     monkeypatch,
 ):
@@ -1118,15 +1369,17 @@ def test_stage_open_failure_after_creation_still_removes_owned_stage(
     repo.mkdir()
     repo_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     build_fd = -1
-    real_open_directory = support._open_directory_at
+    real_open = support.os.open
     failed_once = False
+    failed_name = ""
 
-    def fail_first_stage_open(parent_fd, child_name, **kwargs):
-        nonlocal failed_once
-        if child_name.startswith(".dotsync-app-stage.") and not failed_once:
+    def fail_first_stage_open(path, flags, *args, **kwargs):
+        nonlocal failed_once, failed_name
+        if str(path).startswith(".dotsync-app-stage.") and not failed_once:
             failed_once = True
+            failed_name = str(path)
             raise OSError(errno.EIO, "injected stage open failure")
-        return real_open_directory(parent_fd, child_name, **kwargs)
+        return real_open(path, flags, *args, **kwargs)
 
     try:
         build_fd, build_identity = support._prepare_build_root(
@@ -1134,21 +1387,27 @@ def test_stage_open_failure_after_creation_still_removes_owned_stage(
             os.fstat(repo_fd).st_dev,
         )
         with monkeypatch.context() as patch_context:
-            patch_context.setattr(support, "_open_directory_at", fail_first_stage_open)
+            patch_context.setattr(support.os, "open", fail_first_stage_open)
             with pytest.raises(OSError, match="injected stage open failure"):
                 with support._owned_staging_directory(
                     build_fd,
                     build_identity.device,
                 ):
                     pytest.fail("stage setup unexpectedly completed")
-        assert not list((repo / "build").glob(".dotsync-app-stage.*"))
+        unadopted = repo / "build" / failed_name
+        assert unadopted.is_dir()
+        assert list(unadopted.iterdir()) == []
+        assert stat.S_IMODE(unadopted.stat().st_mode) == 0o700
     finally:
         if build_fd >= 0:
             os.close(build_fd)
         os.close(repo_fd)
 
 
-def test_stage_open_replacement_is_never_adopted_or_deleted(tmp_path, monkeypatch):
+def test_stage_binding_replacement_after_first_open_is_never_adopted_or_deleted(
+    tmp_path,
+    monkeypatch,
+):
     support = _load_support_module()
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -1156,25 +1415,26 @@ def test_stage_open_replacement_is_never_adopted_or_deleted(tmp_path, monkeypatc
     build_fd = -1
     original_stage_name = "original-created-stage"
     replacement_name = ""
-    real_open_directory = support._open_directory_at
+    real_stat = support.os.stat
     replaced = False
 
-    def replace_before_first_stage_open(parent_fd, child_name, **kwargs):
+    def replace_before_first_stage_stat(path, *args, **kwargs):
         nonlocal replaced, replacement_name
-        if child_name.startswith(".dotsync-app-stage.") and not replaced:
+        dir_fd = kwargs.get("dir_fd")
+        if str(path).startswith(".dotsync-app-stage.") and not replaced:
             replaced = True
-            replacement_name = child_name
+            replacement_name = str(path)
             os.rename(
-                child_name,
+                path,
                 original_stage_name,
-                src_dir_fd=parent_fd,
-                dst_dir_fd=parent_fd,
+                src_dir_fd=dir_fd,
+                dst_dir_fd=dir_fd,
             )
-            os.mkdir(child_name, mode=0o700, dir_fd=parent_fd)
+            os.mkdir(path, mode=0o700, dir_fd=dir_fd)
             replacement_fd = os.open(
-                child_name,
+                path,
                 os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                dir_fd=parent_fd,
+                dir_fd=dir_fd,
             )
             try:
                 marker_fd = os.open(
@@ -1186,7 +1446,7 @@ def test_stage_open_replacement_is_never_adopted_or_deleted(tmp_path, monkeypatc
                 os.close(marker_fd)
             finally:
                 os.close(replacement_fd)
-        return real_open_directory(parent_fd, child_name, **kwargs)
+        return real_stat(path, *args, **kwargs)
 
     try:
         build_fd, build_identity = support._prepare_build_root(
@@ -1195,9 +1455,9 @@ def test_stage_open_replacement_is_never_adopted_or_deleted(tmp_path, monkeypatc
         )
         with monkeypatch.context() as patch_context:
             patch_context.setattr(
-                support,
-                "_open_directory_at",
-                replace_before_first_stage_open,
+                support.os,
+                "stat",
+                replace_before_first_stage_stat,
             )
             with pytest.raises(support.PackagingError):
                 with support._owned_staging_directory(
@@ -1215,32 +1475,38 @@ def test_stage_open_replacement_is_never_adopted_or_deleted(tmp_path, monkeypatc
         shutil.rmtree(repo / "build", ignore_errors=True)
 
 
-def test_created_build_root_replacement_is_never_adopted_or_mutated(
+def test_stage_replacement_exactly_after_mkdir_is_never_adopted_or_deleted(
     tmp_path,
     monkeypatch,
 ):
+    """Moving the first open behind a named stat must fail this test."""
     support = _load_support_module()
     repo = tmp_path / "repo"
     repo.mkdir()
     repo_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    real_open_directory = support._open_directory_at
-    replaced = False
+    build_fd = -1
+    replacement_name = ""
+    original_name = "original-created-stage-at-mkdir"
+    real_mkdir = support.os.mkdir
+    injected = False
 
-    def replace_before_build_open(parent_fd, child_name, **kwargs):
-        nonlocal replaced
-        if child_name == support.BUILD_DIRECTORY and not replaced:
-            replaced = True
+    def replace_after_mkdir(path, mode=0o777, *, dir_fd=None):
+        nonlocal replacement_name, injected
+        real_mkdir(path, mode=mode, dir_fd=dir_fd)
+        if str(path).startswith(".dotsync-app-stage.") and not injected:
+            injected = True
+            replacement_name = str(path)
             os.rename(
-                child_name,
-                "original-created-build",
-                src_dir_fd=parent_fd,
-                dst_dir_fd=parent_fd,
+                path,
+                original_name,
+                src_dir_fd=dir_fd,
+                dst_dir_fd=dir_fd,
             )
-            os.mkdir(child_name, mode=0o711, dir_fd=parent_fd)
+            real_mkdir(path, mode=0o711, dir_fd=dir_fd)
             replacement_fd = os.open(
-                child_name,
+                path,
                 os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                dir_fd=parent_fd,
+                dir_fd=dir_fd,
             )
             try:
                 marker_fd = os.open(
@@ -1252,24 +1518,161 @@ def test_created_build_root_replacement_is_never_adopted_or_mutated(
                 os.close(marker_fd)
             finally:
                 os.close(replacement_fd)
-        return real_open_directory(parent_fd, child_name, **kwargs)
+
+    try:
+        build_fd, build_identity = support._prepare_build_root(
+            repo_fd,
+            os.fstat(repo_fd).st_dev,
+        )
+        with monkeypatch.context() as patch_context:
+            patch_context.setattr(support.os, "mkdir", replace_after_mkdir)
+            with pytest.raises(support.PackagingError):
+                with support._owned_staging_directory(
+                    build_fd,
+                    build_identity.device,
+                ):
+                    pytest.fail("replacement was adopted")
+        replacement = repo / "build" / replacement_name
+        assert (replacement / "replacement-marker").read_bytes() == b""
+        assert stat.S_IMODE(replacement.stat().st_mode) == 0o711
+        assert (repo / "build" / original_name).is_dir()
+    finally:
+        if build_fd >= 0:
+            os.close(build_fd)
+        os.close(repo_fd)
+        shutil.rmtree(repo / "build", ignore_errors=True)
+
+
+def test_created_build_root_replacement_is_never_adopted_or_mutated(
+    tmp_path,
+    monkeypatch,
+):
+    support = _load_support_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    repo_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    real_stat = support.os.stat
+    replaced = False
+    replacement_name = ""
+
+    def replace_before_build_stat(path, *args, **kwargs):
+        nonlocal replaced, replacement_name
+        path_text = str(path)
+        dir_fd = kwargs.get("dir_fd")
+        build_exists = False
+        if path_text == support.BUILD_DIRECTORY:
+            try:
+                real_stat(path, *args, **kwargs)
+                build_exists = True
+            except FileNotFoundError:
+                pass
+        should_replace = (
+            path_text.startswith(".dotsync-build.")
+            or (path_text == support.BUILD_DIRECTORY and build_exists)
+        )
+        if should_replace and not replaced:
+            replaced = True
+            replacement_name = path_text
+            os.rename(
+                path,
+                "original-created-build",
+                src_dir_fd=dir_fd,
+                dst_dir_fd=dir_fd,
+            )
+            os.mkdir(path, mode=0o711, dir_fd=dir_fd)
+            replacement_fd = os.open(
+                path,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=dir_fd,
+            )
+            try:
+                marker_fd = os.open(
+                    "replacement-marker",
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                    dir_fd=replacement_fd,
+                )
+                os.close(marker_fd)
+            finally:
+                os.close(replacement_fd)
+        return real_stat(path, *args, **kwargs)
 
     try:
         with monkeypatch.context() as patch_context:
             patch_context.setattr(
-                support,
-                "_open_directory_at",
-                replace_before_build_open,
+                support.os,
+                "stat",
+                replace_before_build_stat,
             )
             with pytest.raises(
                 support.PackagingError,
-                match="identity no longer matches",
+                match="binding changed|identity no longer matches",
             ):
                 support._prepare_build_root(repo_fd, os.fstat(repo_fd).st_dev)
-        replacement = repo / "build"
+        replacement = repo / replacement_name
         assert (replacement / "replacement-marker").is_file()
         assert stat.S_IMODE(replacement.stat().st_mode) == 0o711
         assert (repo / "original-created-build").is_dir()
+    finally:
+        os.close(repo_fd)
+
+
+def test_new_build_replacement_exactly_after_mkdir_is_never_adopted_or_deleted(
+    tmp_path,
+    monkeypatch,
+):
+    """Replacing immediate no-follow open with named stat must fail this test."""
+    support = _load_support_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    repo_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    replacement_name = ""
+    original_name = "original-created-build-at-mkdir"
+    real_mkdir = support.os.mkdir
+    injected = False
+
+    def replace_after_mkdir(path, mode=0o777, *, dir_fd=None):
+        nonlocal replacement_name, injected
+        real_mkdir(path, mode=mode, dir_fd=dir_fd)
+        path_text = str(path)
+        if (
+            path_text == support.BUILD_DIRECTORY
+            or path_text.startswith(".dotsync-build.")
+        ) and not injected:
+            injected = True
+            replacement_name = path_text
+            os.rename(
+                path,
+                original_name,
+                src_dir_fd=dir_fd,
+                dst_dir_fd=dir_fd,
+            )
+            real_mkdir(path, mode=0o711, dir_fd=dir_fd)
+            replacement_fd = os.open(
+                path,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=dir_fd,
+            )
+            try:
+                marker_fd = os.open(
+                    "replacement-marker",
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                    dir_fd=replacement_fd,
+                )
+                os.close(marker_fd)
+            finally:
+                os.close(replacement_fd)
+
+    try:
+        with monkeypatch.context() as patch_context:
+            patch_context.setattr(support.os, "mkdir", replace_after_mkdir)
+            with pytest.raises(support.PackagingError):
+                support._prepare_build_root(repo_fd, os.fstat(repo_fd).st_dev)
+        replacement = repo / replacement_name
+        assert (replacement / "replacement-marker").read_bytes() == b""
+        assert stat.S_IMODE(replacement.stat().st_mode) == 0o711
+        assert (repo / original_name).is_dir()
     finally:
         os.close(repo_fd)
 
