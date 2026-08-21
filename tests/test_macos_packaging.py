@@ -4,10 +4,13 @@ import errno
 import importlib.util
 import os
 import plistlib
+import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
+import time
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -44,6 +47,10 @@ def _fake_build_project(
     (project / "scripts").mkdir(parents=True)
     (project / "packaging").mkdir()
     (project / "macos" / "DotSyncApp").mkdir(parents=True)
+    (project / "macos" / "DotSyncApp" / "Package.swift").write_text(
+        "snapshot-package\n",
+        encoding="utf-8",
+    )
     shutil.copy2(BUILD_SCRIPT, project / "scripts" / BUILD_SCRIPT.name)
     shutil.copy2(SUPPORT_SCRIPT, project / "scripts" / SUPPORT_SCRIPT.name)
     shutil.copy2(PLIST_TEMPLATE, project / "packaging" / PLIST_TEMPLATE.name)
@@ -71,9 +78,23 @@ if [[ -n "${DOTSYNC_TEST_REPLACE_BUILD_ROOT:-}" && ! -e "$DOTSYNC_TEST_ROOT_REPL
   ln -s "$DOTSYNC_TEST_EXTERNAL_BUILD" "$DOTSYNC_TEST_PROJECT/build"
   : > "$DOTSYNC_TEST_ROOT_REPLACED_MARKER"
 fi
+if [[ -n "${DOTSYNC_TEST_REPLACE_CHECKOUT_INPUTS:-}" && ! -e "$DOTSYNC_TEST_INPUTS_REPLACED_MARKER" ]]; then
+  mv "$DOTSYNC_TEST_PROJECT/macos/DotSyncApp" "$DOTSYNC_TEST_PROJECT/original-DotSyncApp"
+  mkdir -p "$DOTSYNC_TEST_PROJECT/macos/DotSyncApp"
+  printf '%s\n' 'attacker-package' > "$DOTSYNC_TEST_PROJECT/macos/DotSyncApp/Package.swift"
+  printf '%s\n' 'invalid replacement plist' > "$DOTSYNC_TEST_PROJECT/packaging/DotSync-Info.plist.in"
+  : > "$DOTSYNC_TEST_INPUTS_REPLACED_MARKER"
+fi
+if [[ -n "${DOTSYNC_TEST_HOLD_SWIFT:-}" ]]; then
+  : > "$DOTSYNC_TEST_SWIFT_HELD_MARKER"
+  while [[ ! -e "$DOTSYNC_TEST_RELEASE_SWIFT_MARKER" ]]; do
+    sleep 0.05
+  done
+fi
 [[ "$#" == 11 || "$#" == 12 ]] || exit 80
 [[ "$1" == "build" ]] || exit 80
-[[ "$2" == "--package-path" && "$3" == "$DOTSYNC_TEST_PROJECT/macos/DotSyncApp" ]] || exit 80
+[[ "$2" == "--package-path" && "$3" == "package" ]] || exit 80
+grep -qx 'snapshot-package' "$3/Package.swift" || exit 80
 [[ "$4" == "--configuration" && "$5" == "release" ]] || exit 80
 [[ "$6" == "--triple" ]] || exit 80
 triple="$7"
@@ -118,12 +139,20 @@ if [[ "$1" == "-create" ]]; then
   [[ "$#" == 5 ]] || exit 80
   first="$2"
   second="$3"
-  [[ "$first" == */swift-arm64/fake-bin/DotSync ]] || exit 80
-  [[ "$second" == */swift-x86_64/fake-bin/DotSync ]] || exit 80
+  [[ "$first" =~ ^/dev/fd/[0-9]+$ ]] || exit 80
+  [[ "$second" =~ ^/dev/fd/[0-9]+$ ]] || exit 80
   [[ "$4" == "-output" ]] || exit 80
   output="$5"
   [[ "$output" == DotSync ]] || exit 80
   if [[ "${DOTSYNC_TEST_FAIL_TOOL:-}" == "lipo-create" ]]; then exit 91; fi
+  if [[ -n "${DOTSYNC_TEST_REBIND_SWIFT_BINARIES:-}" ]]; then
+    stages=("$DOTSYNC_TEST_PROJECT"/build/.dotsync-app-stage.*)
+    [[ "${#stages[@]}" == 1 && -d "${stages[0]}" ]] || exit 80
+    printf '%s' 'rebound-arm' > "${stages[0]}/swift-arm64/fake-bin/rebound"
+    mv "${stages[0]}/swift-arm64/fake-bin/rebound" "${stages[0]}/swift-arm64/fake-bin/DotSync"
+    printf '%s' 'rebound-x86' > "${stages[0]}/swift-x86_64/fake-bin/rebound"
+    mv "${stages[0]}/swift-x86_64/fake-bin/rebound" "${stages[0]}/swift-x86_64/fake-bin/DotSync"
+  fi
   {
     printf 'universal:'
     cat "$first"
@@ -271,7 +300,7 @@ def test_local_build_assembles_only_the_two_exact_macos13_architectures(tmp_path
     arm_args = [
         "build",
         "--package-path",
-        str(project / "macos" / "DotSyncApp"),
+        "package",
         "--configuration",
         "release",
         "--triple",
@@ -286,8 +315,9 @@ def test_local_build_assembles_only_the_two_exact_macos13_architectures(tmp_path
     x86_args[10] = "swift-x86_64"
     arm_binary_path = calls[5][2]
     x86_binary_path = calls[5][3]
-    assert arm_binary_path.endswith("/swift-arm64/fake-bin/DotSync")
-    assert x86_binary_path.endswith("/swift-x86_64/fake-bin/DotSync")
+    assert re.fullmatch(r"/dev/fd/[0-9]+", arm_binary_path)
+    assert re.fullmatch(r"/dev/fd/[0-9]+", x86_binary_path)
+    assert arm_binary_path != x86_binary_path
     assert calls == [
         ["xcrun", "--sdk", "macosx", "--show-sdk-path"],
         ["swift", *arm_args],
@@ -370,7 +400,7 @@ def test_local_build_rejects_symlinked_build_root_without_touching_target(tmp_pa
 
 
 @pytest.mark.no_subprocess_block
-def test_local_build_rejects_symlinked_scratch_child_without_touching_target(tmp_path):
+def test_stage_owned_scratch_ignores_legacy_symlink_without_touching_target(tmp_path):
     project, env = _fake_build_project(tmp_path)
     (project / "build").mkdir()
     external_scratch = tmp_path / "external-scratch"
@@ -384,7 +414,7 @@ def test_local_build_rejects_symlinked_scratch_child_without_touching_target(tmp
 
     result = _run_fake_build(project, env)
 
-    assert result.returncode != 0
+    assert result.returncode == 0, result.stdout + result.stderr
     assert sentinel.read_text(encoding="utf-8") == "keep"
 
 
@@ -426,6 +456,41 @@ def test_build_root_replacement_never_writes_or_deletes_external_target(tmp_path
     detached_build = project / "detached-build"
     assert not (detached_build / "DotSync.app").exists()
     assert not list(detached_build.glob(".dotsync-app-stage.*"))
+
+
+@pytest.mark.no_subprocess_block
+def test_checkout_package_and_plist_replacement_cannot_change_snapshotted_build(
+    tmp_path,
+):
+    project, env = _fake_build_project(tmp_path)
+    env["DOTSYNC_TEST_REPLACE_CHECKOUT_INPUTS"] = "1"
+    env["DOTSYNC_TEST_INPUTS_REPLACED_MARKER"] = str(tmp_path / "inputs-replaced")
+
+    result = _run_fake_build(project, env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (
+        project / "macos" / "DotSyncApp" / "Package.swift"
+    ).read_text(encoding="utf-8") == "attacker-package\n"
+    assert (
+        project / "original-DotSyncApp" / "Package.swift"
+    ).read_text(encoding="utf-8") == "snapshot-package\n"
+    plist = plistlib.loads(
+        (project / "build" / "DotSync.app" / "Contents" / "Info.plist").read_bytes()
+    )
+    assert plist["CFBundleShortVersionString"] == "0.3.0"
+
+
+@pytest.mark.no_subprocess_block
+def test_lipo_consumes_opened_binary_fds_after_scratch_names_are_rebound(tmp_path):
+    project, env = _fake_build_project(tmp_path)
+    env["DOTSYNC_TEST_REBIND_SWIFT_BINARIES"] = "1"
+
+    result = _run_fake_build(project, env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    executable = project / "build" / "DotSync.app" / "Contents" / "MacOS" / "DotSync"
+    assert executable.read_bytes() == b"universal:safe-binary:safe-binary:end"
 
 
 @pytest.mark.no_subprocess_block
@@ -515,6 +580,8 @@ def test_existing_final_app_is_refused_before_tools_and_preserved_byte_for_byte(
     project, env = _fake_build_project(tmp_path)
     previous_app = project / "build" / "DotSync.app"
     previous_app.mkdir(parents=True)
+    build_root = previous_app.parent
+    build_root.chmod(0o711)
     for index in range(100):
         existing_file = previous_app / f"existing-{index:03d}.txt"
         existing_file.write_text(f"keep-{index}", encoding="utf-8")
@@ -523,6 +590,8 @@ def test_existing_final_app_is_refused_before_tools_and_preserved_byte_for_byte(
         path.name: (path.read_bytes(), stat.S_IMODE(path.stat().st_mode), path.stat().st_ino)
         for path in previous_app.iterdir()
     }
+    build_before = os.lstat(build_root)
+    final_before = os.lstat(previous_app)
 
     result = _run_fake_build(project, env)
 
@@ -532,6 +601,30 @@ def test_existing_final_app_is_refused_before_tools_and_preserved_byte_for_byte(
         for path in previous_app.iterdir()
     }
     assert after == before
+    build_after = os.lstat(build_root)
+    final_after = os.lstat(previous_app)
+    assert (
+        build_after.st_dev,
+        build_after.st_ino,
+        build_after.st_mode,
+        build_after.st_mtime_ns,
+    ) == (
+        build_before.st_dev,
+        build_before.st_ino,
+        build_before.st_mode,
+        build_before.st_mtime_ns,
+    )
+    assert (
+        final_after.st_dev,
+        final_after.st_ino,
+        final_after.st_mode,
+        final_after.st_mtime_ns,
+    ) == (
+        final_before.st_dev,
+        final_before.st_ino,
+        final_before.st_mode,
+        final_before.st_mtime_ns,
+    )
     call_log = Path(env["DOTSYNC_TEST_CALL_LOG"])
     assert not call_log.exists() or call_log.read_bytes() == b""
     _assert_no_private_staging(project)
@@ -586,6 +679,62 @@ def test_tool_failure_leaves_no_new_final_or_private_staging(tmp_path, tool):
     assert result.returncode != 0
     assert not (project / "build" / "DotSync.app").exists()
     _assert_no_private_staging(project)
+
+
+@pytest.mark.no_subprocess_block
+def test_sigterm_during_child_tool_unwinds_stage_cleanup_with_signal_status(tmp_path):
+    project, env = _fake_build_project(tmp_path)
+    held_marker = tmp_path / "swift-held"
+    release_marker = tmp_path / "release-swift"
+    env["DOTSYNC_TEST_HOLD_SWIFT"] = "1"
+    env["DOTSYNC_TEST_SWIFT_HELD_MARKER"] = str(held_marker)
+    env["DOTSYNC_TEST_RELEASE_SWIFT_MARKER"] = str(release_marker)
+    process = subprocess.Popen(
+        ["bash", "scripts/build_macos_app.sh"],
+        cwd=project,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    deadline = time.monotonic() + 10
+    while not held_marker.exists():
+        if process.poll() is not None:
+            stdout, stderr = process.communicate()
+            pytest.fail(f"build exited before hold marker: {stdout}{stderr}")
+        if time.monotonic() >= deadline:
+            process.kill()
+            process.wait()
+            pytest.fail("fake Swift did not reach its hold point")
+        time.sleep(0.01)
+
+    process.send_signal(signal.SIGTERM)
+    returncode = process.wait(timeout=10)
+    release_marker.touch()
+    stdout, stderr = process.communicate(timeout=10)
+
+    assert returncode == 128 + signal.SIGTERM, stdout + stderr
+    assert not (project / "build" / "DotSync.app").exists()
+    _assert_no_private_staging(project)
+
+
+def test_temporary_signal_handlers_restore_all_prior_handlers_after_failure():
+    support = _load_support_module()
+    previous = {
+        signum: signal.getsignal(signum)
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    }
+
+    with pytest.raises(RuntimeError, match="injected body failure"):
+        with support._temporary_signal_handlers():
+            for signum, prior_handler in previous.items():
+                assert signal.getsignal(signum) is not prior_handler
+            raise RuntimeError("injected body failure")
+
+    assert {
+        signum: signal.getsignal(signum)
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    } == previous
 
 
 @pytest.mark.no_subprocess_block
@@ -731,6 +880,89 @@ def test_scan_to_publish_replacement_is_rejected_before_atomic_rename(tmp_path):
         os.close(repo_fd)
 
 
+@pytest.mark.parametrize("mutation", ["replace", "in-place"])
+def test_descendant_manifest_change_is_rejected_before_publish(tmp_path, mutation):
+    support = _load_support_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    repo_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    build_fd = -1
+    try:
+        build_fd, build_identity = support._prepare_build_root(
+            repo_fd,
+            os.fstat(repo_fd).st_dev,
+        )
+        with support._owned_staging_directory(
+            build_fd,
+            build_identity.device,
+        ) as stage:
+            app_fd = support._create_directory(
+                stage.descriptor,
+                support.FINAL_APP,
+                build_identity.device,
+                0o755,
+            )
+            contents_fd = support._create_directory(
+                app_fd,
+                "Contents",
+                build_identity.device,
+                0o755,
+            )
+            payload_fd = os.open(
+                "payload",
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o644,
+                dir_fd=contents_fd,
+            )
+            os.write(payload_fd, b"AAAA")
+            os.close(payload_fd)
+            os.close(contents_fd)
+            os.close(app_fd)
+            scanned = support._open_and_scan_staged_app(
+                stage.descriptor,
+                checkout=b"checkout",
+                expected_device=build_identity.device,
+            )
+            payload = (
+                repo
+                / "build"
+                / stage.name
+                / support.FINAL_APP
+                / "Contents"
+                / "payload"
+            )
+            original_stat = payload.stat()
+            if mutation == "replace":
+                payload.rename(payload.with_name("old-payload"))
+                payload.write_bytes(b"AAAA")
+            else:
+                payload.write_bytes(b"BBBB")
+            payload.chmod(stat.S_IMODE(original_stat.st_mode))
+            os.utime(
+                payload,
+                ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+            )
+            try:
+                with pytest.raises(
+                    support.PackagingError,
+                    match="descendant manifest changed",
+                ):
+                    support._publish_scanned_app(
+                        repo_fd=repo_fd,
+                        build_fd=build_fd,
+                        build_identity=build_identity,
+                        stage=stage,
+                        scanned_app=scanned,
+                    )
+                assert not (repo / "build" / "DotSync.app").exists()
+            finally:
+                os.close(scanned.descriptor)
+    finally:
+        if build_fd >= 0:
+            os.close(build_fd)
+        os.close(repo_fd)
+
+
 def test_publish_revalidates_the_open_staging_descriptor(tmp_path, monkeypatch):
     support = _load_support_module()
     repo = tmp_path / "repo"
@@ -798,6 +1030,85 @@ def test_publish_revalidates_the_open_staging_descriptor(tmp_path, monkeypatch):
         os.close(repo_fd)
 
 
+@pytest.mark.parametrize("post_publish_mutation", ["identity", "mode"])
+def test_post_publish_final_identity_and_mode_are_proven_before_success(
+    tmp_path,
+    monkeypatch,
+    post_publish_mutation,
+):
+    support = _load_support_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    repo_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    build_fd = -1
+    real_rename = support._rename_no_replace
+
+    def mutate_after_rename(source_fd, source_name, destination_fd, destination_name):
+        real_rename(source_fd, source_name, destination_fd, destination_name)
+        if post_publish_mutation == "identity":
+            os.rename(
+                destination_name,
+                "published-original",
+                src_dir_fd=destination_fd,
+                dst_dir_fd=destination_fd,
+            )
+            os.mkdir(destination_name, mode=0o755, dir_fd=destination_fd)
+        else:
+            os.chmod(destination_name, 0o700, dir_fd=destination_fd)
+
+    try:
+        build_fd, build_identity = support._prepare_build_root(
+            repo_fd,
+            os.fstat(repo_fd).st_dev,
+        )
+        with support._owned_staging_directory(
+            build_fd,
+            build_identity.device,
+        ) as stage:
+            app_fd = support._create_directory(
+                stage.descriptor,
+                support.FINAL_APP,
+                build_identity.device,
+                0o755,
+            )
+            os.close(app_fd)
+            scanned = support._open_and_scan_staged_app(
+                stage.descriptor,
+                checkout=b"checkout",
+                expected_device=build_identity.device,
+            )
+            try:
+                with monkeypatch.context() as patch_context:
+                    patch_context.setattr(
+                        support,
+                        "_rename_no_replace",
+                        mutate_after_rename,
+                    )
+                    with pytest.raises(
+                        support.PackagingError,
+                        match="published final app",
+                    ):
+                        support._publish_scanned_app(
+                            repo_fd=repo_fd,
+                            build_fd=build_fd,
+                            build_identity=build_identity,
+                            stage=stage,
+                            scanned_app=scanned,
+                        )
+            finally:
+                os.close(scanned.descriptor)
+        final_stat = os.lstat(repo / "build" / support.FINAL_APP)
+        if post_publish_mutation == "identity":
+            assert (repo / "build" / "published-original").is_dir()
+            assert stat.S_IMODE(final_stat.st_mode) == 0o755
+        else:
+            assert stat.S_IMODE(final_stat.st_mode) == 0o700
+    finally:
+        if build_fd >= 0:
+            os.close(build_fd)
+        os.close(repo_fd)
+
+
 def test_stage_open_failure_after_creation_still_removes_owned_stage(
     tmp_path,
     monkeypatch,
@@ -834,6 +1145,132 @@ def test_stage_open_failure_after_creation_still_removes_owned_stage(
     finally:
         if build_fd >= 0:
             os.close(build_fd)
+        os.close(repo_fd)
+
+
+def test_stage_open_replacement_is_never_adopted_or_deleted(tmp_path, monkeypatch):
+    support = _load_support_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    repo_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    build_fd = -1
+    original_stage_name = "original-created-stage"
+    replacement_name = ""
+    real_open_directory = support._open_directory_at
+    replaced = False
+
+    def replace_before_first_stage_open(parent_fd, child_name, **kwargs):
+        nonlocal replaced, replacement_name
+        if child_name.startswith(".dotsync-app-stage.") and not replaced:
+            replaced = True
+            replacement_name = child_name
+            os.rename(
+                child_name,
+                original_stage_name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            os.mkdir(child_name, mode=0o700, dir_fd=parent_fd)
+            replacement_fd = os.open(
+                child_name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=parent_fd,
+            )
+            try:
+                marker_fd = os.open(
+                    "replacement-marker",
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                    dir_fd=replacement_fd,
+                )
+                os.close(marker_fd)
+            finally:
+                os.close(replacement_fd)
+        return real_open_directory(parent_fd, child_name, **kwargs)
+
+    try:
+        build_fd, build_identity = support._prepare_build_root(
+            repo_fd,
+            os.fstat(repo_fd).st_dev,
+        )
+        with monkeypatch.context() as patch_context:
+            patch_context.setattr(
+                support,
+                "_open_directory_at",
+                replace_before_first_stage_open,
+            )
+            with pytest.raises(support.PackagingError):
+                with support._owned_staging_directory(
+                    build_fd,
+                    build_identity.device,
+                ):
+                    pytest.fail("stage setup unexpectedly completed")
+        replacement = repo / "build" / replacement_name
+        assert (replacement / "replacement-marker").is_file()
+        assert (repo / "build" / original_stage_name).is_dir()
+    finally:
+        if build_fd >= 0:
+            os.close(build_fd)
+        os.close(repo_fd)
+        shutil.rmtree(repo / "build", ignore_errors=True)
+
+
+def test_created_build_root_replacement_is_never_adopted_or_mutated(
+    tmp_path,
+    monkeypatch,
+):
+    support = _load_support_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    repo_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    real_open_directory = support._open_directory_at
+    replaced = False
+
+    def replace_before_build_open(parent_fd, child_name, **kwargs):
+        nonlocal replaced
+        if child_name == support.BUILD_DIRECTORY and not replaced:
+            replaced = True
+            os.rename(
+                child_name,
+                "original-created-build",
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            os.mkdir(child_name, mode=0o711, dir_fd=parent_fd)
+            replacement_fd = os.open(
+                child_name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=parent_fd,
+            )
+            try:
+                marker_fd = os.open(
+                    "replacement-marker",
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                    dir_fd=replacement_fd,
+                )
+                os.close(marker_fd)
+            finally:
+                os.close(replacement_fd)
+        return real_open_directory(parent_fd, child_name, **kwargs)
+
+    try:
+        with monkeypatch.context() as patch_context:
+            patch_context.setattr(
+                support,
+                "_open_directory_at",
+                replace_before_build_open,
+            )
+            with pytest.raises(
+                support.PackagingError,
+                match="identity no longer matches",
+            ):
+                support._prepare_build_root(repo_fd, os.fstat(repo_fd).st_dev)
+        replacement = repo / "build"
+        assert (replacement / "replacement-marker").is_file()
+        assert stat.S_IMODE(replacement.stat().st_mode) == 0o711
+        assert (repo / "original-created-build").is_dir()
+    finally:
         os.close(repo_fd)
 
 

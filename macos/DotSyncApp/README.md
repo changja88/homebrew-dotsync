@@ -27,8 +27,13 @@ Assembly requires a clean `build/DotSync.app` output path. If any file,
 directory, or link already exists there, the build fails immediately and never
 deletes or replaces that entry; remove a previous generated app yourself before
 building again. A clean build assembles in a private staging directory, removes
-that staging directory on failure, and publishes the verified app with one
-no-replace rename.
+that owned staging directory on ordinary failure or SIGINT, SIGTERM, and SIGHUP,
+and publishes the verified app with one no-replace rename. Package sources and
+the plist template are copied into that pinned stage before build tools run, so
+later checkout-path changes cannot redirect the build. If another actor replaces
+a just-created build or staging name before identity adoption, the script fails
+and deliberately leaves the unowned replacement untouched rather than deleting
+it.
 
 The public Cask remains blocked until a real release archive passes Developer ID
 signing, notarization, Gatekeeper, and checksum verification. The eventual Cask

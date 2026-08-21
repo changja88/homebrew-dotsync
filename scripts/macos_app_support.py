@@ -6,10 +6,11 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import errno
-import fcntl
+import hashlib
 import os
 import re
 import secrets
+import signal
 import stat
 import subprocess
 import sys
@@ -35,11 +36,21 @@ BUILD_DIRECTORY = "build"
 FINAL_APP = "DotSync.app"
 ARM_SCRATCH = "swift-arm64"
 X86_SCRATCH = "swift-x86_64"
+PACKAGE_SNAPSHOT = "package"
+PLIST_SNAPSHOT = "DotSync-Info.plist.in"
 RENAME_EXCL = 0x00000004
 
 
 class PackagingError(Exception):
     """A filesystem or build input violates the local packaging contract."""
+
+
+class SignalInterruption(Exception):
+    """A termination signal requested normal cleanup unwinding."""
+
+    def __init__(self, signum: int) -> None:
+        super().__init__(f"interrupted by signal {signum}")
+        self.signum = signum
 
 
 @dataclass(frozen=True)
@@ -66,11 +77,43 @@ class StagingDirectory:
 class ScannedApp:
     descriptor: int
     identity: NodeIdentity
+    manifest: tuple[ManifestEntry, ...]
+    checkout: bytes
+
+
+@dataclass(frozen=True)
+class ManifestEntry:
+    relative_path: tuple[str, ...]
+    kind: str
+    device: int
+    inode: int
+    link_count: int
+    mode: int
+    size: int
+    modified_ns: int
+    digest: bytes | None
 
 
 def _validate_child_name(child_name: str) -> None:
     if child_name in {"", ".", ".."} or Path(child_name).name != child_name:
         raise PackagingError("target is not an exact direct child")
+
+
+@contextlib.contextmanager
+def _temporary_signal_handlers() -> Iterator[None]:
+    previous_handlers: dict[int, signal.Handlers] = {}
+
+    def interrupt(signum: int, _frame: object) -> None:
+        raise SignalInterruption(signum)
+
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            previous_handlers[signum] = signal.getsignal(signum)
+            signal.signal(signum, interrupt)
+        yield
+    finally:
+        for signum, previous_handler in previous_handlers.items():
+            signal.signal(signum, previous_handler)
 
 
 def _require_device(node_stat: os.stat_result, expected_device: int) -> None:
@@ -187,7 +230,6 @@ def _prepare_build_root(repo_fd: int, repo_device: int) -> tuple[int, NodeIdenti
         expected_device=repo_device,
         expected_identity=NodeIdentity.from_stat(build_stat),
     )
-    os.fchmod(build_fd, 0o755)
     return build_fd, NodeIdentity.from_stat(opened_stat)
 
 
@@ -238,27 +280,6 @@ def _remove_directory_contents(directory_fd: int, expected_device: int) -> None:
             os.unlink(name, dir_fd=directory_fd)
 
 
-def _remove_generated_directory(build_fd: int, child_name: str, device: int) -> None:
-    _validate_child_name(child_name)
-    try:
-        child_stat = os.stat(child_name, dir_fd=build_fd, follow_symlinks=False)
-    except OSError as error:
-        if error.errno == errno.ENOENT:
-            return
-        raise PackagingError("generated directory could not be inspected") from error
-    child_fd, _ = _open_directory_at(
-        build_fd,
-        child_name,
-        expected_device=device,
-        expected_identity=NodeIdentity.from_stat(child_stat),
-    )
-    try:
-        _remove_directory_contents(child_fd, device)
-    finally:
-        os.close(child_fd)
-    os.rmdir(child_name, dir_fd=build_fd)
-
-
 def _cleanup_owned_stage(
     build_fd: int,
     stage: StagingDirectory,
@@ -281,6 +302,7 @@ def _owned_staging_directory(
 ) -> Iterator[StagingDirectory]:
     stage_name = ""
     stage: StagingDirectory | None = None
+    created_identity: NodeIdentity | None = None
     created = False
     try:
         for _ in range(16):
@@ -297,11 +319,12 @@ def _owned_staging_directory(
         if not created:
             raise PackagingError("private staging name could not be allocated")
         stage_stat = os.stat(stage_name, dir_fd=build_fd, follow_symlinks=False)
+        created_identity = NodeIdentity.from_stat(stage_stat)
         stage_fd, opened_stat = _open_directory_at(
             build_fd,
             stage_name,
             expected_device=expected_device,
-            expected_identity=NodeIdentity.from_stat(stage_stat),
+            expected_identity=created_identity,
         )
         os.fchmod(stage_fd, 0o700)
         stage = StagingDirectory(
@@ -315,16 +338,20 @@ def _owned_staging_directory(
         if created:
             try:
                 if stage is None:
-                    provisional_stat = os.stat(
+                    if created_identity is None:
+                        raise PackagingError("staging identity was never captured")
+                    named_stat = os.stat(
                         stage_name,
                         dir_fd=build_fd,
                         follow_symlinks=False,
                     )
+                    if not created_identity.matches(named_stat):
+                        raise PackagingError("staging cleanup ownership was lost")
                     provisional_fd, opened_stat = _open_directory_at(
                         build_fd,
                         stage_name,
                         expected_device=expected_device,
-                        expected_identity=NodeIdentity.from_stat(provisional_stat),
+                        expected_identity=created_identity,
                     )
                     stage = StagingDirectory(
                         name=stage_name,
@@ -354,43 +381,205 @@ def _create_directory(parent_fd: int, name: str, device: int, mode: int) -> int:
     return child_fd
 
 
-def _physical_descriptor_path(descriptor: int) -> str:
+def _write_all(file_fd: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        written = os.write(file_fd, view)
+        if written == 0:
+            raise PackagingError("file write made no progress")
+        view = view[written:]
+
+
+def _read_all(file_fd: int) -> bytes:
+    payload = bytearray()
+    os.lseek(file_fd, 0, os.SEEK_SET)
+    while True:
+        block = os.read(file_fd, 1024 * 1024)
+        if not block:
+            return bytes(payload)
+        payload.extend(block)
+
+
+def _copy_snapshot_file(
+    source_parent_fd: int,
+    destination_parent_fd: int,
+    name: str,
+    *,
+    source_device: int,
+    destination_device: int,
+) -> None:
+    source_fd, source_stat = _open_regular_at(
+        source_parent_fd,
+        name,
+        expected_device=source_device,
+    )
     try:
-        result = fcntl.fcntl(descriptor, 50, b"\0" * 1024)
-    except OSError as error:
-        raise PackagingError("open file path could not be resolved") from error
-    path_bytes = result.split(b"\0", 1)[0]
-    if not path_bytes:
-        raise PackagingError("open file path resolved empty")
-    return os.fsdecode(path_bytes)
+        if source_stat.st_mode & 0o444 == 0:
+            raise PackagingError("build input contains an unreadable file")
+        payload = _read_all(source_fd)
+        final_source_stat = os.fstat(source_fd)
+        if (
+            source_stat.st_dev,
+            source_stat.st_ino,
+            source_stat.st_mode,
+            source_stat.st_nlink,
+            source_stat.st_size,
+            source_stat.st_mtime_ns,
+        ) != (
+            final_source_stat.st_dev,
+            final_source_stat.st_ino,
+            final_source_stat.st_mode,
+            final_source_stat.st_nlink,
+            final_source_stat.st_size,
+            final_source_stat.st_mtime_ns,
+        ):
+            raise PackagingError("build input changed while snapshotting")
+    finally:
+        os.close(source_fd)
+    destination_fd = os.open(
+        name,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o600,
+        dir_fd=destination_parent_fd,
+    )
+    try:
+        _write_all(destination_fd, payload)
+        os.fchmod(destination_fd, stat.S_IMODE(source_stat.st_mode))
+        _verify_regular_file(
+            os.fstat(destination_fd),
+            expected_device=destination_device,
+        )
+    finally:
+        os.close(destination_fd)
+
+
+def _copy_snapshot_directory(
+    source_fd: int,
+    destination_fd: int,
+    *,
+    source_device: int,
+    destination_device: int,
+    is_package_root: bool = False,
+) -> None:
+    _require_device(os.fstat(source_fd), source_device)
+    _require_device(os.fstat(destination_fd), destination_device)
+    for name in sorted(os.listdir(source_fd), key=os.fsencode):
+        if is_package_root and name == ".build":
+            continue
+        entry_stat = os.stat(name, dir_fd=source_fd, follow_symlinks=False)
+        _require_device(entry_stat, source_device)
+        if stat.S_ISLNK(entry_stat.st_mode):
+            raise PackagingError("build input contains a symlink")
+        if stat.S_ISDIR(entry_stat.st_mode):
+            child_source_fd, _ = _open_directory_at(
+                source_fd,
+                name,
+                expected_device=source_device,
+                expected_identity=NodeIdentity.from_stat(entry_stat),
+            )
+            try:
+                child_destination_fd = _create_directory(
+                    destination_fd,
+                    name,
+                    destination_device,
+                    stat.S_IMODE(entry_stat.st_mode),
+                )
+                try:
+                    _copy_snapshot_directory(
+                        child_source_fd,
+                        child_destination_fd,
+                        source_device=source_device,
+                        destination_device=destination_device,
+                    )
+                finally:
+                    os.close(child_destination_fd)
+            finally:
+                os.close(child_source_fd)
+            continue
+        if not stat.S_ISREG(entry_stat.st_mode):
+            raise PackagingError("build input contains a special file")
+        _copy_snapshot_file(
+            source_fd,
+            destination_fd,
+            name,
+            source_device=source_device,
+            destination_device=destination_device,
+        )
+
+
+def _snapshot_build_inputs(
+    repo_fd: int,
+    repo_device: int,
+    stage: StagingDirectory,
+) -> None:
+    macos_fd, _ = _open_directory_at(
+        repo_fd,
+        "macos",
+        expected_device=repo_device,
+    )
+    try:
+        package_source_fd, _ = _open_directory_at(
+            macos_fd,
+            "DotSyncApp",
+            expected_device=repo_device,
+        )
+    finally:
+        os.close(macos_fd)
+    try:
+        package_destination_fd = _create_directory(
+            stage.descriptor,
+            PACKAGE_SNAPSHOT,
+            stage.identity.device,
+            0o755,
+        )
+        try:
+            _copy_snapshot_directory(
+                package_source_fd,
+                package_destination_fd,
+                source_device=repo_device,
+                destination_device=stage.identity.device,
+                is_package_root=True,
+            )
+        finally:
+            os.close(package_destination_fd)
+    finally:
+        os.close(package_source_fd)
+    packaging_fd, _ = _open_directory_at(
+        repo_fd,
+        "packaging",
+        expected_device=repo_device,
+    )
+    try:
+        _copy_snapshot_file(
+            packaging_fd,
+            stage.descriptor,
+            PLIST_SNAPSHOT,
+            source_device=repo_device,
+            destination_device=stage.identity.device,
+        )
+    finally:
+        os.close(packaging_fd)
 
 
 def _run_tool(
     arguments: list[str],
     *,
-    cwd_path: Path | None = None,
-    cwd_fd: int | None = None,
+    cwd_fd: int,
     pass_fds: tuple[int, ...] = (),
     capture_stdout: bool = False,
 ) -> str:
-    if (cwd_path is None) == (cwd_fd is None):
-        raise PackagingError("tool execution requires exactly one working directory")
     inherited_fds = set(pass_fds)
-    preexec_fn = None
-    if cwd_fd is not None:
-        inherited_fds.add(cwd_fd)
+    inherited_fds.add(cwd_fd)
 
-        def enter_pinned_directory() -> None:
-            os.fchdir(cwd_fd)
+    def enter_pinned_directory() -> None:
+        os.fchdir(cwd_fd)
 
-        preexec_fn = enter_pinned_directory
     try:
         result = subprocess.run(
             arguments,
-            cwd=cwd_path,
             check=True,
             pass_fds=tuple(sorted(inherited_fds)),
-            preexec_fn=preexec_fn,
+            preexec_fn=enter_pinned_directory,
             stdout=subprocess.PIPE if capture_stdout else sys.stderr,
             stderr=sys.stderr,
             text=True,
@@ -400,10 +589,10 @@ def _run_tool(
     return result.stdout if capture_stdout else ""
 
 
-def _resolve_sdk(repo_path: Path) -> str:
+def _resolve_sdk(stage_fd: int) -> str:
     output = _run_tool(
         ["xcrun", "--sdk", "macosx", "--show-sdk-path"],
-        cwd_path=repo_path,
+        cwd_fd=stage_fd,
         capture_stdout=True,
     )
     lines = output.splitlines()
@@ -438,10 +627,10 @@ def _open_relative_directory(
 
 def _build_architecture(
     *,
-    repo_path: Path,
     repo_fd: int,
     build_fd: int,
     build_identity: NodeIdentity,
+    stage_fd: int,
     triple: str,
     scratch_name: str,
     sdk: str,
@@ -450,7 +639,7 @@ def _build_architecture(
         "swift",
         "build",
         "--package-path",
-        str(repo_path / "macos" / "DotSyncApp"),
+        PACKAGE_SNAPSHOT,
         "--configuration",
         "release",
         "--triple",
@@ -460,28 +649,30 @@ def _build_architecture(
         "--scratch-path",
         scratch_name,
     ]
-    _run_tool(arguments, cwd_fd=build_fd)
+    _run_tool(arguments, cwd_fd=stage_fd)
     _verify_build_binding(repo_fd, build_fd, build_identity)
     binary_directory = _run_tool(
         [*arguments, "--show-bin-path"],
-        cwd_fd=build_fd,
+        cwd_fd=stage_fd,
         capture_stdout=True,
     ).strip()
     _verify_build_binding(repo_fd, build_fd, build_identity)
     scratch_fd, _ = _open_directory_at(
-        build_fd,
+        stage_fd,
         scratch_name,
         expected_device=build_identity.device,
     )
     try:
-        relative_prefix = f"{scratch_name}/"
-        physical_prefix = f"{_physical_descriptor_path(scratch_fd)}/"
-        if binary_directory.startswith(relative_prefix):
-            relative_binary_directory = binary_directory[len(relative_prefix) :]
-        elif binary_directory.startswith(physical_prefix):
-            relative_binary_directory = binary_directory[len(physical_prefix) :]
-        else:
-            raise PackagingError("Swift binary directory did not use the pinned scratch path")
+        components = Path(binary_directory).parts
+        scratch_positions = [
+            index for index, component in enumerate(components) if component == scratch_name
+        ]
+        if len(scratch_positions) != 1:
+            raise PackagingError("Swift binary directory did not name its scratch root")
+        relative_components = components[scratch_positions[0] + 1 :]
+        if not relative_components:
+            raise PackagingError("Swift binary directory was the scratch root")
+        relative_binary_directory = "/".join(relative_components)
         binary_dir_fd = _open_relative_directory(
             scratch_fd,
             relative_binary_directory,
@@ -501,13 +692,19 @@ def _build_architecture(
         os.close(scratch_fd)
 
 
-def _render_info_plist(repo_path: Path, version: str) -> bytes:
+def _render_info_plist(stage_fd: int, stage_device: int, version: str) -> bytes:
+    template_fd, _ = _open_regular_at(
+        stage_fd,
+        PLIST_SNAPSHOT,
+        expected_device=stage_device,
+    )
     try:
-        template = (repo_path / "packaging" / "DotSync-Info.plist.in").read_text(
-            encoding="utf-8"
-        )
-    except OSError as error:
-        raise PackagingError("Info.plist template could not be read") from error
+        try:
+            template = _read_all(template_fd).decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise PackagingError("Info.plist template is not UTF-8") from error
+    finally:
+        os.close(template_fd)
     rendered = template.replace("__DOTSYNC_VERSION__", version).replace(
         "__DOTSYNC_BUILD__",
         version,
@@ -540,15 +737,7 @@ def _write_info_plist(contents_fd: int, payload: bytes, device: int) -> int:
     return readable_fd
 
 
-def _file_contains_leak(file_fd: int, checkout: bytes) -> bool:
-    payload = bytearray()
-    os.lseek(file_fd, 0, os.SEEK_SET)
-    while True:
-        block = os.read(file_fd, 1024 * 1024)
-        if not block:
-            break
-        payload.extend(block)
-    contents = bytes(payload)
+def _payload_contains_leak(contents: bytes, checkout: bytes) -> bool:
     return (
         checkout in contents
         or QUERY_CAPABILITY.search(contents) is not None
@@ -557,38 +746,100 @@ def _file_contains_leak(file_fd: int, checkout: bytes) -> bool:
     )
 
 
-def _scan_directory(directory_fd: int, checkout: bytes, expected_device: int) -> None:
+def _manifest_entry(
+    relative_path: tuple[str, ...],
+    kind: str,
+    node_stat: os.stat_result,
+    digest: bytes | None,
+) -> ManifestEntry:
+    return ManifestEntry(
+        relative_path=relative_path,
+        kind=kind,
+        device=node_stat.st_dev,
+        inode=node_stat.st_ino,
+        link_count=node_stat.st_nlink,
+        mode=node_stat.st_mode,
+        size=node_stat.st_size,
+        modified_ns=node_stat.st_mtime_ns,
+        digest=digest,
+    )
+
+
+def _stable_metadata(node_stat: os.stat_result) -> tuple[int, ...]:
+    return (
+        node_stat.st_dev,
+        node_stat.st_ino,
+        node_stat.st_nlink,
+        node_stat.st_mode,
+        node_stat.st_size,
+        node_stat.st_mtime_ns,
+    )
+
+
+def _scan_directory(
+    directory_fd: int,
+    checkout: bytes,
+    expected_device: int,
+    relative_root: tuple[str, ...] = (),
+) -> tuple[ManifestEntry, ...]:
     _require_device(os.fstat(directory_fd), expected_device)
-    for name in os.listdir(directory_fd):
+    manifest: list[ManifestEntry] = []
+    for name in sorted(os.listdir(directory_fd), key=os.fsencode):
+        relative_path = (*relative_root, name)
         entry_stat = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
         _require_device(entry_stat, expected_device)
         if stat.S_ISLNK(entry_stat.st_mode):
             raise PackagingError("bundle contains a symlink")
         if stat.S_ISDIR(entry_stat.st_mode):
-            child_fd, _ = _open_directory_at(
+            child_fd, opened_stat = _open_directory_at(
                 directory_fd,
                 name,
                 expected_device=expected_device,
                 expected_identity=NodeIdentity.from_stat(entry_stat),
             )
             try:
-                _scan_directory(child_fd, checkout, expected_device)
+                descendants = _scan_directory(
+                    child_fd,
+                    checkout,
+                    expected_device,
+                    relative_path,
+                )
+                final_stat = os.fstat(child_fd)
+                if _stable_metadata(opened_stat) != _stable_metadata(final_stat):
+                    raise PackagingError("bundle directory changed while scanning")
+                manifest.append(
+                    _manifest_entry(relative_path, "directory", final_stat, None)
+                )
+                manifest.extend(descendants)
             finally:
                 os.close(child_fd)
             continue
         _verify_regular_file(entry_stat, expected_device=expected_device)
         if entry_stat.st_mode & 0o444 == 0:
             raise PackagingError("bundle contains an unreadable file")
-        file_fd, _ = _open_regular_at(
+        file_fd, opened_stat = _open_regular_at(
             directory_fd,
             name,
             expected_device=expected_device,
         )
         try:
-            if _file_contains_leak(file_fd, checkout):
+            payload = _read_all(file_fd)
+            final_stat = os.fstat(file_fd)
+            if _stable_metadata(opened_stat) != _stable_metadata(final_stat):
+                raise PackagingError("bundle file changed while scanning")
+            if _payload_contains_leak(payload, checkout):
                 raise PackagingError("bundle contains forbidden private data")
+            manifest.append(
+                _manifest_entry(
+                    relative_path,
+                    "file",
+                    final_stat,
+                    hashlib.sha256(payload).digest(),
+                )
+            )
         finally:
             os.close(file_fd)
+    return tuple(manifest)
 
 
 def _open_and_scan_staged_app(
@@ -605,10 +856,12 @@ def _open_and_scan_staged_app(
         expected_identity=NodeIdentity.from_stat(app_stat),
     )
     try:
-        _scan_directory(app_fd, checkout, expected_device)
+        manifest = _scan_directory(app_fd, checkout, expected_device)
         return ScannedApp(
             descriptor=app_fd,
             identity=NodeIdentity.from_stat(opened_stat),
+            manifest=manifest,
+            checkout=checkout,
         )
     except BaseException:
         os.close(app_fd)
@@ -669,8 +922,33 @@ def _publish_scanned_app(
     if not scanned_app.identity.matches(os.fstat(scanned_app.descriptor)):
         raise PackagingError("open staged app changed after scanning")
     _require_device(app_stat, build_identity.device)
+    current_manifest = _scan_directory(
+        scanned_app.descriptor,
+        scanned_app.checkout,
+        build_identity.device,
+    )
+    if current_manifest != scanned_app.manifest:
+        raise PackagingError("staged app descendant manifest changed after scanning")
+    held_app_stat = os.fstat(scanned_app.descriptor)
+    if stat.S_IMODE(held_app_stat.st_mode) != 0o755:
+        raise PackagingError("staged app mode must be exactly 0755")
     _require_final_absent(build_fd)
     _rename_no_replace(stage.descriptor, FINAL_APP, build_fd, FINAL_APP)
+    _verify_build_binding(repo_fd, build_fd, build_identity)
+    final_stat = os.stat(FINAL_APP, dir_fd=build_fd, follow_symlinks=False)
+    _require_device(final_stat, build_identity.device)
+    if not stat.S_ISDIR(final_stat.st_mode) or not scanned_app.identity.matches(
+        final_stat
+    ):
+        raise PackagingError("published final app identity does not match the held app")
+    held_app_stat = os.fstat(scanned_app.descriptor)
+    if not scanned_app.identity.matches(held_app_stat):
+        raise PackagingError("published final app held identity changed")
+    if (
+        stat.S_IMODE(final_stat.st_mode) != 0o755
+        or stat.S_IMODE(held_app_stat.st_mode) != 0o755
+    ):
+        raise PackagingError("published final app mode is not exactly 0755")
 
 
 def _assemble_staged_app(
@@ -682,23 +960,24 @@ def _assemble_staged_app(
     stage: StagingDirectory,
     version: str,
 ) -> None:
-    sdk = _resolve_sdk(repo_path)
+    _snapshot_build_inputs(repo_fd, os.fstat(repo_fd).st_dev, stage)
+    sdk = _resolve_sdk(stage.descriptor)
     _verify_build_binding(repo_fd, build_fd, build_identity)
     arm_fd = _build_architecture(
-        repo_path=repo_path,
         repo_fd=repo_fd,
         build_fd=build_fd,
         build_identity=build_identity,
+        stage_fd=stage.descriptor,
         triple="arm64-apple-macosx13.0",
         scratch_name=ARM_SCRATCH,
         sdk=sdk,
     )
     try:
         x86_fd = _build_architecture(
-            repo_path=repo_path,
             repo_fd=repo_fd,
             build_fd=build_fd,
             build_identity=build_identity,
+            stage_fd=stage.descriptor,
             triple="x86_64-apple-macosx13.0",
             scratch_name=X86_SCRATCH,
             sdk=sdk,
@@ -730,8 +1009,8 @@ def _assemble_staged_app(
                             [
                                 "lipo",
                                 "-create",
-                                _physical_descriptor_path(arm_fd),
-                                _physical_descriptor_path(x86_fd),
+                                f"/dev/fd/{arm_fd}",
+                                f"/dev/fd/{x86_fd}",
                                 "-output",
                                 output_path,
                             ],
@@ -790,7 +1069,11 @@ def _assemble_staged_app(
                         os.close(macos_fd)
                     plist_fd = _write_info_plist(
                         contents_fd,
-                        _render_info_plist(repo_path, version),
+                        _render_info_plist(
+                            stage.descriptor,
+                            build_identity.device,
+                            version,
+                        ),
                         build_identity.device,
                     )
                     try:
@@ -835,22 +1118,18 @@ def assemble(repo_path: Path) -> Path:
         build_fd, build_identity = _prepare_build_root(repo_fd, repo_stat.st_dev)
         _verify_build_binding(repo_fd, build_fd, build_identity)
         _require_final_absent(build_fd)
-        _remove_generated_directory(build_fd, ARM_SCRATCH, build_identity.device)
-        _remove_generated_directory(build_fd, X86_SCRATCH, build_identity.device)
-        with _owned_staging_directory(build_fd, build_identity.device) as stage:
-            _assemble_staged_app(
-                repo_path=repo_path,
-                repo_fd=repo_fd,
-                build_fd=build_fd,
-                build_identity=build_identity,
-                stage=stage,
-                version=version,
-            )
+        with _temporary_signal_handlers():
+            os.fchmod(build_fd, 0o755)
+            with _owned_staging_directory(build_fd, build_identity.device) as stage:
+                _assemble_staged_app(
+                    repo_path=repo_path,
+                    repo_fd=repo_fd,
+                    build_fd=build_fd,
+                    build_identity=build_identity,
+                    stage=stage,
+                    version=version,
+                )
         _verify_build_binding(repo_fd, build_fd, build_identity)
-        final_stat = os.stat(FINAL_APP, dir_fd=build_fd, follow_symlinks=False)
-        if not stat.S_ISDIR(final_stat.st_mode):
-            raise PackagingError("published final app is not a directory")
-        _require_device(final_stat, build_identity.device)
         return repo_path / BUILD_DIRECTORY / FINAL_APP
     except OSError as error:
         raise PackagingError("identity-bound app assembly failed") from error
@@ -873,6 +1152,9 @@ def main(arguments: list[str]) -> int:
     except PackagingError as error:
         print(f"macos_app_support: {error}", file=sys.stderr)
         return 1
+    except SignalInterruption as error:
+        print(f"macos_app_support: {error}", file=sys.stderr)
+        return 128 + error.signum
 
 
 if __name__ == "__main__":
