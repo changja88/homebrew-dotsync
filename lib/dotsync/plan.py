@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Literal
@@ -34,6 +35,19 @@ class Change:
     def is_change(self) -> bool:
         return self.kind != "unchanged"
 
+    def to_dict(self, *, relative_to: Path | None = None) -> dict[str, object]:
+        """Return a JSON-safe plan record without including file contents."""
+        base = (relative_to or Path.cwd()).absolute()
+        return {
+            "label": self.label,
+            "kind": self.kind,
+            "source": _path_snapshot(self.source, relative_to=base),
+            "dest": _path_snapshot(self.dest, relative_to=base),
+            "details": self.details,
+            "file_changes": list(self.file_changes),
+            "diffable": self.diffable,
+        }
+
 
 @dataclass(frozen=True)
 class AppPlan:
@@ -49,11 +63,78 @@ class AppPlan:
     def changed_labels(self) -> list[str]:
         return [c.label for c in self.changes if c.is_change]
 
+    def to_dict(self, *, relative_to: Path | None = None) -> dict[str, object]:
+        """Return a JSON-safe app plan in its declared change order."""
+        return {
+            "app": self.app,
+            "direction": self.direction,
+            "description": self.description,
+            "changes": [
+                change.to_dict(relative_to=relative_to) for change in self.changes
+            ],
+        }
+
 
 def _hash(path: Path) -> str:
     h = hashlib.sha256()
     h.update(path.read_bytes())
     return h.hexdigest()
+
+
+def _relative_path(path: Path, base: Path) -> str:
+    return Path(os.path.relpath(path.absolute(), start=base)).as_posix()
+
+
+def _path_snapshot(
+    path: Path | None, *, relative_to: Path
+) -> dict[str, object] | None:
+    """Describe the filesystem state used by a plan without storing bytes."""
+    if path is None:
+        return None
+
+    snapshot: dict[str, object] = {
+        "path": _relative_path(path, relative_to),
+    }
+    if path.is_symlink():
+        stat = path.lstat()
+        snapshot.update(kind="symlink", mtime_ns=stat.st_mtime_ns)
+        return snapshot
+    if not path.exists():
+        snapshot["kind"] = "missing"
+        return snapshot
+
+    stat = path.stat()
+    snapshot["mtime_ns"] = stat.st_mtime_ns
+    if path.is_file():
+        snapshot.update(kind="file", sha256=_hash(path))
+        return snapshot
+    if path.is_dir():
+        files: list[dict[str, object]] = []
+        for child in sorted(path.rglob("*"), key=lambda item: item.as_posix()):
+            if child.is_symlink():
+                child_stat = child.lstat()
+                files.append(
+                    {
+                        "path": child.relative_to(path).as_posix(),
+                        "kind": "symlink",
+                        "mtime_ns": child_stat.st_mtime_ns,
+                    }
+                )
+            elif child.is_file():
+                child_stat = child.stat()
+                files.append(
+                    {
+                        "path": child.relative_to(path).as_posix(),
+                        "kind": "file",
+                        "mtime_ns": child_stat.st_mtime_ns,
+                        "sha256": _hash(child),
+                    }
+                )
+        snapshot.update(kind="directory", files=files)
+        return snapshot
+
+    snapshot["kind"] = "other"
+    return snapshot
 
 
 def _root_safety_error(path: Path, root: Path | None) -> str:

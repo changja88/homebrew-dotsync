@@ -3,7 +3,6 @@
 from __future__ import annotations
 import argparse
 import sys
-import time
 from pathlib import Path
 from typing import Sequence
 from dotsync import __version__, ui, diffinfo
@@ -24,6 +23,7 @@ from dotsync.shellrc import (
     update_shell_rc,
 )
 from dotsync.welcome import print_welcome
+from dotsync.sync_service import SyncEvents, SyncService
 
 # Existing call sites use this name; alias to the registry's source of truth.
 SUPPORTED_APPS = APP_NAMES
@@ -390,8 +390,7 @@ def cmd_config(args) -> int:
         if bad:
             print(f"unknown apps: {bad}", file=sys.stderr)
             return 2
-        cfg.apps = new_apps
-        save_config(cfg)
+        _sync_service(cfg).update_apps(tuple(new_apps))
         ui.done(f"apps = {new_apps}")
         return 0
     # Delegate any non-core subcommands to the matching app's hook.
@@ -442,10 +441,9 @@ def cmd_apps(args) -> int:
         ui.dim("no change")
         return 0
 
-    cfg.apps = new_apps
     for k, v in new_options.items():
         cfg.app_options[k] = v
-    save_config(cfg)
+    _sync_service(cfg).update_apps(tuple(new_apps))
     if apps_changed:
         ui.done(f"apps = {new_apps}")
     if options_changed:
@@ -456,29 +454,59 @@ def cmd_apps(args) -> int:
 
 def cmd_status(args) -> int:
     cfg = load_config()
-    ui.section("status", sub=str(cfg.dir))
+    status = _sync_service(cfg).status()
+    ui.section("status", sub=str(status.sync_dir))
     print()
-    for name in cfg.apps:
-        app = build_app(name, cfg)
-        s = app.status(cfg.dir)
+    for app_status in status.apps:
+        s = app_status.status
         print(
             ui.format_status_line(
-                name,
+                app_status.name,
                 state=s.state,
                 details=s.details,
-                direction=getattr(s, "direction", ""),
+                direction=s.direction,
             )
         )
-        if s.state != "dirty":
+        if app_status.plan is None:
             continue
-        try:
-            plan = app.plan_from(cfg.dir)
-        except (OSError, RuntimeError, ValueError):
-            continue
-        for change in plan.changes:
+        for change in app_status.plan.changes:
             if change.is_change:
                 print("  " + ui.format_plan_change(change))
     return 0
+
+
+class _CliSyncEvents(SyncEvents):
+    def app_started(self, name: str, app, *, index: int, total: int) -> None:
+        ui.section(name, index=index, total=total, sub=app.description)
+
+    def backup_created(self, backup_dir: Path) -> None:
+        ui.kv("backup", str(backup_dir))
+        print()
+
+    def app_succeeded(self, app) -> None:
+        app._finish_ok()
+
+    def app_unchanged(self, app) -> None:
+        app._finish_unchanged()
+
+    def app_failed(self, app, error: Exception) -> None:
+        ui.error(str(error))
+
+    def app_finished(self, app) -> None:
+        print()
+
+
+def _sync_service(
+    cfg: Config, *, events: SyncEvents | None = None
+) -> SyncService:
+    """Construct the shared service with this CLI module's test seams."""
+    return SyncService(
+        cfg,
+        events=events,
+        app_factory=build_app,
+        backup_session_factory=new_backup_session,
+        backup_rotator=rotate_backups,
+    )
 
 
 def _print_app_warnings(warnings_by_app: dict[str, list[str]]) -> None:
@@ -506,17 +534,6 @@ def _resolve_app_list(args, cfg: Config) -> list[str]:
         )
         return []
     return [args.app]
-
-
-def _build_plans(apps: list[str], cfg: Config, direction: str) -> list[AppPlan]:
-    plans = []
-    for name in apps:
-        app = build_app(name, cfg)
-        if direction == "from":
-            plans.append(app.plan_from(cfg.dir))
-        else:
-            plans.append(app.plan_to(cfg.dir))
-    return plans
 
 
 def _print_preview(plans: list[AppPlan], *, direction: str) -> None:
@@ -620,47 +637,25 @@ def cmd_from(args) -> int:
         f"{len(apps)} app{'s' if len(apps) != 1 else ''}  →  {cfg.dir}",
     )
     print()
-    plans = _build_plans(apps, cfg, "from")
+    service = _sync_service(cfg, events=_CliSyncEvents())
+    preview = service.preview(direction="backup", apps=tuple(apps))
+    plans = list(preview.plans)
     _print_preview(plans, direction="from")
     if not _confirm_or_abort(args, plans, direction="from"):
         return 0
-
-    unchanged_by_plan = {
-        plan.app: bool(plan.changes) and not plan.has_changes for plan in plans
-    }
-    start = time.monotonic()
-    changed: list[str] = []
-    unchanged: list[str] = []
-    failed: list[str] = []
-    warnings_by_app: dict[str, list[str]] = {}
-    for i, name in enumerate(apps, 1):
-        app = build_app(name, cfg)
-        ui.section(name, index=i, total=len(apps), sub=app.description)
-        if unchanged_by_plan.get(name, False):
-            app._finish_unchanged()
-            unchanged.append(name)
-            print()
-            continue
-        try:
-            app.sync_from(cfg.dir)
-            app._finish_ok()
-            changed.append(name)
-        except (FileNotFoundError, RuntimeError) as e:
-            ui.error(str(e))
-            failed.append(name)
-        if app.warnings:
-            warnings_by_app[name] = list(app.warnings)
-        print()
+    result = service.execute(preview.digest)
     ui.summary(
-        ok=len(changed) + len(unchanged),
-        error=len(failed),
-        duration_ms=int((time.monotonic() - start) * 1000),
-        changed=changed or None,
-        unchanged=unchanged or None,
-        failed=failed or None,
+        ok=len(result.changed) + len(result.unchanged),
+        error=len(result.failed),
+        duration_ms=result.duration_ms,
+        changed=list(result.changed) or None,
+        unchanged=list(result.unchanged) or None,
+        failed=list(result.failed) or None,
     )
-    _print_app_warnings(warnings_by_app)
-    return 0 if not failed else 6
+    _print_app_warnings(
+        {name: list(warnings) for name, warnings in result.warnings.items()}
+    )
+    return 0 if not result.failed else 6
 
 
 def cmd_to(args) -> int:
@@ -675,54 +670,25 @@ def cmd_to(args) -> int:
         f"{len(apps)} app{'s' if len(apps) != 1 else ''}  ←  {cfg.dir}",
     )
     print()
-    plans = _build_plans(apps, cfg, "to")
+    service = _sync_service(cfg, events=_CliSyncEvents())
+    preview = service.preview(direction="apply", apps=tuple(apps))
+    plans = list(preview.plans)
     _print_preview(plans, direction="to")
     if not _confirm_or_abort(args, plans, direction="to"):
         return 0
-    unchanged_by_plan = {
-        plan.app: bool(plan.changes) and not plan.has_changes for plan in plans
-    }
-
-    session: Path | None = None
-    start = time.monotonic()
-    changed: list[str] = []
-    unchanged: list[str] = []
-    failed: list[str] = []
-    warnings_by_app: dict[str, list[str]] = {}
-    for i, name in enumerate(apps, 1):
-        app = build_app(name, cfg)
-        ui.section(name, index=i, total=len(apps), sub=app.description)
-        if unchanged_by_plan.get(name, False):
-            app._finish_unchanged()
-            unchanged.append(name)
-            print()
-            continue
-        try:
-            if session is None:
-                session = new_backup_session(cfg.backup_dir)
-                ui.kv("backup", str(session))
-                print()
-            app.sync_to(cfg.dir, session)
-            app._finish_ok()
-            changed.append(name)
-        except (FileNotFoundError, RuntimeError) as e:
-            ui.error(str(e))
-            failed.append(name)
-        if app.warnings:
-            warnings_by_app[name] = list(app.warnings)
-        print()
-    if session is not None:
-        rotate_backups(cfg.backup_dir, cfg.backup_keep)
+    result = service.execute(preview.digest)
     ui.summary(
-        ok=len(changed) + len(unchanged),
-        error=len(failed),
-        duration_ms=int((time.monotonic() - start) * 1000),
-        changed=changed or None,
-        unchanged=unchanged or None,
-        failed=failed or None,
+        ok=len(result.changed) + len(result.unchanged),
+        error=len(result.failed),
+        duration_ms=result.duration_ms,
+        changed=list(result.changed) or None,
+        unchanged=list(result.unchanged) or None,
+        failed=list(result.failed) or None,
     )
-    _print_app_warnings(warnings_by_app)
-    return 0 if not failed else 6
+    _print_app_warnings(
+        {name: list(warnings) for name, warnings in result.warnings.items()}
+    )
+    return 0 if not result.failed else 6
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -1,6 +1,9 @@
 from unittest.mock import patch
+
+import dotsync.apps as app_registry
 from dotsync.cli import _build_parser, _change_diff_text, main
 from dotsync.config import Config, save_config
+from dotsync.apps.base import App
 from dotsync.plan import AppPlan, Change
 
 
@@ -57,9 +60,70 @@ def test_help_lists_backup_apply_without_legacy_from_to():
 def test_no_config_shows_init_hint(fake_home, monkeypatch, tmp_path, capsys):
     monkeypatch.chdir(tmp_path)  # cwd has no dotsync.toml
     rc = main(["backup", "--all"])
-    assert rc != 0
+    assert rc == 3
     err = capsys.readouterr().err
     assert "dotsync init" in err or "DOTSYNC_DIR" in err
+
+
+def test_apply_partial_failure_preserves_backup_warning_and_continue_contract(
+    fake_home, monkeypatch, tmp_path, capsys
+):
+    """One failed app must not hide its warning or stop the next app."""
+    monkeypatch.setenv("NO_COLOR", "1")
+    target = tmp_path / "configs"
+    target.mkdir()
+    save_config(Config(dir=target, apps=["zsh", "ghostty"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+    calls: list[str] = []
+
+    class FailingZshApp(App):
+        name = "zsh"
+        description = "Failing app"
+
+        def plan_to(self, target_dir):
+            return AppPlan(
+                app=self.name,
+                direction="to",
+                changes=[Change("settings", "update")],
+            )
+
+        def sync_to(self, target_dir, backup_dir):
+            calls.append(self.name)
+            self.warnings.append("warning before failure")
+            raise RuntimeError("simulated apply failure")
+
+    class SuccessfulGhosttyApp(App):
+        name = "ghostty"
+        description = "Successful app"
+
+        def plan_to(self, target_dir):
+            return AppPlan(
+                app=self.name,
+                direction="to",
+                changes=[Change("config", "update")],
+            )
+
+        def sync_to(self, target_dir, backup_dir):
+            calls.append(self.name)
+            self.warnings.append("warning after success")
+
+    monkeypatch.setitem(app_registry._BY_NAME, "zsh", FailingZshApp)
+    monkeypatch.setitem(app_registry._BY_NAME, "ghostty", SuccessfulGhosttyApp)
+
+    rc = main(["apply", "--all", "--yes"])
+
+    captured = capsys.readouterr()
+    sessions = list((target / ".backups").iterdir())
+    assert rc == 6
+    assert calls == ["zsh", "ghostty"]
+    assert len(sessions) == 1
+    assert f"backup        {sessions[0]}" in captured.out
+    assert "changed    ghostty" in captured.out
+    assert "failed     zsh" in captured.out
+    assert captured.out.count("warnings") == 1
+    assert "zsh: warning before failure" in captured.out
+    assert "ghostty: warning after success" in captured.out
+    assert "simulated apply failure" in captured.err
 
 
 def test_from_continues_after_one_app_fails(fake_home, monkeypatch, tmp_path, capsys):
@@ -81,7 +145,7 @@ def test_from_continues_after_one_app_fails(fake_home, monkeypatch, tmp_path, ca
     assert "1 ok" in out
     assert "1 error" in out
     # exit code reflects partial failure
-    assert rc != 0
+    assert rc == 6
 
 
 def test_from_dry_run_shows_preview_without_changing_folder(
