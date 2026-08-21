@@ -196,22 +196,12 @@ final class MenuSummarySessionDelegate: NSObject, URLSessionTaskDelegate,
     }
 }
 
-public struct MenuSummaryFetchResult: Equatable, Sendable {
-    public let generation: UInt64
-    public let summary: MenuSummary
-
-    fileprivate init(generation: UInt64, summary: MenuSummary) {
-        self.generation = generation
-        self.summary = summary
-    }
-}
-
 public struct MenuSummaryOwnedFetchResult: Equatable, Sendable {
-    public let result: MenuSummaryFetchResult
+    public let summary: MenuSummary
     public let requestOwner: UInt64
 
-    fileprivate init(result: MenuSummaryFetchResult, requestOwner: UInt64) {
-        self.result = result
+    fileprivate init(summary: MenuSummary, requestOwner: UInt64) {
+        self.summary = summary
         self.requestOwner = requestOwner
     }
 }
@@ -222,7 +212,6 @@ public actor MenuSummaryPoller {
     private let fetcher: any MenuSummaryFetching
     private let monotonicNow: MonotonicNow
     private var lastAttempt: Duration?
-    private var generation: UInt64 = 0
 
     public init(fetcher: any MenuSummaryFetching) {
         let clock = ContinuousClock()
@@ -239,12 +228,6 @@ public actor MenuSummaryPoller {
     ) {
         self.fetcher = fetcher
         self.monotonicNow = monotonicNow
-    }
-
-    public func poll(isActive: Bool) async -> MenuSummaryFetchResult? {
-        guard reservePoll(isActive: isActive)
-        else { return nil }
-        return await fetchResult(generation: beginFetch())
     }
 
     public func poll(
@@ -264,21 +247,13 @@ public actor MenuSummaryPoller {
         guard reservePoll(isActive: isActive)
         else { return nil }
         let requestOwner = await requestStartedAsync()
-        let ownedGeneration = beginFetch()
-        let result = await fetchResult(generation: ownedGeneration)
-        return MenuSummaryOwnedFetchResult(
-            result: result,
-            requestOwner: requestOwner
-        )
+        return await fetchResult(requestOwner: requestOwner)
     }
 
-    public func reload() async -> MenuSummaryFetchResult {
+    public func reload(requestOwner: UInt64) async
+        -> MenuSummaryOwnedFetchResult {
         lastAttempt = monotonicNow()
-        return await fetchResult(generation: beginFetch())
-    }
-
-    public func ownsNewest(_ result: MenuSummaryFetchResult) -> Bool {
-        result.generation == generation
+        return await fetchResult(requestOwner: requestOwner)
     }
 
     private func reservePoll(isActive: Bool) -> Bool {
@@ -293,22 +268,17 @@ public actor MenuSummaryPoller {
         return true
     }
 
-    private func beginFetch() -> UInt64 {
-        generation &+= 1
-        return generation
-    }
-
-    private func fetchResult(generation ownedGeneration: UInt64) async
-        -> MenuSummaryFetchResult {
+    private func fetchResult(requestOwner: UInt64) async
+        -> MenuSummaryOwnedFetchResult {
         let summary: MenuSummary
         do {
             summary = try await fetcher.fetch()
         } catch {
             summary = .unknown
         }
-        return MenuSummaryFetchResult(
-            generation: ownedGeneration,
-            summary: summary
+        return MenuSummaryOwnedFetchResult(
+            summary: summary,
+            requestOwner: requestOwner
         )
     }
 }

@@ -323,6 +323,7 @@ final class MenuSummaryClientTests: XCTestCase {
         session.invalidateAndCancel()
     }
 
+    @MainActor
     func testPollerRunsAtMostEverySixtySecondsOnlyWhileActiveAndExplicitReloadBypassesCadence() async throws {
         let fetcher = CountingSummaryFetcher()
         let clock = ManualSummaryMonotonicClock()
@@ -330,24 +331,45 @@ final class MenuSummaryClientTests: XCTestCase {
             fetcher: fetcher,
             monotonicNow: { clock.now }
         )
+        var nextOwner: UInt64 = 0
+        let acquireOwner: @MainActor @Sendable () -> UInt64 = {
+            nextOwner &+= 1
+            return nextOwner
+        }
 
-        let inactive = await poller.poll(isActive: false)
-        let first = await poller.poll(isActive: true)
+        let inactive = await poller.poll(
+            isActive: false,
+            requestStarted: acquireOwner
+        )
+        let first = await poller.poll(
+            isActive: true,
+            requestStarted: acquireOwner
+        )
         clock.advance(by: .seconds(59) + .milliseconds(999))
-        let tooSoon = await poller.poll(isActive: true)
+        let tooSoon = await poller.poll(
+            isActive: true,
+            requestStarted: acquireOwner
+        )
         clock.advance(by: .milliseconds(1))
-        let atBoundary = await poller.poll(isActive: true)
+        let atBoundary = await poller.poll(
+            isActive: true,
+            requestStarted: acquireOwner
+        )
         clock.advance(by: .seconds(1))
-        let explicit = await poller.reload()
+        let explicitOwner = acquireOwner()
+        let explicit = await poller.reload(requestOwner: explicitOwner)
         XCTAssertNil(inactive)
         XCTAssertNotNil(first)
         XCTAssertNil(tooSoon)
         XCTAssertNotNil(atBoundary)
         XCTAssertEqual(explicit.summary, .unknown)
+        XCTAssertEqual(explicit.requestOwner, 3)
+        XCTAssertEqual(nextOwner, 3)
         let fetchCount = await fetcher.count
         XCTAssertEqual(fetchCount, 3)
     }
 
+    @MainActor
     func testPollerCadenceDoesNotDriftAcrossForwardAndBackwardWallClockChanges() async {
         let fetcher = CountingSummaryFetcher()
         let clock = ManualSummaryMonotonicClock()
@@ -356,28 +378,46 @@ final class MenuSummaryClientTests: XCTestCase {
             monotonicNow: { clock.now }
         )
         var wallClock = Date(timeIntervalSince1970: 1_800_000_000)
+        var nextOwner: UInt64 = 0
+        let acquireOwner: @MainActor @Sendable () -> UInt64 = {
+            nextOwner &+= 1
+            return nextOwner
+        }
 
-        let initial = await poller.poll(isActive: true)
+        let initial = await poller.poll(
+            isActive: true,
+            requestStarted: acquireOwner
+        )
         XCTAssertNotNil(initial)
         wallClock = wallClock.addingTimeInterval(86_400)
         clock.advance(by: .seconds(30))
-        let afterForwardJump = await poller.poll(isActive: true)
+        let afterForwardJump = await poller.poll(
+            isActive: true,
+            requestStarted: acquireOwner
+        )
         XCTAssertNil(afterForwardJump)
         wallClock = wallClock.addingTimeInterval(-172_800)
         clock.advance(by: .seconds(29))
-        let afterBackwardJump = await poller.poll(isActive: true)
+        let afterBackwardJump = await poller.poll(
+            isActive: true,
+            requestStarted: acquireOwner
+        )
         XCTAssertNil(afterBackwardJump)
         clock.advance(by: .seconds(1))
-        let atMonotonicBoundary = await poller.poll(isActive: true)
+        let atMonotonicBoundary = await poller.poll(
+            isActive: true,
+            requestStarted: acquireOwner
+        )
         XCTAssertNotNil(atMonotonicBoundary)
 
         XCTAssertEqual(wallClock, Date(timeIntervalSince1970: 1_799_913_600))
+        XCTAssertEqual(nextOwner, 2)
         let fetchCount = await fetcher.count
         XCTAssertEqual(fetchCount, 2)
     }
 
     @MainActor
-    func testOnlyPermittedPollAcquiresOwnershipAndSupersedesPriorFetch() async throws {
+    func testOnlyPermittedPollAcquiresExactlyOneOwnerBeforeFetch() async throws {
         let fetcher = CountingSummaryFetcher()
         let clock = ManualSummaryMonotonicClock()
         let poller = MenuSummaryPoller(
@@ -406,15 +446,15 @@ final class MenuSummaryClientTests: XCTestCase {
             requestStarted: acquireOwner
         )
         let permitted = try XCTUnwrap(permittedCandidate)
-        let firstIsNewest = await poller.ownsNewest(first.result)
-        let permittedIsNewest = await poller.ownsNewest(permitted.result)
 
         XCTAssertEqual(first.requestOwner, 1)
+        XCTAssertEqual(first.summary, .unknown)
         XCTAssertNil(rejected)
         XCTAssertEqual(permitted.requestOwner, 2)
+        XCTAssertEqual(permitted.summary, .unknown)
         XCTAssertEqual(nextOwner, 2)
-        XCTAssertFalse(firstIsNewest)
-        XCTAssertTrue(permittedIsNewest)
+        let fetchCount = await fetcher.count
+        XCTAssertEqual(fetchCount, 2)
     }
 
     private func assertProtocolError(

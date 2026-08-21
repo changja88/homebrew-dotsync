@@ -154,11 +154,10 @@ final class AppCoordinator: ObservableObject {
                 isActive: isActive,
                 requestStarted: { self.beginSummaryRequest() }
             ) {
-                await acceptSummary(
-                    ownedResult.result,
+                acceptSummary(
+                    ownedResult,
                     from: poller,
-                    owner: owner,
-                    requestOwner: ownedResult.requestOwner
+                    owner: owner
                 )
             }
             startPollingIfNeeded()
@@ -304,12 +303,11 @@ final class AppCoordinator: ObservableObject {
         }
         let owner = summaryOwner
         let requestOwner = beginSummaryRequest()
-        let result = await summaryPoller.reload()
-        await acceptSummary(
+        let result = await summaryPoller.reload(requestOwner: requestOwner)
+        acceptSummary(
             result,
             from: summaryPoller,
-            owner: owner,
-            requestOwner: requestOwner
+            owner: owner
         )
     }
 
@@ -322,33 +320,29 @@ final class AppCoordinator: ObservableObject {
             requestStarted: { self.beginSummaryRequest() }
         )
         else { return }
-        await acceptSummary(
-            ownedResult.result,
+        acceptSummary(
+            ownedResult,
             from: summaryPoller,
-            owner: owner,
-            requestOwner: ownedResult.requestOwner
+            owner: owner
         )
     }
 
     private func acceptSummary(
-        _ result: MenuSummaryFetchResult,
+        _ result: MenuSummaryOwnedFetchResult,
         from poller: MenuSummaryPoller,
-        owner: UInt64,
-        requestOwner: UInt64
-    ) async {
-        await commitAfterNewestSummaryCheck(
-            isNewest: {
-                await poller.ownsNewest(result)
-            },
-            isStillOwned: {
-                owner == self.summaryOwner
-                    && requestOwner == self.summaryRequestOwner
-                    && self.summaryPoller === poller
-            },
-            commit: {
-                self.summary = MenuSummaryModel(summary: result.summary)
-            }
-        )
+        owner: UInt64
+    ) {
+        commitSummaryIfOwned(
+            result.summary,
+            requestOwner: result.requestOwner,
+            from: poller,
+            sessionOwner: owner,
+            currentSessionOwner: summaryOwner,
+            currentPoller: summaryPoller,
+            currentRequestOwner: summaryRequestOwner
+        ) { accepted in
+            summary = MenuSummaryModel(summary: accepted)
+        }
     }
 
     private func beginSummaryRequest() -> UInt64 {
@@ -384,13 +378,21 @@ final class AppCoordinator: ObservableObject {
 }
 
 @MainActor
-func commitAfterNewestSummaryCheck(
-    isNewest: () async -> Bool,
-    isStillOwned: () -> Bool,
-    commit: () -> Void
-) async {
-    guard await isNewest(), isStillOwned() else { return }
-    commit()
+func commitSummaryIfOwned(
+    _ summary: MenuSummary,
+    requestOwner: UInt64,
+    from poller: MenuSummaryPoller,
+    sessionOwner: UInt64,
+    currentSessionOwner: UInt64,
+    currentPoller: MenuSummaryPoller?,
+    currentRequestOwner: UInt64,
+    commit: (MenuSummary) -> Void
+) {
+    guard sessionOwner == currentSessionOwner,
+          currentPoller === poller,
+          requestOwner == currentRequestOwner
+    else { return }
+    commit(summary)
 }
 
 private struct UnknownSummaryFetcher: MenuSummaryFetching {

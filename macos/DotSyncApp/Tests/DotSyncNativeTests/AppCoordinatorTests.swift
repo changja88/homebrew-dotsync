@@ -309,7 +309,7 @@ final class AppCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.summary.summary.usage.highestPercent, 73)
     }
 
-    func testAdmittedPollLinearizesOwnerBeforeGenerationAgainstExplicitReload() async throws {
+    func testLaterAdmittedPollOwnerWinsWhenExplicitOwnsFirst() async throws {
         let fetcher = LinearizedCoordinatorSummaryFetcher()
         let ownerBarrier = SummaryRequestOwnerBarrier()
         let poller = MenuSummaryPoller(fetcher: fetcher)
@@ -346,7 +346,7 @@ final class AppCoordinatorTests: XCTestCase {
         newestOwner &+= 1
         let explicitOwner = newestOwner
         let explicitReload = Task {
-            await poller.reload()
+            await poller.reload(requestOwner: explicitOwner)
         }
         await fetcher.waitUntilStarted(call: 1)
 
@@ -361,17 +361,17 @@ final class AppCoordinatorTests: XCTestCase {
         let explicitPercentage = try XCTUnwrap(
             explicitResult.summary.usage.highestPercent
         )
-        await commitAfterNewestSummaryCheck(
-            isNewest: {
-                await poller.ownsNewest(explicitResult)
-            },
-            isStillOwned: {
-                explicitOwner == newestOwner
-            },
-            commit: {
-                committedPercentages.append(explicitPercentage)
-            }
-        )
+        commitSummaryIfOwned(
+            explicitResult.summary,
+            requestOwner: explicitResult.requestOwner,
+            from: poller,
+            sessionOwner: 1,
+            currentSessionOwner: 1,
+            currentPoller: poller,
+            currentRequestOwner: newestOwner
+        ) { _ in
+            committedPercentages.append(explicitPercentage)
+        }
 
         await fetcher.succeed(
             call: 2,
@@ -380,19 +380,19 @@ final class AppCoordinatorTests: XCTestCase {
         let admittedCandidate = await admittedPoll.value
         let admittedResult = try XCTUnwrap(admittedCandidate)
         let admittedPercentage = try XCTUnwrap(
-            admittedResult.result.summary.usage.highestPercent
+            admittedResult.summary.usage.highestPercent
         )
-        await commitAfterNewestSummaryCheck(
-            isNewest: {
-                await poller.ownsNewest(admittedResult.result)
-            },
-            isStillOwned: {
-                admittedResult.requestOwner == newestOwner
-            },
-            commit: {
-                committedPercentages.append(admittedPercentage)
-            }
-        )
+        commitSummaryIfOwned(
+            admittedResult.summary,
+            requestOwner: admittedResult.requestOwner,
+            from: poller,
+            sessionOwner: 1,
+            currentSessionOwner: 1,
+            currentPoller: poller,
+            currentRequestOwner: newestOwner
+        ) { _ in
+            committedPercentages.append(admittedPercentage)
+        }
 
         XCTAssertEqual(admittedResult.requestOwner, 2)
         XCTAssertEqual(newestOwner, 2)
@@ -401,31 +401,146 @@ final class AppCoordinatorTests: XCTestCase {
         XCTAssertEqual(committedPercentages, [73])
     }
 
-    func testSummaryCommitRevalidatesOwnershipAfterFinalActorHop() async {
-        let newestCheck = SummaryNewestCheckBarrier()
-        var requestIsStillOwned = true
-        var committed = false
+    func testLaterExplicitOwnerWinsWhenAdmittedPollContinuationIsDelayed() async throws {
+        let fetcher = LinearizedCoordinatorSummaryFetcher()
+        let ownerBarrier = SummaryRequestOwnerBarrier()
+        let poller = MenuSummaryPoller(fetcher: fetcher)
+        var newestOwner: UInt64 = 0
+        var committedPercentages: [Double] = []
 
-        let staleCommit = Task { @MainActor in
-            await commitAfterNewestSummaryCheck(
-                isNewest: {
-                    await newestCheck.pauseThenReturnNewest()
-                },
-                isStillOwned: {
-                    requestIsStillOwned
-                },
-                commit: {
-                    committed = true
+        let admittedPoll: Task<MenuSummaryOwnedFetchResult?, Never> = Task {
+            @MainActor in
+            await poller.poll(
+                isActive: true,
+                requestStartedAsync: {
+                    newestOwner &+= 1
+                    let owner = newestOwner
+                    await ownerBarrier.pauseUntilReleased()
+                    return owner
                 }
             )
         }
-        await newestCheck.waitUntilPaused()
+        await ownerBarrier.waitUntilPaused()
+        XCTAssertEqual(newestOwner, 1)
 
-        requestIsStillOwned = false
-        await newestCheck.release()
-        await staleCommit.value
+        newestOwner &+= 1
+        let explicitOwner = newestOwner
+        let explicitReload = Task {
+            await poller.reload(requestOwner: explicitOwner)
+        }
+        await fetcher.waitUntilStarted(call: 1)
 
-        XCTAssertFalse(committed)
+        await ownerBarrier.release()
+        await fetcher.waitUntilStarted(call: 2)
+
+        await fetcher.succeed(
+            call: 2,
+            with: coordinatorSummary(percent: 73)
+        )
+        let admittedCandidate = await admittedPoll.value
+        let admittedResult = try XCTUnwrap(admittedCandidate)
+        let admittedPercentage = try XCTUnwrap(
+            admittedResult.summary.usage.highestPercent
+        )
+        commitSummaryIfOwned(
+            admittedResult.summary,
+            requestOwner: admittedResult.requestOwner,
+            from: poller,
+            sessionOwner: 1,
+            currentSessionOwner: 1,
+            currentPoller: poller,
+            currentRequestOwner: newestOwner
+        ) { _ in
+            committedPercentages.append(admittedPercentage)
+        }
+
+        await fetcher.succeed(
+            call: 1,
+            with: coordinatorSummary(percent: 82)
+        )
+        let explicitResult = await explicitReload.value
+        let explicitPercentage = try XCTUnwrap(
+            explicitResult.summary.usage.highestPercent
+        )
+        commitSummaryIfOwned(
+            explicitResult.summary,
+            requestOwner: explicitResult.requestOwner,
+            from: poller,
+            sessionOwner: 1,
+            currentSessionOwner: 1,
+            currentPoller: poller,
+            currentRequestOwner: newestOwner
+        ) { _ in
+            committedPercentages.append(explicitPercentage)
+        }
+
+        XCTAssertEqual(admittedResult.requestOwner, 1)
+        XCTAssertEqual(explicitResult.requestOwner, 2)
+        XCTAssertEqual(newestOwner, 2)
+        let finalFetchCount = await fetcher.callCount
+        XCTAssertEqual(finalFetchCount, 2)
+        XCTAssertEqual(committedPercentages, [82])
+    }
+
+    func testSummaryCommitValidatesAllOwnershipAndAssignsSynchronously() {
+        let currentPoller = MenuSummaryPoller(
+            fetcher: CountingCoordinatorSummaryFetcher()
+        )
+        let replacedPoller = MenuSummaryPoller(
+            fetcher: CountingCoordinatorSummaryFetcher()
+        )
+        let summary = coordinatorSummary(percent: 64)
+        var committedPercentages: [Double] = []
+        let commit: (MenuSummary) -> Void = { candidate in
+            if let percent = candidate.usage.highestPercent {
+                committedPercentages.append(percent)
+            }
+        }
+
+        commitSummaryIfOwned(
+            summary,
+            requestOwner: 3,
+            from: currentPoller,
+            sessionOwner: 1,
+            currentSessionOwner: 2,
+            currentPoller: currentPoller,
+            currentRequestOwner: 3,
+            commit: commit
+        )
+        commitSummaryIfOwned(
+            summary,
+            requestOwner: 3,
+            from: replacedPoller,
+            sessionOwner: 2,
+            currentSessionOwner: 2,
+            currentPoller: currentPoller,
+            currentRequestOwner: 3,
+            commit: commit
+        )
+        commitSummaryIfOwned(
+            summary,
+            requestOwner: 2,
+            from: currentPoller,
+            sessionOwner: 2,
+            currentSessionOwner: 2,
+            currentPoller: currentPoller,
+            currentRequestOwner: 3,
+            commit: commit
+        )
+        XCTAssertTrue(committedPercentages.isEmpty)
+
+        commitSummaryIfOwned(
+            summary,
+            requestOwner: 3,
+            from: currentPoller,
+            sessionOwner: 2,
+            currentSessionOwner: 2,
+            currentPoller: currentPoller,
+            currentRequestOwner: 3,
+            commit: commit
+        )
+
+        XCTAssertEqual(committedPercentages, [64])
     }
 
     func testOldSessionSummaryCannotOverwriteReplacementSessionResult() async throws {
@@ -1112,33 +1227,6 @@ private actor LinearizedCoordinatorSummaryFetcher: MenuSummaryFetching {
     func succeed(call: Int, with summary: MenuSummary) {
         let continuation = fetchContinuations.removeValue(forKey: call)
         continuation?.resume(returning: summary)
-    }
-}
-
-private actor SummaryNewestCheckBarrier {
-    private var checkContinuation: CheckedContinuation<Bool, Never>?
-    private var observerContinuations: [CheckedContinuation<Void, Never>] = []
-
-    func pauseThenReturnNewest() async -> Bool {
-        await withCheckedContinuation { continuation in
-            checkContinuation = continuation
-            let observers = observerContinuations
-            observerContinuations.removeAll()
-            observers.forEach { $0.resume() }
-        }
-    }
-
-    func waitUntilPaused() async {
-        guard checkContinuation == nil else { return }
-        await withCheckedContinuation { continuation in
-            observerContinuations.append(continuation)
-        }
-    }
-
-    func release() {
-        let continuation = checkContinuation
-        checkContinuation = nil
-        continuation?.resume(returning: true)
     }
 }
 
