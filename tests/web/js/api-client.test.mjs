@@ -67,7 +67,7 @@ test("launch context is captured once and the complete query is erased first", a
 });
 
 
-test("missing duplicate extra and invalid launch values fail closed", () => {
+test("invalid launch values erase the complete query before failing closed", async () => {
   const invalidQueries = [
     `?surface=manager&destination=overview`,
     `?token=${TOKEN}&token=${TOKEN}&surface=manager&destination=overview`,
@@ -78,15 +78,31 @@ test("missing duplicate extra and invalid launch values fail closed", () => {
   ];
 
   for (const search of invalidQueries) {
+    const events = [];
+    let apiCalls = 0;
     const history = {
-      replaceState() {
-        throw new Error("history must not change for invalid launch context");
+      replaceState(state, title, url) {
+        events.push(["history", state, title, url]);
       },
     };
-    assert.throws(
-      () => readLaunchContext({ pathname: "/", search }, history),
-      (error) => error instanceof Error && error.message === "invalid_launch",
-    );
+    let caught;
+    try {
+      const context = readLaunchContext({ pathname: "/", search }, history);
+      const api = createApiClient(context.token, async () => {
+        apiCalls += 1;
+        return response(200, { providers: {} });
+      });
+      await api.bootstrap();
+    } catch (error) {
+      caught = error;
+    }
+
+    assert.equal(caught instanceof Error, true);
+    assert.equal(caught.message, "invalid_launch");
+    assert.equal(caught.message.includes(TOKEN), false);
+    assert.equal(caught.message.includes(search), false);
+    assert.deepEqual(events, [["history", null, "", "/"]]);
+    assert.equal(apiCalls, 0);
   }
 });
 
