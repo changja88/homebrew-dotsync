@@ -111,6 +111,38 @@ def identity_path_entry(directory: Path, name: str) -> str:
         os.close(directory_fd)
 
 
+def identity_directory_fd(descriptor: int, expected_value: str) -> str:
+    expected = _parse_identity(expected_value)
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISDIR(metadata.st_mode) or _identity(metadata) != expected:
+        raise ValueError("inherited Casks descriptor did not match its binding")
+    return f"{metadata.st_dev}:{metadata.st_ino}"
+
+
+def verify_canonical_directory_fd(
+    descriptor: int,
+    expected_value: str,
+    directory: Path,
+    name: str,
+) -> str:
+    expected = _parse_identity(expected_value)
+    identity_directory_fd(descriptor, expected_value)
+    directory_fd = _open_directory(directory)
+    try:
+        metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if not stat.S_ISDIR(metadata.st_mode) or _identity(metadata) != expected:
+            raise ValueError("canonical Casks path did not match the held descriptor")
+        opened_fd = _open_directory(name, dir_fd=directory_fd)
+        try:
+            if _identity(os.fstat(opened_fd)) != expected:
+                raise ValueError("canonical Casks path changed while verifying")
+        finally:
+            os.close(opened_fd)
+    finally:
+        os.close(directory_fd)
+    return f"{metadata.st_dev}:{metadata.st_ino}"
+
+
 def read_app_plist_versions() -> str:
     directory_fd = _open_directory(".")
     plist_fd = -1
@@ -386,6 +418,14 @@ def _parser() -> argparse.ArgumentParser:
     path_entry = subparsers.add_parser("identity-path-entry")
     path_entry.add_argument("directory", type=Path)
     path_entry.add_argument("name")
+    descriptor_identity = subparsers.add_parser("identity-directory-fd")
+    descriptor_identity.add_argument("descriptor", type=int)
+    descriptor_identity.add_argument("expected")
+    verify_descriptor = subparsers.add_parser("verify-canonical-directory-fd")
+    verify_descriptor.add_argument("descriptor", type=int)
+    verify_descriptor.add_argument("expected")
+    verify_descriptor.add_argument("directory", type=Path)
+    verify_descriptor.add_argument("name")
     subparsers.add_parser("read-app-plist-versions")
     binding = subparsers.add_parser("read-cask-binding")
     binding.add_argument("name")
@@ -412,6 +452,17 @@ def main(arguments: list[str] | None = None) -> int:
             print(identity_entry(namespace.name, parent=True))
         elif namespace.operation == "identity-path-entry":
             print(identity_path_entry(namespace.directory, namespace.name))
+        elif namespace.operation == "identity-directory-fd":
+            print(identity_directory_fd(namespace.descriptor, namespace.expected))
+        elif namespace.operation == "verify-canonical-directory-fd":
+            print(
+                verify_canonical_directory_fd(
+                    namespace.descriptor,
+                    namespace.expected,
+                    namespace.directory,
+                    namespace.name,
+                )
+            )
         elif namespace.operation == "read-app-plist-versions":
             print(read_app_plist_versions())
         elif namespace.operation == "read-cask-binding":

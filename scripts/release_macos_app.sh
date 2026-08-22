@@ -51,6 +51,7 @@ SCRIPT_DIR="$(cd -- "${BASH_SOURCE[0]%/*}" && pwd -P)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 TAG="v$VERSION"
 TAG_REF="refs/tags/$TAG"
+ZERO_GIT_OID="0000000000000000000000000000000000000000"
 ASSET_NAME="DotSync-$VERSION-macOS.zip"
 NOTARY_NAME="DotSync-notarization-$VERSION.zip"
 RELEASE_URL="https://github.com/changja88/homebrew-dotsync/releases/download/$TAG/$ASSET_NAME"
@@ -91,14 +92,15 @@ require_empty_git_output git status --porcelain=v1 --untracked-files=all \
   || die "release requires a clean checkout with exact Git status output"
 capture_git_line HEAD_COMMIT git rev-parse HEAD \
   || die "HEAD could not be resolved exactly"
-[[ "$HEAD_COMMIT" =~ ^[0-9a-f]{40}$ ]] || die "HEAD was not a canonical commit id"
+[[ "$HEAD_COMMIT" =~ ^[0-9a-f]{40}$ && "$HEAD_COMMIT" != "$ZERO_GIT_OID" ]] \
+  || die "HEAD was not a canonical non-zero commit id"
 capture_git_line TAG_TYPE git cat-file -t "$TAG_REF" \
   || die "$TAG does not resolve exactly to a tag object"
 [[ "$TAG_TYPE" == "tag" ]] || die "$TAG must be an annotated tag"
 capture_git_line TAG_COMMIT git rev-parse --verify "$TAG_REF^{commit}" \
   || die "$TAG does not resolve exactly to a commit"
-[[ "$TAG_COMMIT" =~ ^[0-9a-f]{40}$ ]] \
-  || die "$TAG commit was not a canonical commit id"
+[[ "$TAG_COMMIT" =~ ^[0-9a-f]{40}$ && "$TAG_COMMIT" != "$ZERO_GIT_OID" ]] \
+  || die "$TAG commit was not a canonical non-zero commit id"
 [[ "$HEAD_COMMIT" == "$TAG_COMMIT" ]] || die "$TAG must resolve to exact HEAD"
 [[ ! -e "$CASK_OUTPUT" && ! -L "$CASK_OUTPUT" ]] \
   || die "refusing to replace an existing Cask"
@@ -107,6 +109,7 @@ WORK_ACTIVE=0
 IN_SOURCE=0
 FINALIZER_ACTIVE=0
 FINALIZER_SIGNAL_STATUS=0
+COMMITTED=0
 TEMPORARY_ROOT=""
 TEMPORARY_ROOT_IDENTITY=""
 WORK_NAME=""
@@ -117,21 +120,46 @@ CASKS_DIRECTORY_CREATED=0
 CASKS_BINDING_OWNERSHIP=""
 CASKS_DEV=""
 CASKS_INO=""
+CASKS_FD=9
 CASK_BINDING_OWNERSHIP=""
 CASK_BINDING_FIELDS=""
 OWNED_CHILDREN=()
 
 record_finalizer_signal() {
-  if [[ "$FINALIZER_SIGNAL_STATUS" -eq 0 ]]; then
+  if [[ "$COMMITTED" -eq 0 && "$FINALIZER_SIGNAL_STATUS" -eq 0 ]]; then
     FINALIZER_SIGNAL_STATUS="$1"
   fi
 }
 
 revalidate_casks_binding() {
-  local current_binding
-  current_binding="$("$PYTHON" "$RELEASE_SUPPORT" \
-    identity-path-entry "$REPO_ROOT" Casks)" || return 1
-  [[ "$current_binding" == "$CASKS_BINDING_OWNERSHIP" ]]
+  "$PYTHON" "$RELEASE_SUPPORT" verify-canonical-directory-fd \
+    "$CASKS_FD" "$CASKS_DEV:$CASKS_INO" "$REPO_ROOT" Casks >/dev/null
+}
+
+rollback_bound_cask() {
+  local cask_binding_fields="$1"
+  local cask_dev="" cask_ino=""
+  if [[ -n "$cask_binding_fields" ]]; then
+    local rendered_casks_dev="" rendered_casks_ino=""
+    read -r rendered_casks_dev rendered_casks_ino cask_dev cask_ino \
+      <<< "$cask_binding_fields"
+    if [[ "$rendered_casks_dev" != "$CASKS_DEV" \
+        || "$rendered_casks_ino" != "$CASKS_INO" ]]; then
+      return 1
+    fi
+  fi
+  local rollback_arguments=(
+    --rollback-created --repository-root "$REPO_ROOT"
+    --casks-dev "$CASKS_DEV" --casks-ino "$CASKS_INO"
+    --casks-fd "$CASKS_FD"
+  )
+  if [[ -n "$cask_dev" && -n "$cask_ino" ]]; then
+    rollback_arguments+=(--cask-dev "$cask_dev" --cask-ino "$cask_ino")
+  fi
+  if [[ "$CASKS_DIRECTORY_CREATED" -eq 1 ]]; then
+    rollback_arguments+=(--remove-casks-directory)
+  fi
+  "$PYTHON" "$REPO_ROOT/scripts/render_cask.py" "${rollback_arguments[@]}"
 }
 
 finalize() {
@@ -172,51 +200,46 @@ finalize() {
     status="$FINALIZER_SIGNAL_STATUS"
   fi
 
-  if [[ "$CASK_TRANSACTION_ACTIVE" -eq 1 ]]; then
-    revalidate_casks_binding || cleanup_failed=1
-  fi
-
-  if [[ "$CASK_TRANSACTION_ACTIVE" -eq 1 ]] \
-      && { [[ "$status" -ne 0 ]] || [[ "$CASK_AUDIT_SUCCEEDED" -ne 1 ]] \
-        || [[ "$cleanup_failed" -ne 0 ]]; }; then
-    local cask_dev="" cask_ino=""
-    if [[ -n "$cask_binding_fields" ]]; then
-      local rendered_casks_dev="" rendered_casks_ino=""
-      read -r rendered_casks_dev rendered_casks_ino cask_dev cask_ino \
-        <<< "$cask_binding_fields"
-      if [[ "$rendered_casks_dev" != "$CASKS_DEV" \
-          || "$rendered_casks_ino" != "$CASKS_INO" ]]; then
-        cleanup_failed=1
-        cask_dev=""
-        cask_ino=""
-      fi
-    fi
-    local rollback_arguments=(
-      --rollback-created --repository-root "$REPO_ROOT"
-      --casks-dev "$CASKS_DEV" --casks-ino "$CASKS_INO"
-    )
-    if [[ -n "$cask_dev" && -n "$cask_ino" ]]; then
-      rollback_arguments+=(--cask-dev "$cask_dev" --cask-ino "$cask_ino")
-    fi
-    if [[ "$CASKS_DIRECTORY_CREATED" -eq 1 ]]; then
-      rollback_arguments+=(--remove-casks-directory)
-    fi
-    "$PYTHON" "$REPO_ROOT/scripts/render_cask.py" "${rollback_arguments[@]}" \
+  if [[ "$status" -eq 0 && "$CASK_AUDIT_SUCCEEDED" -eq 1 \
+      && "$cleanup_failed" -eq 0 ]]; then
+    printf '%s\n' \
+      "Signed app uploaded and Cask audited. Review and commit this generated Cask only if this process exits 0; stop for explicit publication confirmation." \
       || cleanup_failed=1
   fi
 
-  trap '' HUP INT TERM
+  if [[ "$CASK_TRANSACTION_ACTIVE" -eq 1 ]]; then
+    revalidate_casks_binding || cleanup_failed=1
+  fi
   if [[ "$FINALIZER_SIGNAL_STATUS" -ne 0 ]]; then
     status="$FINALIZER_SIGNAL_STATUS"
   fi
 
+  if [[ "$status" -eq 0 && "$CASK_AUDIT_SUCCEEDED" -eq 1 \
+      && "$cleanup_failed" -eq 0 ]]; then
+    COMMITTED=1
+    if [[ "$FINALIZER_SIGNAL_STATUS" -eq 0 ]]; then
+      trap '' HUP INT TERM
+      exit 0
+    fi
+    COMMITTED=0
+    status="$FINALIZER_SIGNAL_STATUS"
+  fi
+
+  if [[ "$CASK_TRANSACTION_ACTIVE" -eq 1 ]]; then
+    rollback_bound_cask "$cask_binding_fields" || cleanup_failed=1
+  fi
+  if [[ "$FINALIZER_SIGNAL_STATUS" -ne 0 ]]; then
+    status="$FINALIZER_SIGNAL_STATUS"
+  elif [[ "$cleanup_failed" -ne 0 ]]; then
+    status=1
+  fi
   if [[ "$cleanup_failed" -ne 0 ]]; then
     printf '%s\n' "release_macos_app: release cleanup did not complete exactly" >&2
-    status=1
-  elif [[ "$status" -eq 0 && "$CASK_AUDIT_SUCCEEDED" -eq 1 ]]; then
-    printf '%s\n' \
-      "Signed app uploaded and Cask audited. Stop for explicit publication confirmation."
   fi
+  if [[ "$FINALIZER_SIGNAL_STATUS" -ne 0 ]]; then
+    status="$FINALIZER_SIGNAL_STATUS"
+  fi
+  trap '' HUP INT TERM
   exit "$status"
 }
 
@@ -389,6 +412,10 @@ CASKS_BINDING_OWNERSHIP="$("$PYTHON" "$RELEASE_SUPPORT" \
 CASKS_IDENTITY_FIELDS="${CASKS_BINDING_OWNERSHIP#Casks:}"
 CASKS_IDENTITY_FIELDS="${CASKS_IDENTITY_FIELDS%:d}"
 IFS=: read -r CASKS_DEV CASKS_INO <<< "$CASKS_IDENTITY_FIELDS"
+exec 9< "$REPO_ROOT/Casks" || die "Casks directory descriptor could not be held"
+[[ "$("$PYTHON" "$RELEASE_SUPPORT" identity-directory-fd \
+  "$CASKS_FD" "$CASKS_DEV:$CASKS_INO")" == "$CASKS_DEV:$CASKS_INO" ]] \
+  || die "held Casks descriptor did not match the path binding"
 CASK_TRANSACTION_ACTIVE=1
 printf '' > cask-binding.json
 CASK_BINDING_OWNERSHIP="$("$PYTHON" "$RELEASE_SUPPORT" identity-here cask-binding.json)" \
@@ -402,6 +429,7 @@ OWNED_CHILDREN+=(--owned "$CASK_BINDING_OWNERSHIP")
   --repository-root "$REPO_ROOT" \
   --expected-casks-dev "$CASKS_DEV" \
   --expected-casks-ino "$CASKS_INO" \
+  --casks-fd "$CASKS_FD" \
   > cask-binding.json
 [[ -f "$CASK_OUTPUT" && ! -L "$CASK_OUTPUT" ]] \
   || die "Cask renderer did not create the exact output"

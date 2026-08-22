@@ -376,7 +376,7 @@ def test_renderer_rolls_back_new_cask_when_final_validation_fails(
 
 @pytest.mark.parametrize(
     "failure_boundary",
-    ["fsync", "validation", "retained-cleanup-fsync"],
+    ["fsync", "validation"],
 )
 def test_renderer_restores_replaced_cask_on_every_postpublication_failure(
     tmp_path, monkeypatch, failure_boundary
@@ -387,15 +387,14 @@ def test_renderer_restores_replaced_cask_on_every_postpublication_failure(
     output.write_bytes(prior_bytes)
     output.chmod(0o640)
 
-    if failure_boundary in ("fsync", "retained-cleanup-fsync"):
+    if failure_boundary == "fsync":
         real_fsync = os.fsync
         fsync_calls = 0
-        failure_call = 2 if failure_boundary == "fsync" else 3
 
         def fail_selected_fsync(descriptor):
             nonlocal fsync_calls
             fsync_calls += 1
-            if fsync_calls == failure_call:
+            if fsync_calls == 2:
                 raise OSError("injected replacement fsync failure")
             return real_fsync(descriptor)
 
@@ -420,106 +419,6 @@ def test_renderer_restores_replaced_cask_on_every_postpublication_failure(
 
     with pytest.raises(expected_error):
         _render(repository, replace_existing=True)
-
-    assert output.read_bytes() == prior_bytes
-    assert stat.S_IMODE(output.stat().st_mode) == 0o640
-    assert list(output.parent.iterdir()) == [output]
-
-
-@pytest.mark.parametrize("recreation_failure", ["write", "chmod", "fsync"])
-def test_renderer_retries_exact_prior_restoration_after_partial_recreation_failure(
-    tmp_path, monkeypatch, recreation_failure
-):
-    repository = _repository(tmp_path)
-    output = repository / "Casks" / "dotsync-app.rb"
-    prior_bytes = b"prior-cask-requiring-reconstruction\n"
-    output.write_bytes(prior_bytes)
-    output.chmod(0o640)
-
-    real_fsync = os.fsync
-    fsync_calls = 0
-
-    def fail_commit_and_selected_recreation_fsync(descriptor):
-        nonlocal fsync_calls
-        fsync_calls += 1
-        if fsync_calls == 3 or (
-            recreation_failure == "fsync" and fsync_calls == 4
-        ):
-            raise OSError("injected retained-entry fsync failure")
-        return real_fsync(descriptor)
-
-    monkeypatch.setattr(os, "fsync", fail_commit_and_selected_recreation_fsync)
-
-    if recreation_failure == "write":
-        real_write_all = render_cask_module._write_all
-        write_calls = 0
-
-        def fail_first_recreation_write(descriptor, payload):
-            nonlocal write_calls
-            write_calls += 1
-            if write_calls == 2:
-                raise OSError("injected retained-entry write failure")
-            return real_write_all(descriptor, payload)
-
-        monkeypatch.setattr(render_cask_module, "_write_all", fail_first_recreation_write)
-    elif recreation_failure == "chmod":
-        real_fchmod = os.fchmod
-        chmod_calls = 0
-
-        def fail_first_recreation_chmod(descriptor, mode):
-            nonlocal chmod_calls
-            chmod_calls += 1
-            if chmod_calls == 2:
-                raise OSError("injected retained-entry chmod failure")
-            return real_fchmod(descriptor, mode)
-
-        monkeypatch.setattr(os, "fchmod", fail_first_recreation_chmod)
-
-    with pytest.raises(OSError, match="injected retained-entry fsync failure"):
-        _render(repository, replace_existing=True)
-
-    assert output.read_bytes() == prior_bytes
-    assert stat.S_IMODE(output.stat().st_mode) == 0o640
-    assert list(output.parent.iterdir()) == [output]
-
-
-def test_renderer_defers_signal_during_prior_recreation_until_restored(
-    tmp_path, monkeypatch
-):
-    repository = _repository(tmp_path)
-    output = repository / "Casks" / "dotsync-app.rb"
-    prior_bytes = b"prior-cask-before-deferred-signal\n"
-    output.write_bytes(prior_bytes)
-    output.chmod(0o640)
-
-    real_fsync = os.fsync
-    fsync_calls = 0
-
-    def fail_commit_fsync(descriptor):
-        nonlocal fsync_calls
-        fsync_calls += 1
-        if fsync_calls == 3:
-            raise OSError("injected post-retained-unlink fsync failure")
-        return real_fsync(descriptor)
-
-    monkeypatch.setattr(os, "fsync", fail_commit_fsync)
-    real_write_all = render_cask_module._write_all
-    write_calls = 0
-
-    def signal_during_recreation(descriptor, payload):
-        nonlocal write_calls
-        write_calls += 1
-        if write_calls == 2:
-            os.kill(os.getpid(), signal.SIGTERM)
-        return real_write_all(descriptor, payload)
-
-    monkeypatch.setattr(render_cask_module, "_write_all", signal_during_recreation)
-    prior_handler = signal.signal(signal.SIGTERM, render_cask_module._raise_signal)
-    try:
-        with pytest.raises(BaseException):
-            _render(repository, replace_existing=True)
-    finally:
-        signal.signal(signal.SIGTERM, prior_handler)
 
     assert output.read_bytes() == prior_bytes
     assert stat.S_IMODE(output.stat().st_mode) == 0o640
@@ -561,6 +460,170 @@ def test_renderer_rolls_back_if_binding_output_cannot_be_published(tmp_path):
     assert list(output.parent.iterdir()) == []
 
 
+@pytest.mark.parametrize("replace_existing", [False, True])
+def test_renderer_retains_exact_rollback_inode_until_binding_callback_completes(
+    tmp_path, replace_existing
+):
+    repository = _repository(tmp_path)
+    output = repository / "Casks" / "dotsync-app.rb"
+    prior_bytes = b"prior-cask-retained-through-binding\n"
+    prior_inode = None
+    if replace_existing:
+        output.write_bytes(prior_bytes)
+        output.chmod(0o640)
+        prior_inode = output.stat().st_ino
+
+    def fail_binding_flush(_binding):
+        entries = list(output.parent.iterdir())
+        retained = [entry for entry in entries if entry.name.startswith(".dotsync-app.")]
+        assert output.is_file()
+        assert len(retained) == 1
+        if replace_existing:
+            assert retained[0].read_bytes() == prior_bytes
+            assert stat.S_IMODE(retained[0].stat().st_mode) == 0o640
+            assert retained[0].stat().st_ino != output.stat().st_ino
+        else:
+            assert retained[0].stat().st_ino == output.stat().st_ino
+            assert output.stat().st_nlink == 2
+        raise OSError("injected binding callback flush failure")
+
+    with pytest.raises(OSError, match="binding callback flush"):
+        render_cask_module._render_cask_with_binding(
+            version=VALID_VERSION,
+            sha256=VALID_SHA256,
+            url=VALID_URL,
+            output=output,
+            repository_root=repository,
+            replace_existing=replace_existing,
+            binding_callback=fail_binding_flush,
+        )
+
+    if replace_existing:
+        assert output.read_bytes() == prior_bytes
+        assert stat.S_IMODE(output.stat().st_mode) == 0o640
+        assert output.stat().st_ino == prior_inode
+        assert list(output.parent.iterdir()) == [output]
+    else:
+        assert list(output.parent.iterdir()) == []
+
+
+@pytest.mark.parametrize("replace_existing", [False, True])
+def test_renderer_signal_immediately_before_retained_unlink_rolls_back_exactly(
+    tmp_path, monkeypatch, replace_existing
+):
+    repository = _repository(tmp_path)
+    output = repository / "Casks" / "dotsync-app.rb"
+    prior_bytes = b"prior-cask-before-renderer-commit\n"
+    if replace_existing:
+        output.write_bytes(prior_bytes)
+        output.chmod(0o640)
+    real_pending_check = render_cask_module._raise_if_managed_signal_pending
+    injected = False
+
+    def signal_immediately_before_commit():
+        nonlocal injected
+        if not injected:
+            injected = True
+            os.kill(os.getpid(), signal.SIGTERM)
+        real_pending_check()
+
+    monkeypatch.setattr(
+        render_cask_module,
+        "_raise_if_managed_signal_pending",
+        signal_immediately_before_commit,
+    )
+    prior_handler = signal.signal(signal.SIGTERM, render_cask_module._raise_signal)
+    try:
+        with pytest.raises(InterruptedError):
+            _render(repository, replace_existing=replace_existing)
+    finally:
+        signal.signal(signal.SIGTERM, prior_handler)
+
+    if replace_existing:
+        assert output.read_bytes() == prior_bytes
+        assert stat.S_IMODE(output.stat().st_mode) == 0o640
+        assert list(output.parent.iterdir()) == [output]
+    else:
+        assert list(output.parent.iterdir()) == []
+
+
+@pytest.mark.parametrize("replace_existing", [False, True])
+def test_renderer_signal_immediately_after_retained_unlink_is_postcommit(
+    tmp_path, monkeypatch, replace_existing
+):
+    repository = _repository(tmp_path)
+    output = repository / "Casks" / "dotsync-app.rb"
+    if replace_existing:
+        output.write_bytes(b"prior-cask-replaced-at-commit\n")
+    real_unlink = os.unlink
+    injected = False
+
+    def signal_immediately_after_commit(path, *args, **kwargs):
+        nonlocal injected
+        result = real_unlink(path, *args, **kwargs)
+        if not injected and str(path).startswith(".dotsync-app."):
+            injected = True
+            os.kill(os.getpid(), signal.SIGTERM)
+        return result
+
+    monkeypatch.setattr(os, "unlink", signal_immediately_after_commit)
+    prior_handler = signal.signal(signal.SIGTERM, render_cask_module._raise_signal)
+    try:
+        rendered = _render(repository, replace_existing=replace_existing)
+    finally:
+        signal.signal(signal.SIGTERM, prior_handler)
+
+    assert injected
+    assert rendered == output
+    assert output.read_text(encoding="utf-8").startswith('cask "dotsync-app" do\n')
+    assert list(output.parent.iterdir()) == [output]
+
+
+@pytest.mark.parametrize("replace_existing", [False, True])
+@pytest.mark.parametrize("postcommit_close_occurrence", [1, 2, 3])
+def test_renderer_has_no_failing_descriptor_close_after_explicit_commit(
+    tmp_path, monkeypatch, replace_existing, postcommit_close_occurrence
+):
+    repository = _repository(tmp_path)
+    output = repository / "Casks" / "dotsync-app.rb"
+    if replace_existing:
+        output.write_bytes(b"prior-cask-before-close-seam\n")
+    real_unlink = os.unlink
+    real_close = os.close
+    committed = False
+    injected = False
+    postcommit_close_count = 0
+
+    def observe_commit(path, *args, **kwargs):
+        nonlocal committed
+        result = real_unlink(path, *args, **kwargs)
+        if str(path).startswith(".dotsync-app."):
+            committed = True
+        return result
+
+    def fail_first_close_after_commit(descriptor):
+        nonlocal injected, postcommit_close_count
+        real_close(descriptor)
+        if committed:
+            postcommit_close_count += 1
+        if (
+            not injected
+            and postcommit_close_count == postcommit_close_occurrence
+        ):
+            injected = True
+            raise OSError("injected close failure after explicit commit")
+
+    monkeypatch.setattr(os, "unlink", observe_commit)
+    monkeypatch.setattr(os, "close", fail_first_close_after_commit)
+
+    rendered = _render(repository, replace_existing=replace_existing)
+
+    assert injected
+    assert rendered == output
+    assert output.read_text(encoding="utf-8").startswith('cask "dotsync-app" do\n')
+    assert list(output.parent.iterdir()) == [output]
+
+
 def _write_executable(path: Path, body: str) -> None:
     path.write_text(body, encoding="utf-8")
     path.chmod(0o755)
@@ -599,7 +662,12 @@ with log_path.open("a", encoding="utf-8") as log:
 def rebind_casks_directory(seam):
     repository = Path(os.environ["DOTSYNC_RELEASE_REPOSITORY"])
     casks = repository / "Casks"
-    original = repository / ("Casks.bound-original-" + seam)
+    if os.environ.get("DOTSYNC_RELEASE_REBIND_CASKS_OUTSIDE"):
+        original = Path(os.environ["DOTSYNC_RELEASE_REBOUND_CASKS_ROOT"]) / (
+            "Casks.bound-original-" + seam
+        )
+    else:
+        original = repository / ("Casks.bound-original-" + seam)
     casks.rename(original)
     casks.mkdir()
     (casks / "replacement-marker").write_text(
@@ -740,6 +808,7 @@ if name == "python-release":
         if len(arguments) < 2 or arguments[1] not in (
             "validate-temp-root", "identity-current", "identity-here",
             "identity-parent", "identity-path-entry", "read-cask-binding",
+            "identity-directory-fd", "verify-canonical-directory-fd",
             "read-app-plist-versions", "cleanup-current",
         ):
             raise SystemExit(92)
@@ -752,6 +821,7 @@ if name == "python-release":
                 [{real_python!r}, *arguments],
                 capture_output=True,
                 text=True,
+                pass_fds=(9,),
             )
             if completed.returncode == 0:
                 rebind_casks_directory("render-to-audit")
@@ -766,6 +836,34 @@ if name == "python-release":
                 os.getppid(),
                 int(os.environ["DOTSYNC_RELEASE_SECOND_SIGNAL_DURING_CLEANUP"]),
             )
+        signal_prefix = json.loads(
+            os.environ.get("DOTSYNC_RELEASE_SIGNAL_PREFIX", "[]")
+        )
+        signal_occurrence = int(
+            os.environ.get("DOTSYNC_RELEASE_SIGNAL_OCCURRENCE", "1")
+        )
+        matching_signal_occurrence = 1 + sum(
+            prior[:len(signal_prefix)] == signal_prefix for prior in prior_calls
+        )
+        if (
+            signal_prefix
+            and call[:len(signal_prefix)] == signal_prefix
+            and matching_signal_occurrence == signal_occurrence
+        ):
+            import subprocess
+            completed = subprocess.run(
+                [{real_python!r}, *arguments],
+                capture_output=True,
+                text=True,
+                pass_fds=(9,),
+            )
+            os.kill(
+                os.getppid(),
+                int(os.environ["DOTSYNC_RELEASE_SIGNAL_NUMBER"]),
+            )
+            sys.stdout.write(completed.stdout)
+            sys.stderr.write(completed.stderr)
+            raise SystemExit(completed.returncode)
         os.execv({real_python!r}, [{real_python!r}, *arguments])
     if arguments[:1] == ["-c"]:
         allowed_code_prefixes = (
@@ -1065,6 +1163,8 @@ esac
     call_log = tmp_path / "release-calls.jsonl"
     private_temp = tmp_path / "private-temp"
     private_temp.mkdir(mode=0o700)
+    rebound_casks_root = tmp_path / "renamed-casks"
+    rebound_casks_root.mkdir()
     env = {
         **git_env,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
@@ -1074,6 +1174,7 @@ esac
         "DOTSYNC_RELEASE_CALL_LOG": str(call_log),
         "DOTSYNC_RELEASE_FAKE_COMMON_DIR": str(tmp_path / "other-common.git"),
         "DOTSYNC_RELEASE_REPOSITORY": str(repository),
+        "DOTSYNC_RELEASE_REBOUND_CASKS_ROOT": str(rebound_casks_root),
         "TMPDIR": str(private_temp),
     }
     return {
@@ -1319,6 +1420,7 @@ def _expected_success_calls() -> list[list[str]]:
         ],
         ["python-release", support, "identity-current"],
         ["python-release", support, "identity-path-entry", "$REPOSITORY", "Casks"],
+        ["python-release", support, "identity-directory-fd", "9", "$DEV:$INO"],
         ["python-release", support, "identity-here", "cask-binding.json"],
         [
             "python-release",
@@ -1337,12 +1439,17 @@ def _expected_success_calls() -> list[list[str]]:
             "$NUMBER",
             "--expected-casks-ino",
             "$NUMBER",
+            "--casks-fd",
+            "9",
         ],
         [
             "python-release", support, "read-cask-binding", "cask-binding.json",
             "cask-binding.json:$DEV:$INO:f",
         ],
-        ["python-release", support, "identity-path-entry", "$REPOSITORY", "Casks"],
+        [
+            "python-release", support, "verify-canonical-directory-fd",
+            "9", "$DEV:$INO", "$REPOSITORY", "Casks",
+        ],
         ["brew", "audit", "--cask", "--strict", cask],
         [
             "python-release", support, "cleanup-current",
@@ -1356,7 +1463,10 @@ def _expected_success_calls() -> list[list[str]]:
             "--owned", "DotSync-0.3.0-macOS.zip:$DEV:$INO:f",
             "--owned", "cask-binding.json:$DEV:$INO:f",
         ],
-        ["python-release", support, "identity-path-entry", "$REPOSITORY", "Casks"],
+        [
+            "python-release", support, "verify-canonical-directory-fd",
+            "9", "$DEV:$INO", "$REPOSITORY", "Casks",
+        ],
     ]
 
 
@@ -1498,10 +1608,12 @@ def test_signed_macos_release_rejects_tagged_project_version_mismatch_before_bui
     "variable,value",
     [
         ("DOTSYNC_RELEASE_HEAD_OUTPUT", ""),
+        ("DOTSYNC_RELEASE_HEAD_OUTPUT", "0" * 40 + "\n"),
         ("DOTSYNC_RELEASE_HEAD_OUTPUT", "A" * 40 + "\n"),
         ("DOTSYNC_RELEASE_TAG_TYPE_OUTPUT", ""),
         ("DOTSYNC_RELEASE_TAG_TYPE_OUTPUT", "commit\n"),
         ("DOTSYNC_RELEASE_TAG_COMMIT_OUTPUT", ""),
+        ("DOTSYNC_RELEASE_TAG_COMMIT_OUTPUT", "0" * 40 + "\n"),
         ("DOTSYNC_RELEASE_TAG_COMMIT_OUTPUT", "A" * 40 + "\n"),
         ("DOTSYNC_RELEASE_GIT_DIR_OUTPUT", ""),
         ("DOTSYNC_RELEASE_GIT_DIR_OUTPUT", "relative/.git\n"),
@@ -1520,6 +1632,25 @@ def test_signed_macos_release_rejects_empty_or_malformed_tag_provenance_output(
 
     assert result.returncode != 0
     assert not any(call[:2] == ["git", "archive"] for call in _release_calls(macos_release_repository))
+
+
+@pytest.mark.no_subprocess_block
+def test_signed_macos_release_rejects_matching_all_zero_head_and_tag_oids(
+    macos_release_repository,
+):
+    env = macos_release_repository["env"]
+    assert isinstance(env, dict)
+    zero_oid = "0" * 40 + "\n"
+    env["DOTSYNC_RELEASE_HEAD_OUTPUT"] = zero_oid
+    env["DOTSYNC_RELEASE_TAG_COMMIT_OUTPUT"] = zero_oid
+
+    result = _run_macos_release(macos_release_repository, VALID_VERSION)
+
+    assert result.returncode != 0
+    assert not any(
+        call[:2] == ["git", "archive"]
+        for call in _release_calls(macos_release_repository)
+    )
 
 
 @pytest.mark.no_subprocess_block
@@ -1738,7 +1869,7 @@ def test_audit_failure_preserves_replacement_of_bound_casks_directory(
     owned = repository / "Casks.created-by-renderer" / "dotsync-app.rb"
     assert result.returncode != 0
     assert replacement.read_bytes() == b"replacement-directory-cask-must-survive\n"
-    assert owned.is_file()
+    assert not owned.exists()
 
 
 @pytest.mark.no_subprocess_block
@@ -1746,24 +1877,32 @@ def test_audit_failure_preserves_replacement_of_bound_casks_directory(
     "seam",
     ["bind-to-render", "render-to-audit", "audit-to-cleanup"],
 )
+@pytest.mark.parametrize("outside_canonical_parent", [False, True])
 def test_release_preserves_casks_directory_replacement_at_every_identity_seam(
-    macos_release_repository, seam
+    macos_release_repository, seam, outside_canonical_parent
 ):
     env = macos_release_repository["env"]
     repository = macos_release_repository["repository"]
     assert isinstance(env, dict)
     assert isinstance(repository, Path)
     env["DOTSYNC_RELEASE_REBIND_CASKS_SEAM"] = seam
+    if outside_canonical_parent:
+        env["DOTSYNC_RELEASE_REBIND_CASKS_OUTSIDE"] = "1"
 
     result = _run_macos_release(macos_release_repository, VALID_VERSION)
 
     replacement = repository / "Casks"
-    bound_original = repository / f"Casks.bound-original-{seam}"
+    rebound_root = Path(env["DOTSYNC_RELEASE_REBOUND_CASKS_ROOT"])
+    bound_original = (
+        rebound_root if outside_canonical_parent else repository
+    ) / f"Casks.bound-original-{seam}"
     assert result.returncode != 0
     assert (replacement / "replacement-marker").read_text(encoding="utf-8") == (
         "replacement directory must survive\n"
     )
     assert bound_original.is_dir()
+    assert list(repository.rglob("dotsync-app.rb")) == []
+    assert list(rebound_root.rglob("dotsync-app.rb")) == []
 
 
 @pytest.mark.no_subprocess_block
@@ -1786,6 +1925,31 @@ def test_second_signal_during_finalizer_is_deferred_until_exact_cleanup(
     assert result.returncode == 128 + signal.SIGHUP
     assert not work.exists()
     assert not (repository / "Casks" / "dotsync-app.rb").exists()
+
+
+@pytest.mark.no_subprocess_block
+def test_signal_immediately_before_release_commit_rolls_back_and_fails(
+    macos_release_repository,
+):
+    env = macos_release_repository["env"]
+    repository = macos_release_repository["repository"]
+    assert isinstance(env, dict)
+    assert isinstance(repository, Path)
+    env["DOTSYNC_RELEASE_SIGNAL_PREFIX"] = json.dumps(
+        [
+            "python-release",
+            str(repository / "scripts" / "macos_release_support.py"),
+            "verify-canonical-directory-fd",
+        ]
+    )
+    env["DOTSYNC_RELEASE_SIGNAL_OCCURRENCE"] = "2"
+    env["DOTSYNC_RELEASE_SIGNAL_NUMBER"] = str(signal.SIGHUP)
+
+    result = _run_macos_release(macos_release_repository, VALID_VERSION)
+
+    assert result.returncode == 128 + signal.SIGHUP
+    assert not (repository / "Casks" / "dotsync-app.rb").exists()
+    assert "only if this process exits 0" in result.stdout
 
 
 @pytest.mark.no_subprocess_block
@@ -2007,13 +2171,14 @@ GATE_FAILURE_CASES = [
     (["gh", "release", "upload"], 1),
     (["python-release", "SUPPORT", "identity-current"], 4),
     (["python-release", "SUPPORT", "identity-path-entry"], 1),
+    (["python-release", "SUPPORT", "identity-directory-fd"], 1),
     (["python-release", "SUPPORT", "identity-here"], 3),
     (["python-release", "RENDERER"], 1),
     (["python-release", "SUPPORT", "read-cask-binding"], 1),
-    (["python-release", "SUPPORT", "identity-path-entry"], 2),
+    (["python-release", "SUPPORT", "verify-canonical-directory-fd"], 1),
     (["brew", "audit"], 1),
     (["python-release", "SUPPORT", "cleanup-current"], 1),
-    (["python-release", "SUPPORT", "identity-path-entry"], 3),
+    (["python-release", "SUPPORT", "verify-canonical-directory-fd"], 2),
 ]
 
 
@@ -2100,6 +2265,13 @@ def _expected_finalizer_suffix(
     ]
     work_binding = support_prefix + ["identity-current", "--require-mode", "0700"]
     casks_binding = support_prefix + ["identity-path-entry", "$REPOSITORY", "Casks"]
+    casks_descriptor_binding = support_prefix + [
+        "identity-directory-fd", "9", "$DEV:$INO"
+    ]
+    casks_revalidation = support_prefix + [
+        "verify-canonical-directory-fd",
+        "9", "$DEV:$INO", "$REPOSITORY", "Casks",
+    ]
     cask_binding_file = support_prefix + ["identity-here", "cask-binding.json"]
     renderer = ["python-release", "$REPOSITORY/scripts/render_cask.py"]
     read_binding = support_prefix + [
@@ -2113,7 +2285,7 @@ def _expected_finalizer_suffix(
     final_revalidation_index = len(success_calls) - 1
 
     work_active = failure_index > success_calls.index(work_binding)
-    cask_active = failure_index > success_calls.index(casks_binding)
+    cask_active = failure_index > success_calls.index(casks_descriptor_binding)
     cask_binding_owned = failure_index > success_calls.index(cask_binding_file)
     read_binding_index = success_calls.index(read_binding)
     cleanup_index = success_calls.index(cleanup)
@@ -2125,7 +2297,7 @@ def _expected_finalizer_suffix(
     if work_active and failure_index < cleanup_index:
         suffix.append(_expected_cleanup_call_before(success_calls, failure_index))
     if cask_active and failure_index != final_revalidation_index:
-        suffix.append(casks_binding)
+        suffix.append(casks_revalidation)
     if cask_active:
         rollback = renderer + [
             "--rollback-created",
@@ -2135,6 +2307,8 @@ def _expected_finalizer_suffix(
             "$NUMBER",
             "--casks-ino",
             "$NUMBER",
+            "--casks-fd",
+            "9",
         ]
         if failure_index >= read_binding_index:
             rollback.extend(
@@ -2264,8 +2438,17 @@ def test_each_failed_release_gate_stops_without_cask_or_trailing_external_calls(
             "Casks",
         ]
     )
+    casks_descriptor_binding_index = success_calls.index(
+        [
+            "python-release",
+            "$REPOSITORY/scripts/macos_release_support.py",
+            "identity-directory-fd",
+            "9",
+            "$DEV:$INO",
+        ]
+    )
     assert (repository / "Casks").exists() == (
-        failure_index == initial_casks_binding_index
+        failure_index in {initial_casks_binding_index, casks_descriptor_binding_index}
     )
 
 

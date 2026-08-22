@@ -16,6 +16,7 @@ import sys
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Callable
 
 
 CANONICAL_VERSION = re.compile(
@@ -227,72 +228,31 @@ def _swap_entries(directory_fd: int, first: str, second: str) -> None:
         raise OSError(error_number, os.strerror(error_number))
 
 
-def _create_retained_entry(
-    directory_fd: int,
-    name: str,
-    payload: bytes,
-    mode: int,
-) -> tuple[int, int]:
-    descriptor = os.open(
-        name,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-        0o600,
-        dir_fd=directory_fd,
-    )
-    created_identity = _identity(os.fstat(descriptor))
-    try:
-        _write_all(descriptor, payload)
-        os.fchmod(descriptor, mode)
-        os.fsync(descriptor)
-        final_metadata = os.fstat(descriptor)
-        if _identity(final_metadata) != created_identity:
-            raise ValueError("retained Cask identity changed while restoring")
-        return created_identity
-    except BaseException as error:
-        os.close(descriptor)
-        descriptor = -1
-        try:
-            _unlink_exact(directory_fd, name, created_identity)
-            os.fsync(directory_fd)
-        except BaseException as cleanup_error:
-            raise RuntimeError(
-                "partial retained Cask cleanup failed: "
-                f"{cleanup_error}"
-            ) from error
-        raise
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-
-
-def _recreate_retained_entry(
-    directory_fd: int,
-    name: str,
-    payload: bytes,
-    mode: int,
-) -> tuple[int, int]:
-    last_error: BaseException | None = None
-    for _attempt in range(2):
-        try:
-            return _create_retained_entry(directory_fd, name, payload, mode)
-        except BaseException as error:
-            last_error = error
-    assert last_error is not None
-    raise RuntimeError("could not recreate the retained prior Cask") from last_error
-
-
 @contextmanager
 def _defer_managed_signals():
     prior_mask = signal.pthread_sigmask(signal.SIG_BLOCK, MANAGED_SIGNALS)
+    commit_state = [False]
     try:
-        yield
+        yield commit_state
     finally:
-        signal.pthread_sigmask(signal.SIG_SETMASK, prior_mask)
+        if commit_state[0]:
+            try:
+                _discard_pending_managed_signals()
+            except BaseException:
+                pass
+            try:
+                signal.pthread_sigmask(signal.SIG_SETMASK, prior_mask)
+            except BaseException:
+                pass
+        else:
+            signal.pthread_sigmask(signal.SIG_SETMASK, prior_mask)
 
 
 def _validate_published_entry(
     directory_fd: int,
     expected: tuple[int, int],
+    *,
+    expected_link_count: int,
 ) -> None:
     path_metadata = os.stat(
         OUTPUT_PARTS[1],
@@ -310,7 +270,7 @@ def _validate_published_entry(
         if (
             _identity(path_metadata) != expected
             or stat.S_IMODE(opened_metadata.st_mode) != 0o644
-            or opened_metadata.st_nlink != 1
+            or opened_metadata.st_nlink != expected_link_count
         ):
             raise ValueError("rendered Cask does not have exact 0644 ownership shape")
     finally:
@@ -319,9 +279,11 @@ def _validate_published_entry(
 
 def _rollback_new_publication(
     casks_fd: int,
+    temporary_name: str,
     published_identity: tuple[int, int],
 ) -> None:
     _unlink_exact(casks_fd, OUTPUT_PARTS[1], published_identity)
+    _unlink_exact(casks_fd, temporary_name, published_identity)
     os.fsync(casks_fd)
 
 
@@ -330,43 +292,62 @@ def _rollback_replacement(
     temporary_name: str,
     published_identity: tuple[int, int],
     prior_identity: tuple[int, int],
-    prior_payload: bytes,
-    prior_mode: int,
 ) -> None:
-    with _defer_managed_signals():
-        try:
-            retained_descriptor, _retained_metadata = _open_exact_regular(
-                casks_fd,
-                temporary_name,
-                prior_identity,
-            )
-        except FileNotFoundError:
-            restored_identity = _recreate_retained_entry(
-                casks_fd,
-                temporary_name,
-                prior_payload,
-                prior_mode,
-            )
-        else:
-            os.close(retained_descriptor)
-            restored_identity = prior_identity
+    retained_descriptor, _retained_metadata = _open_exact_regular(
+        casks_fd,
+        temporary_name,
+        prior_identity,
+    )
+    os.close(retained_descriptor)
+    _swap_entries(casks_fd, temporary_name, OUTPUT_PARTS[1])
+    restored_descriptor, _restored_metadata = _open_exact_regular(
+        casks_fd,
+        OUTPUT_PARTS[1],
+        prior_identity,
+    )
+    os.close(restored_descriptor)
+    _unlink_exact(casks_fd, temporary_name, published_identity)
+    os.fsync(casks_fd)
 
-        _swap_entries(casks_fd, temporary_name, OUTPUT_PARTS[1])
-        restored_descriptor, restored_metadata = _open_exact_regular(
-            casks_fd,
-            OUTPUT_PARTS[1],
-            restored_identity,
+
+def _raise_if_managed_signal_pending() -> None:
+    pending = set(signal.sigpending()).intersection(MANAGED_SIGNALS)
+    if pending:
+        signal_number = min(int(item) for item in pending)
+        raise InterruptedError(
+            f"renderer interrupted before commit by signal {signal_number}"
         )
+
+
+def _discard_pending_managed_signals() -> None:
+    while True:
+        pending = set(signal.sigpending()).intersection(MANAGED_SIGNALS)
+        if not pending:
+            return
+        signal.sigwait(pending)
+
+
+def _commit_retained_entry(
+    casks_fd: int,
+    temporary_name: str,
+    retained_identity: tuple[int, int],
+) -> None:
+    descriptor, _metadata = _open_exact_regular(
+        casks_fd,
+        temporary_name,
+        retained_identity,
+    )
+    committed = False
+    try:
+        _raise_if_managed_signal_pending()
+        os.unlink(temporary_name, dir_fd=casks_fd)
+        committed = True
+    finally:
         try:
-            if (
-                _read_all(restored_descriptor) != prior_payload
-                or stat.S_IMODE(restored_metadata.st_mode) != prior_mode
-            ):
-                raise ValueError("prior Cask restoration was not exact")
-        finally:
-            os.close(restored_descriptor)
-        _unlink_exact(casks_fd, temporary_name, published_identity)
-        os.fsync(casks_fd)
+            os.close(descriptor)
+        except OSError:
+            if not committed:
+                raise
 
 
 def _publish_rendered_cask(
@@ -374,8 +355,9 @@ def _publish_rendered_cask(
     payload: bytes,
     *,
     replace_existing: bool,
-    binding_descriptor: int | None = None,
+    binding_callback: Callable[[PublicationBinding], None] | None = None,
     expected_casks_identity: tuple[int, int] | None = None,
+    inherited_casks_descriptor: int | None = None,
 ) -> PublicationBinding:
     root_fd = os.open(
         repository_root,
@@ -385,24 +367,27 @@ def _publish_rendered_cask(
     temporary_name = f".dotsync-app.{secrets.token_hex(16)}.tmp"
     temporary_created = False
     publication_may_own_output = False
+    publication_committed = False
     published_identity: tuple[int, int] | None = None
     replacement_prior_identity: tuple[int, int] | None = None
-    replacement_prior_payload = b""
-    replacement_prior_mode = 0
     try:
         root_stat = os.fstat(root_fd)
-        casks_stat = os.stat(
-            OUTPUT_PARTS[0],
-            dir_fd=root_fd,
-            follow_symlinks=False,
-        )
-        if not stat.S_ISDIR(casks_stat.st_mode):
-            raise ValueError("Casks must be a real directory")
-        casks_fd = os.open(
-            OUTPUT_PARTS[0],
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-            dir_fd=root_fd,
-        )
+        if inherited_casks_descriptor is None:
+            casks_stat = os.stat(
+                OUTPUT_PARTS[0],
+                dir_fd=root_fd,
+                follow_symlinks=False,
+            )
+            if not stat.S_ISDIR(casks_stat.st_mode):
+                raise ValueError("Casks must be a real directory")
+            casks_fd = os.open(
+                OUTPUT_PARTS[0],
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=root_fd,
+            )
+        else:
+            casks_fd = os.dup(inherited_casks_descriptor)
+            casks_stat = os.fstat(casks_fd)
         opened_casks_stat = os.fstat(casks_fd)
         if (
             casks_stat.st_dev,
@@ -435,99 +420,109 @@ def _publish_rendered_cask(
         finally:
             os.close(temporary_fd)
 
-        if replace_existing:
-            prior_descriptor = os.open(
-                OUTPUT_PARTS[1],
-                os.O_RDONLY | os.O_NOFOLLOW,
-                dir_fd=casks_fd,
-            )
-            try:
-                prior_metadata = os.fstat(prior_descriptor)
-                if not stat.S_ISREG(prior_metadata.st_mode):
-                    raise ValueError("existing Cask must be a regular file")
-                replacement_prior_identity = _identity(prior_metadata)
-                replacement_prior_mode = stat.S_IMODE(prior_metadata.st_mode)
-                replacement_prior_payload = _read_all(prior_descriptor)
-            finally:
-                os.close(prior_descriptor)
-            publication_may_own_output = True
-            _swap_entries(casks_fd, temporary_name, OUTPUT_PARTS[1])
-        else:
-            publication_may_own_output = True
-            os.link(
-                temporary_name,
-                OUTPUT_PARTS[1],
-                src_dir_fd=casks_fd,
-                dst_dir_fd=casks_fd,
-                follow_symlinks=False,
-            )
-            os.unlink(temporary_name, dir_fd=casks_fd)
-            temporary_created = False
-        assert published_identity is not None
-        _validate_published_entry(casks_fd, published_identity)
-        os.fsync(casks_fd)
-        final_casks_stat = os.stat(
-            OUTPUT_PARTS[0],
-            dir_fd=root_fd,
-            follow_symlinks=False,
-        )
-        if (
-            final_casks_stat.st_dev,
-            final_casks_stat.st_ino,
-        ) != (
-            opened_casks_stat.st_dev,
-            opened_casks_stat.st_ino,
-        ):
-            raise ValueError("Casks directory binding changed during publication")
-        binding = PublicationBinding(
-            casks_dev=opened_casks_stat.st_dev,
-            casks_ino=opened_casks_stat.st_ino,
-            cask_dev=published_identity[0],
-            cask_ino=published_identity[1],
-        )
-        if binding_descriptor is not None:
-            binding_payload = (
-                json.dumps(asdict(binding), sort_keys=True, separators=(",", ":"))
-                + "\n"
-            ).encode("utf-8")
-            _write_all(binding_descriptor, binding_payload)
-        if replace_existing:
-            assert replacement_prior_identity is not None
-            _unlink_exact(casks_fd, temporary_name, replacement_prior_identity)
-            temporary_created = False
-            os.fsync(casks_fd)
-        publication_may_own_output = False
-        return binding
-    except BaseException as error:
-        output_is_owned = (
-            publication_may_own_output
-            and published_identity is not None
-            and _entry_is_exact_regular(
-                casks_fd,
-                OUTPUT_PARTS[1],
-                published_identity,
-            )
-        )
-        if output_is_owned:
+        with _defer_managed_signals() as signal_commit_state:
             try:
                 if replace_existing:
-                    assert replacement_prior_identity is not None
-                    _rollback_replacement(
-                        casks_fd,
-                        temporary_name,
-                        published_identity,
-                        replacement_prior_identity,
-                        replacement_prior_payload,
-                        replacement_prior_mode,
+                    prior_descriptor = os.open(
+                        OUTPUT_PARTS[1],
+                        os.O_RDONLY | os.O_NOFOLLOW,
+                        dir_fd=casks_fd,
                     )
-                    temporary_created = False
+                    try:
+                        prior_metadata = os.fstat(prior_descriptor)
+                        if not stat.S_ISREG(prior_metadata.st_mode):
+                            raise ValueError("existing Cask must be a regular file")
+                        replacement_prior_identity = _identity(prior_metadata)
+                    finally:
+                        os.close(prior_descriptor)
+                    publication_may_own_output = True
+                    _swap_entries(casks_fd, temporary_name, OUTPUT_PARTS[1])
+                    expected_link_count = 1
                 else:
-                    _rollback_new_publication(casks_fd, published_identity)
-            except BaseException as rollback_error:
-                raise RuntimeError(
-                    f"Cask publication failed and exact rollback failed: {rollback_error}"
-                ) from error
-        raise
+                    publication_may_own_output = True
+                    os.link(
+                        temporary_name,
+                        OUTPUT_PARTS[1],
+                        src_dir_fd=casks_fd,
+                        dst_dir_fd=casks_fd,
+                        follow_symlinks=False,
+                    )
+                    expected_link_count = 2
+                assert published_identity is not None
+                _validate_published_entry(
+                    casks_fd,
+                    published_identity,
+                    expected_link_count=expected_link_count,
+                )
+                os.fsync(casks_fd)
+                if inherited_casks_descriptor is None:
+                    final_casks_stat = os.stat(
+                        OUTPUT_PARTS[0],
+                        dir_fd=root_fd,
+                        follow_symlinks=False,
+                    )
+                    if _identity(final_casks_stat) != _identity(opened_casks_stat):
+                        raise ValueError(
+                            "Casks directory binding changed during publication"
+                        )
+                binding = PublicationBinding(
+                    casks_dev=opened_casks_stat.st_dev,
+                    casks_ino=opened_casks_stat.st_ino,
+                    cask_dev=published_identity[0],
+                    cask_ino=published_identity[1],
+                )
+                if binding_callback is not None:
+                    binding_callback(binding)
+                retained_identity = (
+                    replacement_prior_identity
+                    if replace_existing
+                    else published_identity
+                )
+                assert retained_identity is not None
+                _commit_retained_entry(
+                    casks_fd,
+                    temporary_name,
+                    retained_identity,
+                )
+                publication_committed = True
+                signal_commit_state[0] = True
+                temporary_created = False
+                publication_may_own_output = False
+            except BaseException as error:
+                output_is_owned = (
+                    publication_may_own_output
+                    and published_identity is not None
+                    and _entry_is_exact_regular(
+                        casks_fd,
+                        OUTPUT_PARTS[1],
+                        published_identity,
+                    )
+                )
+                if output_is_owned:
+                    try:
+                        if replace_existing:
+                            assert replacement_prior_identity is not None
+                            _rollback_replacement(
+                                casks_fd,
+                                temporary_name,
+                                published_identity,
+                                replacement_prior_identity,
+                            )
+                            temporary_created = False
+                        else:
+                            _rollback_new_publication(
+                                casks_fd,
+                                temporary_name,
+                                published_identity,
+                            )
+                            temporary_created = False
+                    except BaseException as rollback_error:
+                        raise RuntimeError(
+                            "Cask publication failed and exact rollback failed: "
+                            f"{rollback_error}"
+                        ) from error
+                raise
+        return binding
     finally:
         if (
             temporary_created
@@ -544,8 +539,16 @@ def _publish_rendered_cask(
             except FileNotFoundError:
                 pass
         if casks_fd >= 0:
-            os.close(casks_fd)
-        os.close(root_fd)
+            try:
+                os.close(casks_fd)
+            except OSError:
+                if not publication_committed:
+                    raise
+        try:
+            os.close(root_fd)
+        except OSError:
+            if not publication_committed:
+                raise
 
 
 def render_cask(
@@ -557,6 +560,7 @@ def render_cask(
     repository_root: Path,
     replace_existing: bool = False,
     expected_casks_identity: tuple[int, int] | None = None,
+    inherited_casks_descriptor: int | None = None,
 ) -> Path:
     """Render exact release facts without network access or checksum inference."""
     exact_output, _binding = _render_cask_with_binding(
@@ -567,6 +571,7 @@ def render_cask(
         repository_root=repository_root,
         replace_existing=replace_existing,
         expected_casks_identity=expected_casks_identity,
+        inherited_casks_descriptor=inherited_casks_descriptor,
     )
     return exact_output
 
@@ -579,8 +584,9 @@ def _render_cask_with_binding(
     output: Path,
     repository_root: Path,
     replace_existing: bool,
-    binding_descriptor: int | None = None,
+    binding_callback: Callable[[PublicationBinding], None] | None = None,
     expected_casks_identity: tuple[int, int] | None = None,
+    inherited_casks_descriptor: int | None = None,
 ) -> tuple[Path, PublicationBinding]:
     _validate_inputs(version, sha256, url)
     root_input = Path(repository_root)
@@ -599,8 +605,9 @@ def _render_cask_with_binding(
         root,
         payload,
         replace_existing=replace_existing,
-        binding_descriptor=binding_descriptor,
+        binding_callback=binding_callback,
         expected_casks_identity=expected_casks_identity,
+        inherited_casks_descriptor=inherited_casks_descriptor,
     )
     return exact_output, binding
 
@@ -611,6 +618,7 @@ def rollback_created_cask(
     casks_identity: tuple[int, int],
     cask_identity: tuple[int, int] | None,
     remove_casks_directory: bool,
+    inherited_casks_descriptor: int | None = None,
 ) -> None:
     root_fd = os.open(
         repository_root,
@@ -618,20 +626,26 @@ def rollback_created_cask(
     )
     casks_fd = -1
     try:
-        casks_metadata = os.stat(
-            OUTPUT_PARTS[0],
-            dir_fd=root_fd,
-            follow_symlinks=False,
-        )
-        if not stat.S_ISDIR(casks_metadata.st_mode) or _identity(casks_metadata) != casks_identity:
-            raise ValueError("refusing Cask rollback after Casks directory rebinding")
-        casks_fd = os.open(
-            OUTPUT_PARTS[0],
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-            dir_fd=root_fd,
-        )
+        if inherited_casks_descriptor is None:
+            casks_metadata = os.stat(
+                OUTPUT_PARTS[0],
+                dir_fd=root_fd,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISDIR(casks_metadata.st_mode)
+                or _identity(casks_metadata) != casks_identity
+            ):
+                raise ValueError("refusing Cask rollback after Casks rebinding")
+            casks_fd = os.open(
+                OUTPUT_PARTS[0],
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=root_fd,
+            )
+        else:
+            casks_fd = os.dup(inherited_casks_descriptor)
         if _identity(os.fstat(casks_fd)) != casks_identity:
-            raise ValueError("refusing Cask rollback after Casks directory rebinding")
+            raise ValueError("held Casks descriptor did not match rollback binding")
         if cask_identity is None:
             try:
                 os.stat(
@@ -676,6 +690,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--replace-existing", action="store_true")
     parser.add_argument("--expected-casks-dev", type=int)
     parser.add_argument("--expected-casks-ino", type=int)
+    parser.add_argument("--casks-fd", type=int)
     return parser
 
 
@@ -687,6 +702,7 @@ def _rollback_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repository-root", required=True, type=Path)
     parser.add_argument("--casks-dev", required=True, type=int)
     parser.add_argument("--casks-ino", required=True, type=int)
+    parser.add_argument("--casks-fd", type=int)
     parser.add_argument("--cask-dev", type=int)
     parser.add_argument("--cask-ino", type=int)
     parser.add_argument("--remove-casks-directory", action="store_true")
@@ -695,6 +711,14 @@ def _rollback_parser() -> argparse.ArgumentParser:
 
 def _raise_signal(signal_number: int, _frame: object) -> None:
     raise InterruptedError(f"renderer interrupted by signal {signal_number}")
+
+
+def _write_binding_to_stdout(binding: PublicationBinding) -> None:
+    payload = (
+        json.dumps(asdict(binding), sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    _write_all(sys.stdout.fileno(), payload)
+    sys.stdout.flush()
 
 
 def main(arguments: list[str] | None = None) -> int:
@@ -714,6 +738,7 @@ def main(arguments: list[str] | None = None) -> int:
                 casks_identity=(namespace.casks_dev, namespace.casks_ino),
                 cask_identity=cask_identity,
                 remove_casks_directory=namespace.remove_casks_directory,
+                inherited_casks_descriptor=namespace.casks_fd,
             )
         except (OSError, ValueError) as error:
             print(f"render_cask: {error}", file=sys.stderr)
@@ -743,8 +768,9 @@ def main(arguments: list[str] | None = None) -> int:
             output=namespace.output,
             repository_root=namespace.repository_root,
             replace_existing=namespace.replace_existing,
-            binding_descriptor=sys.stdout.fileno(),
+            binding_callback=_write_binding_to_stdout,
             expected_casks_identity=expected_casks_identity,
+            inherited_casks_descriptor=namespace.casks_fd,
         )
     except (OSError, ValueError) as error:
         print(f"render_cask: {error}", file=sys.stderr)
