@@ -2066,8 +2066,10 @@ def _assemble_staged_app(
                             "DotSync",
                             expected_device=build_identity.device,
                             require_executable=True,
+                            writable=True,
                         )
                         try:
+                            os.fchmod(stripped_fd, 0o755)
                             _run_tool(
                                 [
                                     "lipo",

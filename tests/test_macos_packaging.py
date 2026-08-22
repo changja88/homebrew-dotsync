@@ -231,9 +231,21 @@ if [[ "${DOTSYNC_TEST_FAIL_TOOL:-}" == "plutil" ]]; then exit 94; fi
     return project, env
 
 
-def _run_fake_build(project: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def _run_fake_build(
+    project: Path,
+    env: dict[str, str],
+    *,
+    private_umask: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    command = ["bash", "scripts/build_macos_app.sh"]
+    if private_umask:
+        command = [
+            "bash",
+            "-c",
+            "umask 077; exec bash scripts/build_macos_app.sh",
+        ]
     return subprocess.run(
-        ["bash", "scripts/build_macos_app.sh"],
+        command,
         cwd=project,
         env=env,
         capture_output=True,
@@ -557,10 +569,13 @@ def test_local_build_accepts_private_git_archive_package_modes(tmp_path):
     package = project / "macos" / "DotSyncApp"
     package.chmod(0o700)
 
-    result = _run_fake_build(project, env)
+    result = _run_fake_build(project, env, private_umask=True)
 
+    app = project / "build" / "DotSync.app"
+    executable = app / "Contents" / "MacOS" / "DotSync"
     assert result.returncode == 0, result.stdout + result.stderr
-    assert (project / "build" / "DotSync.app").is_dir()
+    assert app.is_dir()
+    assert stat.S_IMODE(executable.stat().st_mode) == 0o755
     assert stat.S_IMODE(package.stat().st_mode) == 0o700
 
 
