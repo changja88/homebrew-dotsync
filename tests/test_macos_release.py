@@ -1021,7 +1021,10 @@ if name == "node":
     raise SystemExit(92)
 
 if name == "swift":
-    if arguments == ["test", "--package-path", "macos/DotSyncApp"]:
+    if (
+        arguments == ["test", "--package-path", "macos/DotSyncApp"]
+        and os.environ.get("DOTSYNC_TEST_PYTHON") == os.environ.get("PYTHON")
+    ):
         raise SystemExit(0)
     raise SystemExit(92)
 

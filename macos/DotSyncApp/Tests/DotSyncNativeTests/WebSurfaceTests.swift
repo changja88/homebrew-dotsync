@@ -859,7 +859,9 @@ private final class RealNativeSurfaceFixture {
 
         var repository = URL(fileURLWithPath: #filePath)
         for _ in 0..<5 { repository.deleteLastPathComponent() }
-        let python = repository.appendingPathComponent(".venv/bin/python3")
+        let configuredPython = ProcessInfo.processInfo.environment["DOTSYNC_TEST_PYTHON"]
+        let python = configuredPython.map { URL(fileURLWithPath: $0) }
+            ?? repository.appendingPathComponent(".venv/bin/python3")
         wrapperURL = rootURL.appendingPathComponent("dotsync-native-wrapper")
         try Self.writeExecutable(
             """
