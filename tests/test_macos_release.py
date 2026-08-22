@@ -814,7 +814,7 @@ if name == "python-release":
             raise SystemExit(92)
         if (
             arguments[1] == "read-cask-binding"
-            and os.environ.get("DOTSYNC_RELEASE_REBIND_CASKS_SEAM") == "render-to-audit"
+            and os.environ.get("DOTSYNC_RELEASE_REBIND_CASKS_SEAM") == "render-to-style"
         ):
             import subprocess
             completed = subprocess.run(
@@ -824,7 +824,7 @@ if name == "python-release":
                 pass_fds=(9,),
             )
             if completed.returncode == 0:
-                rebind_casks_directory("render-to-audit")
+                rebind_casks_directory("render-to-style")
             sys.stdout.write(completed.stdout)
             sys.stderr.write(completed.stderr)
             raise SystemExit(completed.returncode)
@@ -980,14 +980,14 @@ if name == "codesign":
         raise SystemExit(0)
     raise SystemExit(92)
 
-if name == "brew" and os.environ.get("DOTSYNC_RELEASE_REPLACE_CASK_DURING_AUDIT"):
+if name == "brew" and os.environ.get("DOTSYNC_RELEASE_REPLACE_CASK_DURING_STYLE"):
     cask = Path(arguments[-1])
     owned = cask.with_name("dotsync-app.created-by-renderer")
     cask.rename(owned)
     cask.write_bytes(b"replacement-cask-must-survive\\n")
     raise SystemExit(91)
 
-if name == "brew" and os.environ.get("DOTSYNC_RELEASE_REPLACE_CASKS_DURING_AUDIT"):
+if name == "brew" and os.environ.get("DOTSYNC_RELEASE_REPLACE_CASKS_DURING_STYLE"):
     cask = Path(arguments[-1])
     casks = cask.parent
     owned = casks.with_name("Casks.created-by-renderer")
@@ -1034,9 +1034,9 @@ if name == "spctl":
     raise SystemExit(92)
 
 if name == "brew":
-    if len(arguments) == 4 and arguments[:3] == ["audit", "--cask", "--strict"]:
-        if os.environ.get("DOTSYNC_RELEASE_REBIND_CASKS_SEAM") == "audit-to-cleanup":
-            rebind_casks_directory("audit-to-cleanup")
+    if len(arguments) == 2 and arguments[0] == "style":
+        if os.environ.get("DOTSYNC_RELEASE_REBIND_CASKS_SEAM") == "style-to-cleanup":
+            rebind_casks_directory("style-to-cleanup")
         raise SystemExit(0)
     raise SystemExit(92)
 
@@ -1453,7 +1453,7 @@ def _expected_success_calls() -> list[list[str]]:
             "python-release", support, "verify-canonical-directory-fd",
             "9", "$DEV:$INO", "$REPOSITORY", "Casks",
         ],
-        ["brew", "audit", "--cask", "--strict", cask],
+        ["brew", "style", cask],
         [
             "python-release", support, "cleanup-current",
             "--parent", "$TMPDIR",
@@ -1824,7 +1824,7 @@ def test_signed_macos_release_reports_cleanup_failure_and_preserves_unknown_entr
     env = macos_release_repository["env"]
     assert isinstance(env, dict)
     record = tmp_path / "cleanup-residue-record"
-    env["DOTSYNC_RELEASE_RESIDUE_PREFIX"] = json.dumps(["brew", "audit"])
+    env["DOTSYNC_RELEASE_RESIDUE_PREFIX"] = json.dumps(["brew", "style"])
     env["DOTSYNC_RELEASE_RESIDUE_RECORD"] = str(record)
 
     result = _run_macos_release(macos_release_repository, VALID_VERSION)
@@ -1839,14 +1839,14 @@ def test_signed_macos_release_reports_cleanup_failure_and_preserves_unknown_entr
 
 
 @pytest.mark.no_subprocess_block
-def test_audit_failure_never_unlinks_a_replacement_of_the_created_cask(
+def test_style_failure_never_unlinks_a_replacement_of_the_created_cask(
     macos_release_repository,
 ):
     env = macos_release_repository["env"]
     repository = macos_release_repository["repository"]
     assert isinstance(env, dict)
     assert isinstance(repository, Path)
-    env["DOTSYNC_RELEASE_REPLACE_CASK_DURING_AUDIT"] = "1"
+    env["DOTSYNC_RELEASE_REPLACE_CASK_DURING_STYLE"] = "1"
 
     result = _run_macos_release(macos_release_repository, VALID_VERSION)
 
@@ -1857,14 +1857,14 @@ def test_audit_failure_never_unlinks_a_replacement_of_the_created_cask(
 
 
 @pytest.mark.no_subprocess_block
-def test_audit_failure_preserves_replacement_of_bound_casks_directory(
+def test_style_failure_preserves_replacement_of_bound_casks_directory(
     macos_release_repository,
 ):
     env = macos_release_repository["env"]
     repository = macos_release_repository["repository"]
     assert isinstance(env, dict)
     assert isinstance(repository, Path)
-    env["DOTSYNC_RELEASE_REPLACE_CASKS_DURING_AUDIT"] = "1"
+    env["DOTSYNC_RELEASE_REPLACE_CASKS_DURING_STYLE"] = "1"
 
     result = _run_macos_release(macos_release_repository, VALID_VERSION)
 
@@ -1878,7 +1878,7 @@ def test_audit_failure_preserves_replacement_of_bound_casks_directory(
 @pytest.mark.no_subprocess_block
 @pytest.mark.parametrize(
     "seam",
-    ["bind-to-render", "render-to-audit", "audit-to-cleanup"],
+    ["bind-to-render", "render-to-style", "style-to-cleanup"],
 )
 @pytest.mark.parametrize("outside_canonical_parent", [False, True])
 def test_release_preserves_casks_directory_replacement_at_every_identity_seam(
@@ -1918,7 +1918,7 @@ def test_second_signal_during_finalizer_is_deferred_until_exact_cleanup(
     assert isinstance(repository, Path)
     work_record = tmp_path / "second-signal-work-record"
     env["DOTSYNC_RELEASE_WORK_RECORD"] = str(work_record)
-    env["DOTSYNC_RELEASE_SIGNAL_PREFIX"] = json.dumps(["brew", "audit"])
+    env["DOTSYNC_RELEASE_SIGNAL_PREFIX"] = json.dumps(["brew", "style"])
     env["DOTSYNC_RELEASE_SIGNAL_NUMBER"] = str(signal.SIGHUP)
     env["DOTSYNC_RELEASE_SECOND_SIGNAL_DURING_CLEANUP"] = str(signal.SIGTERM)
 
@@ -1956,7 +1956,7 @@ def test_signal_immediately_before_release_commit_rolls_back_and_fails(
 
 
 @pytest.mark.no_subprocess_block
-@pytest.mark.parametrize("boundary", ["renderer", "audit"])
+@pytest.mark.parametrize("boundary", ["renderer", "style"])
 @pytest.mark.parametrize("signal_number", [signal.SIGHUP, signal.SIGINT, signal.SIGTERM])
 def test_signals_after_cask_generation_converge_on_failing_rollback(
     macos_release_repository, boundary, signal_number
@@ -1968,7 +1968,7 @@ def test_signals_after_cask_generation_converge_on_failing_rollback(
     if boundary == "renderer":
         prefix = ["python-release", str(repository / "scripts" / "render_cask.py")]
     else:
-        prefix = ["brew", "audit"]
+        prefix = ["brew", "style"]
     env["DOTSYNC_RELEASE_SIGNAL_PREFIX"] = json.dumps(prefix)
     env["DOTSYNC_RELEASE_SIGNAL_NUMBER"] = str(signal_number)
 
@@ -2179,7 +2179,7 @@ GATE_FAILURE_CASES = [
     (["python-release", "RENDERER"], 1),
     (["python-release", "SUPPORT", "read-cask-binding"], 1),
     (["python-release", "SUPPORT", "verify-canonical-directory-fd"], 1),
-    (["brew", "audit"], 1),
+    (["brew", "style"], 1),
     (["python-release", "SUPPORT", "cleanup-current"], 1),
     (["python-release", "SUPPORT", "verify-canonical-directory-fd"], 2),
 ]

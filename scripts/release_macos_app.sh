@@ -115,7 +115,7 @@ TEMPORARY_ROOT_IDENTITY=""
 WORK_NAME=""
 WORK_IDENTITY=""
 CASK_TRANSACTION_ACTIVE=0
-CASK_AUDIT_SUCCEEDED=0
+CASK_STYLE_SUCCEEDED=0
 CASKS_DIRECTORY_CREATED=0
 CASKS_BINDING_OWNERSHIP=""
 CASKS_DEV=""
@@ -200,10 +200,10 @@ finalize() {
     status="$FINALIZER_SIGNAL_STATUS"
   fi
 
-  if [[ "$status" -eq 0 && "$CASK_AUDIT_SUCCEEDED" -eq 1 \
+  if [[ "$status" -eq 0 && "$CASK_STYLE_SUCCEEDED" -eq 1 \
       && "$cleanup_failed" -eq 0 ]]; then
     printf '%s\n' \
-      "Signed app uploaded and Cask audited. Review and commit this generated Cask only if this process exits 0; stop for explicit publication confirmation." \
+      "Signed app uploaded and Cask style checked. Review and commit this generated Cask only if this process exits 0; run the name-based audit and stop for explicit publication confirmation." \
       || cleanup_failed=1
   fi
 
@@ -214,7 +214,7 @@ finalize() {
     status="$FINALIZER_SIGNAL_STATUS"
   fi
 
-  if [[ "$status" -eq 0 && "$CASK_AUDIT_SUCCEEDED" -eq 1 \
+  if [[ "$status" -eq 0 && "$CASK_STYLE_SUCCEEDED" -eq 1 \
       && "$cleanup_failed" -eq 0 ]]; then
     COMMITTED=1
     if [[ "$FINALIZER_SIGNAL_STATUS" -eq 0 ]]; then
@@ -441,7 +441,7 @@ read -r RENDERED_CASKS_DEV RENDERED_CASKS_INO _RENDERED_CASK_DEV _RENDERED_CASK_
 [[ "$RENDERED_CASKS_DEV" == "$CASKS_DEV" \
     && "$RENDERED_CASKS_INO" == "$CASKS_INO" ]] \
   || die "Cask renderer changed the bound Casks directory"
-revalidate_casks_binding || die "Casks directory changed before audit"
-brew audit --cask --strict "$CASK_OUTPUT"
+revalidate_casks_binding || die "Casks directory changed before style check"
+brew style "$CASK_OUTPUT"
 
-CASK_AUDIT_SUCCEEDED=1
+CASK_STYLE_SUCCEEDED=1
