@@ -80,7 +80,7 @@ def test_renderer_writes_exact_formula_dependent_cask_from_release_inputs(tmp_pa
         '  desc "Menu bar companion for DotSync config sync and Codex subscription usage"\n'
         '  homepage "https://github.com/changja88/homebrew-dotsync"\n'
         "\n"
-        '  depends_on macos: ">= :ventura"\n'
+        "  depends_on macos: :ventura\n"
         '  depends_on formula: "changja88/dotsync/dotsync"\n'
         "\n"
         '  app "DotSync.app"\n'
