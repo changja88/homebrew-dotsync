@@ -340,8 +340,19 @@ def _write_capture_stdout_runner(path: Path, *, mode: str) -> None:
             "open(os.environ['DOTSYNC_TEST_CAPTURE_CHILD_PID'], 'w').write(str(os.getpid())); "
             "\nwhile True: os.write(1, b'x' * 4096)"
         ),
+        "close": (
+            "import os; "
+            "open(os.environ['DOTSYNC_TEST_CAPTURE_CHILD_PID'], 'w').write(str(os.getpid())); "
+            "os.write(1, b'safe')"
+        ),
+        "start": (
+            "import os, time; "
+            "open(os.environ['DOTSYNC_TEST_CAPTURE_CHILD_PID'], 'w').write(str(os.getpid())); "
+            "\nwhile True: time.sleep(0.05)"
+        ),
     }
     injection = ""
+    popen_extra = ""
     if mode == "read":
         injection = """
 real_read = module.os.read
@@ -358,11 +369,37 @@ def start_with_read_failure(self):
     return real_thread_start(self)
 module.threading.Thread.start = start_with_read_failure
 """
+    elif mode == "close":
+        injection = """
+real_is_alive = module.threading.Thread.is_alive
+def keep_capture_reader_logically_alive(self):
+    if self.name == "dotsync-captured-stdout":
+        return True
+    return real_is_alive(self)
+module.threading.Thread.is_alive = keep_capture_reader_logically_alive
+"""
+        popen_extra = """
+    class FailingClosePipe:
+        def __init__(self, wrapped):
+            self.wrapped = wrapped
+        def fileno(self):
+            return self.wrapped.fileno()
+        def close(self):
+            raise OSError(5, "injected captured stdout close failure")
+    process.stdout = FailingClosePipe(process.stdout)
+"""
+    elif mode == "start":
+        injection = """
+def fail_capture_thread_start(self):
+    raise RuntimeError("injected captured stdout thread start failure")
+module.threading.Thread.start = fail_capture_thread_start
+"""
     path.write_text(
         f"""
 import importlib.util
 import os
 from pathlib import Path
+import signal
 import sys
 
 project = Path(sys.argv[1])
@@ -373,10 +410,33 @@ sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 {injection}
 
+event_log = Path(os.environ["DOTSYNC_TEST_CAPTURE_EVENT_LOG"])
+def record_event(event):
+    with event_log.open("a", encoding="utf-8") as log:
+        log.write(event + "\\n")
+
+real_waitid = module.os.waitid
+def recorded_waitid(*args, **kwargs):
+    result = real_waitid(*args, **kwargs)
+    if result is not None:
+        flags = args[2] if len(args) > 2 else kwargs["options"]
+        record_event(
+            ("observe:" if flags & os.WNOWAIT else "reap:") + str(args[1])
+        )
+    return result
+module.os.waitid = recorded_waitid
+
+real_killpg = module.os.killpg
+def recorded_killpg(process_group, signum):
+    record_event(f"signal:{{process_group}}:{{signum}}")
+    return real_killpg(process_group, signum)
+module.os.killpg = recorded_killpg
+
 real_popen = module.subprocess.Popen
 def record_child_pid(*args, **kwargs):
     process = real_popen(*args, **kwargs)
     Path(os.environ["DOTSYNC_TEST_CAPTURE_CHILD_PID"]).write_text(str(process.pid))
+{popen_extra}
     return process
 module.subprocess.Popen = record_child_pid
 
@@ -398,6 +458,12 @@ try:
             reap_state = "already-reaped"
         else:
             reap_state = f"unreaped-{{waited_pid}}"
+            if waited_pid == 0:
+                try:
+                    os.killpg(child_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                os.waitpid(child_pid, 0)
         print(f"{{type(error).__name__}}:{{error}}:{{reap_state}}", file=sys.stderr)
         raise SystemExit(1)
     raise SystemExit(0)
@@ -1314,7 +1380,10 @@ module.subprocess.Popen = signal_first_swift
 
 
 @pytest.mark.no_subprocess_block
-@pytest.mark.parametrize("failure_mode", ["overflow", "decode", "read"])
+@pytest.mark.parametrize(
+    "failure_mode",
+    ["overflow", "decode", "read", "close", "start"],
+)
 def test_captured_stdout_failure_is_bounded_and_reaps_exact_leader(
     tmp_path,
     failure_mode,
@@ -1322,7 +1391,9 @@ def test_captured_stdout_failure_is_bounded_and_reaps_exact_leader(
     """Captured output must drain concurrently and fail closed before reap."""
     project, env = _fake_build_project(tmp_path)
     child_pid_file = tmp_path / f"capture-{failure_mode}.pid"
+    event_log = tmp_path / f"capture-{failure_mode}.events"
     env["DOTSYNC_TEST_CAPTURE_CHILD_PID"] = str(child_pid_file)
+    env["DOTSYNC_TEST_CAPTURE_EVENT_LOG"] = str(event_log)
     runner = tmp_path / f"capture-{failure_mode}-runner.py"
     _write_capture_stdout_runner(runner, mode=failure_mode)
     process = subprocess.Popen(
@@ -1352,6 +1423,9 @@ def test_captured_stdout_failure_is_bounded_and_reaps_exact_leader(
     assert ":already-reaped" in stderr
     child_pid = int(child_pid_file.read_text(encoding="utf-8"))
     _assert_process_gone(child_pid)
+    events = event_log.read_text(encoding="utf-8").splitlines()
+    reap_index = events.index(f"reap:{child_pid}")
+    assert not any(event.startswith("signal:") for event in events[reap_index + 1 :])
 
 
 def test_temporary_signal_handlers_restore_all_prior_handlers_after_failure():
@@ -1953,6 +2027,128 @@ module._rename_swap = replace_before_atomic_exchange
     ).read_bytes() == b""
     assert not list((project / "build").glob(".dotsync-app-stage.*"))
     assert (project / "build" / "peer-moved-owned-app").is_dir()
+
+
+def test_unadopted_rollback_placeholder_replacement_survives_stage_unwind(
+    tmp_path,
+    monkeypatch,
+):
+    """Rollback must preserve its stage before placeholder ownership is proven."""
+    support = _load_support_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    repo_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    build_fd = -1
+    stage_name = ""
+    replacement_name = ""
+    original_name = "original-rollback-placeholder"
+    real_verify = support._verify_build_binding
+    real_mkdir = support.os.mkdir
+    injected = False
+
+    def fail_after_publication(repo_descriptor, build_descriptor, identity):
+        real_verify(repo_descriptor, build_descriptor, identity)
+        try:
+            os.stat(
+                support.FINAL_APP,
+                dir_fd=build_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            return
+        raise support.PackagingError("injected post-publication failure")
+
+    def replace_placeholder_after_mkdir(path, mode=0o777, *, dir_fd=None):
+        nonlocal injected, replacement_name
+        real_mkdir(path, mode=mode, dir_fd=dir_fd)
+        if str(path).startswith(".rollback-placeholder.") and not injected:
+            injected = True
+            replacement_name = str(path)
+            os.rename(
+                path,
+                original_name,
+                src_dir_fd=dir_fd,
+                dst_dir_fd=dir_fd,
+            )
+            real_mkdir(path, mode=0o711, dir_fd=dir_fd)
+            replacement_fd = os.open(
+                path,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=dir_fd,
+            )
+            try:
+                marker_fd = os.open(
+                    "foreign-marker",
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                    dir_fd=replacement_fd,
+                )
+                os.close(marker_fd)
+            finally:
+                os.close(replacement_fd)
+
+    try:
+        build_fd, build_identity = support._prepare_build_root(
+            repo_fd,
+            os.fstat(repo_fd).st_dev,
+        )
+        with monkeypatch.context() as patch_context:
+            patch_context.setattr(
+                support,
+                "_verify_build_binding",
+                fail_after_publication,
+            )
+            patch_context.setattr(
+                support.os,
+                "mkdir",
+                replace_placeholder_after_mkdir,
+            )
+            with pytest.raises(
+                support.PackagingError,
+                match="rollback.*ownership|ownership.*rollback",
+            ):
+                with support._owned_staging_directory(
+                    build_fd,
+                    build_identity.device,
+                ) as stage:
+                    stage_name = stage.name
+                    app_fd = support._create_directory(
+                        stage.descriptor,
+                        support.FINAL_APP,
+                        build_identity.device,
+                        0o755,
+                    )
+                    os.close(app_fd)
+                    scanned = support._open_and_scan_staged_app(
+                        stage.descriptor,
+                        checkout=b"checkout",
+                        expected_device=build_identity.device,
+                    )
+                    try:
+                        support._publish_scanned_app(
+                            repo_fd=repo_fd,
+                            build_fd=build_fd,
+                            build_identity=build_identity,
+                            stage=stage,
+                            scanned_app=scanned,
+                            coordinator=support.SignalCoordinator(),
+                        )
+                    finally:
+                        os.close(scanned.descriptor)
+
+        preserved_stage = repo / "build" / stage_name
+        assert (
+            preserved_stage / replacement_name / "foreign-marker"
+        ).read_bytes() == b""
+        assert stat.S_IMODE((preserved_stage / replacement_name).stat().st_mode) == 0o711
+        assert (preserved_stage / original_name).is_dir()
+        assert (repo / "build" / support.FINAL_APP).is_dir()
+    finally:
+        if stage_name:
+            shutil.rmtree(repo / "build" / stage_name, ignore_errors=True)
+        if build_fd >= 0:
+            os.close(build_fd)
+        os.close(repo_fd)
 
 
 def test_stage_first_open_failure_preserves_the_unadopted_private_entry(

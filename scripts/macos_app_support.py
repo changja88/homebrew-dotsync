@@ -1082,6 +1082,12 @@ def _run_tool(
     capture_errors: list[PackagingError] = []
     capture_failed = threading.Event()
     capture_thread: threading.Thread | None = None
+    capture_reader_started = False
+    leader_observed = False
+    leader_reaped = False
+    kill_sent = False
+    quiesced = False
+    operation_error: BaseException | None = None
 
     def record_capture_error(error: PackagingError) -> None:
         if not capture_errors:
@@ -1131,7 +1137,7 @@ def _run_tool(
             )
 
     def start_capture_reader() -> None:
-        nonlocal capture_thread
+        nonlocal capture_reader_started, capture_thread
         assert process is not None and process.stdout is not None
         capture_thread = threading.Thread(
             target=drain_captured_stdout,
@@ -1140,6 +1146,7 @@ def _run_tool(
             daemon=True,
         )
         capture_thread.start()
+        capture_reader_started = True
 
     def kill_failed_group(process_group: int) -> None:
         try:
@@ -1153,7 +1160,7 @@ def _run_tool(
             pass
 
     def wait_for_capture_reader(process_group: int, kill_sent: bool) -> bool:
-        if capture_thread is None:
+        if capture_thread is None or not capture_reader_started:
             return kill_sent
         capture_thread.join(CAPTURE_READER_GRACE_SECONDS)
         if capture_thread.is_alive():
@@ -1171,8 +1178,45 @@ def _run_tool(
             capture_thread.join(CAPTURE_READER_GRACE_SECONDS)
         return kill_sent
 
-    def reap_observed_leader() -> None:
+    def observe_leader_without_reaping() -> None:
+        nonlocal kill_sent, leader_observed
         assert process is not None
+        while not leader_observed:
+            if capture_failed.is_set() and not kill_sent:
+                kill_failed_group(process.pid)
+                kill_sent = True
+            observed = os.waitid(
+                os.P_PID,
+                process.pid,
+                os.WEXITED | os.WNOHANG | os.WNOWAIT,
+            )
+            if observed is not None:
+                if observed.si_pid != process.pid:
+                    raise PackagingError(
+                        "build tool leader observation identity changed"
+                    )
+                leader_observed = True
+                return
+            if (
+                coordinator is not None
+                and coordinator.should_escalate()
+                and not kill_sent
+            ):
+                try:
+                    coordinator._signal_process_group(
+                        process.pid,
+                        signal.SIGKILL,
+                    )
+                except PermissionError:
+                    pass
+                kill_sent = True
+            time.sleep(0.01)
+
+    def reap_observed_leader() -> None:
+        nonlocal leader_reaped
+        assert process is not None
+        if not leader_observed or leader_reaped:
+            raise PackagingError("build tool leader reap state was invalid")
         reaped = os.waitid(os.P_PID, process.pid, os.WEXITED)
         if reaped is None or reaped.si_pid != process.pid:
             raise PackagingError("build tool leader reap identity changed")
@@ -1182,6 +1226,91 @@ def _run_tool(
             process.returncode = -reaped.si_status
         else:
             raise PackagingError("build tool leader had an invalid exit state")
+        leader_reaped = True
+
+    def retain_operation_error(error: BaseException) -> None:
+        nonlocal operation_error
+        if operation_error is None:
+            operation_error = error
+
+    def finalize_owned_process() -> None:
+        nonlocal kill_sent, quiesced
+        if process is None:
+            return
+        previous_mask: set[signal.Signals] | None = None
+        if coordinator is not None:
+            previous_mask = signal.pthread_sigmask(
+                signal.SIG_BLOCK,
+                coordinator.managed_signals,
+            )
+        try:
+            try:
+                if coordinator is not None:
+                    coordinator.record_pending_signal()
+                interrupted = coordinator is not None and coordinator.interrupted
+                if (
+                    (operation_error is not None or capture_failed.is_set())
+                    and not interrupted
+                    and not kill_sent
+                ):
+                    kill_failed_group(process.pid)
+                    kill_sent = True
+                observe_leader_without_reaping()
+                if interrupted:
+                    assert coordinator is not None
+                    coordinator.quiesce_process_group(
+                        process.pid,
+                        already_escalated=kill_sent,
+                    )
+                    quiesced = True
+                if capture_stdout:
+                    kill_sent = wait_for_capture_reader(process.pid, kill_sent)
+                if coordinator is not None:
+                    coordinator.record_pending_signal()
+                    if coordinator.interrupted and not quiesced:
+                        coordinator.quiesce_process_group(
+                            process.pid,
+                            already_escalated=kill_sent,
+                        )
+                        quiesced = True
+                if (
+                    (operation_error is not None or capture_failed.is_set())
+                    and not quiesced
+                ):
+                    if not kill_sent:
+                        kill_failed_group(process.pid)
+                        kill_sent = True
+                    time.sleep(0.05)
+                    quiesced = True
+            except BaseException as error:
+                retain_operation_error(error)
+                if not leader_reaped and not kill_sent:
+                    kill_failed_group(process.pid)
+                    kill_sent = True
+                if not leader_reaped:
+                    time.sleep(0.05)
+                    quiesced = True
+            finally:
+                if not leader_observed:
+                    try:
+                        observe_leader_without_reaping()
+                    except BaseException as error:
+                        retain_operation_error(error)
+                if leader_observed and not leader_reaped:
+                    try:
+                        reap_observed_leader()
+                    except BaseException as error:
+                        retain_operation_error(error)
+                if process.stdout is not None:
+                    try:
+                        process.stdout.close()
+                    except BaseException as error:
+                        retain_operation_error(error)
+        finally:
+            if coordinator is not None:
+                coordinator.detach(process)
+            if previous_mask is not None:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
 
     try:
         if coordinator is not None:
@@ -1219,99 +1348,29 @@ def _run_tool(
 
         if capture_stdout:
             start_capture_reader()
-
-        if coordinator is None:
-            if not capture_stdout:
-                process.communicate()
-            else:
-                kill_sent = False
-                while True:
-                    if capture_failed.is_set() and not kill_sent:
-                        kill_failed_group(process.pid)
-                        kill_sent = True
-                    observed = os.waitid(
-                        os.P_PID,
-                        process.pid,
-                        os.WEXITED | os.WNOHANG | os.WNOWAIT,
-                    )
-                    if observed is not None:
-                        break
-                    time.sleep(0.01)
-                kill_sent = wait_for_capture_reader(process.pid, kill_sent)
-                if capture_failed.is_set() and not kill_sent:
-                    kill_failed_group(process.pid)
-                    time.sleep(0.05)
-                reap_observed_leader()
-                assert process.stdout is not None
-                process.stdout.close()
-                if capture_errors:
-                    raise capture_errors[0]
-                stdout = "".join(captured_chunks)
-        else:
-            kill_sent = False
-            while True:
-                if capture_failed.is_set() and not kill_sent:
-                    kill_failed_group(process.pid)
-                    kill_sent = True
-                observed = os.waitid(
-                    os.P_PID,
-                    process.pid,
-                    os.WEXITED | os.WNOHANG | os.WNOWAIT,
-                )
-                if observed is not None:
-                    break
-                if coordinator.should_escalate() and not kill_sent:
-                    coordinator._signal_process_group(process.pid, signal.SIGKILL)
-                    kill_sent = True
-                time.sleep(0.01)
-
-            previous_mask = signal.pthread_sigmask(
-                signal.SIG_BLOCK,
-                coordinator.managed_signals,
-            )
-            try:
-                coordinator.record_pending_signal()
-                quiesced = False
-                if coordinator.interrupted:
-                    coordinator.quiesce_process_group(
-                        process.pid,
-                        already_escalated=kill_sent,
-                    )
-                    quiesced = True
-                if capture_stdout:
-                    kill_sent = wait_for_capture_reader(process.pid, kill_sent)
-                    if capture_failed.is_set() and not quiesced:
-                        if not kill_sent:
-                            kill_failed_group(process.pid)
-                            kill_sent = True
-                        time.sleep(0.05)
-                        quiesced = True
-                coordinator.record_pending_signal()
-                if coordinator.interrupted and not quiesced:
-                    coordinator.quiesce_process_group(
-                        process.pid,
-                        already_escalated=kill_sent,
-                    )
-                reap_observed_leader()
-                if process.stdout is not None:
-                    process.stdout.close()
-                coordinator.detach(process)
-            finally:
-                signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
-            if coordinator.interrupted:
-                assert coordinator.first_signum is not None
-                raise SignalInterruption(coordinator.first_signum)
-            if capture_errors:
-                raise capture_errors[0]
-            if capture_stdout:
-                stdout = "".join(captured_chunks)
-        if process.returncode != 0:
-            raise PackagingError(f"{arguments[0]} failed")
-    except OSError as error:
-        raise PackagingError(f"{arguments[0]} failed") from error
+        observe_leader_without_reaping()
+    except BaseException as error:
+        retain_operation_error(error)
     finally:
-        if coordinator is not None and process is not None:
-            coordinator.detach(process)
+        finalize_owned_process()
+
+    if coordinator is not None and coordinator.interrupted:
+        assert coordinator.first_signum is not None
+        interruption = SignalInterruption(coordinator.first_signum)
+        if operation_error is not None:
+            raise interruption from operation_error
+        raise interruption
+    if capture_errors:
+        raise capture_errors[0]
+    if operation_error is not None:
+        if isinstance(operation_error, (PackagingError, SignalInterruption)):
+            raise operation_error
+        raise PackagingError(f"{arguments[0]} failed") from operation_error
+    assert process is not None and leader_reaped
+    if process.returncode != 0:
+        raise PackagingError(f"{arguments[0]} failed")
+    if capture_stdout:
+        stdout = "".join(captured_chunks)
     return stdout
 
 
@@ -1777,6 +1836,13 @@ def _rollback_published_app_to_stage(
     stage: StagingDirectory,
     scanned_app: ScannedApp,
 ) -> None:
+    def remove_proven_empty_stage() -> None:
+        # Keep fail-closed preservation active through the atomic rmdir. If an
+        # unowned entry appears, empty-stage removal fails without allowing the
+        # staging context to recurse into it during unwind.
+        _remove_owned_empty_stage(build_fd, stage, build_identity.device)
+        stage.preserve = False
+
     held_stat = os.fstat(scanned_app.descriptor)
     if not scanned_app.identity.matches(held_stat):
         raise PublicationOwnershipError(
@@ -1792,12 +1858,14 @@ def _rollback_published_app_to_stage(
             "published app rollback staging ownership was lost"
         )
     _require_device(stage_stat, build_identity.device)
+    # Placeholder adoption can deliberately preserve an unproven pathname.
+    # Protect the containing stage before that first fallible ownership step.
+    stage.preserve = True
     placeholder = _adopt_new_private_directory(
         stage.descriptor,
         prefix=".rollback-placeholder.",
         expected_device=build_identity.device,
     )
-    stage.preserve = True
     try:
         _rename_swap(
             build_fd,
@@ -1830,7 +1898,7 @@ def _rollback_published_app_to_stage(
                 build_identity.device,
             )
             if not public_is_placeholder:
-                _cleanup_owned_stage(build_fd, stage, build_identity.device)
+                remove_proven_empty_stage()
                 raise PublicationOwnershipError(
                     "published app rollback ownership was lost after atomic exchange"
                 )
@@ -1851,7 +1919,7 @@ def _rollback_published_app_to_stage(
                     placeholder,
                     build_identity.device,
                 )
-                _cleanup_owned_stage(build_fd, stage, build_identity.device)
+                remove_proven_empty_stage()
                 return
             try:
                 _rename_no_replace(
@@ -1864,7 +1932,7 @@ def _rollback_published_app_to_stage(
                 raise PublicationOwnershipError(
                     "published app rollback preserved an unowned private entry"
                 )
-            _cleanup_owned_stage(build_fd, stage, build_identity.device)
+            remove_proven_empty_stage()
             raise PublicationOwnershipError(
                 "published app rollback lost exact ownership; restored an unowned final replacement"
             )
@@ -1893,7 +1961,7 @@ def _rollback_published_app_to_stage(
             placeholder,
             build_identity.device,
         )
-        _cleanup_owned_stage(build_fd, stage, build_identity.device)
+        remove_proven_empty_stage()
         raise PublicationOwnershipError(
             "published app rollback lost exact ownership; restored an unowned final replacement"
         )
