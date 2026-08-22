@@ -2105,6 +2105,7 @@ def test_unadopted_rollback_placeholder_replacement_survives_stage_unwind(
                 dir_fd=dir_fd,
             )
             try:
+                os.fchmod(replacement_fd, 0o711)
                 marker_fd = os.open(
                     "foreign-marker",
                     os.O_WRONLY | os.O_CREAT | os.O_EXCL,
@@ -2256,6 +2257,7 @@ def test_stage_binding_replacement_after_first_open_is_never_adopted_or_deleted(
                 dir_fd=dir_fd,
             )
             try:
+                os.fchmod(replacement_fd, 0o711)
                 marker_fd = os.open(
                     "replacement-marker",
                     os.O_WRONLY | os.O_CREAT | os.O_EXCL,
@@ -2328,6 +2330,7 @@ def test_stage_replacement_exactly_after_mkdir_is_never_adopted_or_deleted(
                 dir_fd=dir_fd,
             )
             try:
+                os.fchmod(replacement_fd, 0o711)
                 marker_fd = os.open(
                     "replacement-marker",
                     os.O_WRONLY | os.O_CREAT | os.O_EXCL,
@@ -2405,6 +2408,7 @@ def test_created_build_root_replacement_is_never_adopted_or_mutated(
                 dir_fd=dir_fd,
             )
             try:
+                os.fchmod(replacement_fd, 0o711)
                 marker_fd = os.open(
                     "replacement-marker",
                     os.O_WRONLY | os.O_CREAT | os.O_EXCL,
@@ -2473,6 +2477,7 @@ def test_new_build_replacement_exactly_after_mkdir_is_never_adopted_or_deleted(
                 dir_fd=dir_fd,
             )
             try:
+                os.fchmod(replacement_fd, 0o711)
                 marker_fd = os.open(
                     "replacement-marker",
                     os.O_WRONLY | os.O_CREAT | os.O_EXCL,
