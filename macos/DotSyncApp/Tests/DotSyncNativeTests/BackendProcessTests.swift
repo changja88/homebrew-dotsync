@@ -84,6 +84,70 @@ final class BackendProcessTests: XCTestCase {
         XCTAssertTrue(fixture.waitUntilStopped(timeout: .seconds(1)))
     }
 
+    func testValidHandshakeFollowedBySecretBytesIsFixedProtocolError() throws {
+        let fixture = try makeFixture(.validThenSecretBytes)
+        let backend = BackendProcess(
+            testOverride: fixture.executableURL,
+            handshakeTimeout: .seconds(1)
+        )
+
+        do {
+            _ = try backend.start()
+            XCTFail("Expected trailing secret bytes to reject the handshake")
+        } catch {
+            XCTAssertEqual(error as? BackendError, .backendProtocolError)
+            XCTAssertEqual(error.localizedDescription, "backend_protocol_error")
+            XCTAssertFalse(
+                error.localizedDescription.contains(fixture.secretBytes)
+            )
+        }
+
+        XCTAssertTrue(fixture.waitUntilStopped(timeout: .seconds(1)))
+    }
+
+    func testRepeatedRetryAfterProtocolFailureNeverRetainsPriorChild() throws {
+        let fixture = try makeFixture(.validThenSecretBytes)
+        let backend = BackendProcess(
+            testOverride: fixture.executableURL,
+            handshakeTimeout: .seconds(1)
+        )
+
+        assertStartError(.backendProtocolError, backend: backend)
+        XCTAssertTrue(fixture.waitUntilStopped(timeout: .seconds(1)))
+        assertStartError(.backendProtocolError, backend: backend)
+
+        XCTAssertEqual(fixture.launchCount, 2)
+        XCTAssertTrue(fixture.waitUntilStopped(timeout: .seconds(1)))
+    }
+
+    func testHandshakeTimeoutRacingChildExitReleasesOwnershipOnce() throws {
+        let fixture = try makeFixture(.exitOnControlEOFBeforeHandshake)
+        let terminationReached = DispatchSemaphore(value: 0)
+        let allowTerminationRecord = DispatchSemaphore(value: 0)
+        let shouldBlock = LockedBox(true)
+        let backend = BackendProcess(
+            testOverride: fixture.executableURL,
+            handshakeTimeout: .milliseconds(50),
+            system: FoundationBackendProcessSystem(),
+            testHooks: BackendProcessTestHooks(
+                beforeTerminationRecord: {
+                    if shouldBlock.takeTrue() {
+                        terminationReached.signal()
+                        allowTerminationRecord.wait()
+                    }
+                }
+            )
+        )
+
+        assertStartError(.backendProtocolError, backend: backend)
+        XCTAssertEqual(terminationReached.wait(timeout: .now() + 1), .success)
+        allowTerminationRecord.signal()
+
+        XCTAssertTrue(fixture.waitUntilStopped(timeout: .seconds(1)))
+        assertStartError(.backendProtocolError, backend: backend)
+        XCTAssertTrue(fixture.waitUntilStopped(timeout: .seconds(1)))
+    }
+
     func testDelayedStdoutByteAfterStartNotifiesProtocolErrorExactlyOnce() async throws {
         let fixture = try makeFixture(.extraStdoutAfterRelease)
         let events = LockedBox<[BackendError]>([])
@@ -310,6 +374,47 @@ final class BackendProcessTests: XCTestCase {
         XCTAssertEqual(events.value, [.backendExited])
     }
 
+    func testStopRacingOldTerminationRecordCannotReleaseReplacementOwner() async throws {
+        let fixture = try makeFixture(.valid)
+        let terminationReached = DispatchSemaphore(value: 0)
+        let allowOldTerminationRecord = DispatchSemaphore(value: 0)
+        let oldTerminationRecorded = DispatchSemaphore(value: 0)
+        let shouldBlock = LockedBox(true)
+        let events = LockedBox<[BackendError]>([])
+        let backend = BackendProcess(
+            testOverride: fixture.executableURL,
+            handshakeTimeout: .seconds(1),
+            onUnexpectedExit: { error in
+                events.withValue { $0.append(error) }
+            },
+            system: FoundationBackendProcessSystem(),
+            testHooks: BackendProcessTestHooks(
+                beforeTerminationRecord: {
+                    let block = shouldBlock.takeTrue()
+                    if block {
+                        terminationReached.signal()
+                        allowOldTerminationRecord.wait()
+                        oldTerminationRecorded.signal()
+                    }
+                }
+            )
+        )
+        _ = try backend.start()
+        let firstStop = Task { try await backend.stop() }
+        XCTAssertEqual(terminationReached.wait(timeout: .now() + 1), .success)
+        try await firstStop.value
+
+        _ = try backend.start()
+        XCTAssertEqual(fixture.launchCount, 2)
+        allowOldTerminationRecord.signal()
+        XCTAssertEqual(oldTerminationRecorded.wait(timeout: .now() + 1), .success)
+
+        XCTAssertTrue(fixture.isRunning)
+        XCTAssertTrue(events.value.isEmpty)
+        try await backend.stop()
+        XCTAssertTrue(fixture.waitUntilStopped(timeout: .seconds(1)))
+    }
+
     func testUnconfirmedFinalKillRetainsOwnerUntilBackgroundReaperConfirmsExit() async throws {
         let fixture = try makeFixture(.ignoresShutdown)
         let system = FailFirstKillSystem()
@@ -432,11 +537,13 @@ private final class NativeHostFixture {
         case oversizedHandshake
         case eofBeforeLineFeed
         case extraStdout
+        case validThenSecretBytes
         case extraStdoutAfterRelease
         case exitBeforeHandshake
         case exitAfterRelease
         case ignoresShutdown
         case handshakeAfterRelease
+        case exitOnControlEOFBeforeHandshake
         case stderrFlood
     }
 
@@ -449,6 +556,7 @@ private final class NativeHostFixture {
     private let readyURL: URL
     private let releaseURL: URL
     private let termURL: URL
+    let secretBytes = "oauth-secret-/Users/private-127.0.0.1"
 
     init(mode: Mode) throws {
         let directory = FileManager.default.temporaryDirectory
@@ -588,6 +696,11 @@ private final class NativeHostFixture {
             printf '%s\\nX' '\(handshake)'
             IFS= read -r ignored
             """
+        case .validThenSecretBytes:
+            return preamble + """
+            printf '%s\n%s' '\(handshake)' '\(secretBytes)'
+            IFS= read -r ignored
+            """
         case .extraStdoutAfterRelease:
             return preamble + """
             printf '%s\\n' '\(handshake)'
@@ -616,6 +729,13 @@ private final class NativeHostFixture {
             : > '\(readyURL.path)'
             while [ ! -e '\(releaseURL.path)' ]; do :; done
             printf '%s\\n' '\(handshake)'
+            IFS= read -r ignored
+            : > '\(controlEOFURL.path)'
+            """
+        case .exitOnControlEOFBeforeHandshake:
+            return preamble + """
+            IFS= read -r ignored
+            printf '%s\n' '\(handshake)'
             IFS= read -r ignored
             : > '\(controlEOFURL.path)'
             """
@@ -729,6 +849,16 @@ private final class LockedBox<Value>: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         operation(&storage)
+    }
+}
+
+private extension LockedBox where Value == Bool {
+    func takeTrue() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let result = storage
+        storage = false
+        return result
     }
 }
 

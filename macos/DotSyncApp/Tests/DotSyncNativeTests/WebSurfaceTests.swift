@@ -1,6 +1,7 @@
 import Foundation
 import WebKit
 import XCTest
+@testable import DotSyncApp
 @testable import DotSyncNative
 
 @MainActor
@@ -179,6 +180,31 @@ final class WebSurfaceTests: XCTestCase {
         )
     }
 
+    func testWebKitRedirectFromExactRootToExternalOriginIsCancelled() throws {
+        let policy = WebNavigationPolicy(origin: try makeOrigin())
+        let exactRoot = URL(string: "http://127.0.0.1:49152/")!
+        let redirected = URL(string: "https://oauth-secret.example/continue")!
+
+        XCTAssertEqual(
+            policy.navigationAction(
+                url: exactRoot,
+                isMainFrame: true,
+                opensNewWindow: false,
+                shouldDownload: false
+            ),
+            .allow
+        )
+        XCTAssertEqual(
+            policy.navigationResponse(
+                url: redirected,
+                isMainFrame: true,
+                canShowMIMEType: true
+            ),
+            .cancel
+        )
+        XCTAssertFalse(policy.allowsSubresource(redirected))
+    }
+
     func testConfigurationIsEphemeralSharesPoolAndRegistersExactBridgeName() {
         let pool = WKProcessPool()
         let bridge = RecordingScriptHandler()
@@ -300,6 +326,111 @@ final class WebSurfaceTests: XCTestCase {
         )
     }
 
+    func testNestedBridgedObjectiveCBridgeMessagesFailClosed() throws {
+        XCTAssertEqual(
+            try AppBridge.decode(
+                NSDictionary(
+                    object: NSString(string: "quit_app"),
+                    forKey: "action" as NSString
+                )
+            ),
+            .quitApp
+        )
+        let nestedBodies: [Any] = [
+            NSDictionary(
+                dictionary: [
+                    "action": NSString(string: "open_manager"),
+                    "destination": NSDictionary(
+                        object: NSString(string: "accounts"),
+                        forKey: "value" as NSString
+                    ),
+                ]
+            ),
+            NSDictionary(
+                dictionary: [
+                    "action": NSArray(object: NSString(string: "quit_app")),
+                ]
+            ),
+            NSDictionary(
+                dictionary: [
+                    "action": NSString(string: "refresh_summary"),
+                    "nested": NSDictionary(
+                        object: NSNumber(value: true),
+                        forKey: "enabled" as NSString
+                    ),
+                ]
+            ),
+        ]
+
+        for body in nestedBodies {
+            XCTAssertThrowsError(try AppBridge.decode(body)) { error in
+                XCTAssertEqual(error as? BackendError, .backendProtocolError)
+            }
+        }
+    }
+
+    func testMalformedMenuSummaryRetainsUnknownAndNeverDisplaysZero() throws {
+        let model = MenuSummaryModel()
+        let known = try MenuSummary.decode(
+            Data(
+                #"{"usage":{"state":"fresh","highest_percent":64.0},"sync":{"state":"fresh","attention_count":0},"observed_at":"2026-08-21T09:00:00Z"}"#
+                    .utf8
+            )
+        )
+        model.accept(known)
+
+        model.acceptMalformedResponse()
+        model.acceptMalformedResponse()
+
+        XCTAssertEqual(model.summary, .unknown)
+        XCTAssertEqual(model.menuTitle, "DotSync · —")
+        XCTAssertFalse(model.menuTitle.contains("0%"))
+    }
+
+    func testRepeatedRetryAfterProtocolFailuresEventuallyOwnsOneSession() async {
+        let backend = RepeatedProtocolFailureBackend(failures: 2)
+        let coordinator = AppCoordinator(backend: backend)
+
+        await coordinator.start()
+        XCTAssertEqual(coordinator.recoveryIssue, .backendUnavailable)
+        await coordinator.retry()
+        XCTAssertEqual(coordinator.recoveryIssue, .backendUnavailable)
+        await coordinator.retry()
+
+        XCTAssertNil(coordinator.recoveryIssue)
+        XCTAssertNotNil(coordinator.session)
+        let startCount = await backend.startCount
+        let stopCount = await backend.stopCount
+        XCTAssertEqual(startCount, 3)
+        XCTAssertEqual(stopCount, 2)
+    }
+
+    func testSummaryPollingDuringQuitStopsBeforeBackendOwnershipIsReleased() async {
+        let backend = QuitBarrierBackend()
+        let fetcher = CountingWebSummaryFetcher()
+        let coordinator = AppCoordinator(
+            backend: backend,
+            summaryFetcherFactory: { _ in fetcher }
+        )
+        await coordinator.start()
+        let countBeforeQuit = await fetcher.count
+        let quit = Task { @MainActor in await coordinator.quit() }
+        await backend.waitUntilStopEntered()
+
+        coordinator.setActive(false)
+        coordinator.setActive(true)
+        await coordinator.pollSummaryIfDue()
+
+        let countDuringQuit = await fetcher.count
+        XCTAssertEqual(countDuringQuit, countBeforeQuit)
+        XCTAssertNotNil(coordinator.session)
+        XCTAssertFalse(coordinator.isTerminated)
+        await backend.releaseStop()
+        await quit.value
+        XCTAssertNil(coordinator.session)
+        XCTAssertTrue(coordinator.isTerminated)
+    }
+
     func testReceiverReadinessStopsAfterExactlyThreeNonTrueProbes() {
         let readiness = ManagerListenerReadiness(maximumProbeAttempts: 3)
         readiness.pageDidBecomeUnavailable()
@@ -391,4 +522,75 @@ private final class RecordingUserContentController: WKUserContentController {
         names.append(name)
         handlers.append(scriptMessageHandler)
     }
+}
+
+private actor RepeatedProtocolFailureBackend: BackendControlling {
+    private var failures: Int
+    private(set) var startCount = 0
+    private(set) var stopCount = 0
+
+    init(failures: Int) {
+        self.failures = failures
+    }
+
+    func startBackend() async throws -> BackendSession {
+        startCount += 1
+        if failures > 0 {
+            failures -= 1
+            throw BackendError.backendProtocolError
+        }
+        return BackendSession(origin: try fixtureOrigin())
+    }
+
+    func stopBackend() async throws {
+        stopCount += 1
+    }
+}
+
+private actor QuitBarrierBackend: BackendControlling {
+    private var stopEntered = false
+    private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+    private var stopWaiter: CheckedContinuation<Void, Never>?
+
+    func startBackend() async throws -> BackendSession {
+        BackendSession(origin: try fixtureOrigin())
+    }
+
+    func stopBackend() async throws {
+        stopEntered = true
+        let waiters = entryWaiters
+        entryWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+        await withCheckedContinuation { continuation in
+            stopWaiter = continuation
+        }
+    }
+
+    func waitUntilStopEntered() async {
+        if stopEntered { return }
+        await withCheckedContinuation { continuation in
+            entryWaiters.append(continuation)
+        }
+    }
+
+    func releaseStop() {
+        stopWaiter?.resume()
+        stopWaiter = nil
+    }
+}
+
+private actor CountingWebSummaryFetcher: MenuSummaryFetching {
+    private(set) var count = 0
+
+    func fetch() async throws -> MenuSummary {
+        count += 1
+        return .unknown
+    }
+}
+
+private func fixtureOrigin() throws -> LocalOrigin {
+    try LocalOrigin(
+        origin: "http://127.0.0.1:49152",
+        token: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    )
 }
