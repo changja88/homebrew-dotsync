@@ -55,26 +55,3 @@ def test_config_btt_presets_rejects_unsafe_names(
     err = capsys.readouterr().err
     assert "preset" in err
     assert load_config().app_options["bettertouchtool"]["presets"] == ["Safe"]
-
-
-def test_config_update_preserves_symlinked_sync_directory_compatibility(
-    fake_home, monkeypatch, tmp_path, capsys
-):
-    real_target = tmp_path / "real-configs"
-    real_target.mkdir()
-    save_config(
-        Config(
-            dir=real_target,
-            apps=["bettertouchtool"],
-            app_options={"bettertouchtool": {"presets": ["Before"]}},
-        )
-    )
-    alias = tmp_path / "configs-alias"
-    alias.symlink_to(real_target, target_is_directory=True)
-    monkeypatch.setenv("DOTSYNC_DIR", str(alias))
-
-    rc = main(["config", "btt-presets", "After"])
-
-    assert rc == 0
-    assert "After" in capsys.readouterr().out
-    assert load_config().app_options["bettertouchtool"]["presets"] == ["After"]

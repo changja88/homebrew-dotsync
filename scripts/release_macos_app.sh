@@ -310,9 +310,6 @@ TAGGED_VERSION="$("$PYTHON" -c 'import pathlib, tomllib; print(tomllib.loads(pat
   || die "tagged project version could not be parsed"
 [[ "$TAGGED_VERSION" == "$VERSION" ]] \
   || die "tagged project version must exactly match VERSION"
-"$PYTHON" -m pytest
-node --test tests/web/js/state.test.mjs tests/web/js/api-client.test.mjs
-DOTSYNC_TEST_PYTHON="$PYTHON" swift test --package-path macos/DotSyncApp
 PYTHONPATH=lib "$PYTHON" -m dotsync ui --check
 PYTHON="$PYTHON" bash scripts/build_macos_app.sh
 

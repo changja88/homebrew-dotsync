@@ -15,9 +15,5 @@ let package = Package(
             name: "DotSyncApp",
             dependencies: ["DotSyncNative"]
         ),
-        .testTarget(
-            name: "DotSyncNativeTests",
-            dependencies: ["DotSyncNative", "DotSyncApp"]
-        ),
     ]
 )

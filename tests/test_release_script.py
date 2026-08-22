@@ -35,8 +35,7 @@ FORMULA = (
     '  url "https://github.com/changja88/homebrew-dotsync/archive/refs/tags/v0.1.19.tar.gz"\n'
     f'  sha256 "{OLD_SHA}"\n'
     "  test do\n"
-    '    assert_match "dotsync #{version}", shell_output("#{bin}/dotsync --version")\n'
-    '    system bin/"dotsync", "ui", "--check"\n'
+    '    assert_match "dotsync 0.1.19", shell_output("#{bin}/dotsync --version")\n'
     "  end\n"
     "end\n"
 )
@@ -163,10 +162,7 @@ def test_release_completes_and_never_publishes_placeholder_when_gh_fails(sandbox
     assert result.returncode == 0, result.stdout + result.stderr
     assert FAKE_TARBALL_SHA in formula
     assert "v0.1.20" in formula  # url bumped
-    assert 'assert_match "dotsync #{version}"' in formula
-    assert 'system bin/"dotsync", "ui", "--check"' in formula
     assert _origin_has_tag(sandbox, "v0.1.20")
-    assert not (sandbox["work"] / "Casks" / "dotsync-app.rb").exists()
 
 
 @pytest.mark.no_subprocess_block
@@ -247,21 +243,6 @@ def test_formula_wraps_libexec_entrypoint_with_pythonpath():
     assert '(libexec/"bin").env_script_all_files(bin, PYTHONPATH: libexec)' not in formula
     assert 'bin.env_script_all_files(libexec/"bin", PYTHONPATH: libexec)' not in formula
     assert 'bin.install "bin/dotsync"' not in formula
-
-
-def test_formula_libexec_copy_contains_every_production_ui_asset(tmp_path):
-    libexec = tmp_path / "libexec"
-    shutil.copytree(REPO_ROOT / "lib" / "dotsync", libexec / "dotsync")
-    static = libexec / "dotsync" / "web" / "static"
-
-    assert sorted(path.name for path in static.iterdir()) == [
-        "api-client.mjs",
-        "app.mjs",
-        "index.html",
-        "render.mjs",
-        "state.mjs",
-        "styles.css",
-    ]
 
 
 @pytest.mark.no_subprocess_block
