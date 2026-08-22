@@ -3,14 +3,17 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
 import sys
+import signal
 from pathlib import Path
 
 import pytest
 
+from scripts import macos_release_support, render_cask as render_cask_module
 from scripts.render_cask import render_cask
 
 
@@ -23,11 +26,14 @@ VALID_URL = (
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RELEASE_SCRIPT = REPO_ROOT / "scripts" / "release_macos_app.sh"
 RENDERER_SCRIPT = REPO_ROOT / "scripts" / "render_cask.py"
+RELEASE_SUPPORT_SCRIPT = REPO_ROOT / "scripts" / "macos_release_support.py"
 CASK_TEMPLATE = REPO_ROOT / "packaging" / "dotsync-app.rb.in"
 REPOSITORY_SLUG = "changja88/homebrew-dotsync"
 TEST_IDENTITY = "Developer ID Application: Release Test (TEAMID1234)"
 TEST_NOTARY_PROFILE = "dotsync-release-test"
-FINAL_ARCHIVE_BYTES = b"final-stapled-dotsync-archive\n"
+FIXTURE_EXECUTABLE_BYTES = b"fixture-universal-binary\n"
+MALICIOUS_EXECUTABLE_BYTES = b"substituted-executable\n"
+FINAL_ARCHIVE_BYTES = b"archive:" + FIXTURE_EXECUTABLE_BYTES
 FINAL_ARCHIVE_SHA256 = hashlib.sha256(FINAL_ARCHIVE_BYTES).hexdigest()
 
 
@@ -238,6 +244,223 @@ def test_renderer_atomic_publish_failure_leaves_no_output_or_temporary_file(
     assert list((repository / "Casks").iterdir()) == []
 
 
+def test_renderer_rolls_back_interruption_immediately_after_new_link(
+    tmp_path, monkeypatch
+):
+    repository = _repository(tmp_path)
+    real_link = os.link
+
+    def interrupt_after_link(*args, **kwargs):
+        real_link(*args, **kwargs)
+        raise InterruptedError("injected interruption after publication link")
+
+    monkeypatch.setattr(os, "link", interrupt_after_link)
+
+    with pytest.raises(InterruptedError, match="after publication link"):
+        _render(repository)
+
+    assert list((repository / "Casks").iterdir()) == []
+
+
+def test_renderer_restores_prior_cask_when_interrupted_immediately_after_swap(
+    tmp_path, monkeypatch
+):
+    repository = _repository(tmp_path)
+    output = repository / "Casks" / "dotsync-app.rb"
+    prior_bytes = b"prior-before-interrupted-swap\n"
+    output.write_bytes(prior_bytes)
+    output.chmod(0o640)
+    real_swap = render_cask_module._swap_entries
+    swap_calls = 0
+
+    def interrupt_after_first_swap(*args, **kwargs):
+        nonlocal swap_calls
+        swap_calls += 1
+        real_swap(*args, **kwargs)
+        if swap_calls == 1:
+            raise InterruptedError("injected interruption after publication swap")
+
+    monkeypatch.setattr(render_cask_module, "_swap_entries", interrupt_after_first_swap)
+
+    with pytest.raises(InterruptedError, match="after publication swap"):
+        _render(repository, replace_existing=True)
+
+    assert output.read_bytes() == prior_bytes
+    assert stat.S_IMODE(output.stat().st_mode) == 0o640
+    assert list(output.parent.iterdir()) == [output]
+
+
+def test_renderer_rejects_template_rebound_after_descriptor_open(
+    tmp_path, monkeypatch
+):
+    repository = _repository(tmp_path)
+    template = repository / "packaging" / "dotsync-app.rb.in"
+    attacker_template = repository / "packaging" / "attacker.rb.in"
+    attacker_template.write_text(
+        "# attacker-controlled template\n"
+        'version "__DOTSYNC_VERSION__"\n'
+        'sha256 "__DOTSYNC_SHA256__"\n'
+        'url "__DOTSYNC_URL__"\n',
+        encoding="utf-8",
+    )
+    real_open = os.open
+    rebound = False
+
+    def rebind_after_open(path, flags, *args, **kwargs):
+        nonlocal rebound
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if (
+            not rebound
+            and path == "dotsync-app.rb.in"
+            and kwargs.get("dir_fd") is not None
+        ):
+            rebound = True
+            os.replace(attacker_template, template)
+        return descriptor
+
+    monkeypatch.setattr(os, "open", rebind_after_open)
+
+    with pytest.raises(ValueError, match="binding changed"):
+        _render(repository)
+
+    assert rebound
+    assert not (repository / "Casks" / "dotsync-app.rb").exists()
+
+
+def test_renderer_rolls_back_new_cask_when_directory_fsync_fails(
+    tmp_path, monkeypatch
+):
+    repository = _repository(tmp_path)
+    real_fsync = os.fsync
+    fsync_calls = 0
+
+    def fail_second_fsync(descriptor):
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if fsync_calls == 2:
+            raise OSError("injected post-publication fsync failure")
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fail_second_fsync)
+
+    with pytest.raises(OSError, match="post-publication fsync"):
+        _render(repository)
+
+    assert list((repository / "Casks").iterdir()) == []
+
+
+def test_renderer_rolls_back_new_cask_when_final_validation_fails(
+    tmp_path, monkeypatch
+):
+    repository = _repository(tmp_path)
+    real_stat = os.stat
+
+    def invalidate_published_cask(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        if path == "dotsync-app.rb" and kwargs.get("dir_fd") is not None:
+            return os.stat_result(
+                (
+                    stat.S_IFDIR | 0o755,
+                    *result[1:],
+                )
+            )
+        return result
+
+    monkeypatch.setattr(os, "stat", invalidate_published_cask)
+
+    with pytest.raises(ValueError, match="regular file"):
+        _render(repository)
+
+    assert list((repository / "Casks").iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "failure_boundary",
+    ["fsync", "validation", "retained-cleanup-fsync"],
+)
+def test_renderer_restores_replaced_cask_on_every_postpublication_failure(
+    tmp_path, monkeypatch, failure_boundary
+):
+    repository = _repository(tmp_path)
+    output = repository / "Casks" / "dotsync-app.rb"
+    prior_bytes = b"prior-cask-bytes\n"
+    output.write_bytes(prior_bytes)
+    output.chmod(0o640)
+
+    if failure_boundary in ("fsync", "retained-cleanup-fsync"):
+        real_fsync = os.fsync
+        fsync_calls = 0
+        failure_call = 2 if failure_boundary == "fsync" else 3
+
+        def fail_selected_fsync(descriptor):
+            nonlocal fsync_calls
+            fsync_calls += 1
+            if fsync_calls == failure_call:
+                raise OSError("injected replacement fsync failure")
+            return real_fsync(descriptor)
+
+        monkeypatch.setattr(os, "fsync", fail_selected_fsync)
+        expected_error = OSError
+    else:
+        real_stat = os.stat
+
+        def invalidate_published_cask(path, *args, **kwargs):
+            result = real_stat(path, *args, **kwargs)
+            if path == "dotsync-app.rb" and kwargs.get("dir_fd") is not None:
+                return os.stat_result(
+                    (
+                        stat.S_IFDIR | 0o755,
+                        *result[1:],
+                    )
+                )
+            return result
+
+        monkeypatch.setattr(os, "stat", invalidate_published_cask)
+        expected_error = ValueError
+
+    with pytest.raises(expected_error):
+        _render(repository, replace_existing=True)
+
+    assert output.read_bytes() == prior_bytes
+    assert stat.S_IMODE(output.stat().st_mode) == 0o640
+    assert list(output.parent.iterdir()) == [output]
+
+
+@pytest.mark.no_subprocess_block
+def test_renderer_rolls_back_if_binding_output_cannot_be_published(tmp_path):
+    repository = _repository(tmp_path)
+    output = repository / "Casks" / "dotsync-app.rb"
+    command = [
+        sys.executable,
+        str(RENDERER_SCRIPT),
+        "--version",
+        VALID_VERSION,
+        "--sha256",
+        VALID_SHA256,
+        "--url",
+        VALID_URL,
+        "--output",
+        str(output),
+        "--repository-root",
+        str(repository),
+    ]
+
+    stdout_path = tmp_path / "read-only-stdout"
+    stdout_path.write_bytes(b"")
+    with stdout_path.open("rb") as read_only_stdout:
+        result = subprocess.run(
+            command,
+            stdout=read_only_stdout,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+
+    assert result.returncode != 0
+    assert not output.exists()
+    assert list(output.parent.iterdir()) == []
+
+
 def _write_executable(path: Path, body: str) -> None:
     path.write_text(body, encoding="utf-8")
     path.chmod(0o755)
@@ -281,6 +504,41 @@ matching_occurrence = 1 + sum(
 if failure and call[:len(failure)] == failure and matching_occurrence == failure_occurrence:
     raise SystemExit(91)
 
+rebind_prefix = json.loads(os.environ.get("DOTSYNC_RELEASE_REBIND_PREFIX", "[]"))
+rebind_occurrence = 1 + sum(
+    prior[:len(rebind_prefix)] == rebind_prefix for prior in prior_calls
+)
+if (
+    rebind_prefix
+    and call[:len(rebind_prefix)] == rebind_prefix
+    and rebind_occurrence == 1
+):
+    rebind_kind = os.environ["DOTSYNC_RELEASE_REBIND_KIND"]
+    if rebind_kind == "work":
+        if name == "git" and "--output" in arguments:
+            output = Path(arguments[arguments.index("--output") + 1])
+            target = output.parent if output.is_absolute() else Path.cwd()
+        else:
+            target = Path.cwd().parent if Path.cwd().name == "source" else Path.cwd()
+    elif rebind_kind == "source":
+        target = Path.cwd()
+        if target.name != "source":
+            target = target / "source"
+    else:
+        raise SystemExit(93)
+    moved = target.with_name(target.name + ".pinned-original")
+    target.rename(moved)
+    target.mkdir(mode=0o700)
+    (target / "attacker-marker").write_text("replacement must survive\\n")
+    if rebind_kind == "source":
+        executable = target / "build" / "DotSync.app" / "Contents" / "MacOS" / "DotSync"
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes({MALICIOUS_EXECUTABLE_BYTES!r})
+        executable.chmod(0o755)
+    record = os.environ.get("DOTSYNC_RELEASE_REBIND_RECORD")
+    if record:
+        Path(record).write_text(str(target), encoding="utf-8")
+
 if name == "git":
     if arguments == ["rev-parse", "--path-format=absolute", "--git-common-dir"] and os.environ.get("DOTSYNC_RELEASE_LINKED"):
         print(os.environ["DOTSYNC_RELEASE_FAKE_COMMON_DIR"])
@@ -288,40 +546,232 @@ if name == "git":
     if arguments == ["branch", "--show-current"] and os.environ.get("DOTSYNC_RELEASE_BRANCH"):
         print(os.environ["DOTSYNC_RELEASE_BRANCH"])
         raise SystemExit(0)
+    if arguments == ["rev-parse", "HEAD"] and "DOTSYNC_RELEASE_HEAD_OUTPUT" in os.environ:
+        print(os.environ["DOTSYNC_RELEASE_HEAD_OUTPUT"])
+        raise SystemExit(0)
+    if arguments == ["cat-file", "-t", "refs/tags/v0.3.0"] and "DOTSYNC_RELEASE_TAG_TYPE_OUTPUT" in os.environ:
+        print(os.environ["DOTSYNC_RELEASE_TAG_TYPE_OUTPUT"])
+        raise SystemExit(0)
+    if arguments == ["rev-parse", "--verify", "refs/tags/v0.3.0^{{commit}}"] and "DOTSYNC_RELEASE_TAG_COMMIT_OUTPUT" in os.environ:
+        print(os.environ["DOTSYNC_RELEASE_TAG_COMMIT_OUTPUT"])
+        raise SystemExit(0)
+    allowed_git = arguments in (
+        ["rev-parse", "--show-toplevel"],
+        ["rev-parse", "--path-format=absolute", "--git-dir"],
+        ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        ["branch", "--show-current"],
+        ["status", "--porcelain=v1", "--untracked-files=all"],
+        ["rev-parse", "HEAD"],
+        ["cat-file", "-t", "refs/tags/v0.3.0"],
+        ["rev-parse", "--verify", "refs/tags/v0.3.0^{{commit}}"],
+        ["archive", "--format=tar", "--prefix=source/", "--output", "source.tar", "refs/tags/v0.3.0"],
+    )
+    if not allowed_git:
+        raise SystemExit(92)
     os.execv({real_git!r}, [{real_git!r}, *arguments])
 
 if name == "tar":
+    if arguments != ["-xf", "source.tar", "-C", "."]:
+        raise SystemExit(92)
     os.execv({real_tar!r}, [{real_tar!r}, *arguments])
 
 if name == "bash":
+    if arguments != ["scripts/build_macos_app.sh"]:
+        raise SystemExit(92)
     os.execv("/bin/bash", ["/bin/bash", *arguments])
 
 if name == "python-release":
     if len(arguments) >= 1 and arguments[0].endswith("scripts/render_cask.py"):
+        signal_prefix = json.loads(os.environ.get("DOTSYNC_RELEASE_SIGNAL_PREFIX", "[]"))
+        if (
+            signal_prefix
+            and call[:len(signal_prefix)] == signal_prefix
+            and "--rollback-created" not in arguments
+        ):
+            import subprocess
+            completed = subprocess.run([{real_python!r}, *arguments])
+            os.kill(os.getppid(), int(os.environ["DOTSYNC_RELEASE_SIGNAL_NUMBER"]))
+            raise SystemExit(completed.returncode)
         os.execv({real_python!r}, [{real_python!r}, *arguments])
-    raise SystemExit(0)
+    if len(arguments) >= 1 and arguments[0].endswith("scripts/macos_release_support.py"):
+        if len(arguments) < 2 or arguments[1] not in (
+            "validate-temp-root", "identity-current", "identity-here",
+            "identity-parent", "identity-path-entry", "read-cask-binding",
+            "cleanup-current",
+        ):
+            raise SystemExit(92)
+        os.execv({real_python!r}, [{real_python!r}, *arguments])
+    if arguments[:1] == ["-c"]:
+        allowed_code_prefixes = (
+            "import pathlib, tomllib;", "import pathlib, plistlib;",
+            "import re, sys; identity=", "import json, sys; data=json.load(sys.stdin);",
+        )
+        if len(arguments) not in (2, 3) or not arguments[1].startswith(allowed_code_prefixes):
+            raise SystemExit(92)
+        os.execv({real_python!r}, [{real_python!r}, *arguments])
+    if arguments in (["-m", "pytest"], ["-m", "dotsync", "ui", "--check"]):
+        raise SystemExit(0)
+    raise SystemExit(92)
 
 if name == "security":
+    if arguments != ["find-identity", "-v", "-p", "codesigning"]:
+        raise SystemExit(92)
     identity = os.environ["DEVELOPER_ID_APPLICATION"]
-    if not os.environ.get("DOTSYNC_RELEASE_IDENTITY_UNRESOLVABLE"):
+    if "DOTSYNC_RELEASE_SECURITY_OUTPUT" in os.environ:
+        print(os.environ["DOTSYNC_RELEASE_SECURITY_OUTPUT"])
+    elif not os.environ.get("DOTSYNC_RELEASE_IDENTITY_UNRESOLVABLE"):
         print(f'  1) AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA "{{identity}}"')
     raise SystemExit(0)
 
+if name == "lipo":
+    if arguments == ["build/DotSync.app/Contents/MacOS/DotSync", "-verify_arch", "arm64", "x86_64"]:
+        raise SystemExit(0)
+    if arguments == ["build/DotSync.app/Contents/MacOS/DotSync", "-archs"]:
+        print(os.environ.get("DOTSYNC_RELEASE_ARCHS", "x86_64 arm64"))
+        raise SystemExit(0)
+    raise SystemExit(92)
+
+if name == "xcrun":
+    if arguments[:2] == ["notarytool", "history"]:
+        if arguments[2:] != ["--keychain-profile", os.environ["NOTARYTOOL_PROFILE"], "--output-format", "json"]:
+            raise SystemExit(92)
+        print(
+            os.environ.get(
+                "DOTSYNC_RELEASE_NOTARY_HISTORY_OUTPUT",
+                '{{"history":[{{"id":"11111111-2222-3333-4444-555555555555","status":"Accepted"}}]}}',
+            )
+        )
+        raise SystemExit(0)
+    if arguments[:2] == ["notarytool", "submit"]:
+        if arguments[3:] != ["--keychain-profile", os.environ["NOTARYTOOL_PROFILE"], "--wait", "--output-format", "json"]:
+            raise SystemExit(92)
+        print(
+            os.environ.get(
+                "DOTSYNC_RELEASE_NOTARY_SUBMIT_OUTPUT",
+                '{{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","status":"Accepted","message":"Package Approved"}}',
+            )
+        )
+        raise SystemExit(0)
+    if arguments[:2] in (["stapler", "staple"], ["stapler", "validate"]) and len(arguments) == 3:
+        raise SystemExit(0)
+    raise SystemExit(92)
+
 if name == "ditto":
+    if len(arguments) != 5 or arguments[:3] != ["-c", "-k", "--keepParent"]:
+        raise SystemExit(92)
     destination = Path(arguments[-1])
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.name.startswith("DotSync-notarization-"):
         destination.write_bytes(b"unsigned-notary-archive\\n")
     else:
-        destination.write_bytes({FINAL_ARCHIVE_BYTES!r})
+        app = Path(arguments[-2])
+        executable = app / "Contents" / "MacOS" / "DotSync"
+        destination.write_bytes(b"archive:" + executable.read_bytes())
     raise SystemExit(0)
 
 if name == "shasum":
+    if len(arguments) != 3 or arguments[:2] != ["-a", "256"]:
+        raise SystemExit(92)
     archive = Path(arguments[-1])
-    print(f"{{hashlib.sha256(archive.read_bytes()).hexdigest()}}  {{archive}}")
+    output_override = os.environ.get("DOTSYNC_RELEASE_SHA_OUTPUT")
+    if output_override is not None:
+        print(output_override.replace("{{archive}}", str(archive)))
+    else:
+        print(f"{{hashlib.sha256(archive.read_bytes()).hexdigest()}}  {{archive}}")
     raise SystemExit(0)
 
-raise SystemExit(0)
+if name == "gh":
+    if arguments[:2] == ["release", "view"]:
+        if arguments != ["release", "view", "v0.3.0", "--repo", {REPOSITORY_SLUG!r}, "--json", "id,assets"]:
+            raise SystemExit(92)
+        print(
+            os.environ.get(
+                "DOTSYNC_RELEASE_GH_VIEW_OUTPUT",
+                '{{"id":"RE_kwDORel3as4AAAAA","assets":[]}}',
+            )
+        )
+        raise SystemExit(0)
+    if arguments[:2] == ["release", "upload"]:
+        if arguments != ["release", "upload", "v0.3.0", "../DotSync-0.3.0-macOS.zip", "--repo", {REPOSITORY_SLUG!r}]:
+            raise SystemExit(92)
+        uploaded_copy = os.environ.get("DOTSYNC_RELEASE_UPLOADED_COPY")
+        if uploaded_copy:
+            Path(uploaded_copy).write_bytes(Path(arguments[3]).read_bytes())
+        raise SystemExit(0)
+    raise SystemExit(92)
+
+if name == "codesign":
+    if arguments[:1] == ["--force"]:
+        if arguments != ["--force", "--options", "runtime", "--timestamp", "--sign", os.environ["DEVELOPER_ID_APPLICATION"], "build/DotSync.app"]:
+            raise SystemExit(92)
+        signed_copy = os.environ.get("DOTSYNC_RELEASE_SIGNED_COPY")
+        if signed_copy:
+            app = Path(arguments[-1])
+            executable = app / "Contents" / "MacOS" / "DotSync"
+            Path(signed_copy).write_bytes(executable.read_bytes())
+        raise SystemExit(0)
+    if arguments[:1] == ["--verify"]:
+        if arguments != ["--verify", "--deep", "--strict", "--verbose=2", "build/DotSync.app"]:
+            raise SystemExit(92)
+        raise SystemExit(0)
+    raise SystemExit(92)
+
+if name == "brew" and os.environ.get("DOTSYNC_RELEASE_REPLACE_CASK_DURING_AUDIT"):
+    cask = Path(arguments[-1])
+    owned = cask.with_name("dotsync-app.created-by-renderer")
+    cask.rename(owned)
+    cask.write_bytes(b"replacement-cask-must-survive\\n")
+    raise SystemExit(91)
+
+if name == "brew" and os.environ.get("DOTSYNC_RELEASE_REPLACE_CASKS_DURING_AUDIT"):
+    cask = Path(arguments[-1])
+    casks = cask.parent
+    owned = casks.with_name("Casks.created-by-renderer")
+    casks.rename(owned)
+    casks.mkdir()
+    (casks / cask.name).write_bytes(b"replacement-directory-cask-must-survive\\n")
+    raise SystemExit(91)
+
+signal_prefix = json.loads(os.environ.get("DOTSYNC_RELEASE_SIGNAL_PREFIX", "[]"))
+if signal_prefix and call[:len(signal_prefix)] == signal_prefix:
+    os.kill(os.getppid(), int(os.environ["DOTSYNC_RELEASE_SIGNAL_NUMBER"]))
+
+residue_prefix = json.loads(os.environ.get("DOTSYNC_RELEASE_RESIDUE_PREFIX", "[]"))
+if residue_prefix and call[:len(residue_prefix)] == residue_prefix:
+    archive_calls = [prior for prior in prior_calls if prior[:2] == ["git", "archive"]]
+    if not archive_calls:
+        raise SystemExit(93)
+    archive_call = archive_calls[-1]
+    output = Path(archive_call[archive_call.index("--output") + 1])
+    work = output.parent if output.is_absolute() else Path.cwd()
+    if work.name == "source":
+        work = work.parent
+    (work / "unowned-cleanup-residue").write_text("preserve me\\n")
+    residue_record = os.environ.get("DOTSYNC_RELEASE_RESIDUE_RECORD")
+    if residue_record:
+        Path(residue_record).write_text(str(work), encoding="utf-8")
+
+if name == "node":
+    if arguments == ["--test", "tests/web/js/state.test.mjs", "tests/web/js/api-client.test.mjs"]:
+        raise SystemExit(0)
+    raise SystemExit(92)
+
+if name == "swift":
+    if arguments == ["test", "--package-path", "macos/DotSyncApp"]:
+        raise SystemExit(0)
+    raise SystemExit(92)
+
+if name == "spctl":
+    if arguments == ["--assess", "--type", "execute", "--verbose=4", "build/DotSync.app"]:
+        raise SystemExit(0)
+    raise SystemExit(92)
+
+if name == "brew":
+    if len(arguments) == 4 and arguments[:3] == ["audit", "--cask", "--strict"]:
+        raise SystemExit(0)
+    raise SystemExit(92)
+
+raise SystemExit(92)
 """
 
 
@@ -339,6 +789,10 @@ def macos_release_repository(tmp_path):
     (repository / "tests" / "web" / "js").mkdir(parents=True)
     shutil.copy2(RELEASE_SCRIPT, repository / "scripts" / RELEASE_SCRIPT.name)
     shutil.copy2(RENDERER_SCRIPT, repository / "scripts" / RENDERER_SCRIPT.name)
+    shutil.copy2(
+        RELEASE_SUPPORT_SCRIPT,
+        repository / "scripts" / RELEASE_SUPPORT_SCRIPT.name,
+    )
     shutil.copy2(CASK_TEMPLATE, repository / "packaging" / CASK_TEMPLATE.name)
     (repository / "pyproject.toml").write_text(
         '[project]\nname = "dotsync"\nversion = "0.3.0"\n',
@@ -361,6 +815,16 @@ set -euo pipefail
 mkdir -p build/DotSync.app/Contents/MacOS
 printf '%s\\n' 'fixture-universal-binary' > build/DotSync.app/Contents/MacOS/DotSync
 chmod 755 build/DotSync.app/Contents/MacOS/DotSync
+plist_version="${DOTSYNC_RELEASE_BUILT_PLIST_VERSION:-0.3.0}"
+printf '%s\\n' \\
+  '<?xml version="1.0" encoding="UTF-8"?>' \\
+  '<plist version="1.0"><dict>' \\
+  '<key>CFBundleShortVersionString</key>' \\
+  "<string>$plist_version</string>" \\
+  '<key>CFBundleVersion</key>' \\
+  "<string>$plist_version</string>" \\
+  '</dict></plist>' \\
+  > build/DotSync.app/Contents/Info.plist
 """,
     )
 
@@ -409,6 +873,8 @@ chmod 755 build/DotSync.app/Contents/MacOS/DotSync
         (fake_bin / name).symlink_to(dispatcher)
 
     call_log = tmp_path / "release-calls.jsonl"
+    private_temp = tmp_path / "private-temp"
+    private_temp.mkdir(mode=0o700)
     env = {
         **git_env,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
@@ -417,6 +883,7 @@ chmod 755 build/DotSync.app/Contents/MacOS/DotSync
         "NOTARYTOOL_PROFILE": TEST_NOTARY_PROFILE,
         "DOTSYNC_RELEASE_CALL_LOG": str(call_log),
         "DOTSYNC_RELEASE_FAKE_COMMON_DIR": str(tmp_path / "other-common.git"),
+        "TMPDIR": str(private_temp),
     }
     return {
         "repository": repository,
@@ -443,6 +910,26 @@ def _run_macos_release(
     )
 
 
+@pytest.mark.no_subprocess_block
+def test_fake_release_dispatcher_rejects_unknown_external_argv(
+    macos_release_repository,
+):
+    fake_bin = macos_release_repository["fake_bin"]
+    env = macos_release_repository["env"]
+    assert isinstance(fake_bin, Path)
+    assert isinstance(env, dict)
+
+    result = subprocess.run(
+        [str(fake_bin / "codesign"), "--unknown-release-argument"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 92
+
+
 def _release_calls(fixture: dict[str, object]) -> list[list[str]]:
     call_log = fixture["call_log"]
     assert isinstance(call_log, Path)
@@ -454,45 +941,80 @@ def _release_calls(fixture: dict[str, object]) -> list[list[str]]:
 def _normalized_release_calls(fixture: dict[str, object]) -> list[list[str]]:
     repository = fixture["repository"]
     fake_bin = fixture["fake_bin"]
+    env = fixture["env"]
     assert isinstance(repository, Path)
     assert isinstance(fake_bin, Path)
+    assert isinstance(env, dict)
     calls = _release_calls(fixture)
-    work_directory: str | None = None
-    for call in calls:
-        if call[:3] == ["git", "archive", "--format=tar"]:
-            output_index = call.index("--output") + 1
-            work_directory = str(Path(call[output_index]).parent)
-            break
 
     replacements = [
         (str(fake_bin / "python-release"), "$PYTHON"),
         (str(repository), "$REPOSITORY"),
+        (str(env["TMPDIR"]), "$TMPDIR"),
     ]
-    if work_directory is not None:
-        replacements.append((work_directory, "$WORK"))
     normalized: list[list[str]] = []
     for call in calls:
-        normalized.append(
-            [
-                next(
-                    (
-                        value.replace(original, replacement)
-                        for original, replacement in replacements
-                        if original in value
-                    ),
-                    value,
-                )
-                for value in call
-            ]
-        )
+        normalized_call: list[str] = []
+        for value in call:
+            for original, replacement in replacements:
+                value = value.replace(original, replacement)
+            value = re.sub(
+                r"^([^:]+):[0-9]+:[0-9]+:([df])$",
+                r"\1:$DEV:$INO:\2",
+                value,
+            )
+            if re.fullmatch(r"[0-9]+:[0-9]+", value):
+                value = "$DEV:$INO"
+            if re.fullmatch(r"dotsync-macos-release\.[A-Za-z0-9]+", value):
+                value = "$WORK_NAME"
+            normalized_call.append(value)
+        normalized.append(normalized_call)
     return normalized
 
 
 def _expected_success_calls() -> list[list[str]]:
-    app = "$WORK/source/build/DotSync.app"
-    notary_zip = "$WORK/DotSync-notarization-0.3.0.zip"
-    final_zip = "$WORK/DotSync-0.3.0-macOS.zip"
+    app = "build/DotSync.app"
+    executable = f"{app}/Contents/MacOS/DotSync"
+    notary_zip = "../DotSync-notarization-0.3.0.zip"
+    final_zip = "../DotSync-0.3.0-macOS.zip"
     cask = "$REPOSITORY/Casks/dotsync-app.rb"
+    support = "$REPOSITORY/scripts/macos_release_support.py"
+    tagged_version_code = (
+        'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml")'
+        '.read_text(encoding="utf-8"))["project"]["version"])'
+    )
+    plist_code = (
+        'import pathlib, plistlib; data=plistlib.loads(pathlib.Path("build/'
+        'DotSync.app/Contents/Info.plist").read_bytes()); print(data.get('
+        '"CFBundleShortVersionString", "")); print(data.get("CFBundleVersion", ""))'
+    )
+    identity_code = (
+        'import re, sys; identity=sys.argv[1]; pattern=re.compile(r"\\s*\\d+\\)'
+        '\\s+[0-9A-Fa-f]{40}\\s+\\\"" + re.escape(identity) + r"\\\""); '
+        'lines=sys.stdin.read().splitlines(); raise SystemExit(0 if sum(pattern.'
+        'fullmatch(line) is not None for line in lines) == 1 else 1)'
+    )
+    history_code = (
+        'import json, sys; data=json.load(sys.stdin); raise SystemExit(0 if '
+        'isinstance(data, dict) and isinstance(data.get("history"), list) else 1)'
+    )
+    submit_code = (
+        'import json, sys; data=json.load(sys.stdin); submission_id=data.get("id") '
+        'if isinstance(data, dict) else None; status=data.get("status") if '
+        'isinstance(data, dict) else None; sys.exit(1) if status != "Accepted" or '
+        'not isinstance(submission_id, str) or not submission_id.strip() else '
+        'print(submission_id)'
+    )
+    release_code = (
+        'import json, sys; data=json.load(sys.stdin); release_id=data.get("id") if '
+        'isinstance(data, dict) else None; assets=data.get("assets") if isinstance('
+        'data, dict) else None; valid_assets=isinstance(assets, list) and all('
+        'isinstance(asset, dict) and isinstance(asset.get("name"), str) and asset'
+        '["name"] for asset in assets); collision=valid_assets and any(asset["name"] '
+        '== sys.argv[1] for asset in assets); sys.exit(1) if not isinstance('
+        'release_id, str) or not release_id.strip() or not valid_assets or collision '
+        'else print(release_id)'
+    )
     return [
         ["git", "rev-parse", "--show-toplevel"],
         ["git", "rev-parse", "--path-format=absolute", "--git-dir"],
@@ -500,17 +1022,25 @@ def _expected_success_calls() -> list[list[str]]:
         ["git", "branch", "--show-current"],
         ["git", "status", "--porcelain=v1", "--untracked-files=all"],
         ["git", "rev-parse", "HEAD"],
+        ["git", "cat-file", "-t", "refs/tags/v0.3.0"],
         ["git", "rev-parse", "--verify", "refs/tags/v0.3.0^{commit}"],
+        ["python-release", support, "validate-temp-root", "$TMPDIR"],
+        ["python-release", support, "identity-current"],
+        ["python-release", support, "identity-current", "--require-mode", "0700"],
         [
             "git",
             "archive",
             "--format=tar",
             "--prefix=source/",
             "--output",
-            "$WORK/source.tar",
+            "source.tar",
             "refs/tags/v0.3.0",
         ],
-        ["tar", "-xf", "$WORK/source.tar", "-C", "$WORK"],
+        ["python-release", support, "identity-here", "source.tar"],
+        ["tar", "-xf", "source.tar", "-C", "."],
+        ["python-release", support, "identity-here", "source"],
+        ["python-release", support, "identity-current"],
+        ["python-release", "-c", tagged_version_code],
         ["python-release", "-m", "pytest"],
         [
             "node",
@@ -521,21 +1051,27 @@ def _expected_success_calls() -> list[list[str]]:
         ["swift", "test", "--package-path", "macos/DotSyncApp"],
         ["python-release", "-m", "dotsync", "ui", "--check"],
         ["bash", "scripts/build_macos_app.sh"],
+        ["python-release", "-c", plist_code],
         [
             "lipo",
-            f"{app}/Contents/MacOS/DotSync",
+            executable,
             "-verify_arch",
             "arm64",
             "x86_64",
         ],
+        ["lipo", executable, "-archs"],
         ["security", "find-identity", "-v", "-p", "codesigning"],
+        ["python-release", "-c", identity_code, TEST_IDENTITY],
         [
             "xcrun",
             "notarytool",
             "history",
             "--keychain-profile",
             TEST_NOTARY_PROFILE,
+            "--output-format",
+            "json",
         ],
+        ["python-release", "-c", history_code],
         [
             "codesign",
             "--force",
@@ -548,6 +1084,7 @@ def _expected_success_calls() -> list[list[str]]:
         ],
         ["codesign", "--verify", "--deep", "--strict", "--verbose=2", app],
         ["ditto", "-c", "-k", "--keepParent", app, notary_zip],
+        ["python-release", support, "identity-parent", "DotSync-notarization-0.3.0.zip"],
         [
             "xcrun",
             "notarytool",
@@ -556,13 +1093,21 @@ def _expected_success_calls() -> list[list[str]]:
             "--keychain-profile",
             TEST_NOTARY_PROFILE,
             "--wait",
+            "--output-format",
+            "json",
         ],
+        ["python-release", "-c", submit_code],
         ["xcrun", "stapler", "staple", app],
         ["xcrun", "stapler", "validate", app],
         ["spctl", "--assess", "--type", "execute", "--verbose=4", app],
         ["ditto", "-c", "-k", "--keepParent", app, final_zip],
+        ["python-release", support, "identity-parent", "DotSync-0.3.0-macOS.zip"],
         ["shasum", "-a", "256", final_zip],
-        ["gh", "release", "view", "v0.3.0", "--repo", REPOSITORY_SLUG],
+        [
+            "gh", "release", "view", "v0.3.0", "--repo", REPOSITORY_SLUG,
+            "--json", "id,assets",
+        ],
+        ["python-release", "-c", release_code, "DotSync-0.3.0-macOS.zip"],
         [
             "gh",
             "release",
@@ -572,6 +1117,9 @@ def _expected_success_calls() -> list[list[str]]:
             "--repo",
             REPOSITORY_SLUG,
         ],
+        ["python-release", support, "identity-current"],
+        ["python-release", support, "identity-path-entry", "$REPOSITORY", "Casks"],
+        ["python-release", support, "identity-here", "cask-binding.json"],
         [
             "python-release",
             "$REPOSITORY/scripts/render_cask.py",
@@ -586,7 +1134,23 @@ def _expected_success_calls() -> list[list[str]]:
             "--repository-root",
             "$REPOSITORY",
         ],
+        [
+            "python-release", support, "read-cask-binding", "cask-binding.json",
+            "cask-binding.json:$DEV:$INO:f",
+        ],
         ["brew", "audit", "--cask", "--strict", cask],
+        [
+            "python-release", support, "cleanup-current",
+            "--parent", "$TMPDIR",
+            "--name", "$WORK_NAME",
+            "--parent-identity", "$DEV:$INO",
+            "--work-identity", "$DEV:$INO",
+            "--owned", "source.tar:$DEV:$INO:f",
+            "--owned", "source:$DEV:$INO:d",
+            "--owned", "DotSync-notarization-0.3.0.zip:$DEV:$INO:f",
+            "--owned", "DotSync-0.3.0-macOS.zip:$DEV:$INO:f",
+            "--owned", "cask-binding.json:$DEV:$INO:f",
+        ],
     ]
 
 
@@ -677,6 +1241,78 @@ def test_signed_macos_release_requires_tag_to_resolve_to_exact_head(
 
 
 @pytest.mark.no_subprocess_block
+def test_signed_macos_release_rejects_lightweight_tag_before_export(
+    macos_release_repository,
+):
+    repository = macos_release_repository["repository"]
+    env = macos_release_repository["env"]
+    assert isinstance(repository, Path)
+    assert isinstance(env, dict)
+    real_git = shutil.which("git", path=os.environ["PATH"])
+    assert real_git is not None
+    _git(repository, real_git, "tag", "-d", "v0.3.0", env=env)
+    _git(repository, real_git, "tag", "v0.3.0", env=env)
+
+    result = _run_macos_release(macos_release_repository, VALID_VERSION)
+
+    assert result.returncode != 0
+    assert not any(call[:2] == ["git", "archive"] for call in _release_calls(macos_release_repository))
+
+
+@pytest.mark.no_subprocess_block
+def test_signed_macos_release_rejects_tagged_project_version_mismatch_before_build(
+    macos_release_repository,
+):
+    repository = macos_release_repository["repository"]
+    env = macos_release_repository["env"]
+    assert isinstance(repository, Path)
+    assert isinstance(env, dict)
+    real_git = shutil.which("git", path=os.environ["PATH"])
+    assert real_git is not None
+    _git(repository, real_git, "tag", "-d", "v0.3.0", env=env)
+    (repository / "pyproject.toml").write_text(
+        '[project]\nname = "dotsync"\nversion = "9.9.9"\n',
+        encoding="utf-8",
+    )
+    _git(repository, real_git, "add", "pyproject.toml", env=env)
+    _git(repository, real_git, "commit", "-m", "mismatched tagged version", env=env)
+    _git(repository, real_git, "tag", "-a", "v0.3.0", "-m", "v0.3.0", env=env)
+
+    result = _run_macos_release(macos_release_repository, VALID_VERSION)
+
+    assert result.returncode != 0
+    calls = _release_calls(macos_release_repository)
+    assert any(call[:2] == ["git", "archive"] for call in calls)
+    assert not any(call[:2] == ["python-release", "-m"] for call in calls)
+    assert not any(call[:2] == ["bash", "scripts/build_macos_app.sh"] for call in calls)
+
+
+@pytest.mark.no_subprocess_block
+@pytest.mark.parametrize(
+    "variable,value",
+    [
+        ("DOTSYNC_RELEASE_HEAD_OUTPUT", ""),
+        ("DOTSYNC_RELEASE_HEAD_OUTPUT", "not-an-object-id"),
+        ("DOTSYNC_RELEASE_TAG_TYPE_OUTPUT", ""),
+        ("DOTSYNC_RELEASE_TAG_TYPE_OUTPUT", "commit"),
+        ("DOTSYNC_RELEASE_TAG_COMMIT_OUTPUT", ""),
+        ("DOTSYNC_RELEASE_TAG_COMMIT_OUTPUT", "not-an-object-id"),
+    ],
+)
+def test_signed_macos_release_rejects_empty_or_malformed_tag_provenance_output(
+    macos_release_repository, variable, value
+):
+    env = macos_release_repository["env"]
+    assert isinstance(env, dict)
+    env[variable] = value
+
+    result = _run_macos_release(macos_release_repository, VALID_VERSION)
+
+    assert result.returncode != 0
+    assert not any(call[:2] == ["git", "archive"] for call in _release_calls(macos_release_repository))
+
+
+@pytest.mark.no_subprocess_block
 @pytest.mark.parametrize("trailing_slashes", ["/", "///"])
 def test_signed_macos_release_rejects_symlinked_temporary_root_without_touching_target(
     macos_release_repository, tmp_path, trailing_slashes
@@ -694,6 +1330,166 @@ def test_signed_macos_release_rejects_symlinked_temporary_root_without_touching_
     assert result.returncode != 0
     assert list(external.iterdir()) == []
     assert not any(call[:2] == ["git", "archive"] for call in _release_calls(macos_release_repository))
+
+
+@pytest.mark.no_subprocess_block
+@pytest.mark.parametrize("mode", [0o770, 0o707, 0o777])
+def test_signed_macos_release_rejects_group_or_other_writable_real_tmpdir(
+    macos_release_repository, tmp_path, mode
+):
+    env = macos_release_repository["env"]
+    assert isinstance(env, dict)
+    unsafe_root = tmp_path / "unsafe-real-temp"
+    unsafe_root.mkdir(mode=mode)
+    unsafe_root.chmod(mode)
+    env["TMPDIR"] = str(unsafe_root)
+
+    result = _run_macos_release(macos_release_repository, VALID_VERSION)
+
+    assert result.returncode != 0
+    assert list(unsafe_root.iterdir()) == []
+    assert not any(call[:2] == ["git", "archive"] for call in _release_calls(macos_release_repository))
+
+
+def test_release_support_rejects_tmpdir_not_owned_by_effective_user(
+    tmp_path, monkeypatch
+):
+    private_root = tmp_path / "private-root"
+    private_root.mkdir(mode=0o700)
+    actual_uid = private_root.stat().st_uid
+    monkeypatch.setattr(os, "geteuid", lambda: actual_uid + 1)
+
+    with pytest.raises(ValueError, match="owned by the effective user"):
+        macos_release_support.validate_temp_root(private_root)
+
+
+def test_release_support_rejects_lexical_alias_of_filesystem_root(monkeypatch):
+    root_alias = Path("/private/..")
+    root_uid = Path("/").stat().st_uid
+    monkeypatch.setattr(os, "geteuid", lambda: root_uid)
+
+    with pytest.raises(ValueError, match="non-root"):
+        macos_release_support.validate_temp_root(root_alias)
+
+
+@pytest.mark.no_subprocess_block
+def test_signed_macos_release_preserves_replacement_of_workdir_name_and_fails(
+    macos_release_repository, tmp_path
+):
+    env = macos_release_repository["env"]
+    assert isinstance(env, dict)
+    record = tmp_path / "work-rebind-record"
+    env["DOTSYNC_RELEASE_REBIND_PREFIX"] = json.dumps(["git", "archive"])
+    env["DOTSYNC_RELEASE_REBIND_KIND"] = "work"
+    env["DOTSYNC_RELEASE_REBIND_RECORD"] = str(record)
+
+    result = _run_macos_release(macos_release_repository, VALID_VERSION)
+
+    rebound_name = Path(record.read_text(encoding="utf-8"))
+    assert result.returncode != 0
+    assert (rebound_name / "attacker-marker").read_text() == "replacement must survive\n"
+
+
+@pytest.mark.no_subprocess_block
+def test_signed_and_uploaded_bytes_stay_in_pinned_source_after_name_replacement(
+    macos_release_repository, tmp_path
+):
+    env = macos_release_repository["env"]
+    assert isinstance(env, dict)
+    signed_copy = tmp_path / "signed-executable"
+    uploaded_copy = tmp_path / "uploaded-archive"
+    env["DOTSYNC_RELEASE_REBIND_PREFIX"] = json.dumps(["lipo"])
+    env["DOTSYNC_RELEASE_REBIND_KIND"] = "source"
+    env["DOTSYNC_RELEASE_REBIND_RECORD"] = str(tmp_path / "source-rebind-record")
+    env["DOTSYNC_RELEASE_SIGNED_COPY"] = str(signed_copy)
+    env["DOTSYNC_RELEASE_UPLOADED_COPY"] = str(uploaded_copy)
+
+    result = _run_macos_release(macos_release_repository, VALID_VERSION)
+
+    assert result.returncode != 0
+    assert signed_copy.read_bytes() == FIXTURE_EXECUTABLE_BYTES
+    assert uploaded_copy.read_bytes() == FINAL_ARCHIVE_BYTES
+
+
+@pytest.mark.no_subprocess_block
+def test_signed_macos_release_reports_cleanup_failure_and_preserves_unknown_entry(
+    macos_release_repository, tmp_path
+):
+    env = macos_release_repository["env"]
+    assert isinstance(env, dict)
+    record = tmp_path / "cleanup-residue-record"
+    env["DOTSYNC_RELEASE_RESIDUE_PREFIX"] = json.dumps(["brew", "audit"])
+    env["DOTSYNC_RELEASE_RESIDUE_RECORD"] = str(record)
+
+    result = _run_macos_release(macos_release_repository, VALID_VERSION)
+
+    work = Path(record.read_text(encoding="utf-8"))
+    repository = macos_release_repository["repository"]
+    assert isinstance(repository, Path)
+    assert result.returncode != 0
+    assert (work / "unowned-cleanup-residue").read_text() == "preserve me\n"
+    assert not (repository / "Casks" / "dotsync-app.rb").exists()
+    assert "explicit publication confirmation" not in result.stdout
+
+
+@pytest.mark.no_subprocess_block
+def test_audit_failure_never_unlinks_a_replacement_of_the_created_cask(
+    macos_release_repository,
+):
+    env = macos_release_repository["env"]
+    repository = macos_release_repository["repository"]
+    assert isinstance(env, dict)
+    assert isinstance(repository, Path)
+    env["DOTSYNC_RELEASE_REPLACE_CASK_DURING_AUDIT"] = "1"
+
+    result = _run_macos_release(macos_release_repository, VALID_VERSION)
+
+    cask = repository / "Casks" / "dotsync-app.rb"
+    assert result.returncode != 0
+    assert cask.read_bytes() == b"replacement-cask-must-survive\n"
+    assert (repository / "Casks" / "dotsync-app.created-by-renderer").is_file()
+
+
+@pytest.mark.no_subprocess_block
+def test_audit_failure_preserves_replacement_of_bound_casks_directory(
+    macos_release_repository,
+):
+    env = macos_release_repository["env"]
+    repository = macos_release_repository["repository"]
+    assert isinstance(env, dict)
+    assert isinstance(repository, Path)
+    env["DOTSYNC_RELEASE_REPLACE_CASKS_DURING_AUDIT"] = "1"
+
+    result = _run_macos_release(macos_release_repository, VALID_VERSION)
+
+    replacement = repository / "Casks" / "dotsync-app.rb"
+    owned = repository / "Casks.created-by-renderer" / "dotsync-app.rb"
+    assert result.returncode != 0
+    assert replacement.read_bytes() == b"replacement-directory-cask-must-survive\n"
+    assert owned.is_file()
+
+
+@pytest.mark.no_subprocess_block
+@pytest.mark.parametrize("boundary", ["renderer", "audit"])
+@pytest.mark.parametrize("signal_number", [signal.SIGHUP, signal.SIGINT, signal.SIGTERM])
+def test_signals_after_cask_generation_converge_on_failing_rollback(
+    macos_release_repository, boundary, signal_number
+):
+    env = macos_release_repository["env"]
+    repository = macos_release_repository["repository"]
+    assert isinstance(env, dict)
+    assert isinstance(repository, Path)
+    if boundary == "renderer":
+        prefix = ["python-release", str(repository / "scripts" / "render_cask.py")]
+    else:
+        prefix = ["brew", "audit"]
+    env["DOTSYNC_RELEASE_SIGNAL_PREFIX"] = json.dumps(prefix)
+    env["DOTSYNC_RELEASE_SIGNAL_NUMBER"] = str(signal_number)
+
+    result = _run_macos_release(macos_release_repository, VALID_VERSION)
+
+    assert result.returncode != 0
+    assert not (repository / "Casks" / "dotsync-app.rb").exists()
 
 
 @pytest.mark.no_subprocess_block
@@ -735,6 +1531,89 @@ def test_signed_macos_release_rejects_unresolvable_developer_identity(
     assert not any(call[0] == "codesign" for call in calls)
 
 
+@pytest.mark.no_subprocess_block
+@pytest.mark.parametrize(
+    "security_output",
+    [
+        f'not-an-identity "{TEST_IDENTITY}"',
+        f'  1) SHORT "{TEST_IDENTITY}"',
+        f'  1) {"A" * 40} "{TEST_IDENTITY}" trailing',
+        f'  1) {"A" * 40} "{TEST_IDENTITY[:-1]}X"',
+    ],
+)
+def test_signed_macos_release_rejects_malformed_identity_tool_output(
+    macos_release_repository, security_output
+):
+    env = macos_release_repository["env"]
+    assert isinstance(env, dict)
+    env["DOTSYNC_RELEASE_SECURITY_OUTPUT"] = security_output
+
+    result = _run_macos_release(macos_release_repository, VALID_VERSION)
+
+    assert result.returncode != 0
+    assert not any(call[0] == "codesign" for call in _release_calls(macos_release_repository))
+
+
+@pytest.mark.no_subprocess_block
+@pytest.mark.parametrize(
+    "identity",
+    [
+        "Apple Development: Release Test (TEAMID1234)",
+        "Developer ID Installer: Release Test (TEAMID1234)",
+        "Developer ID Application:",
+        " Developer ID Application: Release Test (TEAMID1234)",
+    ],
+)
+def test_signed_macos_release_rejects_wrong_or_malformed_identity_class(
+    macos_release_repository, identity
+):
+    env = macos_release_repository["env"]
+    assert isinstance(env, dict)
+    env["DEVELOPER_ID_APPLICATION"] = identity
+
+    result = _run_macos_release(macos_release_repository, VALID_VERSION)
+
+    assert result.returncode != 0
+    assert not any(call[0] == "codesign" for call in _release_calls(macos_release_repository))
+
+
+@pytest.mark.no_subprocess_block
+@pytest.mark.parametrize(
+    "architectures",
+    ["x86_64 arm64 i386", "x86_64 arm64 arm64", "arm64", ""],
+)
+def test_signed_macos_release_requires_exact_universal_architecture_set(
+    macos_release_repository, architectures
+):
+    env = macos_release_repository["env"]
+    assert isinstance(env, dict)
+    env["DOTSYNC_RELEASE_ARCHS"] = architectures
+
+    result = _run_macos_release(macos_release_repository, VALID_VERSION)
+
+    assert result.returncode != 0
+    calls = _release_calls(macos_release_repository)
+    assert any(call[-1:] == ["-archs"] for call in calls)
+    assert not any(call[0] == "security" for call in calls)
+
+
+@pytest.mark.no_subprocess_block
+def test_signed_macos_release_rejects_built_plist_version_mismatch(
+    macos_release_repository,
+):
+    env = macos_release_repository["env"]
+    assert isinstance(env, dict)
+    env["DOTSYNC_RELEASE_BUILT_PLIST_VERSION"] = "9.9.9"
+
+    result = _run_macos_release(macos_release_repository, VALID_VERSION)
+
+    assert result.returncode != 0
+    calls = _release_calls(macos_release_repository)
+    assert any(call[:2] == ["bash", "scripts/build_macos_app.sh"] for call in calls)
+    assert not any(call[0] == "lipo" for call in calls)
+    assert not any(call[0] == "codesign" for call in calls)
+
+
 GATE_FAILURE_CASES = [
     (["git", "rev-parse", "--show-toplevel"], 1),
     (["git", "rev-parse", "--path-format=absolute", "--git-dir"], 1),
@@ -742,31 +1621,66 @@ GATE_FAILURE_CASES = [
     (["git", "branch", "--show-current"], 1),
     (["git", "status"], 1),
     (["git", "rev-parse", "HEAD"], 1),
+    (["git", "cat-file", "-t"], 1),
     (["git", "rev-parse", "--verify"], 1),
+    (["python-release", "SUPPORT", "validate-temp-root"], 1),
+    (["python-release", "SUPPORT", "identity-current"], 1),
+    (["python-release", "SUPPORT", "identity-current"], 2),
     (["git", "archive"], 1),
+    (["python-release", "SUPPORT", "identity-here"], 1),
     (["tar", "-xf"], 1),
+    (["python-release", "SUPPORT", "identity-here"], 2),
+    (["python-release", "SUPPORT", "identity-current"], 3),
+    (["python-release", "-c"], 1),
     (["python-release", "-m", "pytest"], 1),
     (["node", "--test"], 1),
     (["swift", "test"], 1),
     (["python-release", "-m", "dotsync"], 1),
     (["bash", "scripts/build_macos_app.sh"], 1),
+    (["python-release", "-c"], 2),
     (["lipo"], 1),
+    (["lipo"], 2),
     (["security"], 1),
+    (["python-release", "-c"], 3),
     (["xcrun", "notarytool", "history"], 1),
+    (["python-release", "-c"], 4),
     (["codesign", "--force"], 1),
     (["codesign", "--verify"], 1),
     (["ditto", "-c"], 1),
+    (["python-release", "SUPPORT", "identity-parent"], 1),
     (["xcrun", "notarytool", "submit"], 1),
+    (["python-release", "-c"], 5),
     (["xcrun", "stapler", "staple"], 1),
     (["xcrun", "stapler", "validate"], 1),
     (["spctl"], 1),
     (["ditto", "-c"], 2),
+    (["python-release", "SUPPORT", "identity-parent"], 2),
     (["shasum"], 1),
     (["gh", "release", "view"], 1),
+    (["python-release", "-c"], 6),
     (["gh", "release", "upload"], 1),
+    (["python-release", "SUPPORT", "identity-current"], 4),
+    (["python-release", "SUPPORT", "identity-path-entry"], 1),
+    (["python-release", "SUPPORT", "identity-here"], 3),
     (["python-release", "RENDERER"], 1),
+    (["python-release", "SUPPORT", "read-cask-binding"], 1),
     (["brew", "audit"], 1),
 ]
+
+
+def _is_finalizer_call(call: list[str], repository: Path) -> bool:
+    support = str(repository / "scripts" / "macos_release_support.py")
+    renderer = str(repository / "scripts" / "render_cask.py")
+    return (
+        call[:3] in (
+            ["python-release", support, "read-cask-binding"],
+            ["python-release", support, "cleanup-current"],
+        )
+        or (
+            call[:2] == ["python-release", renderer]
+            and "--rollback-created" in call
+        )
+    )
 
 
 @pytest.mark.no_subprocess_block
@@ -779,7 +1693,9 @@ def test_each_failed_release_gate_stops_without_cask_or_trailing_external_calls(
     assert isinstance(env, dict)
     assert isinstance(repository, Path)
     actual_prefix = list(failure_prefix)
-    if actual_prefix == ["python-release", "RENDERER"]:
+    if actual_prefix[:2] == ["python-release", "SUPPORT"]:
+        actual_prefix[1] = str(repository / "scripts" / "macos_release_support.py")
+    elif actual_prefix == ["python-release", "RENDERER"]:
         actual_prefix = [
             "python-release",
             str(repository / "scripts" / "render_cask.py"),
@@ -791,19 +1707,23 @@ def test_each_failed_release_gate_stops_without_cask_or_trailing_external_calls(
 
     assert result.returncode != 0
     calls = _release_calls(macos_release_repository)
-    failed_indexes = [
+    matching_indexes = [
         index
         for index, call in enumerate(calls)
         if call[: len(actual_prefix)] == actual_prefix
+        and not (
+            actual_prefix[:2]
+            == ["python-release", str(repository / "scripts" / "render_cask.py")]
+            and "--rollback-created" in call
+        )
     ]
-    assert len(failed_indexes) == failure_occurrence
-    assert failed_indexes[-1] == len(calls) - 1
+    assert len(matching_indexes) >= failure_occurrence
+    failed_index = matching_indexes[failure_occurrence - 1]
+    assert all(
+        _is_finalizer_call(call, repository)
+        for call in calls[failed_index + 1 :]
+    )
     assert not (repository / "Casks" / "dotsync-app.rb").exists()
-    if actual_prefix[:3] not in (
-        ["gh", "release", "upload"],
-        ["python-release", str(repository / "scripts" / "render_cask.py")],
-    ) and actual_prefix[:2] != ["brew", "audit"]:
-        assert not any(call[:3] == ["gh", "release", "upload"] for call in calls)
 
 
 @pytest.mark.no_subprocess_block
@@ -822,3 +1742,98 @@ def test_notary_profile_validation_failure_stops_before_sign_or_upload(
     calls = _release_calls(macos_release_repository)
     assert not any(call[0] == "codesign" for call in calls)
     assert not any(call[:3] == ["gh", "release", "upload"] for call in calls)
+
+
+@pytest.mark.no_subprocess_block
+@pytest.mark.parametrize(
+    "variable,value",
+    [
+        ("DOTSYNC_RELEASE_NOTARY_HISTORY_OUTPUT", ""),
+        ("DOTSYNC_RELEASE_NOTARY_HISTORY_OUTPUT", "not-json"),
+        ("DOTSYNC_RELEASE_NOTARY_SUBMIT_OUTPUT", ""),
+        ("DOTSYNC_RELEASE_NOTARY_SUBMIT_OUTPUT", "not-json"),
+        ("DOTSYNC_RELEASE_NOTARY_SUBMIT_OUTPUT", '{"id":"","status":"Accepted"}'),
+        (
+            "DOTSYNC_RELEASE_NOTARY_SUBMIT_OUTPUT",
+            '{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","status":"Invalid"}',
+        ),
+        (
+            "DOTSYNC_RELEASE_NOTARY_SUBMIT_OUTPUT",
+            '[{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","status":"Accepted"}]',
+        ),
+    ],
+)
+def test_signed_macos_release_rejects_empty_or_malformed_notary_json(
+    macos_release_repository, variable, value
+):
+    env = macos_release_repository["env"]
+    assert isinstance(env, dict)
+    env[variable] = value
+
+    result = _run_macos_release(macos_release_repository, VALID_VERSION)
+
+    assert result.returncode != 0
+    assert not any(
+        call[:3] == ["gh", "release", "upload"]
+        for call in _release_calls(macos_release_repository)
+    )
+
+
+@pytest.mark.no_subprocess_block
+@pytest.mark.parametrize(
+    "sha_output",
+    [
+        "",
+        FINAL_ARCHIVE_SHA256,
+        f"{FINAL_ARCHIVE_SHA256} ../wrong-name.zip",
+        f"{FINAL_ARCHIVE_SHA256}  ../wrong-name.zip",
+        f"{FINAL_ARCHIVE_SHA256}  {{archive}} trailing",
+        f"{FINAL_ARCHIVE_SHA256.upper()}  {{archive}}",
+        f"{'0' * 64}  {{archive}}",
+    ],
+)
+def test_signed_macos_release_rejects_malformed_or_misbinding_sha_output(
+    macos_release_repository, sha_output
+):
+    env = macos_release_repository["env"]
+    assert isinstance(env, dict)
+    env["DOTSYNC_RELEASE_SHA_OUTPUT"] = sha_output
+
+    result = _run_macos_release(macos_release_repository, VALID_VERSION)
+
+    assert result.returncode != 0
+    assert not any(
+        call[:3] == ["gh", "release", "view"]
+        for call in _release_calls(macos_release_repository)
+    )
+
+
+@pytest.mark.no_subprocess_block
+@pytest.mark.parametrize(
+    "release_output",
+    [
+        "",
+        "not-json",
+        '{"id":"","assets":[]}',
+        '{"id":"RE_kwDORel3as4AAAAA","assets":{}}',
+        (
+            '{"id":"RE_kwDORel3as4AAAAA","assets":'
+            '[{"name":"DotSync-0.3.0-macOS.zip"}]}'
+        ),
+        '{"id":"RE_kwDORel3as4AAAAA","assets":[{}]}',
+    ],
+)
+def test_signed_macos_release_validates_release_id_and_rejects_asset_collision(
+    macos_release_repository, release_output
+):
+    env = macos_release_repository["env"]
+    assert isinstance(env, dict)
+    env["DOTSYNC_RELEASE_GH_VIEW_OUTPUT"] = release_output
+
+    result = _run_macos_release(macos_release_repository, VALID_VERSION)
+
+    assert result.returncode != 0
+    assert not any(
+        call[:3] == ["gh", "release", "upload"]
+        for call in _release_calls(macos_release_repository)
+    )
