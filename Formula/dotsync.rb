@@ -2,7 +2,7 @@ class Dotsync < Formula
   desc "Sync app configs with a local folder"
   homepage "https://github.com/changja88/homebrew-dotsync"
   url "https://github.com/changja88/homebrew-dotsync/archive/refs/tags/v0.2.3.tar.gz"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "2d1e37f686dab39417502aca07c7acaae2edd429b76077ca6b43ab11d6f90b7c"
   license "MIT"
 
   # Reuse an existing Python 3.12+ binary if the user already has one — avoids
@@ -28,7 +28,7 @@ class Dotsync < Formula
     # Prefer an already-installed Python 3.12+ over brew's python@3.12; pin
     # the shebang so dotsync runs with a known version regardless of the
     # user's `python3` resolution.
-    py = self.class.external_python || (Formula["python@3.12"].opt_bin/"python3.12").to_s
+    py = self.class.external_python || (formula_opt_bin("python@3.12")/"python3.12").to_s
     inreplace libexec/"bin/dotsync", /^#!.*python.*$/, "#!#{py}"
     (bin/"dotsync").write_env_script libexec/"bin/dotsync", PYTHONPATH: libexec
   end
