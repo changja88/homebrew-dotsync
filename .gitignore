@@ -76,6 +76,7 @@ Desktop.ini
 !.env.example
 .envrc
 .python-version
+/config/macos-release.env
 
 # --- Logs / temp ---------------------------------------------------------
 *.log
