@@ -552,6 +552,19 @@ def test_local_build_assembles_only_the_two_exact_macos13_architectures(tmp_path
 
 
 @pytest.mark.no_subprocess_block
+def test_local_build_accepts_private_git_archive_package_modes(tmp_path):
+    project, env = _fake_build_project(tmp_path)
+    package = project / "macos" / "DotSyncApp"
+    package.chmod(0o700)
+
+    result = _run_fake_build(project, env)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (project / "build" / "DotSync.app").is_dir()
+    assert stat.S_IMODE(package.stat().st_mode) == 0o700
+
+
+@pytest.mark.no_subprocess_block
 def test_local_build_rejects_non_exact_semantic_project_version(tmp_path):
     project, env = _fake_build_project(tmp_path, version="0.3")
 

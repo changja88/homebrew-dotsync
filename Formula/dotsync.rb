@@ -1,7 +1,7 @@
 class Dotsync < Formula
   desc "Sync app configs with a local folder"
   homepage "https://github.com/changja88/homebrew-dotsync"
-  url "https://github.com/changja88/homebrew-dotsync/archive/refs/tags/v0.2.2.tar.gz"
+  url "https://github.com/changja88/homebrew-dotsync/archive/refs/tags/v0.2.3.tar.gz"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "MIT"
 

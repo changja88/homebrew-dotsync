@@ -950,7 +950,7 @@ def _snapshot_build_inputs(
         expected_device=repo_device,
     )
     try:
-        package_source_fd, _ = _open_directory_at(
+        package_source_fd, package_source_stat = _open_directory_at(
             macos_fd,
             "DotSyncApp",
             expected_device=repo_device,
@@ -979,7 +979,7 @@ def _snapshot_build_inputs(
             stage.descriptor,
             PACKAGE_SNAPSHOT,
             stage.identity.device,
-            0o755,
+            stat.S_IMODE(package_source_stat.st_mode),
         )
         _copy_snapshot_directory(
             package_source_fd,
