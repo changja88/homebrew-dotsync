@@ -70,7 +70,8 @@ public final class BackendProcess: @unchecked Sendable {
             handshakeTimeout: handshakeTimeout,
             onUnexpectedExit: onUnexpectedExit,
             system: FoundationBackendProcessSystem(),
-            testHooks: BackendProcessTestHooks()
+            testHooks: BackendProcessTestHooks(),
+            processFactory: { Process() }
         )
     }
 
@@ -80,7 +81,8 @@ public final class BackendProcess: @unchecked Sendable {
         handshakeTimeout: Duration = .seconds(5),
         onUnexpectedExit: @escaping @Sendable (BackendError) -> Void = { _ in },
         system: any BackendProcessSystem,
-        testHooks: BackendProcessTestHooks = BackendProcessTestHooks()
+        testHooks: BackendProcessTestHooks = BackendProcessTestHooks(),
+        processFactory: @escaping @Sendable () -> Process = Process.init
     ) {
         core = BackendProcessCore(
             resolver: resolver,
@@ -88,7 +90,8 @@ public final class BackendProcess: @unchecked Sendable {
             handshakeTimeout: handshakeTimeout,
             onUnexpectedExit: onUnexpectedExit,
             system: system,
-            testHooks: testHooks
+            testHooks: testHooks,
+            processFactory: processFactory
         )
     }
 
@@ -165,6 +168,7 @@ private final class BackendProcessCore: @unchecked Sendable {
     private let onUnexpectedExit: @Sendable (BackendError) -> Void
     private let system: any BackendProcessSystem
     private let testHooks: BackendProcessTestHooks
+    private let processFactory: @Sendable () -> Process
     private var state: LifecycleState = .idle
 
     init(
@@ -173,7 +177,8 @@ private final class BackendProcessCore: @unchecked Sendable {
         handshakeTimeout: Duration,
         onUnexpectedExit: @escaping @Sendable (BackendError) -> Void,
         system: any BackendProcessSystem,
-        testHooks: BackendProcessTestHooks
+        testHooks: BackendProcessTestHooks,
+        processFactory: @escaping @Sendable () -> Process
     ) {
         self.resolver = resolver
         self.testOverride = testOverride
@@ -181,6 +186,7 @@ private final class BackendProcessCore: @unchecked Sendable {
         self.onUnexpectedExit = onUnexpectedExit
         self.system = system
         self.testHooks = testHooks
+        self.processFactory = processFactory
     }
 
     func start() throws -> BackendSession {
@@ -203,7 +209,7 @@ private final class BackendProcessCore: @unchecked Sendable {
 
         let control = Pipe()
         let handshake = Pipe()
-        let child = Process()
+        let child = processFactory()
         let exited = DispatchSemaphore(value: 0)
         child.executableURL = executable
         child.arguments = ["ui", "--native-host"]

@@ -31,6 +31,219 @@ _SECRET_SENTINELS = (
 )
 
 
+_FORCE_DELETE_UI_HARNESS = r'''
+import assert from "node:assert/strict";
+
+let onManagerRender = null;
+
+class FakeElement {
+  constructor(tag = "div") {
+    this.tag = tag;
+    this.attributes = new Map();
+    this.children = [];
+    this.classList = { toggle() {} };
+    this.dataset = {};
+    this.hidden = false;
+    this.textContent = "";
+    this.value = "";
+    this.returnValue = "";
+  }
+
+  append(...children) {
+    this.children.push(...children);
+  }
+
+  replaceChildren(...children) {
+    this.children = [...children];
+    if (this === managerContent && typeof onManagerRender === "function") {
+      onManagerRender();
+    }
+  }
+
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+    if (name.startsWith("data-")) {
+      const key = name.slice(5).replace(/-([a-z])/g, (_match, letter) => letter.toUpperCase());
+      this.dataset[key] = String(value);
+    }
+  }
+
+  removeAttribute(name) {
+    this.attributes.delete(name);
+  }
+
+  closest(selector) {
+    if (selector === "[data-action]" && this.dataset.action) return this;
+    if (selector === "[data-native-action]" && this.dataset.nativeAction) return this;
+    if (selector === "[data-preview-direction]" && this.dataset.previewDirection) return this;
+    if (selector === "nav [data-destination]" && this.dataset.destination) return this;
+    if (selector === '[data-action="toggle-sync-app"]'
+        && this.dataset.action === "toggle-sync-app") return this;
+    return null;
+  }
+
+  focus() {}
+}
+
+class FakeDialog extends FakeElement {
+  constructor() {
+    super("dialog");
+    this.listeners = [];
+    this.open = false;
+  }
+
+  showModal() {
+    this.open = true;
+  }
+
+  addEventListener(name, listener, options = {}) {
+    assert.equal(name, "close");
+    this.listeners.push({ listener, once: options.once === true });
+  }
+
+  confirm() {
+    assert.equal(this.open, true);
+    this.returnValue = "confirm";
+    this.open = false;
+    const listeners = [...this.listeners];
+    this.listeners = this.listeners.filter((entry) => !entry.once);
+    for (const entry of listeners) entry.listener();
+  }
+}
+
+class FakeCustomEvent {
+  constructor(type, options = {}) {
+    this.type = type;
+    this.detail = options.detail;
+  }
+}
+
+function findAction(root, action) {
+  if (root?.dataset?.action === action) return root;
+  for (const child of root?.children ?? []) {
+    const found = findAction(child, action);
+    if (found) return found;
+  }
+  return null;
+}
+
+let source = "";
+for await (const chunk of process.stdin) source += chunk;
+const fixture = JSON.parse(source);
+const nativeFetch = globalThis.fetch.bind(globalThis);
+const documentListeners = new Map();
+const windowListeners = new Map();
+const body = new FakeElement("body");
+const popover = new FakeElement("section");
+const manager = new FakeElement("section");
+const popoverContent = new FakeElement("main");
+const managerContent = new FakeElement("main");
+const summaryUsage = new FakeElement();
+const summarySync = new FakeElement();
+const summaryUpdated = new FakeElement();
+const statusMessage = new FakeElement();
+const dialog = new FakeDialog();
+const dialogTitle = new FakeElement("h2");
+const dialogCopy = new FakeElement("p");
+const dialogSubmit = new FakeElement("button");
+const dialogLabel = new FakeElement("label");
+const dialogInput = new FakeElement("input");
+const fixedElements = new Map([
+  ["body", body],
+  ['[data-surface="popover"]', popover],
+  ['[data-surface="manager"]', manager],
+  ["#popover-content", popoverContent],
+  ["#manager-content", managerContent],
+  ["#summary-usage", summaryUsage],
+  ["#summary-sync", summarySync],
+  ["#popover-updated", summaryUpdated],
+  ["#status-message", statusMessage],
+  ["#confirmation-dialog", dialog],
+  ["#confirmation-title", dialogTitle],
+  ["#confirmation-copy", dialogCopy],
+  ["#confirmation-submit", dialogSubmit],
+  ["#confirmation-label", dialogLabel],
+  ["#confirmation-input", dialogInput],
+]);
+
+globalThis.document = {
+  body,
+  hidden: false,
+  createElement: (tag) => new FakeElement(tag),
+  createTextNode: (text) => ({ textContent: text, children: [] }),
+  querySelector: (selector) => fixedElements.get(selector) ?? null,
+  querySelectorAll: () => [],
+  addEventListener(name, listener) {
+    documentListeners.set(name, listener);
+  },
+};
+globalThis.window = {
+  location: {
+    search: `?token=${fixture.token}&surface=manager&destination=accounts`,
+    pathname: "/",
+  },
+  history: { replaceState() {} },
+  addEventListener(name, listener) {
+    windowListeners.set(name, listener);
+  },
+  dispatchEvent(event) {
+    const listener = windowListeners.get(event.type);
+    if (typeof listener === "function") listener(event);
+    return true;
+  },
+  setTimeout,
+  clearTimeout,
+  setInterval: () => 1,
+};
+globalThis.CustomEvent = FakeCustomEvent;
+const deleteBodies = [];
+globalThis.fetch = async (path, options = {}) => {
+  if (options.method === "DELETE") {
+    deleteBodies.push(JSON.parse(options.body));
+  }
+  return nativeFetch(new URL(path, fixture.origin), options);
+};
+
+await import("./lib/dotsync/web/static/app.mjs?task14-force-delete");
+const click = documentListeners.get("click");
+assert.equal(typeof click, "function");
+const deleteButton = findAction(managerContent, "delete-account");
+assert.ok(deleteButton, "packaged Accounts surface did not render delete action");
+
+const firstDelete = click({ target: deleteButton });
+assert.equal(dialog.open, true);
+dialog.confirm();
+await firstDelete;
+
+const forceButton = await Promise.race([
+  new Promise((resolve) => {
+    const publish = () => {
+      const found = findAction(managerContent, "force-delete-account");
+      if (found) resolve(found);
+    };
+    onManagerRender = publish;
+    publish();
+  }),
+  new Promise((_resolve, reject) => setTimeout(
+    () => reject(new Error("force-delete disclosure did not render")),
+    3000,
+  )),
+]);
+
+const forceDelete = click({ target: forceButton });
+const disclosure = {
+  title: dialogTitle.textContent,
+  copy: dialogCopy.textContent,
+  confirmText: dialogSubmit.textContent,
+};
+dialog.confirm();
+await forceDelete;
+windowListeners.get("beforeunload")?.();
+
+process.stdout.write(JSON.stringify({ disclosure, deleteBodies }));
+'''
+
+
 @dataclass(frozen=True)
 class Response:
     status: int
@@ -94,6 +307,7 @@ class BarrierProvider:
         self.refresh_cancel: dict[str, threading.Event | None] = {}
         self.percentages: dict[str, float] = {}
         self.refresh_errors: dict[str, BaseException] = {}
+        self.logout_errors: dict[str, BaseException] = {}
 
     def login(
         self,
@@ -155,6 +369,9 @@ class BarrierProvider:
         with self._condition:
             self.calls.append(("logout", account.id))
             self._condition.notify_all()
+        error = self.logout_errors.get(account.id)
+        if error is not None:
+            raise error
 
     def prepare_refresh(self, account_id: str, percentage: float) -> None:
         self.percentages[account_id] = percentage
@@ -317,6 +534,7 @@ def _start_request(operation):
 
 def test_browser_bootstrap_erases_token_and_surfaces_do_not_start_provider_work(
     web_stack: WebStack,
+    fake_home: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     with run_ui_server(web_stack.application, poll_interval=0.01) as server:
@@ -374,10 +592,15 @@ process.stdout.write(JSON.stringify({
     assert web_stack.codex.calls == []
     assert web_stack.claude.calls == []
     assert web_stack.application.jobs.list_jobs() == []
-    assert web_stack.application.token not in capsys.readouterr().out
-    for path in web_stack.paths.root.rglob("*"):
+    encoded_token = web_stack.application.token.encode("utf-8")
+    assert encoded_token not in stdout
+    assert encoded_token not in stderr
+    captured = capsys.readouterr()
+    assert web_stack.application.token not in captured.out
+    assert web_stack.application.token not in captured.err
+    for path in fake_home.rglob("*"):
         if path.is_file():
-            assert web_stack.application.token.encode("utf-8") not in path.read_bytes()
+            assert encoded_token not in path.read_bytes()
 
 
 def test_public_claude_operations_stop_before_account_provider_or_job_work(
@@ -411,6 +634,55 @@ def test_public_claude_operations_stop_before_account_provider_or_job_work(
     assert web_stack.codex.calls == []
     assert web_stack.accounts.list() == []
     assert web_stack.application.jobs.list_jobs() == []
+
+
+def test_failed_official_logout_discloses_irreversible_force_local_intent(
+    web_stack: WebStack,
+) -> None:
+    account = web_stack.create_account("Deletion disclosure", 44.0)
+    web_stack.codex.logout_errors[account.id] = ProviderError(
+        "provider_unavailable",
+        "fixture official logout failed",
+    )
+
+    with run_ui_server(web_stack.application, poll_interval=0.01) as server:
+        process = subprocess.Popen(
+            [
+                "node",
+                "--input-type=module",
+                "--eval",
+                _FORCE_DELETE_UI_HARNESS,
+            ],
+            cwd=Path(__file__).parents[2],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        stdout, stderr = process.communicate(
+            json.dumps(
+                {
+                    "origin": server.origin,
+                    "token": web_stack.application.token,
+                }
+            ).encode("utf-8"),
+            timeout=5.0,
+        )
+
+    assert process.returncode == 0, stderr.decode("utf-8", errors="replace")
+    result = json.loads(stdout)
+    assert result["disclosure"] == {
+        "title": "로컬 프로필만 강제로 삭제할까요?",
+        "copy": (
+            "공식 로그아웃이 완료되지 않았습니다. 이 작업은 DotSync 전용 "
+            "로컬 프로필을 되돌릴 수 없게 삭제합니다."
+        ),
+        "confirmText": "로컬만 삭제",
+    }
+    assert result["deleteBodies"] == [
+        {"provider": "codex", "action": "logout_and_delete"},
+        {"provider": "codex", "action": "remove_local_profile_anyway"},
+    ]
+    assert web_stack.codex.calls.count(("logout", account.id)) == 2
 
 
 def test_simultaneous_refreshes_remain_correlated_over_real_loopback(

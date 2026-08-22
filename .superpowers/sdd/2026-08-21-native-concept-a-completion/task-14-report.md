@@ -2,165 +2,165 @@
 
 Date: 2026-08-22
 
-Status: COMPLETE with external native visual/accessibility gates recorded below.
-No production code or build/release code is changed by this task.
+Status: COMPLETE after review fix round 1, with the native manual
+visual/accessibility gates below still external and not claimed as passed.
 
-## Scope delivered
+## Outcome
 
-- Added a real, executable fixture Codex CLI workflow covering two managed
-  accounts through create, login, refresh, rename, reauthentication, logout,
-  deletion, failed deletion, stale cache fallback, and force-local deletion.
-- Proved each Codex invocation uses only its account-owned `HOME`, `CODEX_HOME`,
-  `TMPDIR`, and probe directory; `config.toml` is mode `0600` and forces the
-  top-level `cli_auth_credentials_store = "file"` contract.
-- Added real `127.0.0.1` HTTP coverage for capability bootstrap, policy-first
-  Claude rejection, correlated concurrent refresh, duplicate/delete/cancel/
-  shutdown races, stale sync-plan generations, hostile request framing,
-  filesystem-shaped labels, identifier-free menu summaries, and fixed error
-  redaction.
-- Added six real Python native-host lifecycle orders with a fixture Codex
-  provider grandchild. Named pipes, `threading.Barrier`, and macOS `kqueue`
-  `NOTE_EXIT` notifications provide deterministic process barriers; there are
-  no sleep-based lifecycle oracles.
-- Extended Swift coverage for trailing secret bytes, handshake timeout/exit,
-  stop/termination-handler and stale-owner identity races, repeated Retry,
-  external-origin redirects, nested bridged Objective-C bodies, malformed
-  summary display, and polling during Quit.
+All nine Important proof gaps from `task-14-review.md` are closed with real
+filesystem, HTTP, process, packaged-JavaScript, or WKWebView outcomes. The only
+production edit is the controller-authorized package-internal
+`processFactory: @Sendable () -> Process` injection in `BackendProcess`; its
+default remains a new Foundation `Process`, and the public initializer and API
+are unchanged. No build, release, formula, or packaged-web production code is
+changed.
 
-## Account and secret isolation evidence
+## Review-gap closure
 
-- Every Python isolation fixture sets a temporary `HOME`; no test targets the
-  operator's real `~/.claude`, `~/.claude.json`, or `~/.codex`.
-- The managed-account and native-lifecycle suites seed all three default-profile
-  trees and compare file type, mode, `mtime_ns`, and contents before/after.
-- The manual fixture review also compared the seeded default-profile timestamps
-  before and after; all five entries remained byte-size/timestamp identical.
-- Provider fixtures receive no `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or
-  `ANTHROPIC_AUTH_TOKEN`.
-- The native capability remains an in-memory test value. The real handshake
-  token is not written to argv, environment, disk, diagnostics, or test logs.
-  The loopback JavaScript boundary proves query erasure before state startup.
-- Opening/bootstrap/menu-summary paths assert zero provider calls. Public
-  Claude operations return the fixed `provider_policy_disabled` response before
-  account, provider, or job work.
+1. **Persistent account cache correlation.** The two-account workflow refreshes
+   Personal after Work, then fails Work again. It inspects both distinct
+   `usage/<account-id>/snapshot.json` files and their embedded `account_id`,
+   loads each cache entry, and proves failed Work receives only Work's stale
+   snapshot.
+2. **Force-local disclosure.** A Node harness runs the packaged `app.mjs`, real
+   reducer/render/dialog code, and the real loopback delete/job API. It proves
+   the first official logout failure renders the user-visible Korean warning
+   that local deletion is irreversible, and that the confirmed retry sends the
+   exact `force_local` intent.
+3. **Distinct parent-crash order.** A separate relay process owns the backend
+   control pipe. The test kills that relay with `SIGKILL`, so OS pipe EOF—not a
+   direct test close—causes backend shutdown, and exact relay/backend/provider
+   PIDs receive `kqueue NOTE_EXIT` and disappear.
+4. **Published terminal job barrier.** The old eight-request polling helper is
+   removed. A test-only `sitecustomize` wrapper signals a FIFO only after the
+   real `JobRegistry` terminal result is published; the test makes one GET and
+   checks the exact `provider_unavailable` result.
+5. **Concurrent Quit/completion reconciliation.** FIFO and `Barrier` gates
+   retain the job ID, overlap control EOF with completion publication, record
+   the one terminal result, count exactly one real `WebApplication.shutdown`,
+   and consume exactly one provider exit record.
+6. **Real surface lifecycle.** XCTest starts the real Python native host through
+   `BackendProcess`, seeds a cached Codex account, exposes an executable fixture
+   provider, creates the packaged popover and manager in real `WKWebView`
+   surfaces, waits for both documents, dismantles both hosts, closes the manager
+   state, and quits. The cached summary is 58%, the provider launch count stays
+   zero before/after dismantle and Quit, and seeded default profiles are
+   unchanged.
+7. **Capability containment.** The native test parses and removes the one
+   protocol-authorized stdout handshake frame, then requires zero token bytes in
+   trailing stdout, stderr/diagnostics, backend/provider argv and environment,
+   captured test output, and every regular file in the isolated HOME/hook/temp
+   root. The web test checks Node stdout and stderr, pytest stdout and stderr,
+   and the complete isolated HOME including sync/app-owned data. Query erasure
+   and nonpersistent WebKit configuration remain covered.
+8. **Numeric PID reuse.** Two distinct forwarding `Process` proxy owners expose
+   the same numeric PID while running two real fixture children. A system double
+   observes Foundation process state without ever signalling the fake numeric
+   PID. Releasing the stale termination callback cannot affect the replacement
+   owner.
+9. **Production redirect delegate.** A real local server redirects the exact
+   launch origin to a second local origin. A production `WebSurface` hosted in
+   WKWebView cancels before the external server receives a request and forwards
+   no bridge command.
 
-## Test-first and non-vacuity evidence
+## Test-first and mutation evidence
 
-The new coverage is characterization coverage against already-correct Task
-8–13 behavior, so no artificial product RED was manufactured.
+Each coverage gap was tied to a concrete bad implementation that the previous
+suite allowed. Temporary mutations were applied, observed RED, and restored
+before final GREEN:
 
-Fixture/oracle REDs observed and corrected before GREEN:
+| Gap | Previously allowed bad implementation | Strengthened RED | Final GREEN |
+| --- | --- | --- | --- |
+| Account cache | `_cache_file` returns one global snapshot | per-account cache file missing | focused `1 passed` |
+| Force disclosure | generic warning copy | exact irreversible warning assertion failed | focused `1 passed in 3.20s` |
+| Force intent | retry sends `logout_and_delete` | second DELETE payload mismatch | same focused GREEN |
+| Parent crash | relay gives backend `DEVNULL` instead of an owned pipe | refresh connection reset after premature EOF | lifecycle GREEN |
+| Job publication | FIFO signals before `_finish_locked` | the single job GET timed out on unpublished state | lifecycle GREEN |
+| Exactly-once shutdown | `RunningUIServer.close` invokes application shutdown twice | `shutdown_count` was `2`, expected `1` | lifecycle GREEN |
+| Capability | native host writes the token to stderr | containment failed on stderr/diagnostics | containment GREEN |
+| Surface lifecycle | packaged startup automatically refreshes the first account | real provider launch count was `1`, expected `0` | focused XCTest passed |
+| PID reuse | stale-owner check compares numeric PIDs | replacement fixture was no longer running | focused XCTest passed |
+| Redirect delegate | navigation-action delegate always returns `.allow` | external server received the redirected request | focused XCTest passed |
 
-1. The executable fixture initially failed with `env: python3: No such file or
-   directory`; the cause was its intentionally narrowed fixture `PATH`. The
-   fixture was corrected to include `os.defpath`.
-2. The failed-logout oracle initially expected `logout_failed`; inspection of
-   the fixed JSON-RPC normalization contract showed `-32001` correctly maps to
-   `provider_unavailable`, and the test was corrected.
-3. The web workflow initially read `job.result.snapshot`; the public API
-   contract is `job.result.usage`, and the test oracle was corrected.
-4. The provider-crash lifecycle oracle initially expected a failed JobRegistry
-   record. The fixed API contract safely succeeds the job with
-   `result.error_code = provider_unavailable`; the oracle now proves that shape.
-5. Swift compilation and one launch-count assertion exposed test-fixture-only
-   issues; both were corrected without production changes.
-
-Temporary mutation proofs (each mutation produced the expected RED and was
-immediately restored; final verification confirmed no production diff):
-
-- Changed Codex `CODEX_HOME` from the account `home` to the account root:
-  `test_managed_accounts.py` failed `2` tests because both snapshots became
-  `provider_unavailable`.
-- Disabled `_enforce_provider_policy` for Claude:
-  the policy workflow failed with `[201, 404, 404, 404, 404]` instead of five
-  `403` responses.
-- Reversed native control EOF/control-byte exit codes:
-  the native lifecycle test failed because the real backend returned `2`
-  instead of `0` after EOF.
-- Allowed WebKit top-level action/response origins unconditionally:
-  the redirect test failed because the external response was allowed instead
-  of cancelled.
+The authorized Swift seam followed a product RED: the new PID-reuse test first
+failed to compile with `extra argument 'processFactory' in call`; the smallest
+internal seam then made it GREEN. Initial attempts also exposed test-only
+fixture defects (an abstract `Process` subclass and a provider exit-record race).
+The final proxy forwards every used Foundation process contract, and the exit
+fixture combines per-thread signal masking with a process-wide lock. The first
+full Python run caught the latter race as one duplicate provider exit record;
+after the fixture fix, the lifecycle suite was `6 passed` and the full suite was
+rerun from scratch to `1319 passed`.
 
 ## Automated verification
 
-All prescribed commands were run once after the final behavior was in place:
+Final-state commands and results:
 
 | Command | Result |
 | --- | --- |
-| `.venv/bin/python3 -m pytest` | PASS — `1318 passed in 94.41s` |
+| `.venv/bin/python3 -m pytest tests/integration/test_managed_accounts.py tests/integration/test_native_host_lifecycle.py tests/integration/test_web_workflows.py -q` | PASS — `16 passed in 9.19s` |
+| `.venv/bin/python3 -m pytest tests/integration/test_native_host_lifecycle.py -q` after the full-load fixture finding | PASS — `6 passed in 3.81s` |
+| `.venv/bin/python3 -m pytest` | PASS — `1319 passed in 98.92s` |
 | `node --test tests/web/js/state.test.mjs tests/web/js/api-client.test.mjs` | PASS — `11` tests |
-| `swift test --package-path macos/DotSyncApp` | PASS — `105` XCTest tests |
+| `swift test` from `macos/DotSyncApp` | PASS — `107` XCTest tests in `27.063s` |
 | `PYTHONPATH=lib python3 -m dotsync --help` | PASS |
 | `PYTHONPATH=lib python3 bin/dotsync --help` | PASS |
 | `PYTHONPATH=lib python3 -m dotsync ui --check` | PASS |
 | `python3 -m compileall -q lib tests` | PASS |
-| `bash scripts/build_macos_app.sh` | PASS — assembled `build/DotSync.app` |
-| `git diff --check` | PASS |
+| `bash scripts/build_macos_app.sh` | PASS — fresh universal `build/DotSync.app` assembled |
+| `git diff --check` | PASS (run again immediately before commit) |
 
-Focused iteration results:
+The Swift build still emits the pre-existing macOS 12 `WKProcessPool`
+deprecation warnings. There are no compiler errors or test failures.
 
-- Managed accounts: `2 passed`.
-- Real loopback workflows: `7 passed`.
-- Native host lifecycle orders: `6 passed`.
-- Combined new Python integration coverage: `15 passed`.
-- Swift BackendProcess + WebSurface focus: `38 passed`.
+## Isolation and process evidence
 
-Swift emitted the existing macOS 12 `WKProcessPool` deprecation warnings; no
-new compiler error or test failure remains.
+- Every Python/Swift real-backend fixture uses an explicit temporary HOME; none
+  resolves or targets the operator's real `.claude`, `.claude.json`, or
+  `.codex` paths.
+- Managed-account and native-host tests snapshot type/mode/timestamp/content of
+  seeded default profiles. The real Swift native-surface fixture also snapshots
+  mode, modification date, and contents.
+- Public Claude operations remain policy-disabled before account/provider/job
+  work.
+- Provider process identity is observed from the provider itself, registered
+  with one-shot kernel exit notifications while live, and asserted absent after
+  shutdown. Lifecycle synchronization uses FIFO, `Condition`, `Barrier`, and
+  `kqueue`; no sleep/stress loop decides a process or race result.
+- Explicit Quit leaves the real fixture backend stopped and provider launch
+  count at zero in the native-surface case; all six Python orders prove exact
+  backend/provider teardown for active-provider cases.
 
-## Fixture visual/accessibility/native review
+## Visual/accessibility/native gates
 
-The `browser:control-in-app-browser` skill was used for the inspectable web
-surface and caused the review to stay within browser accessibility snapshots
-rather than claim inspection of an unattached native `WKWebView`.
+The prior fixture browser review remains valid evidence for inspectable web
+content: screenshots and accessibility snapshots of actual manager/popover and
+both immutable HTML references, keyboard Tab/Enter navigation into Accounts,
+named headings/controls/regions, long Korean copy, query erasure, and presence
+of dark-mode/reduced-motion CSS. That review honestly observed that CSS
+`documentElement` zoom at 200% produced horizontal overflow, which is not
+equivalent to native macOS accessibility zoom and remains a concern rather than
+a claimed product failure.
 
-Executed evidence:
+Fix round 1 added automated native WKWebView creation, navigation, dismantle,
+cached-summary, provider-zero-work, redirect, and explicit backend Quit
+evidence. It did not use the in-app browser because the relevant boundary was
+the native XCTest WebKit surface; the browser control skill was read before any
+visual action and caused no further action or pause in this round.
 
-- Started the production loopback application under an isolated fixture HOME
-  with a fixed non-secret test capability.
-- Captured actual manager and popover screenshots and accessibility snapshots.
-- Opened and captured both immutable references:
-  `docs/ui/concept-a/menu-bar-plus-management.html` and
-  `docs/ui/concept-a/original-concepts.html`.
-- Confirmed the actual surface retains the selected Concept A structure:
-  menu-only 360×560 popover, separate management window, Overview/Accounts/
-  Config Sync/Settings navigation, cached summaries, policy-disabled Claude
-  copy, original-profile protection copy, and explicit preview/manager/Quit
-  controls.
-- Tab/Enter navigation moved from the manager chrome into Accounts without a
-  pointer and retained named buttons/regions/headings in the accessibility tree.
-- Long Korean copy was present and exposed through named accessibility nodes.
-- Query erasure left both surfaces at the query-free root.
-- CSS contains explicit dark-appearance and reduced-motion media rules.
-- The fixture server and unsigned native process were stopped; the final
-  process check found no fixture/native process, and default-profile timestamps
-  remained unchanged.
-- The existing fixture-backed native XCTest opened real AppKit-hosted popover
-  and manager `WKWebView` roots, walked all manager destinations, delivered an
-  Apply handoff, and awaited Quit; it passed in the full Swift suite.
+Still unexecuted and not claimed as passed:
 
-Observed concern:
+- pixel-level comparison inside the unsigned app's native WKWebView;
+- full keyboard traversal of AppKit menu-extra/window chrome;
+- VoiceOver names and traversal order in macOS Accessibility Inspector;
+- native reduced-motion and light/dark screenshots;
+- native 200% accessibility zoom and long-Korean layout;
+- closing a user-driven real manager window and observing menu-only presence;
+- clicking the real menu-extra Quit item.
 
-- Browser simulation at a 360×560 viewport with `documentElement` zoomed to
-  200% reported `scrollWidth = 720` and horizontal overflow. Browser CSS zoom
-  is not equivalent to native macOS accessibility zoom, so this is not claimed
-  as a native failure; it remains a native visual verification concern.
-
-Unexecuted external gates (not claimed as passed):
-
-- Pixel-level comparison inside the unsigned app's native `WKWebView`.
-- Full keyboard traversal of the AppKit menu extra/window chrome.
-- VoiceOver names and order from macOS Accessibility Inspector.
-- Native reduced-motion and light/dark appearance screenshots.
-- Native 200% accessibility zoom and long-Korean layout.
-- Closing the real manager window and observing menu-only presence.
-- Clicking the real menu-extra Quit item and observing backend/provider teardown.
-
-Reason: the unsigned AppKit process launched under the fixture HOME, but its
-fixed executable resolver found no fixture backend child and System Events
-returned no inspectable native window/menu accessibility tree. The process was
-terminated and reaped rather than claiming an interaction that could not be
-performed.
+The tooling still cannot drive or inspect those native menu/VoiceOver surfaces
+reliably. Automated tests cover the underlying manager-close/dismantle and Quit
+lifecycle but are not presented as manual visual acceptance.
 
 ## Files changed
 
@@ -169,26 +169,30 @@ performed.
 - `tests/integration/test_native_host_lifecycle.py`
 - `macos/DotSyncApp/Tests/DotSyncNativeTests/BackendProcessTests.swift`
 - `macos/DotSyncApp/Tests/DotSyncNativeTests/WebSurfaceTests.swift`
+- `macos/DotSyncApp/Sources/DotSyncNative/BackendProcess.swift` — authorized
+  package-internal test seam only
 - `.superpowers/sdd/2026-08-21-native-concept-a-completion/task-14-report.md`
 
-## Self-review
+## Self-review and concerns
 
-- Diff is test/report-only; production, build, formula, and release files have
-  no final changes.
-- Tests assert public or real filesystem/process outcomes, not mock call return
-  values. Provider call counts are used only to prove forbidden work did not
-  begin.
-- Race oracles use Event/Condition/Barrier/FIFO/kqueue primitives. The only
-  bounded HTTP repetition is polling the documented asynchronous job endpoint;
-  it does not determine process timing.
-- Provider PIDs are checked while live, registered with one-shot kernel exit
-  notifications, and checked absent after backend `Popen.wait`.
-- Temporary build/cache and visual fixture directories were removed after
-  verification.
-- No concern requires a production change within Task 14. The native visual
-  gates and browser-only 200% overflow observation remain for external review.
+- Final production diff is limited to the explicitly authorized internal
+  factory seam. The public initializer, native handshake, local-origin policy,
+  fixed `dotsyncNative` bridge receiver, MainActor summary owner, and all build/
+  release contracts are unchanged.
+- The real surface fixture invokes `dotsync.ui_app.run_native_ui` directly
+  through an isolated wrapper so production native-host composition and framing
+  are exercised without the CLI's fixed-error catch obscuring test diagnostics.
+- Tests assert persistent files, HTTP payloads, real render copy, real process
+  PIDs/counts, actual WK navigation, and shutdown records rather than mock
+  return values.
+- Generated SwiftPM and app-build output is removed before staging; no fixture
+  process or temporary HOME is intentionally retained.
+- Remaining concerns are only the external native visual/VoiceOver gates and
+  existing `WKProcessPool` deprecation warnings. No observed behavior requires
+  another production change.
 
-Serena: skipped — this linked worktree has no `.serena/project.yml`, and Task 14
-is test/report-only coverage with no production symbol contract changes.
+Serena: skipped — this linked worktree has no `.serena/project.yml` opt-in
+marker. The one production change was a small, explicitly ruled internal seam.
 
-Graphify: skipped — this linked worktree has no `graphify-out/graph.json`.
+Graphify: skipped — this linked worktree has no `graphify-out/graph.json` opt-in
+marker.

@@ -307,6 +307,21 @@ def test_two_codex_accounts_are_independent_and_defaults_are_unchanged(
     assert usable_personal.stale is False
     assert usable_personal.snapshot is not None
     assert usable_personal.snapshot.account_id == personal.id
+
+    personal_cache = app.paths.usage / personal.id / "snapshot.json"
+    work_cache = app.paths.usage / work.id / "snapshot.json"
+    assert personal_cache != work_cache
+    assert json.loads(personal_cache.read_text(encoding="utf-8"))["account_id"] == (
+        personal.id
+    )
+    assert json.loads(work_cache.read_text(encoding="utf-8"))["account_id"] == work.id
+    assert app.cache.load(personal.id) == usable_personal.snapshot
+    assert app.cache.load(work.id) == work_usage.snapshot
+
+    failed_work_after_personal_refresh = app.refresh(work.id)
+    assert failed_work_after_personal_refresh.stale is True
+    assert failed_work_after_personal_refresh.error_code == "provider_unavailable"
+    assert failed_work_after_personal_refresh.snapshot == work_usage.snapshot
     (work_home / "fail-refresh").unlink()
 
     personal = app.service.logout(personal.id)

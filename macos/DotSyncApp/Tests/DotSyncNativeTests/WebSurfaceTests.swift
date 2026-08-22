@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import SwiftUI
 import WebKit
 import XCTest
 @testable import DotSyncApp
@@ -203,6 +205,103 @@ final class WebSurfaceTests: XCTestCase {
             .cancel
         )
         XCTAssertFalse(policy.allowsSubresource(redirected))
+    }
+
+    func testProductionDelegateCancelsRealLoopbackRedirectBeforeExternalRequestOrBridge() async throws {
+        let fixture = try RedirectNavigationFixture()
+        defer { fixture.stop() }
+        let commands = LockedCommandRecorder()
+        let origin = try LocalOrigin(origin: fixture.origin, token: token)
+        var host = Optional(NSHostingView(
+            rootView: WebSurface(
+                origin: origin,
+                processPool: WKProcessPool(),
+                surface: .manager,
+                destination: .overview,
+                commandHandler: { command in commands.append(command) }
+            )
+            .frame(width: 640, height: 480)
+        ))
+        host?.frame = NSRect(x: 0, y: 0, width: 640, height: 480)
+        host?.layoutSubtreeIfNeeded()
+        let webView = try XCTUnwrap(
+            host.flatMap { descendants(of: $0, type: WKWebView.self).first }
+        )
+
+        let redirected = await Task.detached {
+            fixture.waitForRedirect(timeout: .seconds(3))
+        }.value
+        XCTAssertTrue(redirected)
+        let stopped = XCTNSPredicateExpectation(
+            predicate: NSPredicate(
+                block: { value, _ in
+                    guard let view = value as? WKWebView else { return false }
+                    return !view.isLoading
+                }
+            ),
+            object: webView
+        )
+        await fulfillment(of: [stopped], timeout: 3)
+
+        XCTAssertFalse(fixture.externalWasRequested)
+        XCTAssertTrue(commands.values.isEmpty)
+        host = nil
+    }
+
+    func testRealNativeHostPopoverAndManagerDismantleNeverLaunchProviderAndQuit() async throws {
+        let fixture = try RealNativeSurfaceFixture()
+        defer { fixture.cleanup() }
+        let backend = BackendProcess(
+            testOverride: fixture.wrapperURL,
+            handshakeTimeout: .seconds(3)
+        )
+        let coordinator = AppCoordinator(
+            backend: backend,
+            summaryFetcherFactory: { MenuSummaryClient(origin: $0) }
+        )
+        await coordinator.start()
+        XCTAssertNil(
+            coordinator.recoveryIssue,
+            "native fixture diagnostics: \(fixture.diagnostics)"
+        )
+        XCTAssertEqual(coordinator.summary.summary.usage.highestPercent, 58)
+
+        var popover = Optional(NSHostingView(
+            rootView: PopoverRoot(coordinator: coordinator)
+                .frame(width: 360, height: 560)
+        ))
+        popover?.frame = NSRect(x: 0, y: 0, width: 360, height: 560)
+        popover?.layoutSubtreeIfNeeded()
+        var manager = Optional(NSHostingView(
+            rootView: ManagerRoot(coordinator: coordinator)
+                .frame(width: 920, height: 620)
+        ))
+        manager?.frame = NSRect(x: 0, y: 0, width: 920, height: 620)
+        manager?.layoutSubtreeIfNeeded()
+        let popoverWebView = try XCTUnwrap(
+            popover.flatMap { descendants(of: $0, type: WKWebView.self).first }
+        )
+        let managerWebView = try XCTUnwrap(
+            manager.flatMap { descendants(of: $0, type: WKWebView.self).first }
+        )
+
+        try await waitForDocument(in: popoverWebView)
+        try await waitForDocument(in: managerWebView)
+        XCTAssertEqual(popoverWebView.url?.query, nil)
+        XCTAssertEqual(managerWebView.url?.query, nil)
+        XCTAssertEqual(fixture.providerLaunchCount, 0)
+
+        coordinator.managerDidClose()
+        popover = nil
+        manager = nil
+        XCTAssertFalse(coordinator.isManagerPresented)
+        XCTAssertNotNil(coordinator.session)
+        XCTAssertEqual(fixture.providerLaunchCount, 0)
+
+        await coordinator.quit()
+        XCTAssertNil(coordinator.session)
+        XCTAssertEqual(fixture.providerLaunchCount, 0)
+        XCTAssertTrue(fixture.defaultProfilesAreUnchanged)
     }
 
     func testConfigurationIsEphemeralSharesPoolAndRegistersExactBridgeName() {
@@ -501,6 +600,380 @@ final class WebSurfaceTests: XCTestCase {
             origin: "http://127.0.0.1:49152",
             token: token
         )
+    }
+
+    private func waitForDocument(in webView: WKWebView) async throws {
+        let stopped = XCTNSPredicateExpectation(
+            predicate: NSPredicate(
+                block: { value, _ in
+                    guard let view = value as? WKWebView else { return false }
+                    return view.url != nil && !view.isLoading
+                }
+            ),
+            object: webView
+        )
+        await fulfillment(of: [stopped], timeout: 5)
+        let state = try await webView.evaluateJavaScript("document.readyState")
+        XCTAssertEqual(state as? String, "complete")
+    }
+}
+
+private final class LockedCommandRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var commands: [NativeCommand] = []
+
+    var values: [NativeCommand] {
+        lock.withLock { commands }
+    }
+
+    func append(_ command: NativeCommand) {
+        lock.withLock { commands.append(command) }
+    }
+}
+
+private final class FixtureTranscript: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var pending = Data()
+    private var lines: [String] = []
+
+    func append(_ data: Data) {
+        condition.lock()
+        pending.append(data)
+        while let newline = pending.firstIndex(of: 0x0a) {
+            lines.append(String(decoding: pending[..<newline], as: UTF8.self))
+            pending.removeSubrange(...newline)
+        }
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func waitForPrefix(_ prefix: String, timeout: Duration) -> String? {
+        let deadline = Date().addingTimeInterval(timeout.timeInterval)
+        condition.lock()
+        defer { condition.unlock() }
+        while true {
+            if let line = lines.first(where: { $0.hasPrefix(prefix) }) {
+                return line
+            }
+            if !condition.wait(until: deadline) { return nil }
+        }
+    }
+
+    func containsPrefix(_ prefix: String) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return lines.contains { $0.hasPrefix(prefix) }
+    }
+}
+
+private final class RedirectNavigationFixture: @unchecked Sendable {
+    private(set) var origin = ""
+    private let process = Process()
+    private let control = Pipe()
+    private let output = Pipe()
+    private let transcript = FixtureTranscript()
+    private let exited = DispatchSemaphore(value: 0)
+
+    init() throws {
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        process.arguments = ["-u", "-c", Self.script]
+        process.standardInput = control
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        process.terminationHandler = { [exited] _ in exited.signal() }
+        output.fileHandleForReading.readabilityHandler = { [transcript] handle in
+            let data = handle.availableData
+            if !data.isEmpty { transcript.append(data) }
+        }
+        try process.run()
+        control.fileHandleForReading.closeFile()
+        output.fileHandleForWriting.closeFile()
+        guard let ready = transcript.waitForPrefix("READY\t", timeout: .seconds(3))
+        else {
+            stop()
+            throw BackendError.backendStartFailed
+        }
+        let fields = ready.split(separator: "\t")
+        guard fields.count == 3 else {
+            stop()
+            throw BackendError.backendProtocolError
+        }
+        origin = "http://127.0.0.1:\(fields[1])"
+    }
+
+    var externalWasRequested: Bool {
+        transcript.containsPrefix("EXTERNAL\t")
+    }
+
+    func waitForRedirect(timeout: Duration) -> Bool {
+        transcript.waitForPrefix("REDIRECT\t", timeout: timeout) != nil
+    }
+
+    func stop() {
+        output.fileHandleForReading.readabilityHandler = nil
+        try? control.fileHandleForWriting.close()
+        if process.isRunning,
+           exited.wait(timeout: .now() + .seconds(3)) != .success
+        {
+            process.terminate()
+            process.waitUntilExit()
+        }
+    }
+
+    private static let script = #"""
+import http.server
+import sys
+import threading
+
+class External(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        print("EXTERNAL\t%s" % self.path, flush=True)
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"external")
+    def log_message(self, format, *args):
+        pass
+
+external = http.server.ThreadingHTTPServer(("127.0.0.1", 0), External)
+external_port = external.server_address[1]
+
+class Source(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        print("REDIRECT\t%s" % self.path, flush=True)
+        self.send_response(302)
+        self.send_header("Location", "http://127.0.0.1:%d/escape" % external_port)
+        self.end_headers()
+    def log_message(self, format, *args):
+        pass
+
+source = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Source)
+print("READY\t%d\t%d" % (source.server_address[1], external_port), flush=True)
+threads = [
+    threading.Thread(target=source.serve_forever),
+    threading.Thread(target=external.serve_forever),
+]
+for thread in threads:
+    thread.start()
+sys.stdin.buffer.read()
+source.shutdown()
+external.shutdown()
+for thread in threads:
+    thread.join()
+source.server_close()
+external.server_close()
+"""#
+}
+
+private struct ProfileEntry: Equatable {
+    let path: String
+    let permissions: Int
+    let modified: Date
+    let data: Data?
+}
+
+private final class RealNativeSurfaceFixture {
+    let wrapperURL: URL
+    private let rootURL: URL
+    private let homeURL: URL
+    private let providerLaunchesURL: URL
+    private let diagnosticsURL: URL
+    private let originalProfiles: [ProfileEntry]
+
+    init() throws {
+        let manager = FileManager.default
+        let temporaryPath = manager.temporaryDirectory.path
+        let canonicalTemporary = temporaryPath.hasPrefix("/var/")
+            ? URL(fileURLWithPath: "/private" + temporaryPath, isDirectory: true)
+            : manager.temporaryDirectory.resolvingSymlinksInPath()
+        rootURL = canonicalTemporary.appendingPathComponent(
+            "dotsync-real-native-surface-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        homeURL = rootURL.appendingPathComponent("home", isDirectory: true)
+        let binURL = rootURL.appendingPathComponent("bin", isDirectory: true)
+        try manager.createDirectory(at: homeURL, withIntermediateDirectories: true)
+        try manager.createDirectory(at: binURL, withIntermediateDirectories: true)
+        try Self.setPrivateDirectory(homeURL)
+        try Self.seedDefaultProfiles(homeURL)
+
+        let accountID = "11111111-1111-4111-8111-111111111111"
+        let appRoot = homeURL
+            .appendingPathComponent("Library/Application Support/DotSync", isDirectory: true)
+        let accountHome = appRoot
+            .appendingPathComponent("accounts/codex/\(accountID)/home", isDirectory: true)
+        let usageRoot = appRoot
+            .appendingPathComponent("usage/\(accountID)", isDirectory: true)
+        try manager.createDirectory(at: accountHome, withIntermediateDirectories: true)
+        try manager.createDirectory(at: usageRoot, withIntermediateDirectories: true)
+        for url in [appRoot, accountHome.deletingLastPathComponent(), accountHome, usageRoot] {
+            try Self.setPrivateDirectory(url)
+        }
+        try Self.writeJSON(
+            [
+                "schema_version": 1,
+                "accounts": [[
+                    "id": accountID,
+                    "provider": "codex",
+                    "label": "Cached Fixture",
+                    "state": "ready",
+                    "identity": [
+                        "display_name": "Fixture",
+                        "email": NSNull(),
+                        "plan": "test",
+                    ],
+                    "created_at": "2026-08-21T12:00:00+00:00",
+                ]],
+            ],
+            to: appRoot.appendingPathComponent("accounts.json")
+        )
+        try Self.writeJSON(
+            [
+                "account_id": accountID,
+                "provider": "codex",
+                "windows": [[
+                    "name": "five_hour",
+                    "limit_id": "primary",
+                    "label": NSNull(),
+                    "used_percent": 58.0,
+                    "duration_minutes": 300,
+                    "resets_at": NSNull(),
+                ]],
+                "observed_at": "2026-08-21T12:00:00Z",
+                "source": "codex_app_server",
+                "provider_version": "fixture-1",
+            ],
+            to: usageRoot.appendingPathComponent("snapshot.json")
+        )
+
+        providerLaunchesURL = rootURL.appendingPathComponent("provider-launches")
+        diagnosticsURL = rootURL.appendingPathComponent("native-stderr")
+        let providerURL = binURL.appendingPathComponent("codex")
+        try Self.writeExecutable(
+            """
+            #!/bin/sh
+            printf 'launch\\n' >> \(shellQuote(providerLaunchesURL.path))
+            while IFS= read -r ignored; do :; done
+            """,
+            to: providerURL
+        )
+
+        var repository = URL(fileURLWithPath: #filePath)
+        for _ in 0..<5 { repository.deleteLastPathComponent() }
+        let python = repository.appendingPathComponent(".venv/bin/python3")
+        wrapperURL = rootURL.appendingPathComponent("dotsync-native-wrapper")
+        try Self.writeExecutable(
+            """
+            #!/bin/sh
+            HOME=\(shellQuote(homeURL.path))
+            PATH=\(shellQuote(binURL.path + ":/usr/bin:/bin"))
+            PYTHONPATH=\(shellQuote(repository.appendingPathComponent("lib").path))
+            export HOME PATH PYTHONPATH
+            exec \(shellQuote(python.path)) -c 'from dotsync.ui_app import run_native_ui; raise SystemExit(run_native_ui())' "$@" 2>\(shellQuote(diagnosticsURL.path))
+            """,
+            to: wrapperURL
+        )
+        originalProfiles = try Self.profileSnapshot(homeURL)
+    }
+
+    var providerLaunchCount: Int {
+        guard let data = try? Data(contentsOf: providerLaunchesURL) else { return 0 }
+        return String(decoding: data, as: UTF8.self)
+            .split(separator: "\n").count
+    }
+
+    var diagnostics: String {
+        guard let data = try? Data(contentsOf: diagnosticsURL) else { return "<none>" }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    var defaultProfilesAreUnchanged: Bool {
+        (try? Self.profileSnapshot(homeURL)) == originalProfiles
+    }
+
+    func cleanup() {
+        try? FileManager.default.removeItem(at: rootURL)
+    }
+
+    private static func seedDefaultProfiles(_ home: URL) throws {
+        let manager = FileManager.default
+        let claude = home.appendingPathComponent(".claude", isDirectory: true)
+        let codex = home.appendingPathComponent(".codex", isDirectory: true)
+        try manager.createDirectory(at: claude, withIntermediateDirectories: false)
+        try manager.createDirectory(at: codex, withIntermediateDirectories: false)
+        try setPrivateDirectory(claude)
+        try setPrivateDirectory(codex)
+        try writePrivate(Data("{\"fixture\":true}\n".utf8), to: claude.appendingPathComponent("settings.json"))
+        try writePrivate(Data("{\"fixture\":true}\n".utf8), to: home.appendingPathComponent(".claude.json"))
+        try writePrivate(Data("{\"fixture\":true}\n".utf8), to: codex.appendingPathComponent("auth.json"))
+    }
+
+    private static func profileSnapshot(_ home: URL) throws -> [ProfileEntry] {
+        let manager = FileManager.default
+        var urls: [URL] = []
+        for name in [".claude", ".claude.json", ".codex"] {
+            let root = home.appendingPathComponent(name)
+            urls.append(root)
+            if let enumerator = manager.enumerator(at: root, includingPropertiesForKeys: nil) {
+                for case let child as URL in enumerator { urls.append(child) }
+            }
+        }
+        return try urls.sorted { $0.path < $1.path }.map { url in
+            let attributes = try manager.attributesOfItem(atPath: url.path)
+            return ProfileEntry(
+                path: url.path.replacingOccurrences(of: home.path, with: ""),
+                permissions: attributes[.posixPermissions] as? Int ?? 0,
+                modified: try XCTUnwrap(attributes[.modificationDate] as? Date),
+                data: attributes[.type] as? FileAttributeType == .typeRegular
+                    ? try Data(contentsOf: url)
+                    : nil
+            )
+        }
+    }
+
+    private static func writeJSON(_ value: Any, to url: URL) throws {
+        try writePrivate(try JSONSerialization.data(withJSONObject: value), to: url)
+    }
+
+    private static func writePrivate(_ data: Data, to url: URL) throws {
+        try data.write(to: url, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: url.path
+        )
+    }
+
+    private static func setPrivateDirectory(_ url: URL) throws {
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: url.path
+        )
+    }
+
+    private static func writeExecutable(_ source: String, to url: URL) throws {
+        try Data(source.utf8).write(to: url, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: url.path
+        )
+    }
+}
+
+private func shellQuote(_ value: String) -> String {
+    "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+}
+
+private func descendants<T: NSView>(of root: NSView, type: T.Type) -> [T] {
+    root.subviews.flatMap { view -> [T] in
+        let current = (view as? T).map { [$0] } ?? []
+        return current + descendants(of: view, type: type)
+    }
+}
+
+private extension Duration {
+    var timeInterval: TimeInterval {
+        let components = self.components
+        return TimeInterval(components.seconds)
+            + TimeInterval(components.attoseconds) / 1_000_000_000_000_000_000
     }
 }
 

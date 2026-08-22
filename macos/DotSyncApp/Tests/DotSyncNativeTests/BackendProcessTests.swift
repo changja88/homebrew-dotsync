@@ -374,8 +374,14 @@ final class BackendProcessTests: XCTestCase {
         XCTAssertEqual(events.value, [.backendExited])
     }
 
-    func testStopRacingOldTerminationRecordCannotReleaseReplacementOwner() async throws {
+    func testReusedNumericPIDCannotLetStaleTerminationReleaseReplacementOwner() async throws {
         let fixture = try makeFixture(.valid)
+        let firstProcess = ReusedNumericPIDProcess()
+        let replacementProcess = ReusedNumericPIDProcess()
+        XCTAssertFalse(firstProcess === replacementProcess)
+        XCTAssertEqual(firstProcess.processIdentifier, replacementProcess.processIdentifier)
+        let processQueue = LockedBox([firstProcess, replacementProcess])
+        let system = IdentityOnlyProcessSystem()
         let terminationReached = DispatchSemaphore(value: 0)
         let allowOldTerminationRecord = DispatchSemaphore(value: 0)
         let oldTerminationRecorded = DispatchSemaphore(value: 0)
@@ -387,7 +393,7 @@ final class BackendProcessTests: XCTestCase {
             onUnexpectedExit: { error in
                 events.withValue { $0.append(error) }
             },
-            system: FoundationBackendProcessSystem(),
+            system: system,
             testHooks: BackendProcessTestHooks(
                 beforeTerminationRecord: {
                     let block = shouldBlock.takeTrue()
@@ -397,7 +403,12 @@ final class BackendProcessTests: XCTestCase {
                         oldTerminationRecorded.signal()
                     }
                 }
-            )
+            ),
+            processFactory: {
+                processQueue.withValue { processes in
+                    processes.removeFirst()
+                }
+            }
         )
         _ = try backend.start()
         let firstStop = Task { try await backend.stop() }
@@ -413,6 +424,7 @@ final class BackendProcessTests: XCTestCase {
         XCTAssertTrue(events.value.isEmpty)
         try await backend.stop()
         XCTAssertTrue(fixture.waitUntilStopped(timeout: .seconds(1)))
+        XCTAssertEqual(system.numericSignalAttempts, 0)
     }
 
     func testUnconfirmedFinalKillRetainsOwnerUntilBackgroundReaperConfirmsExit() async throws {
@@ -831,6 +843,106 @@ private final class FailFirstKillSystem: BackendProcessSystem,
     }
 }
 
+private final class ReusedNumericPIDProcess: Process, @unchecked Sendable {
+    private let underlying = Process()
+    private var forwardedTerminationHandler: (@Sendable (Process) -> Void)?
+
+    override var executableURL: URL? {
+        get { underlying.executableURL }
+        set { underlying.executableURL = newValue }
+    }
+
+    override var arguments: [String]? {
+        get { underlying.arguments }
+        set { underlying.arguments = newValue }
+    }
+
+    override var environment: [String: String]? {
+        get { underlying.environment }
+        set { underlying.environment = newValue }
+    }
+
+    override var currentDirectoryURL: URL? {
+        get { underlying.currentDirectoryURL }
+        set { underlying.currentDirectoryURL = newValue }
+    }
+
+    override var standardInput: Any? {
+        get { underlying.standardInput }
+        set { underlying.standardInput = newValue }
+    }
+
+    override var standardOutput: Any? {
+        get { underlying.standardOutput }
+        set { underlying.standardOutput = newValue }
+    }
+
+    override var standardError: Any? {
+        get { underlying.standardError }
+        set { underlying.standardError = newValue }
+    }
+
+    override var terminationHandler: (@Sendable (Process) -> Void)? {
+        get { forwardedTerminationHandler }
+        set {
+            forwardedTerminationHandler = newValue
+            underlying.terminationHandler = { [weak self] _ in
+                guard let self else { return }
+                self.forwardedTerminationHandler?(self)
+            }
+        }
+    }
+
+    override func run() throws {
+        try underlying.run()
+    }
+
+    override var isRunning: Bool { underlying.isRunning }
+    override var processIdentifier: pid_t { 42_424 }
+}
+
+private final class IdentityOnlyProcessSystem: BackendProcessSystem,
+    @unchecked Sendable {
+    private let lock = NSLock()
+    private var signalAttempts = 0
+
+    var numericSignalAttempts: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return signalAttempts
+    }
+
+    func isRunning(_ process: Process) -> Bool {
+        process.isRunning
+    }
+
+    func waitForExit(
+        _ process: Process,
+        signal: DispatchSemaphore,
+        timeout: Duration
+    ) -> Bool {
+        if !process.isRunning { return true }
+        let result = signal.wait(timeout: .now() + timeout.dispatchInterval)
+        return result == .success || !process.isRunning
+    }
+
+    func sendTerminate(_ process: Process) -> Bool {
+        recordForbiddenNumericSignal()
+        return false
+    }
+
+    func sendKill(_ process: Process) -> Bool {
+        recordForbiddenNumericSignal()
+        return false
+    }
+
+    private func recordForbiddenNumericSignal() {
+        lock.lock()
+        signalAttempts += 1
+        lock.unlock()
+    }
+}
+
 private final class LockedBox<Value>: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: Value
@@ -845,10 +957,10 @@ private final class LockedBox<Value>: @unchecked Sendable {
         return storage
     }
 
-    func withValue(_ operation: (inout Value) -> Void) {
+    func withValue<Result>(_ operation: (inout Value) -> Result) -> Result {
         lock.lock()
         defer { lock.unlock() }
-        operation(&storage)
+        return operation(&storage)
     }
 }
 
