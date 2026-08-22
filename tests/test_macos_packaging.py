@@ -323,6 +323,91 @@ raise SystemExit(module.main(["assemble", str(project)]))
     )
 
 
+def _write_capture_stdout_runner(path: Path, *, mode: str) -> None:
+    child_programs = {
+        "overflow": (
+            "import os; "
+            "open(os.environ['DOTSYNC_TEST_CAPTURE_CHILD_PID'], 'w').write(str(os.getpid())); "
+            "os.write(1, b'x' * (1024 * 1024))"
+        ),
+        "decode": (
+            "import os; "
+            "open(os.environ['DOTSYNC_TEST_CAPTURE_CHILD_PID'], 'w').write(str(os.getpid())); "
+            "os.write(1, b'\\xff')"
+        ),
+        "read": (
+            "import os; "
+            "open(os.environ['DOTSYNC_TEST_CAPTURE_CHILD_PID'], 'w').write(str(os.getpid())); "
+            "\nwhile True: os.write(1, b'x' * 4096)"
+        ),
+    }
+    injection = ""
+    if mode == "read":
+        injection = """
+real_read = module.os.read
+real_thread_start = module.threading.Thread.start
+failed = False
+def fail_first_pipe_read(descriptor, size):
+    global failed
+    if not failed:
+        failed = True
+        raise OSError(5, "injected captured stdout read failure")
+    return real_read(descriptor, size)
+def start_with_read_failure(self):
+    module.os.read = fail_first_pipe_read
+    return real_thread_start(self)
+module.threading.Thread.start = start_with_read_failure
+"""
+    path.write_text(
+        f"""
+import importlib.util
+import os
+from pathlib import Path
+import sys
+
+project = Path(sys.argv[1])
+support_path = Path(sys.argv[2])
+spec = importlib.util.spec_from_file_location("capture_stdout_runner", support_path)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+{injection}
+
+real_popen = module.subprocess.Popen
+def record_child_pid(*args, **kwargs):
+    process = real_popen(*args, **kwargs)
+    Path(os.environ["DOTSYNC_TEST_CAPTURE_CHILD_PID"]).write_text(str(process.pid))
+    return process
+module.subprocess.Popen = record_child_pid
+
+cwd_fd = os.open(project, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+try:
+    try:
+        with module.SignalCoordinator() as coordinator:
+            module._run_tool(
+                [sys.executable, "-c", {child_programs[mode]!r}],
+                cwd_fd=cwd_fd,
+                capture_stdout=True,
+                coordinator=coordinator,
+            )
+    except BaseException as error:
+        child_pid = int(Path(os.environ["DOTSYNC_TEST_CAPTURE_CHILD_PID"]).read_text())
+        try:
+            waited_pid, _ = os.waitpid(child_pid, os.WNOHANG)
+        except ChildProcessError:
+            reap_state = "already-reaped"
+        else:
+            reap_state = f"unreaped-{{waited_pid}}"
+        print(f"{{type(error).__name__}}:{{error}}:{{reap_state}}", file=sys.stderr)
+        raise SystemExit(1)
+    raise SystemExit(0)
+finally:
+    os.close(cwd_fd)
+""",
+        encoding="utf-8",
+    )
+
+
 def test_info_plist_template_defines_menu_bar_only_macos13_app():
     plist = plistlib.loads(_render_info_plist(version="0.3.0", build="300"))
 
@@ -1136,6 +1221,7 @@ def test_interrupted_process_group_is_quiesced_before_leader_is_reaped(tmp_path)
     release_marker = tmp_path / "release-swift"
     swift_pid_file = tmp_path / "swift.pid"
     grandchild_pid_file = tmp_path / "grandchild.pid"
+    interrupted_leader_pid_file = tmp_path / "interrupted-leader.pid"
     ordering_log = tmp_path / "ordering.log"
     env.update(
         {
@@ -1144,6 +1230,9 @@ def test_interrupted_process_group_is_quiesced_before_leader_is_reaped(tmp_path)
             "DOTSYNC_TEST_RELEASE_SWIFT_MARKER": str(release_marker),
             "DOTSYNC_TEST_SWIFT_PID_FILE": str(swift_pid_file),
             "DOTSYNC_TEST_GRANDCHILD_PID_FILE": str(grandchild_pid_file),
+            "DOTSYNC_TEST_INTERRUPTED_LEADER_PID": str(
+                interrupted_leader_pid_file
+            ),
             "DOTSYNC_TEST_ORDERING_LOG": str(ordering_log),
         }
     )
@@ -1161,16 +1250,16 @@ def recorded_waitid(*args, **kwargs):
     if result is not None:
         flags = args[2] if len(args) > 2 else kwargs["options"]
         record(
-            "exit-observed-without-reap"
+            "exit-observed-without-reap:" + str(args[1])
             if flags & os.WNOWAIT
-            else "leader-reaped"
+            else "leader-reaped:" + str(args[1])
         )
     return result
 module.os.waitid = recorded_waitid
 
 real_quiesce = module.SignalCoordinator.quiesce_process_group
 def recorded_quiesce(self, process_group, **kwargs):
-    record("group-quiesce")
+    record("group-quiesce:" + str(process_group))
     return real_quiesce(self, process_group, **kwargs)
 module.SignalCoordinator.quiesce_process_group = recorded_quiesce
 
@@ -1182,6 +1271,8 @@ def signal_first_swift(*args, **kwargs):
     command = args[0] if args else kwargs.get("args", [])
     if command and command[0] == "swift" and not sent:
         sent = True
+        with open(os.environ["DOTSYNC_TEST_INTERRUPTED_LEADER_PID"], "w", encoding="utf-8") as pid_file:
+            pid_file.write(str(process.pid))
         os.kill(os.getpid(), signal.SIGTERM)
     return process
 module.subprocess.Popen = signal_first_swift
@@ -1198,16 +1289,69 @@ module.subprocess.Popen = signal_first_swift
 
     assert result.returncode == 128 + signal.SIGTERM, result.stdout + result.stderr
     events = ordering_log.read_text(encoding="utf-8").splitlines()
-    observed = events.index("exit-observed-without-reap")
-    quiesced = events.index("group-quiesce", observed)
-    reaped = events.index("leader-reaped", quiesced)
+    interrupted_leader_pid = int(
+        interrupted_leader_pid_file.read_text(encoding="utf-8")
+    )
+    observed = events.index(
+        f"exit-observed-without-reap:{interrupted_leader_pid}"
+    )
+    quiesced = events.index(
+        f"group-quiesce:{interrupted_leader_pid}",
+        observed,
+    )
+    reaped = events.index(
+        f"leader-reaped:{interrupted_leader_pid}",
+        quiesced,
+    )
     assert observed < quiesced < reaped
     swift_pid = int(swift_pid_file.read_text(encoding="utf-8"))
+    assert swift_pid == interrupted_leader_pid
     grandchild_pid = int(grandchild_pid_file.read_text(encoding="utf-8"))
     _assert_process_gone(swift_pid)
     _assert_process_gone(grandchild_pid)
     assert not (project / "build" / "DotSync.app").exists()
     _assert_no_private_staging(project)
+
+
+@pytest.mark.no_subprocess_block
+@pytest.mark.parametrize("failure_mode", ["overflow", "decode", "read"])
+def test_captured_stdout_failure_is_bounded_and_reaps_exact_leader(
+    tmp_path,
+    failure_mode,
+):
+    """Captured output must drain concurrently and fail closed before reap."""
+    project, env = _fake_build_project(tmp_path)
+    child_pid_file = tmp_path / f"capture-{failure_mode}.pid"
+    env["DOTSYNC_TEST_CAPTURE_CHILD_PID"] = str(child_pid_file)
+    runner = tmp_path / f"capture-{failure_mode}-runner.py"
+    _write_capture_stdout_runner(runner, mode=failure_mode)
+    process = subprocess.Popen(
+        [sys.executable, str(runner), str(project), str(SUPPORT_SCRIPT)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+
+    try:
+        stdout, stderr = process.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        if child_pid_file.exists():
+            child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+            try:
+                os.killpg(child_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait(timeout=5)
+        pytest.fail(f"captured stdout {failure_mode} handling deadlocked")
+
+    assert process.returncode == 1, stdout + stderr
+    assert "PackagingError:" in stderr
+    assert ":already-reaped" in stderr
+    child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+    _assert_process_gone(child_pid)
 
 
 def test_temporary_signal_handlers_restore_all_prior_handlers_after_failure():
@@ -1619,6 +1763,196 @@ def test_post_publish_final_identity_and_mode_are_proven_before_success(
         if build_fd >= 0:
             os.close(build_fd)
         os.close(repo_fd)
+
+
+def test_rollback_binding_replacement_is_restored_public_and_ownership_loss_wins_signal(
+    tmp_path,
+    monkeypatch,
+):
+    """A pathname rollback must never consume an unowned final replacement."""
+    support = _load_support_module()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    repo_fd = os.open(repo, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    build_fd = -1
+    coordinator = support.SignalCoordinator()
+    real_verify = support._verify_build_binding
+    real_swap = support._rename_swap
+    peer_owned_name = "peer-moved-owned-app"
+    replaced = False
+
+    def fail_after_publication(repo_descriptor, build_descriptor, identity):
+        real_verify(repo_descriptor, build_descriptor, identity)
+        try:
+            os.stat(
+                support.FINAL_APP,
+                dir_fd=build_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            return
+        raise support.PackagingError("injected post-publication failure")
+
+    def replace_at_atomic_exchange_boundary(
+        source_fd,
+        source_name,
+        destination_fd,
+        destination_name,
+    ):
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            os.rename(
+                support.FINAL_APP,
+                peer_owned_name,
+                src_dir_fd=build_fd,
+                dst_dir_fd=build_fd,
+            )
+            os.mkdir(support.FINAL_APP, mode=0o755, dir_fd=build_fd)
+            replacement_fd = os.open(
+                support.FINAL_APP,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=build_fd,
+            )
+            try:
+                marker_fd = os.open(
+                    "replacement-marker",
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                    dir_fd=replacement_fd,
+                )
+                os.close(marker_fd)
+            finally:
+                os.close(replacement_fd)
+            coordinator.first_signum = signal.SIGTERM
+        real_swap(source_fd, source_name, destination_fd, destination_name)
+
+    try:
+        build_fd, build_identity = support._prepare_build_root(
+            repo_fd,
+            os.fstat(repo_fd).st_dev,
+        )
+        with monkeypatch.context() as patch_context:
+            patch_context.setattr(
+                support,
+                "_verify_build_binding",
+                fail_after_publication,
+            )
+            patch_context.setattr(
+                support,
+                "_rename_swap",
+                replace_at_atomic_exchange_boundary,
+            )
+            with pytest.raises(
+                support.PackagingError,
+                match="rollback.*ownership|ownership.*rollback",
+            ):
+                with support._owned_staging_directory(
+                    build_fd,
+                    build_identity.device,
+                ) as stage:
+                    app_fd = support._create_directory(
+                        stage.descriptor,
+                        support.FINAL_APP,
+                        build_identity.device,
+                        0o755,
+                    )
+                    os.close(app_fd)
+                    scanned = support._open_and_scan_staged_app(
+                        stage.descriptor,
+                        checkout=b"checkout",
+                        expected_device=build_identity.device,
+                    )
+                    try:
+                        support._publish_scanned_app(
+                            repo_fd=repo_fd,
+                            build_fd=build_fd,
+                            build_identity=build_identity,
+                            stage=stage,
+                            scanned_app=scanned,
+                            coordinator=coordinator,
+                        )
+                    finally:
+                        os.close(scanned.descriptor)
+
+        assert (
+            repo / "build" / support.FINAL_APP / "replacement-marker"
+        ).read_bytes() == b""
+        assert not list((repo / "build").glob(".dotsync-app-stage.*"))
+        assert (repo / "build" / peer_owned_name).is_dir()
+    finally:
+        if build_fd >= 0:
+            os.close(build_fd)
+        os.close(repo_fd)
+
+
+@pytest.mark.no_subprocess_block
+def test_assemble_reports_rollback_ownership_loss_before_retained_signal(tmp_path):
+    """The terminal signal handoff must not hide an unowned replacement."""
+    project, env = _fake_build_project(tmp_path)
+    runner = tmp_path / "rollback-ownership-signal-runner.py"
+    _write_support_runner(
+        runner,
+        injection="""
+real_verify = module._verify_build_binding
+def fail_after_publication(repo_fd, build_fd, build_identity):
+    real_verify(repo_fd, build_fd, build_identity)
+    try:
+        os.stat(module.FINAL_APP, dir_fd=build_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    raise module.PackagingError("injected post-publication failure")
+module._verify_build_binding = fail_after_publication
+
+real_swap = module._rename_swap
+injected = False
+def replace_before_atomic_exchange(source_fd, source_name, destination_fd, destination_name):
+    global injected
+    if not injected:
+        injected = True
+        os.rename(
+            module.FINAL_APP,
+            "peer-moved-owned-app",
+            src_dir_fd=source_fd,
+            dst_dir_fd=source_fd,
+        )
+        os.mkdir(module.FINAL_APP, mode=0o755, dir_fd=source_fd)
+        replacement_fd = os.open(
+            module.FINAL_APP,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=source_fd,
+        )
+        try:
+            marker_fd = os.open(
+                "replacement-marker",
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+                dir_fd=replacement_fd,
+            )
+            os.close(marker_fd)
+        finally:
+            os.close(replacement_fd)
+        os.kill(os.getpid(), signal.SIGTERM)
+    return real_swap(source_fd, source_name, destination_fd, destination_name)
+module._rename_swap = replace_before_atomic_exchange
+""",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(runner), str(project), str(SUPPORT_SCRIPT)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "rollback lost exact ownership" in result.stderr
+    assert (
+        project / "build" / "DotSync.app" / "replacement-marker"
+    ).read_bytes() == b""
+    assert not list((project / "build").glob(".dotsync-app-stage.*"))
+    assert (project / "build" / "peer-moved-owned-app").is_dir()
 
 
 def test_stage_first_open_failure_preserves_the_unadopted_private_entry(

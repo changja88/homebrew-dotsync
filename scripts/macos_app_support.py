@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import codecs
 import contextlib
 import ctypes
 import errno
@@ -14,6 +15,7 @@ import signal
 import stat
 import subprocess
 import sys
+import threading
 import time
 import tomllib
 from dataclasses import dataclass
@@ -40,10 +42,19 @@ X86_SCRATCH = "swift-x86_64"
 PACKAGE_SNAPSHOT = "package"
 PLIST_SNAPSHOT = "DotSync-Info.plist.in"
 RENAME_EXCL = 0x00000004
+RENAME_SWAP = 0x00000002
+RENAME_NOFOLLOW_ANY = 0x00000010
+RENAME_RESOLVE_BENEATH = 0x00000020
+CAPTURED_STDOUT_LIMIT = 64 * 1024
+CAPTURE_READER_GRACE_SECONDS = 1.0
 
 
 class PackagingError(Exception):
     """A filesystem or build input violates the local packaging contract."""
+
+
+class PublicationOwnershipError(PackagingError):
+    """Publication rollback cannot prove ownership of the public binding."""
 
 
 class SignalInterruption(Exception):
@@ -73,6 +84,7 @@ class StagingDirectory:
     descriptor: int
     identity: NodeIdentity
     removed: bool = False
+    preserve: bool = False
 
 
 @dataclass
@@ -121,7 +133,7 @@ class SignalCoordinator:
     def __init__(self) -> None:
         self.first_signum: int | None = None
         self._previous_handlers: dict[int, signal.Handlers] = {}
-        self._active_process: subprocess.Popen[str] | None = None
+        self._active_process: subprocess.Popen[bytes] | None = None
         self._signal_received_at: float | None = None
         self._committed = False
 
@@ -171,14 +183,14 @@ class SignalCoordinator:
         except ProcessLookupError:
             pass
 
-    def attach(self, process: subprocess.Popen[str]) -> None:
+    def attach(self, process: subprocess.Popen[bytes]) -> None:
         if self._active_process is not None:
             raise PackagingError("build tools must run serially")
         self._active_process = process
         if self.first_signum is not None:
             self._signal_process_group(process.pid, self.first_signum)
 
-    def detach(self, process: subprocess.Popen[str]) -> None:
+    def detach(self, process: subprocess.Popen[bytes]) -> None:
         if self._active_process is process:
             self._active_process = None
 
@@ -636,7 +648,7 @@ def _owned_staging_directory(
         yield stage
     finally:
         cleanup_error: BaseException | None = None
-        if stage is not None and not stage.removed:
+        if stage is not None and not stage.removed and not stage.preserve:
             try:
                 _cleanup_owned_stage(build_fd, stage, expected_device)
             except BaseException as error:
@@ -1064,8 +1076,113 @@ def _run_tool(
     def enter_pinned_directory() -> None:
         os.fchdir(cwd_fd)
 
-    process: subprocess.Popen[str] | None = None
+    process: subprocess.Popen[bytes] | None = None
     stdout = ""
+    captured_chunks: list[str] = []
+    capture_errors: list[PackagingError] = []
+    capture_failed = threading.Event()
+    capture_thread: threading.Thread | None = None
+
+    def record_capture_error(error: PackagingError) -> None:
+        if not capture_errors:
+            capture_errors.append(error)
+        capture_failed.set()
+
+    def drain_captured_stdout(pipe_fd: int) -> None:
+        decoder = codecs.getincrementaldecoder("utf-8")("strict")
+        captured_bytes = 0
+        decoding = True
+        try:
+            while True:
+                try:
+                    block = os.read(pipe_fd, 16 * 1024)
+                except OSError:
+                    record_capture_error(
+                        PackagingError("captured stdout could not be read")
+                    )
+                    return
+                if not block:
+                    if decoding:
+                        try:
+                            captured_chunks.append(decoder.decode(b"", final=True))
+                        except UnicodeDecodeError:
+                            record_capture_error(
+                                PackagingError("captured stdout is not valid UTF-8")
+                            )
+                    return
+                captured_bytes += len(block)
+                if captured_bytes > CAPTURED_STDOUT_LIMIT:
+                    record_capture_error(
+                        PackagingError("captured stdout exceeded the 64 KiB limit")
+                    )
+                    decoding = False
+                    continue
+                if decoding:
+                    try:
+                        captured_chunks.append(decoder.decode(block, final=False))
+                    except UnicodeDecodeError:
+                        record_capture_error(
+                            PackagingError("captured stdout is not valid UTF-8")
+                        )
+                        decoding = False
+        except BaseException:
+            record_capture_error(
+                PackagingError("captured stdout reader failed unexpectedly")
+            )
+
+    def start_capture_reader() -> None:
+        nonlocal capture_thread
+        assert process is not None and process.stdout is not None
+        capture_thread = threading.Thread(
+            target=drain_captured_stdout,
+            args=(process.stdout.fileno(),),
+            name="dotsync-captured-stdout",
+            daemon=True,
+        )
+        capture_thread.start()
+
+    def kill_failed_group(process_group: int) -> None:
+        try:
+            SignalCoordinator._signal_process_group(
+                process_group,
+                signal.SIGKILL,
+            )
+        except PermissionError:
+            # A zombie-only group can report EPERM on macOS. The still-WNOWAIT
+            # leader remains reserved and is reaped below.
+            pass
+
+    def wait_for_capture_reader(process_group: int, kill_sent: bool) -> bool:
+        if capture_thread is None:
+            return kill_sent
+        capture_thread.join(CAPTURE_READER_GRACE_SECONDS)
+        if capture_thread.is_alive():
+            record_capture_error(
+                PackagingError("captured stdout did not close after leader exit")
+            )
+            if not kill_sent:
+                kill_failed_group(process_group)
+                kill_sent = True
+            time.sleep(0.05)
+            capture_thread.join(CAPTURE_READER_GRACE_SECONDS)
+        if capture_thread.is_alive():
+            assert process is not None and process.stdout is not None
+            process.stdout.close()
+            capture_thread.join(CAPTURE_READER_GRACE_SECONDS)
+        return kill_sent
+
+    def reap_observed_leader() -> None:
+        assert process is not None
+        reaped = os.waitid(os.P_PID, process.pid, os.WEXITED)
+        if reaped is None or reaped.si_pid != process.pid:
+            raise PackagingError("build tool leader reap identity changed")
+        if reaped.si_code == os.CLD_EXITED:
+            process.returncode = reaped.si_status
+        elif reaped.si_code in {os.CLD_KILLED, os.CLD_DUMPED}:
+            process.returncode = -reaped.si_status
+        else:
+            raise PackagingError("build tool leader had an invalid exit state")
+
     try:
         if coordinator is not None:
             previous_mask = signal.pthread_sigmask(
@@ -1083,7 +1200,7 @@ def _run_tool(
                     preexec_fn=enter_pinned_directory,
                     stdout=subprocess.PIPE if capture_stdout else sys.stderr,
                     stderr=sys.stderr,
-                    text=True,
+                    text=False,
                     start_new_session=True,
                 )
                 coordinator.attach(process)
@@ -1096,16 +1213,46 @@ def _run_tool(
                 preexec_fn=enter_pinned_directory,
                 stdout=subprocess.PIPE if capture_stdout else sys.stderr,
                 stderr=sys.stderr,
-                text=True,
+                text=False,
                 start_new_session=True,
             )
 
+        if capture_stdout:
+            start_capture_reader()
+
         if coordinator is None:
-            captured_stdout, _ = process.communicate()
-            stdout = captured_stdout if capture_stdout and captured_stdout else ""
+            if not capture_stdout:
+                process.communicate()
+            else:
+                kill_sent = False
+                while True:
+                    if capture_failed.is_set() and not kill_sent:
+                        kill_failed_group(process.pid)
+                        kill_sent = True
+                    observed = os.waitid(
+                        os.P_PID,
+                        process.pid,
+                        os.WEXITED | os.WNOHANG | os.WNOWAIT,
+                    )
+                    if observed is not None:
+                        break
+                    time.sleep(0.01)
+                kill_sent = wait_for_capture_reader(process.pid, kill_sent)
+                if capture_failed.is_set() and not kill_sent:
+                    kill_failed_group(process.pid)
+                    time.sleep(0.05)
+                reap_observed_leader()
+                assert process.stdout is not None
+                process.stdout.close()
+                if capture_errors:
+                    raise capture_errors[0]
+                stdout = "".join(captured_chunks)
         else:
             kill_sent = False
             while True:
+                if capture_failed.is_set() and not kill_sent:
+                    kill_failed_group(process.pid)
+                    kill_sent = True
                 observed = os.waitid(
                     os.P_PID,
                     process.pid,
@@ -1132,23 +1279,20 @@ def _run_tool(
                     )
                     quiesced = True
                 if capture_stdout:
-                    assert process.stdout is not None
-                    stdout = process.stdout.read()
+                    kill_sent = wait_for_capture_reader(process.pid, kill_sent)
+                    if capture_failed.is_set() and not quiesced:
+                        if not kill_sent:
+                            kill_failed_group(process.pid)
+                            kill_sent = True
+                        time.sleep(0.05)
+                        quiesced = True
                 coordinator.record_pending_signal()
                 if coordinator.interrupted and not quiesced:
                     coordinator.quiesce_process_group(
                         process.pid,
                         already_escalated=kill_sent,
                     )
-                reaped = os.waitid(os.P_PID, process.pid, os.WEXITED)
-                if reaped is None or reaped.si_pid != process.pid:
-                    raise PackagingError("build tool leader reap identity changed")
-                if reaped.si_code == os.CLD_EXITED:
-                    process.returncode = reaped.si_status
-                elif reaped.si_code in {os.CLD_KILLED, os.CLD_DUMPED}:
-                    process.returncode = -reaped.si_status
-                else:
-                    raise PackagingError("build tool leader had an invalid exit state")
+                reap_observed_leader()
                 if process.stdout is not None:
                     process.stdout.close()
                 coordinator.detach(process)
@@ -1157,6 +1301,10 @@ def _run_tool(
             if coordinator.interrupted:
                 assert coordinator.first_signum is not None
                 raise SignalInterruption(coordinator.first_signum)
+            if capture_errors:
+                raise capture_errors[0]
+            if capture_stdout:
+                stdout = "".join(captured_chunks)
         if process.returncode != 0:
             raise PackagingError(f"{arguments[0]} failed")
     except OSError as error:
@@ -1485,6 +1633,60 @@ def _rename_no_replace(
         )
 
 
+def _rename_swap(
+    source_fd: int,
+    source_name: str,
+    destination_fd: int,
+    destination_name: str,
+) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameatx_np = libc.renameatx_np
+    renameatx_np.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    renameatx_np.restype = ctypes.c_int
+    result = renameatx_np(
+        source_fd,
+        os.fsencode(source_name),
+        destination_fd,
+        os.fsencode(destination_name),
+        RENAME_SWAP | RENAME_NOFOLLOW_ANY | RENAME_RESOLVE_BENEATH,
+    )
+    if result != 0:
+        error_number = ctypes.get_errno()
+        raise PublicationOwnershipError(
+            "published app rollback ownership was lost during atomic exchange"
+        ) from OSError(error_number, os.strerror(error_number))
+
+
+def _remove_owned_directory_binding(
+    parent_fd: int,
+    name: str,
+    descriptor: int,
+    identity: NodeIdentity,
+    expected_device: int,
+) -> None:
+    opened_stat = os.fstat(descriptor)
+    named_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if not identity.matches(opened_stat) or not identity.matches(named_stat):
+        raise PublicationOwnershipError(
+            "published app rollback private ownership was lost"
+        )
+    _require_device(opened_stat, expected_device)
+    _require_device(named_stat, expected_device)
+    _remove_directory_contents(descriptor, expected_device)
+    named_stat = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if not identity.matches(named_stat):
+        raise PublicationOwnershipError(
+            "published app rollback private binding changed"
+        )
+    os.rmdir(name, dir_fd=parent_fd)
+
+
 def _publish_scanned_app(
     *,
     repo_fd: int,
@@ -1560,11 +1762,10 @@ def _publish_scanned_app(
                     stage,
                     scanned_app,
                 )
+            except PublicationOwnershipError:
+                raise
             except BaseException as rollback_error:
-                if coordinator.interrupted:
-                    assert coordinator.first_signum is not None
-                    raise SignalInterruption(coordinator.first_signum) from rollback_error
-                raise PackagingError(
+                raise PublicationOwnershipError(
                     "published app rollback lost exact ownership"
                 ) from rollback_error
         raise publication_error
@@ -1577,34 +1778,127 @@ def _rollback_published_app_to_stage(
     scanned_app: ScannedApp,
 ) -> None:
     held_stat = os.fstat(scanned_app.descriptor)
-    try:
-        named_stat = os.stat(FINAL_APP, dir_fd=build_fd, follow_symlinks=False)
-    except OSError as error:
-        raise PackagingError("published app rollback ownership was lost") from error
-    if (
-        not scanned_app.identity.matches(held_stat)
-        or not scanned_app.identity.matches(named_stat)
-        or not stat.S_ISDIR(named_stat.st_mode)
-    ):
-        raise PackagingError("published app rollback ownership was lost")
+    if not scanned_app.identity.matches(held_stat):
+        raise PublicationOwnershipError(
+            "published app rollback held ownership was lost"
+        )
     _require_device(held_stat, build_identity.device)
-    _require_device(named_stat, build_identity.device)
     stage_stat = os.stat(stage.name, dir_fd=build_fd, follow_symlinks=False)
     if (
         not stage.identity.matches(stage_stat)
         or not stage.identity.matches(os.fstat(stage.descriptor))
     ):
-        raise PackagingError("published app rollback staging ownership was lost")
+        raise PublicationOwnershipError(
+            "published app rollback staging ownership was lost"
+        )
     _require_device(stage_stat, build_identity.device)
-    _rename_no_replace(build_fd, FINAL_APP, stage.descriptor, FINAL_APP)
-    restored_stat = os.stat(
-        FINAL_APP,
-        dir_fd=stage.descriptor,
-        follow_symlinks=False,
+    placeholder = _adopt_new_private_directory(
+        stage.descriptor,
+        prefix=".rollback-placeholder.",
+        expected_device=build_identity.device,
     )
-    if not scanned_app.identity.matches(restored_stat):
-        raise PackagingError("published app rollback binding changed")
-    _cleanup_owned_stage(build_fd, stage, build_identity.device)
+    stage.preserve = True
+    try:
+        _rename_swap(
+            build_fd,
+            FINAL_APP,
+            stage.descriptor,
+            placeholder.name,
+        )
+        captured_stat = os.stat(
+            placeholder.name,
+            dir_fd=stage.descriptor,
+            follow_symlinks=False,
+        )
+        public_stat = os.stat(
+            FINAL_APP,
+            dir_fd=build_fd,
+            follow_symlinks=False,
+        )
+        captured_owned = (
+            stat.S_ISDIR(captured_stat.st_mode)
+            and scanned_app.identity.matches(captured_stat)
+        )
+        public_is_placeholder = placeholder.identity.matches(public_stat)
+
+        if captured_owned:
+            _remove_owned_directory_binding(
+                stage.descriptor,
+                placeholder.name,
+                scanned_app.descriptor,
+                scanned_app.identity,
+                build_identity.device,
+            )
+            if not public_is_placeholder:
+                _cleanup_owned_stage(build_fd, stage, build_identity.device)
+                raise PublicationOwnershipError(
+                    "published app rollback ownership was lost after atomic exchange"
+                )
+            _rename_no_replace(
+                build_fd,
+                FINAL_APP,
+                stage.descriptor,
+                placeholder.name,
+            )
+            returned_stat = os.stat(
+                placeholder.name,
+                dir_fd=stage.descriptor,
+                follow_symlinks=False,
+            )
+            if placeholder.identity.matches(returned_stat):
+                _remove_owned_empty_directory(
+                    stage.descriptor,
+                    placeholder,
+                    build_identity.device,
+                )
+                _cleanup_owned_stage(build_fd, stage, build_identity.device)
+                return
+            try:
+                _rename_no_replace(
+                    stage.descriptor,
+                    placeholder.name,
+                    build_fd,
+                    FINAL_APP,
+                )
+            except BaseException:
+                raise PublicationOwnershipError(
+                    "published app rollback preserved an unowned private entry"
+                )
+            _cleanup_owned_stage(build_fd, stage, build_identity.device)
+            raise PublicationOwnershipError(
+                "published app rollback lost exact ownership; restored an unowned final replacement"
+            )
+
+        if not public_is_placeholder:
+            raise PublicationOwnershipError(
+                "published app rollback preserved an unowned private entry"
+            )
+        _rename_swap(
+            stage.descriptor,
+            placeholder.name,
+            build_fd,
+            FINAL_APP,
+        )
+        restored_private_stat = os.stat(
+            placeholder.name,
+            dir_fd=stage.descriptor,
+            follow_symlinks=False,
+        )
+        if not placeholder.identity.matches(restored_private_stat):
+            raise PublicationOwnershipError(
+                "published app rollback preserved an unowned private entry"
+            )
+        _remove_owned_empty_directory(
+            stage.descriptor,
+            placeholder,
+            build_identity.device,
+        )
+        _cleanup_owned_stage(build_fd, stage, build_identity.device)
+        raise PublicationOwnershipError(
+            "published app rollback lost exact ownership; restored an unowned final replacement"
+        )
+    finally:
+        os.close(placeholder.descriptor)
 
 
 def _assemble_staged_app(
@@ -1827,6 +2121,8 @@ def assemble(repo_path: Path) -> Path:
             except BaseException as error:
                 operation_error = error
 
+            if isinstance(operation_error, PublicationOwnershipError):
+                raise operation_error
             if coordinator.interrupted:
                 assert coordinator.first_signum is not None
                 interruption = SignalInterruption(coordinator.first_signum)

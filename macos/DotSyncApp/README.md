@@ -46,19 +46,26 @@ small create/open interval cannot be identified perfectly from filesystem
 metadata alone; the random name and fail-closed pristine proof narrow that
 unavoidable local boundary.
 
-Publication rollback is identity-bound too: before committed success, any
-validation failure moves the exact held final app back into the private stage
-with a no-replace rename and deletes it only there. If a same-user peer actively
-rebinds `build/DotSync.app` after publication, the builder reports that exact
-ownership was lost and preserves the replacement. It cannot safely find or
-delete the moved owned inode once another actor has removed its known binding.
+Publication rollback is identity-bound too. It atomically swaps the public name
+with a no-follow, beneath-resolved private placeholder, then inspects the entry
+captured in the private stage. An owned app is deleted only through its held
+private descriptor. An unowned captured replacement is swapped back to the
+public `build/DotSync.app` name and reported as exact ownership loss, even when
+a termination signal is also pending; it is never recursively deleted. If the
+same-user peer keeps rebinding names during recovery, the builder fails closed
+and can preserve the private stage rather than delete an entry it cannot prove
+it owns. It cannot safely find or delete an owned inode after another actor has
+already moved that inode away from every builder-known binding.
 
 Every child build tool runs in its own process group. The first SIGINT, SIGTERM,
 or SIGHUP is retained as the final `128 + signal` status, forwarded to the full
 group, and escalated when descendants do not exit. Later signals cannot raise
 through cleanup. A signal during staging cleanup or immediately after the
 no-replace publication removes the exact held app and leaves neither staging nor
-final output behind.
+final output behind. The two tool outputs consumed by the supervisor are drained
+concurrently, decoded as strict UTF-8, and limited to 64 KiB. Overflow, read,
+decode, or pipe-close failure terminates and quiesces the exact process group
+while its leader PID remains reserved, then reaps that exact leader.
 
 The public Cask remains blocked until a real release archive passes Developer ID
 signing, notarization, Gatekeeper, and checksum verification. The eventual Cask
