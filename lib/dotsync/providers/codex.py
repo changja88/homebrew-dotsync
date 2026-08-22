@@ -40,7 +40,8 @@ _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 _READ_FLAGS = os.O_RDONLY | os.O_NOFOLLOW
 _MISSING = object()
 _USER_AGENT_VERSION = re.compile(
-    r"^codex_cli_rs/(?P<version>\d+(?:\.\d+){2}(?:[-+][A-Za-z0-9.-]+)?)"
+    r"^(?:codex_cli_rs|dotsync)/"
+    r"(?P<version>\d+(?:\.\d+){2}(?:[-+][A-Za-z0-9.-]+)?)"
 )
 _CREDENTIAL_STORE_KEY = "cli_auth_credentials_store"
 
