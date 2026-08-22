@@ -253,16 +253,10 @@ class UsageService:
             validate_private_tree(profile_root, allowed_root=self._paths.root)
             validate_private_tree(cache_root, allowed_root=self._paths.root)
 
-            try:
+            if not force_local and account.state != "logged_out":
                 provider = self._provider_for(account)
                 with self._provider_operation("logout", effective_cancel_event):
                     provider.logout(account, cancel_event=effective_cancel_event)
-            except ProviderError as error:
-                if (
-                    _is_cancellation(error, effective_cancel_event)
-                    or not force_local
-                ):
-                    raise
 
             # Point of no return: cancellation is honored through this check.
             # Once the deletion transaction begins, it must either commit or
