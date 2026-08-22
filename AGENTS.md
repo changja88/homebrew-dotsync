@@ -119,31 +119,22 @@ When adding an app:
 
 See `docs/adding-an-app.md` for the detailed checklist.
 
-## Testing Discipline
+## Development and Verification Workflow
 
-This codebase was built test-first. For behavior changes, follow this order:
+Do not use TDD for application development unless the user explicitly asks for
+it. Do not add automated tests by default.
 
-1. Add or update a failing test.
-2. Run the targeted test and confirm it fails for the expected reason.
-3. Implement the smallest change that makes it pass.
-4. Run the relevant targeted tests.
-5. Run the full test suite when the change has shared behavior or release
-   impact.
+Work in short user-visible slices:
 
-Common commands:
+1. Implement only the requested change.
+2. Run the minimum build, syntax, or packaging checks needed to produce a usable
+   artifact.
+3. Publish and reinstall the application so the user can inspect the real
+   installed build.
+4. Use the user's feedback to choose the next small change.
 
-```bash
-make test
-.venv/bin/python3 -m pytest
-.venv/bin/python3 -m pytest tests/test_config.py -v
-.venv/bin/python3 -m pytest tests/apps/test_claude.py::test_status_clean -v
-PYTHONPATH=lib python3 -m dotsync --help
-PYTHONPATH=lib python3 bin/dotsync --help
-```
-
-Tests isolate `$HOME`, scrub `DOTSYNC_DIR`, and block accidental
-`subprocess.run` calls by default in `tests/conftest.py`. If a test needs an
-external command, mock or monkeypatch it explicitly.
+Do not treat a large passing test count as proof that the installed GUI works.
+Actual installed-app behavior and user acceptance are the completion criteria.
 
 ## Documentation Expectations
 
