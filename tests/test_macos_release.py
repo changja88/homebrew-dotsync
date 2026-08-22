@@ -75,7 +75,8 @@ def test_renderer_writes_exact_formula_dependent_cask_from_release_inputs(tmp_pa
         '  version "0.3.0"\n'
         f'  sha256 "{VALID_SHA256}"\n'
         "\n"
-        f'  url "{VALID_URL}"\n'
+        '  url "https://github.com/changja88/homebrew-dotsync/releases/download/'
+        'v#{version}/DotSync-#{version}-macOS.zip"\n'
         '  name "DotSync"\n'
         '  desc "Menu bar companion for DotSync config sync and Codex subscription usage"\n'
         '  homepage "https://github.com/changja88/homebrew-dotsync"\n'

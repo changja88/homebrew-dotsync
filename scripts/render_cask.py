@@ -30,6 +30,10 @@ SENTINELS = (
     "__DOTSYNC_SHA256__",
     "__DOTSYNC_URL__",
 )
+CASK_RELEASE_URL = (
+    "https://github.com/changja88/homebrew-dotsync/releases/download/"
+    "v#{version}/DotSync-#{version}-macOS.zip"
+)
 MANAGED_SIGNALS = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
 
 
@@ -129,10 +133,12 @@ def _read_template(repository_root: Path) -> str:
 
 
 def _render_template(template: str, version: str, sha256: str, url: str) -> bytes:
+    if url != _validated_release_url(version):
+        raise ValueError("URL must be the exact matching GitHub release asset")
     rendered = (
         template.replace(SENTINELS[0], version)
         .replace(SENTINELS[1], sha256)
-        .replace(SENTINELS[2], url)
+        .replace(SENTINELS[2], CASK_RELEASE_URL)
     )
     if "__DOTSYNC_" in rendered:
         raise ValueError("rendered Cask contains an unresolved sentinel")
