@@ -759,9 +759,9 @@ def test_provider_crash_is_safe_job_failure_and_backend_remains(
     native_backend.wait_provider_started()
     native_backend.crash_provider()
     native_backend.wait_provider_exit()
+    native_backend.wait_job_published(job_id)
     native_backend.assert_provider_gone()
 
-    native_backend.wait_job_published(job_id)
     status, body = native_backend.request("GET", f"/api/jobs/{job_id}")
     assert status == 200
     job = json.loads(body)["job"]
