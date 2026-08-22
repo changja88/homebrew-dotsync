@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import plistlib
 import stat
 import sys
 from pathlib import Path
@@ -110,6 +111,71 @@ def identity_path_entry(directory: Path, name: str) -> str:
         os.close(directory_fd)
 
 
+def read_app_plist_versions() -> str:
+    directory_fd = _open_directory(".")
+    plist_fd = -1
+    try:
+        for component in ("build", "DotSync.app", "Contents"):
+            metadata = os.stat(
+                component,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise ValueError(f"{component} must be a real directory")
+            child_fd = _open_directory(component, dir_fd=directory_fd)
+            if _identity(os.fstat(child_fd)) != _identity(metadata):
+                os.close(child_fd)
+                raise ValueError(f"{component} identity changed while opening")
+            os.close(directory_fd)
+            directory_fd = child_fd
+
+        plist_metadata = os.stat(
+            "Info.plist",
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        if not stat.S_ISREG(plist_metadata.st_mode):
+            raise ValueError("Info.plist must be an exact regular file")
+        plist_fd = os.open(
+            "Info.plist",
+            os.O_RDONLY | os.O_NOFOLLOW,
+            dir_fd=directory_fd,
+        )
+        opened_metadata = os.fstat(plist_fd)
+        if _identity(opened_metadata) != _identity(plist_metadata):
+            raise ValueError("Info.plist identity changed while opening")
+        payload = bytearray()
+        while True:
+            chunk = os.read(plist_fd, 64 * 1024)
+            if not chunk:
+                break
+            payload.extend(chunk)
+            if len(payload) > 1024 * 1024:
+                raise ValueError("Info.plist was unexpectedly large")
+        final_metadata = os.stat(
+            "Info.plist",
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        if _identity(final_metadata) != _identity(opened_metadata):
+            raise ValueError("Info.plist binding changed while reading")
+        data = plistlib.loads(payload)
+        if not isinstance(data, dict):
+            raise ValueError("Info.plist root must be a dictionary")
+        short_version = data.get("CFBundleShortVersionString")
+        build_version = data.get("CFBundleVersion")
+        if not isinstance(short_version, str) or not isinstance(build_version, str):
+            raise ValueError("Info.plist version fields must be strings")
+        return f"{short_version}\n{build_version}"
+    except plistlib.InvalidFileException as error:
+        raise ValueError("Info.plist could not be parsed") from error
+    finally:
+        if plist_fd >= 0:
+            os.close(plist_fd)
+        os.close(directory_fd)
+
+
 def read_cask_binding(name: str, expected_value: str) -> str:
     expected_name, expected_identity, expected_kind = _parse_owned(expected_value)
     if _simple_name(name) != expected_name or expected_kind != "f":
@@ -141,7 +207,10 @@ def read_cask_binding(name: str, expected_value: str) -> str:
         if not isinstance(data, dict) or set(data) != set(keys):
             raise ValueError("Cask binding JSON had an unexpected schema")
         values = [data[key] for key in keys]
-        if any(not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in values):
+        if any(
+            not isinstance(value, int) or isinstance(value, bool) or value <= 0
+            for value in values
+        ):
             raise ValueError("Cask binding JSON identities were invalid")
         return " ".join(str(value) for value in values)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -317,6 +386,7 @@ def _parser() -> argparse.ArgumentParser:
     path_entry = subparsers.add_parser("identity-path-entry")
     path_entry.add_argument("directory", type=Path)
     path_entry.add_argument("name")
+    subparsers.add_parser("read-app-plist-versions")
     binding = subparsers.add_parser("read-cask-binding")
     binding.add_argument("name")
     binding.add_argument("expected")
@@ -342,6 +412,8 @@ def main(arguments: list[str] | None = None) -> int:
             print(identity_entry(namespace.name, parent=True))
         elif namespace.operation == "identity-path-entry":
             print(identity_path_entry(namespace.directory, namespace.name))
+        elif namespace.operation == "read-app-plist-versions":
+            print(read_app_plist_versions())
         elif namespace.operation == "read-cask-binding":
             print(read_cask_binding(namespace.name, namespace.expected))
         elif namespace.operation == "cleanup-current":

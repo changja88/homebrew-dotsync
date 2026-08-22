@@ -7,6 +7,36 @@ die() {
   exit 1
 }
 
+capture_git_line() {
+  local target="$1"
+  shift
+  local captured="" command_status=0
+  captured="$(
+    set +e
+    "$@"
+    command_status="$?"
+    printf '\034'
+    exit "$command_status"
+  )" || return 1
+  [[ "$captured" == *$'\n\034' ]] || return 1
+  captured="${captured%$'\n\034'}"
+  [[ -n "$captured" && "$captured" != *$'\n'* && "$captured" != *$'\r'* ]] \
+    || return 1
+  printf -v "$target" '%s' "$captured"
+}
+
+require_empty_git_output() {
+  local captured="" command_status=0
+  captured="$(
+    set +e
+    "$@"
+    command_status="$?"
+    printf '\034'
+    exit "$command_status"
+  )" || return 1
+  [[ "$captured" == $'\034' ]]
+}
+
 if [[ "$#" -ne 1 ]]; then
   die "usage: scripts/release_macos_app.sh VERSION"
 fi
@@ -37,20 +67,38 @@ done
   || die "release filesystem support is required"
 
 cd -- "$REPO_ROOT"
-TOPLEVEL="$(git rev-parse --show-toplevel)" || die "repository root could not be resolved"
-[[ "$(cd -- "$TOPLEVEL" && pwd -P)" == "$REPO_ROOT" ]] \
+capture_git_line TOPLEVEL git rev-parse --show-toplevel \
+  || die "repository root could not be resolved exactly"
+[[ "$TOPLEVEL" == /* && "$TOPLEVEL" == "$REPO_ROOT" ]] \
   || die "script must run from its repository root"
-GIT_DIR="$(git rev-parse --path-format=absolute --git-dir)"
-GIT_COMMON_DIR="$(git rev-parse --path-format=absolute --git-common-dir)"
+capture_git_line GIT_DIR git rev-parse --path-format=absolute --git-dir \
+  || die "Git directory could not be resolved exactly"
+capture_git_line GIT_COMMON_DIR git rev-parse --path-format=absolute --git-common-dir \
+  || die "Git common directory could not be resolved exactly"
+[[ "$GIT_DIR" == /* && "$GIT_COMMON_DIR" == /* ]] \
+  || die "Git directories must be absolute"
+GIT_DIR_PHYSICAL="$(cd -- "$GIT_DIR" && pwd -P)" \
+  || die "Git directory was not a real directory"
+GIT_COMMON_DIR_PHYSICAL="$(cd -- "$GIT_COMMON_DIR" && pwd -P)" \
+  || die "Git common directory was not a real directory"
+[[ "$GIT_DIR" == "$GIT_DIR_PHYSICAL" && "$GIT_COMMON_DIR" == "$GIT_COMMON_DIR_PHYSICAL" ]] \
+  || die "Git directories were not canonical physical paths"
 [[ "$GIT_DIR" == "$GIT_COMMON_DIR" ]] || die "release requires the primary checkout"
-[[ "$(git branch --show-current)" == "main" ]] || die "release requires main"
-CLEAN_STATUS="$(git status --porcelain=v1 --untracked-files=all)" \
-  || die "checkout cleanliness could not be determined"
-[[ -z "$CLEAN_STATUS" ]] || die "release requires a clean checkout"
-HEAD_COMMIT="$(git rev-parse HEAD)"
-TAG_TYPE="$(git cat-file -t "$TAG_REF")" || die "$TAG does not resolve to a tag object"
+capture_git_line BRANCH git branch --show-current \
+  || die "release branch could not be resolved exactly"
+[[ "$BRANCH" == "main" ]] || die "release requires main"
+require_empty_git_output git status --porcelain=v1 --untracked-files=all \
+  || die "release requires a clean checkout with exact Git status output"
+capture_git_line HEAD_COMMIT git rev-parse HEAD \
+  || die "HEAD could not be resolved exactly"
+[[ "$HEAD_COMMIT" =~ ^[0-9a-f]{40}$ ]] || die "HEAD was not a canonical commit id"
+capture_git_line TAG_TYPE git cat-file -t "$TAG_REF" \
+  || die "$TAG does not resolve exactly to a tag object"
 [[ "$TAG_TYPE" == "tag" ]] || die "$TAG must be an annotated tag"
-TAG_COMMIT="$(git rev-parse --verify "$TAG_REF^{commit}")" || die "$TAG does not exist"
+capture_git_line TAG_COMMIT git rev-parse --verify "$TAG_REF^{commit}" \
+  || die "$TAG does not resolve exactly to a commit"
+[[ "$TAG_COMMIT" =~ ^[0-9a-f]{40}$ ]] \
+  || die "$TAG commit was not a canonical commit id"
 [[ "$HEAD_COMMIT" == "$TAG_COMMIT" ]] || die "$TAG must resolve to exact HEAD"
 [[ ! -e "$CASK_OUTPUT" && ! -L "$CASK_OUTPUT" ]] \
   || die "refusing to replace an existing Cask"
@@ -58,6 +106,7 @@ TAG_COMMIT="$(git rev-parse --verify "$TAG_REF^{commit}")" || die "$TAG does not
 WORK_ACTIVE=0
 IN_SOURCE=0
 FINALIZER_ACTIVE=0
+FINALIZER_SIGNAL_STATUS=0
 TEMPORARY_ROOT=""
 TEMPORARY_ROOT_IDENTITY=""
 WORK_NAME=""
@@ -66,18 +115,36 @@ CASK_TRANSACTION_ACTIVE=0
 CASK_AUDIT_SUCCEEDED=0
 CASKS_DIRECTORY_CREATED=0
 CASKS_BINDING_OWNERSHIP=""
+CASKS_DEV=""
+CASKS_INO=""
 CASK_BINDING_OWNERSHIP=""
 CASK_BINDING_FIELDS=""
 OWNED_CHILDREN=()
+
+record_finalizer_signal() {
+  if [[ "$FINALIZER_SIGNAL_STATUS" -eq 0 ]]; then
+    FINALIZER_SIGNAL_STATUS="$1"
+  fi
+}
+
+revalidate_casks_binding() {
+  local current_binding
+  current_binding="$("$PYTHON" "$RELEASE_SUPPORT" \
+    identity-path-entry "$REPO_ROOT" Casks)" || return 1
+  [[ "$current_binding" == "$CASKS_BINDING_OWNERSHIP" ]]
+}
 
 finalize() {
   local status="$1"
   local cleanup_failed=0
   if [[ "$FINALIZER_ACTIVE" -eq 1 ]]; then
-    exit 1
+    return
   fi
   FINALIZER_ACTIVE=1
-  trap - EXIT HUP INT TERM
+  trap - EXIT
+  trap 'record_finalizer_signal 129' HUP
+  trap 'record_finalizer_signal 130' INT
+  trap 'record_finalizer_signal 143' TERM
   set +e
   set +u
 
@@ -101,20 +168,32 @@ finalize() {
       || cleanup_failed=1
   fi
 
+  if [[ "$FINALIZER_SIGNAL_STATUS" -ne 0 ]]; then
+    status="$FINALIZER_SIGNAL_STATUS"
+  fi
+
+  if [[ "$CASK_TRANSACTION_ACTIVE" -eq 1 ]]; then
+    revalidate_casks_binding || cleanup_failed=1
+  fi
+
   if [[ "$CASK_TRANSACTION_ACTIVE" -eq 1 ]] \
       && { [[ "$status" -ne 0 ]] || [[ "$CASK_AUDIT_SUCCEEDED" -ne 1 ]] \
         || [[ "$cleanup_failed" -ne 0 ]]; }; then
-    local casks_dev="" casks_ino="" cask_dev="" cask_ino=""
+    local cask_dev="" cask_ino=""
     if [[ -n "$cask_binding_fields" ]]; then
-      read -r casks_dev casks_ino cask_dev cask_ino <<< "$cask_binding_fields"
-    else
-      local captured_casks="${CASKS_BINDING_OWNERSHIP#Casks:}"
-      captured_casks="${captured_casks%:d}"
-      IFS=: read -r casks_dev casks_ino <<< "$captured_casks"
+      local rendered_casks_dev="" rendered_casks_ino=""
+      read -r rendered_casks_dev rendered_casks_ino cask_dev cask_ino \
+        <<< "$cask_binding_fields"
+      if [[ "$rendered_casks_dev" != "$CASKS_DEV" \
+          || "$rendered_casks_ino" != "$CASKS_INO" ]]; then
+        cleanup_failed=1
+        cask_dev=""
+        cask_ino=""
+      fi
     fi
     local rollback_arguments=(
       --rollback-created --repository-root "$REPO_ROOT"
-      --casks-dev "$casks_dev" --casks-ino "$casks_ino"
+      --casks-dev "$CASKS_DEV" --casks-ino "$CASKS_INO"
     )
     if [[ -n "$cask_dev" && -n "$cask_ino" ]]; then
       rollback_arguments+=(--cask-dev "$cask_dev" --cask-ino "$cask_ino")
@@ -124,6 +203,11 @@ finalize() {
     fi
     "$PYTHON" "$REPO_ROOT/scripts/render_cask.py" "${rollback_arguments[@]}" \
       || cleanup_failed=1
+  fi
+
+  trap '' HUP INT TERM
+  if [[ "$FINALIZER_SIGNAL_STATUS" -ne 0 ]]; then
+    status="$FINALIZER_SIGNAL_STATUS"
   fi
 
   if [[ "$cleanup_failed" -ne 0 ]]; then
@@ -137,9 +221,9 @@ finalize() {
 }
 
 on_exit() { finalize "$?"; }
-on_hup() { finalize 129; }
-on_int() { finalize 130; }
-on_term() { finalize 143; }
+on_hup() { record_finalizer_signal 129; finalize "$FINALIZER_SIGNAL_STATUS"; }
+on_int() { record_finalizer_signal 130; finalize "$FINALIZER_SIGNAL_STATUS"; }
+on_term() { record_finalizer_signal 143; finalize "$FINALIZER_SIGNAL_STATUS"; }
 
 trap on_exit EXIT
 trap on_hup HUP
@@ -211,32 +295,25 @@ PYTHON="$PYTHON" bash scripts/build_macos_app.sh
 
 APP="build/DotSync.app"
 APP_EXECUTABLE="$APP/Contents/MacOS/DotSync"
-APP_INFO_PLIST="$APP/Contents/Info.plist"
 [[ -d "$APP" && ! -L "$APP" ]] || die "local builder did not create DotSync.app"
 [[ -f "$APP_EXECUTABLE" && ! -L "$APP_EXECUTABLE" && -x "$APP_EXECUTABLE" ]] \
   || die "local builder did not create the expected executable"
-if [[ -e "$APP_INFO_PLIST" || -L "$APP_INFO_PLIST" ]]; then
-  [[ -f "$APP_INFO_PLIST" && ! -L "$APP_INFO_PLIST" ]] \
-    || die "built Info.plist must be a regular file"
-  BUILT_PLIST_VERSIONS="$("$PYTHON" -c 'import pathlib, plistlib; data=plistlib.loads(pathlib.Path("build/DotSync.app/Contents/Info.plist").read_bytes()); print(data.get("CFBundleShortVersionString", "")); print(data.get("CFBundleVersion", ""))')" \
-    || die "built Info.plist version could not be parsed"
-  EXPECTED_PLIST_VERSIONS="$(printf '%s\n%s' "$VERSION" "$VERSION")"
-  [[ "$BUILT_PLIST_VERSIONS" == "$EXPECTED_PLIST_VERSIONS" ]] \
-    || die "built Info.plist versions must exactly match VERSION"
-fi
+BUILT_PLIST_VERSIONS="$("$PYTHON" "$RELEASE_SUPPORT" read-app-plist-versions)" \
+  || die "built Info.plist must be an exact readable nofollow regular file"
+EXPECTED_PLIST_VERSIONS="$(printf '%s\n%s' "$VERSION" "$VERSION")"
+[[ "$BUILT_PLIST_VERSIONS" == "$EXPECTED_PLIST_VERSIONS" ]] \
+  || die "built Info.plist versions must exactly match VERSION"
 lipo "$APP_EXECUTABLE" -verify_arch arm64 x86_64
-ARCHITECTURE_OUTPUT="$(lipo "$APP_EXECUTABLE" -archs)" \
+ARCHITECTURE_CAPTURE="$({
+  lipo "$APP_EXECUTABLE" -archs
+  architecture_status="$?"
+  printf '\034'
+  exit "$architecture_status"
+})" \
   || die "universal architecture listing failed"
-read -r -a ARCHITECTURES <<< "$ARCHITECTURE_OUTPUT"
-[[ "${#ARCHITECTURES[@]}" -eq 2 ]] \
-  || die "app executable must contain exactly arm64 and x86_64"
-if [[ "${ARCHITECTURES[0]}" == "arm64" ]]; then
-  [[ "${ARCHITECTURES[1]}" == "x86_64" ]] \
-    || die "app executable must contain exactly arm64 and x86_64"
-else
-  [[ "${ARCHITECTURES[0]}" == "x86_64" && "${ARCHITECTURES[1]}" == "arm64" ]] \
-    || die "app executable must contain exactly arm64 and x86_64"
-fi
+[[ "$ARCHITECTURE_CAPTURE" == $'arm64 x86_64\n\034' \
+    || "$ARCHITECTURE_CAPTURE" == $'x86_64 arm64\n\034' ]] \
+  || die "app executable must report exactly one arm64/x86_64 architecture line"
 
 if [[ ! "${DEVELOPER_ID_APPLICATION:-}" =~ ^Developer\ ID\ Application:\ [^[:space:]].*[^[:space:]]$ ]] \
     || [[ "$DEVELOPER_ID_APPLICATION" == *$'\n'* ]]; then
@@ -309,6 +386,9 @@ fi
 CASKS_BINDING_OWNERSHIP="$("$PYTHON" "$RELEASE_SUPPORT" \
   identity-path-entry "$REPO_ROOT" Casks)" \
   || die "Casks directory could not be identity-bound"
+CASKS_IDENTITY_FIELDS="${CASKS_BINDING_OWNERSHIP#Casks:}"
+CASKS_IDENTITY_FIELDS="${CASKS_IDENTITY_FIELDS%:d}"
+IFS=: read -r CASKS_DEV CASKS_INO <<< "$CASKS_IDENTITY_FIELDS"
 CASK_TRANSACTION_ACTIVE=1
 printf '' > cask-binding.json
 CASK_BINDING_OWNERSHIP="$("$PYTHON" "$RELEASE_SUPPORT" identity-here cask-binding.json)" \
@@ -320,12 +400,20 @@ OWNED_CHILDREN+=(--owned "$CASK_BINDING_OWNERSHIP")
   --url "$RELEASE_URL" \
   --output "$CASK_OUTPUT" \
   --repository-root "$REPO_ROOT" \
+  --expected-casks-dev "$CASKS_DEV" \
+  --expected-casks-ino "$CASKS_INO" \
   > cask-binding.json
 [[ -f "$CASK_OUTPUT" && ! -L "$CASK_OUTPUT" ]] \
   || die "Cask renderer did not create the exact output"
 CASK_BINDING_FIELDS="$("$PYTHON" "$RELEASE_SUPPORT" read-cask-binding \
   cask-binding.json "$CASK_BINDING_OWNERSHIP")" \
   || die "Cask renderer did not return an exact rollback binding"
+read -r RENDERED_CASKS_DEV RENDERED_CASKS_INO _RENDERED_CASK_DEV _RENDERED_CASK_INO \
+  <<< "$CASK_BINDING_FIELDS"
+[[ "$RENDERED_CASKS_DEV" == "$CASKS_DEV" \
+    && "$RENDERED_CASKS_INO" == "$CASKS_INO" ]] \
+  || die "Cask renderer changed the bound Casks directory"
+revalidate_casks_binding || die "Casks directory changed before audit"
 brew audit --cask --strict "$CASK_OUTPUT"
 
 CASK_AUDIT_SUCCEEDED=1

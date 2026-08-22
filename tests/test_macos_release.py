@@ -426,6 +426,106 @@ def test_renderer_restores_replaced_cask_on_every_postpublication_failure(
     assert list(output.parent.iterdir()) == [output]
 
 
+@pytest.mark.parametrize("recreation_failure", ["write", "chmod", "fsync"])
+def test_renderer_retries_exact_prior_restoration_after_partial_recreation_failure(
+    tmp_path, monkeypatch, recreation_failure
+):
+    repository = _repository(tmp_path)
+    output = repository / "Casks" / "dotsync-app.rb"
+    prior_bytes = b"prior-cask-requiring-reconstruction\n"
+    output.write_bytes(prior_bytes)
+    output.chmod(0o640)
+
+    real_fsync = os.fsync
+    fsync_calls = 0
+
+    def fail_commit_and_selected_recreation_fsync(descriptor):
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if fsync_calls == 3 or (
+            recreation_failure == "fsync" and fsync_calls == 4
+        ):
+            raise OSError("injected retained-entry fsync failure")
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fail_commit_and_selected_recreation_fsync)
+
+    if recreation_failure == "write":
+        real_write_all = render_cask_module._write_all
+        write_calls = 0
+
+        def fail_first_recreation_write(descriptor, payload):
+            nonlocal write_calls
+            write_calls += 1
+            if write_calls == 2:
+                raise OSError("injected retained-entry write failure")
+            return real_write_all(descriptor, payload)
+
+        monkeypatch.setattr(render_cask_module, "_write_all", fail_first_recreation_write)
+    elif recreation_failure == "chmod":
+        real_fchmod = os.fchmod
+        chmod_calls = 0
+
+        def fail_first_recreation_chmod(descriptor, mode):
+            nonlocal chmod_calls
+            chmod_calls += 1
+            if chmod_calls == 2:
+                raise OSError("injected retained-entry chmod failure")
+            return real_fchmod(descriptor, mode)
+
+        monkeypatch.setattr(os, "fchmod", fail_first_recreation_chmod)
+
+    with pytest.raises(OSError, match="injected retained-entry fsync failure"):
+        _render(repository, replace_existing=True)
+
+    assert output.read_bytes() == prior_bytes
+    assert stat.S_IMODE(output.stat().st_mode) == 0o640
+    assert list(output.parent.iterdir()) == [output]
+
+
+def test_renderer_defers_signal_during_prior_recreation_until_restored(
+    tmp_path, monkeypatch
+):
+    repository = _repository(tmp_path)
+    output = repository / "Casks" / "dotsync-app.rb"
+    prior_bytes = b"prior-cask-before-deferred-signal\n"
+    output.write_bytes(prior_bytes)
+    output.chmod(0o640)
+
+    real_fsync = os.fsync
+    fsync_calls = 0
+
+    def fail_commit_fsync(descriptor):
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if fsync_calls == 3:
+            raise OSError("injected post-retained-unlink fsync failure")
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fail_commit_fsync)
+    real_write_all = render_cask_module._write_all
+    write_calls = 0
+
+    def signal_during_recreation(descriptor, payload):
+        nonlocal write_calls
+        write_calls += 1
+        if write_calls == 2:
+            os.kill(os.getpid(), signal.SIGTERM)
+        return real_write_all(descriptor, payload)
+
+    monkeypatch.setattr(render_cask_module, "_write_all", signal_during_recreation)
+    prior_handler = signal.signal(signal.SIGTERM, render_cask_module._raise_signal)
+    try:
+        with pytest.raises(BaseException):
+            _render(repository, replace_existing=True)
+    finally:
+        signal.signal(signal.SIGTERM, prior_handler)
+
+    assert output.read_bytes() == prior_bytes
+    assert stat.S_IMODE(output.stat().st_mode) == 0o640
+    assert list(output.parent.iterdir()) == [output]
+
+
 @pytest.mark.no_subprocess_block
 def test_renderer_rolls_back_if_binding_output_cannot_be_published(tmp_path):
     repository = _repository(tmp_path)
@@ -496,12 +596,31 @@ if log_path.exists():
 with log_path.open("a", encoding="utf-8") as log:
     log.write(json.dumps(call) + "\\n")
 
+def rebind_casks_directory(seam):
+    repository = Path(os.environ["DOTSYNC_RELEASE_REPOSITORY"])
+    casks = repository / "Casks"
+    original = repository / ("Casks.bound-original-" + seam)
+    casks.rename(original)
+    casks.mkdir()
+    (casks / "replacement-marker").write_text(
+        "replacement directory must survive\\n",
+        encoding="utf-8",
+    )
+
 failure = json.loads(os.environ.get("DOTSYNC_RELEASE_FAIL_PREFIX", "[]"))
 failure_occurrence = int(os.environ.get("DOTSYNC_RELEASE_FAIL_OCCURRENCE", "1"))
 matching_occurrence = 1 + sum(
     prior[:len(failure)] == failure for prior in prior_calls
 )
 if failure and call[:len(failure)] == failure and matching_occurrence == failure_occurrence:
+    raise SystemExit(91)
+
+stdout_failure_prefix = json.loads(
+    os.environ.get("DOTSYNC_RELEASE_STDOUT_THEN_FAIL_PREFIX", "[]")
+)
+if stdout_failure_prefix and call[:len(stdout_failure_prefix)] == stdout_failure_prefix:
+    sys.stdout.write(os.environ["DOTSYNC_RELEASE_STDOUT_THEN_FAIL_OUTPUT"])
+    sys.stdout.flush()
     raise SystemExit(91)
 
 rebind_prefix = json.loads(os.environ.get("DOTSYNC_RELEASE_REBIND_PREFIX", "[]"))
@@ -540,20 +659,34 @@ if (
         Path(record).write_text(str(target), encoding="utf-8")
 
 if name == "git":
+    git_output_overrides = {{
+        ("rev-parse", "--show-toplevel"): "DOTSYNC_RELEASE_TOPLEVEL_OUTPUT",
+        ("rev-parse", "--path-format=absolute", "--git-dir"):
+            "DOTSYNC_RELEASE_GIT_DIR_OUTPUT",
+        ("rev-parse", "--path-format=absolute", "--git-common-dir"):
+            "DOTSYNC_RELEASE_COMMON_DIR_OUTPUT",
+        ("branch", "--show-current"): "DOTSYNC_RELEASE_BRANCH_OUTPUT",
+        ("status", "--porcelain=v1", "--untracked-files=all"):
+            "DOTSYNC_RELEASE_STATUS_OUTPUT",
+    }}
+    override_name = git_output_overrides.get(tuple(arguments))
+    if override_name is not None and override_name in os.environ:
+        sys.stdout.write(os.environ[override_name])
+        raise SystemExit(0)
     if arguments == ["rev-parse", "--path-format=absolute", "--git-common-dir"] and os.environ.get("DOTSYNC_RELEASE_LINKED"):
         print(os.environ["DOTSYNC_RELEASE_FAKE_COMMON_DIR"])
         raise SystemExit(0)
-    if arguments == ["branch", "--show-current"] and os.environ.get("DOTSYNC_RELEASE_BRANCH"):
+    if arguments == ["branch", "--show-current"] and "DOTSYNC_RELEASE_BRANCH" in os.environ:
         print(os.environ["DOTSYNC_RELEASE_BRANCH"])
         raise SystemExit(0)
     if arguments == ["rev-parse", "HEAD"] and "DOTSYNC_RELEASE_HEAD_OUTPUT" in os.environ:
-        print(os.environ["DOTSYNC_RELEASE_HEAD_OUTPUT"])
+        sys.stdout.write(os.environ["DOTSYNC_RELEASE_HEAD_OUTPUT"])
         raise SystemExit(0)
     if arguments == ["cat-file", "-t", "refs/tags/v0.3.0"] and "DOTSYNC_RELEASE_TAG_TYPE_OUTPUT" in os.environ:
-        print(os.environ["DOTSYNC_RELEASE_TAG_TYPE_OUTPUT"])
+        sys.stdout.write(os.environ["DOTSYNC_RELEASE_TAG_TYPE_OUTPUT"])
         raise SystemExit(0)
     if arguments == ["rev-parse", "--verify", "refs/tags/v0.3.0^{{commit}}"] and "DOTSYNC_RELEASE_TAG_COMMIT_OUTPUT" in os.environ:
-        print(os.environ["DOTSYNC_RELEASE_TAG_COMMIT_OUTPUT"])
+        sys.stdout.write(os.environ["DOTSYNC_RELEASE_TAG_COMMIT_OUTPUT"])
         raise SystemExit(0)
     allowed_git = arguments in (
         ["rev-parse", "--show-toplevel"],
@@ -568,6 +701,11 @@ if name == "git":
     )
     if not allowed_git:
         raise SystemExit(92)
+    if arguments[:1] == ["archive"] and os.environ.get("DOTSYNC_RELEASE_WORK_RECORD"):
+        Path(os.environ["DOTSYNC_RELEASE_WORK_RECORD"]).write_text(
+            str(Path.cwd()),
+            encoding="utf-8",
+        )
     os.execv({real_git!r}, [{real_git!r}, *arguments])
 
 if name == "tar":
@@ -582,6 +720,11 @@ if name == "bash":
 
 if name == "python-release":
     if len(arguments) >= 1 and arguments[0].endswith("scripts/render_cask.py"):
+        if (
+            os.environ.get("DOTSYNC_RELEASE_REBIND_CASKS_SEAM") == "bind-to-render"
+            and "--rollback-created" not in arguments
+        ):
+            rebind_casks_directory("bind-to-render")
         signal_prefix = json.loads(os.environ.get("DOTSYNC_RELEASE_SIGNAL_PREFIX", "[]"))
         if (
             signal_prefix
@@ -597,9 +740,32 @@ if name == "python-release":
         if len(arguments) < 2 or arguments[1] not in (
             "validate-temp-root", "identity-current", "identity-here",
             "identity-parent", "identity-path-entry", "read-cask-binding",
-            "cleanup-current",
+            "read-app-plist-versions", "cleanup-current",
         ):
             raise SystemExit(92)
+        if (
+            arguments[1] == "read-cask-binding"
+            and os.environ.get("DOTSYNC_RELEASE_REBIND_CASKS_SEAM") == "render-to-audit"
+        ):
+            import subprocess
+            completed = subprocess.run(
+                [{real_python!r}, *arguments],
+                capture_output=True,
+                text=True,
+            )
+            if completed.returncode == 0:
+                rebind_casks_directory("render-to-audit")
+            sys.stdout.write(completed.stdout)
+            sys.stderr.write(completed.stderr)
+            raise SystemExit(completed.returncode)
+        if (
+            arguments[1] == "cleanup-current"
+            and os.environ.get("DOTSYNC_RELEASE_SECOND_SIGNAL_DURING_CLEANUP")
+        ):
+            os.kill(
+                os.getppid(),
+                int(os.environ["DOTSYNC_RELEASE_SECOND_SIGNAL_DURING_CLEANUP"]),
+            )
         os.execv({real_python!r}, [{real_python!r}, *arguments])
     if arguments[:1] == ["-c"]:
         allowed_code_prefixes = (
@@ -768,6 +934,8 @@ if name == "spctl":
 
 if name == "brew":
     if len(arguments) == 4 and arguments[:3] == ["audit", "--cask", "--strict"]:
+        if os.environ.get("DOTSYNC_RELEASE_REBIND_CASKS_SEAM") == "audit-to-cleanup":
+            rebind_casks_directory("audit-to-cleanup")
         raise SystemExit(0)
     raise SystemExit(92)
 
@@ -816,6 +984,7 @@ mkdir -p build/DotSync.app/Contents/MacOS
 printf '%s\\n' 'fixture-universal-binary' > build/DotSync.app/Contents/MacOS/DotSync
 chmod 755 build/DotSync.app/Contents/MacOS/DotSync
 plist_version="${DOTSYNC_RELEASE_BUILT_PLIST_VERSION:-0.3.0}"
+plist_shape="${DOTSYNC_RELEASE_BUILT_PLIST_SHAPE:-regular}"
 printf '%s\\n' \\
   '<?xml version="1.0" encoding="UTF-8"?>' \\
   '<plist version="1.0"><dict>' \\
@@ -824,7 +993,28 @@ printf '%s\\n' \\
   '<key>CFBundleVersion</key>' \\
   "<string>$plist_version</string>" \\
   '</dict></plist>' \\
-  > build/DotSync.app/Contents/Info.plist
+  > build/DotSync.app/Contents/Info.plist.payload
+case "$plist_shape" in
+  regular)
+    mv build/DotSync.app/Contents/Info.plist.payload build/DotSync.app/Contents/Info.plist
+    ;;
+  absent)
+    rm build/DotSync.app/Contents/Info.plist.payload
+    ;;
+  symlink)
+    ln -s Info.plist.payload build/DotSync.app/Contents/Info.plist
+    ;;
+  directory)
+    mkdir build/DotSync.app/Contents/Info.plist
+    ;;
+  unreadable)
+    mv build/DotSync.app/Contents/Info.plist.payload build/DotSync.app/Contents/Info.plist
+    chmod 000 build/DotSync.app/Contents/Info.plist
+    ;;
+  *)
+    exit 97
+    ;;
+esac
 """,
     )
 
@@ -883,6 +1073,7 @@ printf '%s\\n' \\
         "NOTARYTOOL_PROFILE": TEST_NOTARY_PROFILE,
         "DOTSYNC_RELEASE_CALL_LOG": str(call_log),
         "DOTSYNC_RELEASE_FAKE_COMMON_DIR": str(tmp_path / "other-common.git"),
+        "DOTSYNC_RELEASE_REPOSITORY": str(repository),
         "TMPDIR": str(private_temp),
     }
     return {
@@ -967,6 +1158,20 @@ def _normalized_release_calls(fixture: dict[str, object]) -> list[list[str]]:
                 value = "$DEV:$INO"
             if re.fullmatch(r"dotsync-macos-release\.[A-Za-z0-9]+", value):
                 value = "$WORK_NAME"
+            if (
+                value.isdigit()
+                and normalized_call
+                and normalized_call[-1]
+                in {
+                    "--expected-casks-dev",
+                    "--expected-casks-ino",
+                    "--casks-dev",
+                    "--casks-ino",
+                    "--cask-dev",
+                    "--cask-ino",
+                }
+            ):
+                value = "$NUMBER"
             normalized_call.append(value)
         normalized.append(normalized_call)
     return normalized
@@ -982,11 +1187,6 @@ def _expected_success_calls() -> list[list[str]]:
     tagged_version_code = (
         'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml")'
         '.read_text(encoding="utf-8"))["project"]["version"])'
-    )
-    plist_code = (
-        'import pathlib, plistlib; data=plistlib.loads(pathlib.Path("build/'
-        'DotSync.app/Contents/Info.plist").read_bytes()); print(data.get('
-        '"CFBundleShortVersionString", "")); print(data.get("CFBundleVersion", ""))'
     )
     identity_code = (
         'import re, sys; identity=sys.argv[1]; pattern=re.compile(r"\\s*\\d+\\)'
@@ -1051,7 +1251,7 @@ def _expected_success_calls() -> list[list[str]]:
         ["swift", "test", "--package-path", "macos/DotSyncApp"],
         ["python-release", "-m", "dotsync", "ui", "--check"],
         ["bash", "scripts/build_macos_app.sh"],
-        ["python-release", "-c", plist_code],
+        ["python-release", support, "read-app-plist-versions"],
         [
             "lipo",
             executable,
@@ -1133,11 +1333,16 @@ def _expected_success_calls() -> list[list[str]]:
             cask,
             "--repository-root",
             "$REPOSITORY",
+            "--expected-casks-dev",
+            "$NUMBER",
+            "--expected-casks-ino",
+            "$NUMBER",
         ],
         [
             "python-release", support, "read-cask-binding", "cask-binding.json",
             "cask-binding.json:$DEV:$INO:f",
         ],
+        ["python-release", support, "identity-path-entry", "$REPOSITORY", "Casks"],
         ["brew", "audit", "--cask", "--strict", cask],
         [
             "python-release", support, "cleanup-current",
@@ -1151,6 +1356,7 @@ def _expected_success_calls() -> list[list[str]]:
             "--owned", "DotSync-0.3.0-macOS.zip:$DEV:$INO:f",
             "--owned", "cask-binding.json:$DEV:$INO:f",
         ],
+        ["python-release", support, "identity-path-entry", "$REPOSITORY", "Casks"],
     ]
 
 
@@ -1292,11 +1498,15 @@ def test_signed_macos_release_rejects_tagged_project_version_mismatch_before_bui
     "variable,value",
     [
         ("DOTSYNC_RELEASE_HEAD_OUTPUT", ""),
-        ("DOTSYNC_RELEASE_HEAD_OUTPUT", "not-an-object-id"),
+        ("DOTSYNC_RELEASE_HEAD_OUTPUT", "A" * 40 + "\n"),
         ("DOTSYNC_RELEASE_TAG_TYPE_OUTPUT", ""),
-        ("DOTSYNC_RELEASE_TAG_TYPE_OUTPUT", "commit"),
+        ("DOTSYNC_RELEASE_TAG_TYPE_OUTPUT", "commit\n"),
         ("DOTSYNC_RELEASE_TAG_COMMIT_OUTPUT", ""),
-        ("DOTSYNC_RELEASE_TAG_COMMIT_OUTPUT", "not-an-object-id"),
+        ("DOTSYNC_RELEASE_TAG_COMMIT_OUTPUT", "A" * 40 + "\n"),
+        ("DOTSYNC_RELEASE_GIT_DIR_OUTPUT", ""),
+        ("DOTSYNC_RELEASE_GIT_DIR_OUTPUT", "relative/.git\n"),
+        ("DOTSYNC_RELEASE_COMMON_DIR_OUTPUT", ""),
+        ("DOTSYNC_RELEASE_COMMON_DIR_OUTPUT", "relative/.git\n"),
     ],
 )
 def test_signed_macos_release_rejects_empty_or_malformed_tag_provenance_output(
@@ -1310,6 +1520,68 @@ def test_signed_macos_release_rejects_empty_or_malformed_tag_provenance_output(
 
     assert result.returncode != 0
     assert not any(call[:2] == ["git", "archive"] for call in _release_calls(macos_release_repository))
+
+
+@pytest.mark.no_subprocess_block
+@pytest.mark.parametrize(
+    "command_key",
+    [
+        "toplevel",
+        "git-dir",
+        "common-dir",
+        "branch",
+        "status",
+        "head",
+        "tag-type",
+        "tag-commit",
+    ],
+)
+def test_each_captured_git_preflight_rejects_plausible_stdout_with_nonzero_exit(
+    macos_release_repository, command_key
+):
+    repository = macos_release_repository["repository"]
+    env = macos_release_repository["env"]
+    assert isinstance(repository, Path)
+    assert isinstance(env, dict)
+    real_git = shutil.which("git", path=os.environ["PATH"])
+    assert real_git is not None
+    head = _git(repository, real_git, "rev-parse", "HEAD", env=env)
+    cases = {
+        "toplevel": (["git", "rev-parse", "--show-toplevel"], f"{repository}\n"),
+        "git-dir": (
+            ["git", "rev-parse", "--path-format=absolute", "--git-dir"],
+            f"{repository / '.git'}\n",
+        ),
+        "common-dir": (
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            f"{repository / '.git'}\n",
+        ),
+        "branch": (["git", "branch", "--show-current"], "main\n"),
+        "status": (
+            ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+            "",
+        ),
+        "head": (["git", "rev-parse", "HEAD"], f"{head}\n"),
+        "tag-type": (
+            ["git", "cat-file", "-t", "refs/tags/v0.3.0"],
+            "tag\n",
+        ),
+        "tag-commit": (
+            ["git", "rev-parse", "--verify", "refs/tags/v0.3.0^{commit}"],
+            f"{head}\n",
+        ),
+    }
+    prefix, plausible_output = cases[command_key]
+    env["DOTSYNC_RELEASE_STDOUT_THEN_FAIL_PREFIX"] = json.dumps(prefix)
+    env["DOTSYNC_RELEASE_STDOUT_THEN_FAIL_OUTPUT"] = plausible_output
+
+    result = _run_macos_release(macos_release_repository, VALID_VERSION)
+
+    assert result.returncode != 0
+    assert not any(
+        call[:2] == ["git", "archive"]
+        for call in _release_calls(macos_release_repository)
+    )
 
 
 @pytest.mark.no_subprocess_block
@@ -1470,6 +1742,53 @@ def test_audit_failure_preserves_replacement_of_bound_casks_directory(
 
 
 @pytest.mark.no_subprocess_block
+@pytest.mark.parametrize(
+    "seam",
+    ["bind-to-render", "render-to-audit", "audit-to-cleanup"],
+)
+def test_release_preserves_casks_directory_replacement_at_every_identity_seam(
+    macos_release_repository, seam
+):
+    env = macos_release_repository["env"]
+    repository = macos_release_repository["repository"]
+    assert isinstance(env, dict)
+    assert isinstance(repository, Path)
+    env["DOTSYNC_RELEASE_REBIND_CASKS_SEAM"] = seam
+
+    result = _run_macos_release(macos_release_repository, VALID_VERSION)
+
+    replacement = repository / "Casks"
+    bound_original = repository / f"Casks.bound-original-{seam}"
+    assert result.returncode != 0
+    assert (replacement / "replacement-marker").read_text(encoding="utf-8") == (
+        "replacement directory must survive\n"
+    )
+    assert bound_original.is_dir()
+
+
+@pytest.mark.no_subprocess_block
+def test_second_signal_during_finalizer_is_deferred_until_exact_cleanup(
+    macos_release_repository, tmp_path
+):
+    env = macos_release_repository["env"]
+    repository = macos_release_repository["repository"]
+    assert isinstance(env, dict)
+    assert isinstance(repository, Path)
+    work_record = tmp_path / "second-signal-work-record"
+    env["DOTSYNC_RELEASE_WORK_RECORD"] = str(work_record)
+    env["DOTSYNC_RELEASE_SIGNAL_PREFIX"] = json.dumps(["brew", "audit"])
+    env["DOTSYNC_RELEASE_SIGNAL_NUMBER"] = str(signal.SIGHUP)
+    env["DOTSYNC_RELEASE_SECOND_SIGNAL_DURING_CLEANUP"] = str(signal.SIGTERM)
+
+    result = _run_macos_release(macos_release_repository, VALID_VERSION)
+
+    work = Path(work_record.read_text(encoding="utf-8"))
+    assert result.returncode == 128 + signal.SIGHUP
+    assert not work.exists()
+    assert not (repository / "Casks" / "dotsync-app.rb").exists()
+
+
+@pytest.mark.no_subprocess_block
 @pytest.mark.parametrize("boundary", ["renderer", "audit"])
 @pytest.mark.parametrize("signal_number", [signal.SIGHUP, signal.SIGINT, signal.SIGTERM])
 def test_signals_after_cask_generation_converge_on_failing_rollback(
@@ -1580,7 +1899,16 @@ def test_signed_macos_release_rejects_wrong_or_malformed_identity_class(
 @pytest.mark.no_subprocess_block
 @pytest.mark.parametrize(
     "architectures",
-    ["x86_64 arm64 i386", "x86_64 arm64 arm64", "arm64", ""],
+    [
+        "x86_64 arm64 i386",
+        "x86_64 arm64 arm64",
+        "arm64",
+        "",
+        "x86_64 arm64\nunexpected",
+        " x86_64 arm64",
+        "x86_64 arm64 ",
+        "x86_64 arm64\n",
+    ],
 )
 def test_signed_macos_release_requires_exact_universal_architecture_set(
     macos_release_repository, architectures
@@ -1614,6 +1942,24 @@ def test_signed_macos_release_rejects_built_plist_version_mismatch(
     assert not any(call[0] == "codesign" for call in calls)
 
 
+@pytest.mark.no_subprocess_block
+@pytest.mark.parametrize("plist_shape", ["absent", "symlink", "directory", "unreadable"])
+def test_signed_macos_release_requires_exact_regular_readable_info_plist(
+    macos_release_repository, plist_shape
+):
+    env = macos_release_repository["env"]
+    assert isinstance(env, dict)
+    env["DOTSYNC_RELEASE_BUILT_PLIST_SHAPE"] = plist_shape
+
+    result = _run_macos_release(macos_release_repository, VALID_VERSION)
+
+    assert result.returncode != 0
+    calls = _release_calls(macos_release_repository)
+    assert any(call[:2] == ["bash", "scripts/build_macos_app.sh"] for call in calls)
+    assert not any(call[0] == "lipo" for call in calls)
+    assert not any(call[0] == "codesign" for call in calls)
+
+
 GATE_FAILURE_CASES = [
     (["git", "rev-parse", "--show-toplevel"], 1),
     (["git", "rev-parse", "--path-format=absolute", "--git-dir"], 1),
@@ -1637,19 +1983,19 @@ GATE_FAILURE_CASES = [
     (["swift", "test"], 1),
     (["python-release", "-m", "dotsync"], 1),
     (["bash", "scripts/build_macos_app.sh"], 1),
-    (["python-release", "-c"], 2),
+    (["python-release", "SUPPORT", "read-app-plist-versions"], 1),
     (["lipo"], 1),
     (["lipo"], 2),
     (["security"], 1),
-    (["python-release", "-c"], 3),
+    (["python-release", "-c"], 2),
     (["xcrun", "notarytool", "history"], 1),
-    (["python-release", "-c"], 4),
+    (["python-release", "-c"], 3),
     (["codesign", "--force"], 1),
     (["codesign", "--verify"], 1),
     (["ditto", "-c"], 1),
     (["python-release", "SUPPORT", "identity-parent"], 1),
     (["xcrun", "notarytool", "submit"], 1),
-    (["python-release", "-c"], 5),
+    (["python-release", "-c"], 4),
     (["xcrun", "stapler", "staple"], 1),
     (["xcrun", "stapler", "validate"], 1),
     (["spctl"], 1),
@@ -1657,30 +2003,151 @@ GATE_FAILURE_CASES = [
     (["python-release", "SUPPORT", "identity-parent"], 2),
     (["shasum"], 1),
     (["gh", "release", "view"], 1),
-    (["python-release", "-c"], 6),
+    (["python-release", "-c"], 5),
     (["gh", "release", "upload"], 1),
     (["python-release", "SUPPORT", "identity-current"], 4),
     (["python-release", "SUPPORT", "identity-path-entry"], 1),
     (["python-release", "SUPPORT", "identity-here"], 3),
     (["python-release", "RENDERER"], 1),
     (["python-release", "SUPPORT", "read-cask-binding"], 1),
+    (["python-release", "SUPPORT", "identity-path-entry"], 2),
     (["brew", "audit"], 1),
+    (["python-release", "SUPPORT", "cleanup-current"], 1),
+    (["python-release", "SUPPORT", "identity-path-entry"], 3),
 ]
 
 
-def _is_finalizer_call(call: list[str], repository: Path) -> bool:
-    support = str(repository / "scripts" / "macos_release_support.py")
-    renderer = str(repository / "scripts" / "render_cask.py")
-    return (
-        call[:3] in (
-            ["python-release", support, "read-cask-binding"],
-            ["python-release", support, "cleanup-current"],
-        )
-        or (
-            call[:2] == ["python-release", renderer]
-            and "--rollback-created" in call
-        )
+def _matching_occurrence_index(
+    calls: list[list[str]], prefix: list[str], occurrence: int
+) -> int:
+    matching = [
+        index for index, call in enumerate(calls) if call[: len(prefix)] == prefix
+    ]
+    assert len(matching) >= occurrence
+    return matching[occurrence - 1]
+
+
+def _expected_cleanup_call_before(
+    success_calls: list[list[str]], failure_index: int
+) -> list[str]:
+    cleanup = next(
+        call for call in success_calls if call[:3] == [
+            "python-release",
+            "$REPOSITORY/scripts/macos_release_support.py",
+            "cleanup-current",
+        ]
     )
+    expected = cleanup[:11]
+    owned_entries = [
+        (
+            [
+                "python-release",
+                "$REPOSITORY/scripts/macos_release_support.py",
+                "identity-here",
+                "source.tar",
+            ],
+            "source.tar:$DEV:$INO:f",
+        ),
+        (
+            [
+                "python-release",
+                "$REPOSITORY/scripts/macos_release_support.py",
+                "identity-here",
+                "source",
+            ],
+            "source:$DEV:$INO:d",
+        ),
+        (
+            [
+                "python-release",
+                "$REPOSITORY/scripts/macos_release_support.py",
+                "identity-parent",
+                "DotSync-notarization-0.3.0.zip",
+            ],
+            "DotSync-notarization-0.3.0.zip:$DEV:$INO:f",
+        ),
+        (
+            [
+                "python-release",
+                "$REPOSITORY/scripts/macos_release_support.py",
+                "identity-parent",
+                "DotSync-0.3.0-macOS.zip",
+            ],
+            "DotSync-0.3.0-macOS.zip:$DEV:$INO:f",
+        ),
+        (
+            [
+                "python-release",
+                "$REPOSITORY/scripts/macos_release_support.py",
+                "identity-here",
+                "cask-binding.json",
+            ],
+            "cask-binding.json:$DEV:$INO:f",
+        ),
+    ]
+    for creator, owned_entry in owned_entries:
+        if success_calls.index(creator) < failure_index:
+            expected.extend(["--owned", owned_entry])
+    return expected
+
+
+def _expected_finalizer_suffix(
+    success_calls: list[list[str]], failure_index: int
+) -> list[list[str]]:
+    support_prefix = [
+        "python-release",
+        "$REPOSITORY/scripts/macos_release_support.py",
+    ]
+    work_binding = support_prefix + ["identity-current", "--require-mode", "0700"]
+    casks_binding = support_prefix + ["identity-path-entry", "$REPOSITORY", "Casks"]
+    cask_binding_file = support_prefix + ["identity-here", "cask-binding.json"]
+    renderer = ["python-release", "$REPOSITORY/scripts/render_cask.py"]
+    read_binding = support_prefix + [
+        "read-cask-binding",
+        "cask-binding.json",
+        "cask-binding.json:$DEV:$INO:f",
+    ]
+    cleanup = next(
+        call for call in success_calls if call[:3] == support_prefix + ["cleanup-current"]
+    )
+    final_revalidation_index = len(success_calls) - 1
+
+    work_active = failure_index > success_calls.index(work_binding)
+    cask_active = failure_index > success_calls.index(casks_binding)
+    cask_binding_owned = failure_index > success_calls.index(cask_binding_file)
+    read_binding_index = success_calls.index(read_binding)
+    cleanup_index = success_calls.index(cleanup)
+    suffix: list[list[str]] = []
+
+    if cask_active and failure_index <= read_binding_index:
+        expected_binding = read_binding if cask_binding_owned else read_binding[:-1] + [""]
+        suffix.append(expected_binding)
+    if work_active and failure_index < cleanup_index:
+        suffix.append(_expected_cleanup_call_before(success_calls, failure_index))
+    if cask_active and failure_index != final_revalidation_index:
+        suffix.append(casks_binding)
+    if cask_active:
+        rollback = renderer + [
+            "--rollback-created",
+            "--repository-root",
+            "$REPOSITORY",
+            "--casks-dev",
+            "$NUMBER",
+            "--casks-ino",
+            "$NUMBER",
+        ]
+        if failure_index >= read_binding_index:
+            rollback.extend(
+                [
+                    "--cask-dev",
+                    "$NUMBER",
+                    "--cask-ino",
+                    "$NUMBER",
+                ]
+            )
+        rollback.append("--remove-casks-directory")
+        suffix.append(rollback)
+    return suffix
 
 
 @pytest.mark.no_subprocess_block
@@ -1703,27 +2170,103 @@ def test_each_failed_release_gate_stops_without_cask_or_trailing_external_calls(
     env["DOTSYNC_RELEASE_FAIL_PREFIX"] = json.dumps(actual_prefix)
     env["DOTSYNC_RELEASE_FAIL_OCCURRENCE"] = str(failure_occurrence)
 
+    normalized_failure_prefix = list(actual_prefix)
+    normalized_failure_prefix[1:] = [
+        value.replace(str(repository), "$REPOSITORY")
+        for value in normalized_failure_prefix[1:]
+    ]
+    success_calls = _expected_success_calls()
+    failure_index = _matching_occurrence_index(
+        success_calls,
+        normalized_failure_prefix,
+        failure_occurrence,
+    )
+    expected_calls = success_calls[: failure_index + 1]
+    expected_calls.extend(_expected_finalizer_suffix(success_calls, failure_index))
+
     result = _run_macos_release(macos_release_repository, VALID_VERSION)
 
     assert result.returncode != 0
-    calls = _release_calls(macos_release_repository)
-    matching_indexes = [
-        index
-        for index, call in enumerate(calls)
-        if call[: len(actual_prefix)] == actual_prefix
-        and not (
-            actual_prefix[:2]
-            == ["python-release", str(repository / "scripts" / "render_cask.py")]
-            and "--rollback-created" in call
-        )
-    ]
-    assert len(matching_indexes) >= failure_occurrence
-    failed_index = matching_indexes[failure_occurrence - 1]
-    assert all(
-        _is_finalizer_call(call, repository)
-        for call in calls[failed_index + 1 :]
-    )
+    assert _normalized_release_calls(macos_release_repository) == expected_calls
+
+    temporary_root = Path(env["TMPDIR"])
+    preserved_work_failures = {
+        success_calls.index(
+            [
+                "python-release",
+                "$REPOSITORY/scripts/macos_release_support.py",
+                "identity-current",
+                "--require-mode",
+                "0700",
+            ]
+        ),
+        success_calls.index(
+            [
+                "python-release",
+                "$REPOSITORY/scripts/macos_release_support.py",
+                "identity-here",
+                "source.tar",
+            ]
+        ),
+        success_calls.index(
+            [
+                "python-release",
+                "$REPOSITORY/scripts/macos_release_support.py",
+                "identity-here",
+                "source",
+            ]
+        ),
+        success_calls.index(
+            [
+                "python-release",
+                "$REPOSITORY/scripts/macos_release_support.py",
+                "identity-parent",
+                "DotSync-notarization-0.3.0.zip",
+            ]
+        ),
+        success_calls.index(
+            [
+                "python-release",
+                "$REPOSITORY/scripts/macos_release_support.py",
+                "identity-parent",
+                "DotSync-0.3.0-macOS.zip",
+            ]
+        ),
+        success_calls.index(
+            [
+                "python-release",
+                "$REPOSITORY/scripts/macos_release_support.py",
+                "identity-here",
+                "cask-binding.json",
+            ]
+        ),
+        next(
+            index
+            for index, call in enumerate(success_calls)
+            if call[:3]
+            == [
+                "python-release",
+                "$REPOSITORY/scripts/macos_release_support.py",
+                "cleanup-current",
+            ]
+        ),
+    }
+    work_directories = list(temporary_root.glob("dotsync-macos-release.*"))
+    assert len(work_directories) == (1 if failure_index in preserved_work_failures else 0)
+
     assert not (repository / "Casks" / "dotsync-app.rb").exists()
+    initial_casks_binding_index = success_calls.index(
+        [
+            "python-release",
+            "$REPOSITORY/scripts/macos_release_support.py",
+            "identity-path-entry",
+            "$REPOSITORY",
+            "Casks",
+        ]
+    )
+    assert (repository / "Casks").exists() == (
+        failure_index == initial_casks_binding_index
+    )
 
 
 @pytest.mark.no_subprocess_block
