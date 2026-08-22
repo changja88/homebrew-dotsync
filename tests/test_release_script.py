@@ -166,6 +166,7 @@ def test_release_completes_and_never_publishes_placeholder_when_gh_fails(sandbox
     assert 'assert_match "dotsync #{version}"' in formula
     assert 'system bin/"dotsync", "ui", "--check"' in formula
     assert _origin_has_tag(sandbox, "v0.1.20")
+    assert not (sandbox["work"] / "Casks" / "dotsync-app.rb").exists()
 
 
 @pytest.mark.no_subprocess_block
