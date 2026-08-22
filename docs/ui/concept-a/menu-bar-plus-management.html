@@ -1,0 +1,1158 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DotSync 통합 앱 UI 시안</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17151d;
+      --muted: #74717e;
+      --line: rgba(35, 29, 48, .11);
+      --pink: #f780e2;
+      --mid: #c069f0;
+      --purple: #7571f9;
+      --green: #2db47d;
+      --amber: #e3a32b;
+      --red: #de5b65;
+      --blue: #5f82f2;
+      --claude: #c87850;
+      --codex: #171717;
+      --shadow: 0 26px 70px rgba(37, 27, 58, .14);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", system-ui, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 5% 4%, rgba(247, 128, 226, .14), transparent 27rem),
+        radial-gradient(circle at 96% 12%, rgba(117, 113, 249, .14), transparent 30rem),
+        #f5f4f8;
+    }
+
+    button { font: inherit; }
+
+    .page-header {
+      width: min(1480px, calc(100% - 48px));
+      margin: 0 auto;
+      padding: 56px 0 28px;
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 30px;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 11px;
+      border-radius: 999px;
+      background: rgba(255,255,255,.68);
+      border: 1px solid rgba(255,255,255,.88);
+      box-shadow: 0 7px 24px rgba(40, 30, 66, .07);
+      color: #686373;
+      font-size: 12px;
+      font-weight: 720;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--pink), var(--purple));
+      box-shadow: 0 0 0 4px rgba(192, 105, 240, .12);
+    }
+
+    h1 {
+      margin: 17px 0 9px;
+      font-size: clamp(34px, 4vw, 58px);
+      line-height: .99;
+      letter-spacing: -.052em;
+    }
+
+    .page-header p {
+      max-width: 750px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.55;
+    }
+
+    .sticky-nav {
+      position: sticky;
+      top: 16px;
+      z-index: 50;
+      display: flex;
+      gap: 7px;
+      padding: 7px;
+      border: 1px solid rgba(255,255,255,.88);
+      border-radius: 16px;
+      background: rgba(250,249,252,.74);
+      box-shadow: 0 12px 34px rgba(46, 34, 73, .1);
+      backdrop-filter: blur(18px) saturate(1.4);
+    }
+
+    .sticky-nav a {
+      color: #625d6c;
+      text-decoration: none;
+      padding: 9px 12px;
+      border-radius: 11px;
+      font-size: 13px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .sticky-nav a:hover { background: white; color: #302b39; }
+
+    .concepts {
+      width: min(1480px, calc(100% - 48px));
+      margin: 0 auto;
+      padding-bottom: 110px;
+      display: grid;
+      gap: 72px;
+    }
+
+    .concept {
+      position: relative;
+      scroll-margin-top: 100px;
+      border-radius: 30px;
+      background: rgba(255,255,255,.62);
+      border: 1px solid rgba(255,255,255,.93);
+      box-shadow: 0 20px 70px rgba(47, 35, 72, .1);
+      overflow: hidden;
+      transition: box-shadow .2s ease, transform .2s ease, outline .2s ease;
+    }
+
+    .concept.selected {
+      outline: 3px solid rgba(117,113,249,.72);
+      box-shadow: 0 28px 85px rgba(85, 75, 180, .2);
+      transform: translateY(-2px);
+    }
+
+    .concept.selected .select-button {
+      background: linear-gradient(135deg, var(--mid), var(--purple));
+      color: white;
+      border-color: transparent;
+    }
+
+    .concept-heading {
+      padding: 26px 28px 22px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255,255,255,.55);
+    }
+
+    .concept-title {
+      display: flex;
+      align-items: center;
+      gap: 15px;
+    }
+
+    .concept-letter {
+      width: 44px;
+      height: 44px;
+      display: grid;
+      place-items: center;
+      border-radius: 14px;
+      color: white;
+      background: linear-gradient(135deg, var(--pink), var(--purple));
+      font-weight: 850;
+      box-shadow: 0 10px 24px rgba(150, 87, 229, .28);
+    }
+
+    .concept-heading h2 {
+      margin: 0 0 4px;
+      font-size: 23px;
+      letter-spacing: -.025em;
+    }
+
+    .concept-heading p { margin: 0; color: var(--muted); font-size: 14px; }
+
+    .select-button {
+      appearance: none;
+      border: 1px solid rgba(35,29,48,.15);
+      background: rgba(255,255,255,.8);
+      color: #3b3645;
+      border-radius: 12px;
+      padding: 10px 15px;
+      font-weight: 750;
+      cursor: pointer;
+      box-shadow: 0 5px 16px rgba(37,27,58,.07);
+    }
+
+    .mock-stage {
+      padding: 34px;
+      min-height: 760px;
+    }
+
+    .concept-footer {
+      display: grid;
+      grid-template-columns: 1.15fr .85fr;
+      gap: 22px;
+      padding: 0 28px 28px;
+    }
+
+    .rationale, .best-for {
+      padding: 17px 19px;
+      border: 1px solid var(--line);
+      border-radius: 17px;
+      background: rgba(255,255,255,.67);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .rationale strong, .best-for strong { display: block; margin-bottom: 3px; }
+    .rationale span, .best-for span { color: var(--muted); }
+
+    .mac-dots { display: flex; gap: 7px; }
+    .mac-dots i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+    .mac-dots i:nth-child(1) { background: #ff5f57; }
+    .mac-dots i:nth-child(2) { background: #ffbd2e; }
+    .mac-dots i:nth-child(3) { background: #28c840; }
+
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      border-radius: 11px;
+      display: grid;
+      place-items: center;
+      color: white;
+      background: linear-gradient(145deg, var(--pink), var(--mid) 46%, var(--purple));
+      font-weight: 900;
+      letter-spacing: -.08em;
+      box-shadow: 0 7px 18px rgba(140,83,218,.28);
+    }
+
+    .service-icon {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border-radius: 9px;
+      color: white;
+      font-size: 12px;
+      font-weight: 850;
+      flex: 0 0 auto;
+    }
+    .service-icon.claude { background: var(--claude); }
+    .service-icon.codex { background: var(--codex); }
+
+    .mini-progress {
+      height: 6px;
+      border-radius: 999px;
+      background: rgba(80,73,94,.1);
+      overflow: hidden;
+    }
+    .mini-progress > i { display: block; height: 100%; border-radius: inherit; }
+
+    /* Concept A ---------------------------------------------------------- */
+    .a-stage {
+      position: relative;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+      background:
+        linear-gradient(rgba(255,255,255,.08), rgba(255,255,255,.08)),
+        radial-gradient(circle at 23% 18%, rgba(246,178,226,.78), transparent 31%),
+        radial-gradient(circle at 77% 17%, rgba(140,139,238,.8), transparent 34%),
+        linear-gradient(135deg, #34243f, #50446c 54%, #343044);
+    }
+
+    .a-stage::before {
+      content: "";
+      position: absolute;
+      inset: 18px;
+      border-radius: 23px;
+      background: linear-gradient(145deg, rgba(255,255,255,.18), rgba(255,255,255,.02));
+      border: 1px solid rgba(255,255,255,.15);
+    }
+
+    .desktop-menubar {
+      position: absolute;
+      top: 18px;
+      left: 18px;
+      right: 18px;
+      height: 36px;
+      border-radius: 22px 22px 0 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0 15px;
+      color: rgba(255,255,255,.92);
+      background: rgba(20,18,29,.27);
+      backdrop-filter: blur(24px);
+      font-size: 11px;
+      font-weight: 680;
+    }
+    .desktop-menubar .right { display: flex; gap: 13px; align-items: center; }
+    .menubar-pill { padding: 4px 7px; border-radius: 7px; background: rgba(255,255,255,.15); }
+
+    .popover {
+      position: relative;
+      z-index: 2;
+      width: 414px;
+      margin-top: 20px;
+      border-radius: 22px;
+      background: rgba(252,250,253,.93);
+      border: 1px solid rgba(255,255,255,.8);
+      box-shadow: 0 30px 80px rgba(12,8,23,.42);
+      backdrop-filter: blur(40px) saturate(1.4);
+      overflow: hidden;
+    }
+
+    .pop-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 15px 16px 12px;
+    }
+    .pop-brand { display: flex; align-items: center; gap: 10px; }
+    .pop-brand strong { font-size: 15px; letter-spacing: -.02em; }
+    .pop-brand small { display: block; margin-top: 1px; color: var(--muted); font-size: 10px; }
+    .icon-button { width: 31px; height: 31px; border-radius: 10px; border: 1px solid var(--line); background: rgba(255,255,255,.7); color: #5f5b66; }
+
+    .pop-summary {
+      margin: 0 12px 11px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      overflow: hidden;
+      background: rgba(255,255,255,.68);
+    }
+    .pop-summary > div { padding: 12px; }
+    .pop-summary > div + div { border-left: 1px solid var(--line); }
+    .pop-summary b { display: block; font-size: 18px; letter-spacing: -.04em; }
+    .pop-summary span { color: var(--muted); font-size: 10px; }
+
+    .section-label {
+      padding: 8px 16px 6px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: #7a7581;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    .section-label em { font-style: normal; text-transform: none; letter-spacing: 0; font-weight: 650; }
+
+    .provider-block {
+      margin: 0 12px 9px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255,255,255,.74);
+      overflow: hidden;
+    }
+    .provider-title { display: flex; align-items: center; gap: 9px; padding: 10px 11px 7px; }
+    .provider-title strong { font-size: 12px; }
+    .provider-title span { margin-left: auto; color: var(--muted); font-size: 9px; }
+    .account-line { padding: 8px 11px 10px 48px; display: grid; gap: 6px; }
+    .account-line + .account-line { border-top: 1px solid rgba(35,29,48,.075); }
+    .account-meta { display: flex; justify-content: space-between; font-size: 10px; }
+    .account-meta span { color: var(--muted); }
+    .meter-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+    .meter small { display: flex; justify-content: space-between; color: #7d7885; font-size: 8px; margin-bottom: 3px; }
+
+    .sync-list { margin: 0 12px 10px; border: 1px solid var(--line); border-radius: 14px; background: rgba(255,255,255,.72); overflow: hidden; }
+    .sync-line { display: flex; align-items: center; gap: 9px; padding: 9px 11px; font-size: 11px; }
+    .sync-line + .sync-line { border-top: 1px solid rgba(35,29,48,.07); }
+    .sync-line .state { margin-left: auto; color: var(--muted); }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+    .status-dot.amber { background: var(--amber); }
+    .status-dot.purple { background: var(--purple); }
+
+    .pop-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 0 12px 12px; }
+    .pop-actions button { border: 0; border-radius: 12px; padding: 11px; font-size: 11px; font-weight: 800; }
+    .backup-button { color: white; background: linear-gradient(135deg, var(--mid), var(--purple)); }
+    .apply-button { color: #4e4955; background: rgba(105,98,117,.09); }
+    .pop-footer { padding: 10px 14px; display: flex; justify-content: space-between; color: #8b8690; border-top: 1px solid var(--line); font-size: 9px; }
+
+    /* Concept B ---------------------------------------------------------- */
+    .b-stage { background: #dddde5; display: grid; place-items: center; }
+    .dashboard-window {
+      width: min(1180px, 100%);
+      min-height: 690px;
+      border-radius: 22px;
+      overflow: hidden;
+      background: #14141a;
+      color: #f7f5fb;
+      box-shadow: 0 30px 70px rgba(29,25,39,.27);
+      border: 1px solid rgba(0,0,0,.24);
+    }
+    .dash-titlebar { height: 48px; display: flex; align-items: center; padding: 0 17px; border-bottom: 1px solid rgba(255,255,255,.08); background: #1b1b22; }
+    .dash-titlebar strong { margin: 0 auto; transform: translateX(-27px); font-size: 12px; color: #c9c6d0; }
+    .dash-shell { min-height: 642px; display: grid; grid-template-columns: 206px 1fr; }
+    .dash-sidebar { padding: 16px 12px; background: #1a1a21; border-right: 1px solid rgba(255,255,255,.07); }
+    .dash-logo { display: flex; align-items: center; gap: 10px; padding: 4px 7px 19px; }
+    .dash-logo strong { font-size: 14px; }
+    .dash-nav-label { padding: 13px 9px 6px; color: #676370; font-size: 9px; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
+    .dash-nav-item { display: flex; align-items: center; gap: 9px; padding: 9px 10px; border-radius: 10px; color: #8f8b97; font-size: 11px; font-weight: 650; }
+    .dash-nav-item.active { color: #fff; background: linear-gradient(135deg, rgba(192,105,240,.28), rgba(117,113,249,.3)); }
+    .dash-nav-item b { width: 19px; color: #aaa4b4; }
+    .sidebar-bottom { margin-top: 118px; padding: 11px; border-radius: 12px; background: rgba(255,255,255,.045); color: #817d8a; font-size: 9px; line-height: 1.5; }
+    .sidebar-bottom strong { color: #c3becb; display: block; }
+
+    .dash-main { padding: 24px 25px; background: radial-gradient(circle at 90% 0, rgba(117,113,249,.09), transparent 34%), #14141a; }
+    .dash-main-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+    .dash-main-head h3 { margin: 0 0 3px; font-size: 24px; letter-spacing: -.045em; }
+    .dash-main-head p { margin: 0; color: #77727f; font-size: 10px; }
+    .dash-top-actions { display: flex; gap: 7px; }
+    .dark-button { border: 1px solid rgba(255,255,255,.09); color: #d5d0db; background: rgba(255,255,255,.055); border-radius: 10px; padding: 8px 11px; font-size: 10px; }
+    .dark-button.primary { border: 0; color: white; background: linear-gradient(135deg, #c266e9, #746ff3); }
+
+    .usage-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+    .usage-panel { padding: 15px; border-radius: 15px; border: 1px solid rgba(255,255,255,.075); background: linear-gradient(145deg, rgba(255,255,255,.065), rgba(255,255,255,.027)); }
+    .usage-panel-head { display: flex; align-items: center; gap: 9px; margin-bottom: 13px; }
+    .usage-panel-head strong { font-size: 12px; }
+    .usage-panel-head span { margin-left: auto; color: #77727f; font-size: 9px; }
+    .dark-account { display: grid; grid-template-columns: 125px 1fr 1fr; gap: 12px; align-items: center; padding: 8px 0; }
+    .dark-account + .dark-account { border-top: 1px solid rgba(255,255,255,.055); }
+    .dark-account-name b { display: block; font-size: 10px; }
+    .dark-account-name small { color: #6f6b76; font-size: 8px; }
+    .dark-meter label { display: flex; justify-content: space-between; color: #817c88; font-size: 8px; margin-bottom: 4px; }
+    .dark-meter .mini-progress { background: rgba(255,255,255,.07); }
+
+    .dash-lower { display: grid; grid-template-columns: 1.4fr .7fr; gap: 12px; }
+    .dark-card { border-radius: 15px; border: 1px solid rgba(255,255,255,.07); background: rgba(255,255,255,.036); overflow: hidden; }
+    .dark-card-head { display: flex; justify-content: space-between; align-items: center; padding: 13px 14px; border-bottom: 1px solid rgba(255,255,255,.06); }
+    .dark-card-head strong { font-size: 11px; }
+    .dark-card-head span { color: #6f6b77; font-size: 8px; }
+    .app-table-row { display: grid; grid-template-columns: 1.2fr .8fr .9fr 1fr; align-items: center; gap: 8px; padding: 10px 14px; font-size: 9px; }
+    .app-table-row + .app-table-row { border-top: 1px solid rgba(255,255,255,.045); }
+    .app-cell { display: flex; align-items: center; gap: 8px; font-weight: 700; }
+    .app-glyph { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 7px; background: rgba(255,255,255,.07); color: #bbb5c5; font-size: 8px; }
+    .dark-muted { color: #77727e; }
+    .state-chip { justify-self: start; padding: 4px 7px; border-radius: 999px; color: #78d1ac; background: rgba(45,180,125,.12); }
+    .state-chip.warn { color: #ecc15c; background: rgba(227,163,43,.11); }
+    .state-chip.purple { color: #a9a5ff; background: rgba(117,113,249,.13); }
+    .activity-row { padding: 11px 13px; display: grid; grid-template-columns: 8px 1fr; gap: 9px; font-size: 9px; line-height: 1.4; }
+    .activity-row + .activity-row { border-top: 1px solid rgba(255,255,255,.045); }
+    .activity-row i { width: 7px; height: 7px; margin-top: 3px; border-radius: 50%; background: var(--green); }
+    .activity-row i.purple { background: var(--purple); }
+    .activity-row i.amber { background: var(--amber); }
+    .activity-row span { color: #6f6a76; display: block; }
+
+    /* Concept C ---------------------------------------------------------- */
+    .c-stage { background: linear-gradient(145deg, #edf0f6, #d8dce5); display: grid; place-items: center; }
+    .native-window {
+      width: min(1190px, 100%);
+      min-height: 700px;
+      border-radius: 20px;
+      overflow: hidden;
+      background: #f8f8fa;
+      border: 1px solid rgba(31,38,53,.18);
+      box-shadow: 0 34px 80px rgba(28,35,49,.22);
+    }
+    .native-titlebar { height: 51px; display: grid; grid-template-columns: 180px 1fr 180px; align-items: center; padding: 0 16px; border-bottom: 1px solid rgba(30,38,53,.1); background: rgba(244,244,247,.94); }
+    .native-titlebar strong { text-align: center; font-size: 12px; }
+    .native-titlebar .tools { justify-self: end; display: flex; gap: 7px; }
+    .tool-square { width: 28px; height: 28px; border-radius: 8px; border: 1px solid rgba(30,38,53,.1); background: #fff; color: #625e69; }
+    .native-body { min-height: 649px; display: grid; grid-template-columns: 176px 1fr; }
+    .native-sidebar { padding: 14px 10px; background: rgba(234,235,240,.88); border-right: 1px solid rgba(30,38,53,.09); }
+    .native-side-label { padding: 12px 9px 5px; color: #8b8790; font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
+    .native-side-row { display: flex; align-items: center; gap: 8px; padding: 8px 9px; border-radius: 8px; color: #696572; font-size: 11px; font-weight: 650; }
+    .native-side-row.active { color: #282430; background: rgba(255,255,255,.82); box-shadow: 0 1px 2px rgba(20,20,28,.08); }
+    .native-side-row b { width: 17px; color: #8b85d9; }
+    .native-content { padding: 24px; }
+    .native-head { display: flex; justify-content: space-between; align-items: end; margin-bottom: 18px; }
+    .native-head h3 { margin: 0 0 3px; font-size: 22px; letter-spacing: -.035em; }
+    .native-head p { margin: 0; color: #8a8691; font-size: 10px; }
+    .folder-control { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 9px; border: 1px solid rgba(30,38,53,.1); background: #fff; color: #716d78; font-size: 9px; }
+
+    .split-workspace { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .native-panel { border-radius: 16px; border: 1px solid rgba(30,38,53,.1); background: #fff; overflow: hidden; box-shadow: 0 8px 22px rgba(31,37,51,.05); }
+    .native-panel-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 15px; border-bottom: 1px solid rgba(30,38,53,.075); }
+    .native-panel-head strong { font-size: 12px; }
+    .native-panel-head span { color: #8c8893; font-size: 9px; }
+    .sync-health { margin: 14px; padding: 14px; border-radius: 13px; background: linear-gradient(135deg, rgba(45,180,125,.09), rgba(117,113,249,.075)); display: flex; align-items: center; gap: 12px; }
+    .health-ring { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 50%; background: conic-gradient(var(--green) 0 82%, rgba(86,80,98,.12) 82%); position: relative; }
+    .health-ring::after { content: ""; position: absolute; inset: 5px; border-radius: 50%; background: #f9fbfb; }
+    .health-ring b { position: relative; z-index: 1; font-size: 9px; }
+    .sync-health strong { display: block; font-size: 12px; }
+    .sync-health span { color: #7d7885; font-size: 9px; }
+    .native-app-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; padding: 10px 15px; }
+    .native-app-row + .native-app-row { border-top: 1px solid rgba(30,38,53,.065); }
+    .native-app-name { display: flex; gap: 9px; align-items: center; }
+    .native-app-name b { display: block; font-size: 10px; }
+    .native-app-name small { color: #97939d; font-size: 8px; }
+    .native-state { font-size: 9px; color: var(--green); }
+    .native-state.warn { color: #c58a1e; }
+    .native-state.purple { color: var(--purple); }
+
+    .native-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 13px 14px; border-top: 1px solid rgba(30,38,53,.075); background: #fafafa; }
+    .native-actions button { padding: 10px; border-radius: 9px; border: 1px solid rgba(30,38,53,.1); background: #fff; color: #5e5967; font-size: 10px; font-weight: 760; }
+    .native-actions button.primary { border-color: transparent; color: #fff; background: linear-gradient(135deg, var(--mid), var(--purple)); }
+
+    .account-card { margin: 12px 14px; border-radius: 13px; border: 1px solid rgba(30,38,53,.085); overflow: hidden; }
+    .account-card + .account-card { margin-top: -3px; }
+    .account-card-head { display: flex; align-items: center; gap: 9px; padding: 10px 11px; background: #fbfbfc; }
+    .account-card-head b { font-size: 10px; }
+    .account-card-head small { display: block; color: #96919b; font-size: 8px; }
+    .fresh { margin-left: auto; color: var(--green); font-size: 8px; }
+    .account-buckets { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 10px 11px 12px; }
+    .bucket-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 5px; }
+    .bucket-top span { color: #8b8791; font-size: 8px; }
+    .bucket-top b { font-size: 11px; }
+    .reset-note { margin-top: 4px; color: #a29ea7; font-size: 7px; }
+    .privacy-strip { margin: 11px 14px 14px; padding: 9px 10px; border-radius: 10px; color: #716c79; background: rgba(117,113,249,.07); font-size: 8px; line-height: 1.45; }
+
+    @media (max-width: 980px) {
+      .page-header { align-items: flex-start; flex-direction: column; }
+      .sticky-nav { position: static; }
+      .mock-stage { padding: 18px; overflow-x: auto; justify-content: start; }
+      .dashboard-window, .native-window { min-width: 920px; }
+      .concept-footer { grid-template-columns: 1fr; }
+    }
+  </style>
+  <style>
+    .extended-page { width: min(1480px, calc(100% - 48px)); margin: 0 auto; padding: 44px 0 80px; }
+    .extension-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 28px; margin-bottom: 24px; }
+    .extension-head h1 { margin: 14px 0 8px; font-size: clamp(34px, 4vw, 54px); }
+    .extension-head p { max-width: 780px; margin: 0; color: var(--muted); line-height: 1.55; }
+    .mode-switch { display: flex; flex: 0 0 auto; gap: 5px; padding: 5px; border: 1px solid rgba(255,255,255,.92); border-radius: 15px; background: rgba(255,255,255,.68); box-shadow: 0 12px 34px rgba(46,34,73,.1); backdrop-filter: blur(18px); }
+    .mode-switch button { border: 0; border-radius: 11px; padding: 10px 14px; color: #716b7a; background: transparent; font-size: 12px; font-weight: 760; cursor: pointer; }
+    .mode-switch button.active { color: white; background: linear-gradient(135deg, var(--mid), var(--purple)); box-shadow: 0 7px 18px rgba(117,113,249,.25); }
+    .flow-note { display: flex; align-items: center; gap: 9px; margin-bottom: 16px; color: #696473; font-size: 12px; }
+    .flow-note span { padding: 6px 9px; border: 1px solid rgba(35,29,48,.09); border-radius: 999px; background: rgba(255,255,255,.72); }
+    .flow-arrow { color: #aaa4b2; }
+
+    .demo-stage { position: relative; min-height: 840px; overflow: hidden; border: 1px solid rgba(255,255,255,.75); border-radius: 30px; background: radial-gradient(circle at 20% 13%, rgba(246,178,226,.82), transparent 31%), radial-gradient(circle at 82% 17%, rgba(140,139,238,.84), transparent 36%), linear-gradient(135deg,#34243f,#50446c 54%,#343044); box-shadow: var(--shadow); }
+    .demo-stage::before { content: ""; position: absolute; inset: 18px; border: 1px solid rgba(255,255,255,.15); border-radius: 23px; background: linear-gradient(145deg,rgba(255,255,255,.14),rgba(255,255,255,.02)); pointer-events: none; }
+    .demo-stage .desktop-menubar { top: 18px; }
+    .desktop-note { position: absolute; left: 52px; bottom: 44px; width: 260px; color: rgba(255,255,255,.72); font-size: 11px; line-height: 1.55; }
+    .desktop-note strong { display: block; margin-bottom: 4px; color: white; font-size: 14px; }
+
+    .demo-popover { position: absolute; z-index: 5; top: 76px; right: 82px; width: 414px; margin: 0; transition: opacity .22s ease, transform .22s ease; }
+    .demo-stage.window-mode .demo-popover { opacity: 0; transform: translateY(-10px) scale(.96); pointer-events: none; }
+    .provider-disabled { margin: 0 12px 9px; padding: 11px; border: 1px solid rgba(200,120,80,.2); border-radius: 14px; color: #7c655a; background: rgba(250,239,232,.8); font-size: 10px; line-height: 1.45; }
+    .provider-disabled strong { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; color: #624b40; font-size: 11px; }
+    .open-manager { border: 0; color: #645c75; background: transparent; font-size: 9px; cursor: pointer; font-weight: 720; }
+
+    .manage-window { position: absolute; z-index: 6; inset: 78px 60px 44px; display: grid; grid-template-rows: 48px 1fr; overflow: hidden; border: 1px solid rgba(255,255,255,.74); border-radius: 22px; color: var(--ink); background: rgba(247,245,249,.95); box-shadow: 0 38px 100px rgba(15,10,28,.46); backdrop-filter: blur(38px) saturate(1.25); opacity: 0; transform: translateY(15px) scale(.975); pointer-events: none; transition: opacity .24s ease, transform .24s ease; }
+    .demo-stage.window-mode .manage-window { opacity: 1; transform: none; pointer-events: auto; }
+    .manage-titlebar { display: grid; grid-template-columns: 180px 1fr 180px; align-items: center; padding: 0 16px; border-bottom: 1px solid var(--line); background: rgba(255,255,255,.58); }
+    .manage-titlebar strong { text-align: center; font-size: 12px; }
+    .manage-tools { display: flex; justify-content: flex-end; gap: 7px; }
+    .manage-tools button { width: 29px; height: 29px; border: 1px solid var(--line); border-radius: 9px; color: #6c6672; background: rgba(255,255,255,.65); cursor: pointer; }
+    .manage-shell { display: grid; grid-template-columns: 188px minmax(0,1fr); min-height: 0; }
+    .manage-sidebar { padding: 16px 11px; border-right: 1px solid var(--line); background: rgba(231,227,236,.62); }
+    .manage-brand { display: flex; align-items: center; gap: 10px; padding: 3px 8px 17px; }
+    .manage-brand strong { display: block; font-size: 13px; }
+    .manage-brand small { display: block; color: #898390; font-size: 8px; }
+    .manage-label { padding: 12px 9px 5px; color: #918b98; font-size: 8px; font-weight: 820; letter-spacing: .08em; text-transform: uppercase; }
+    .manage-nav { display: flex; align-items: center; width: 100%; gap: 9px; padding: 8px 9px; border: 0; border-radius: 9px; color: #706a77; background: transparent; text-align: left; font-size: 10px; font-weight: 680; cursor: pointer; }
+    .manage-nav b { width: 18px; color: #8881c8; }
+    .manage-nav.active { color: #312b38; background: rgba(255,255,255,.78); box-shadow: 0 1px 3px rgba(25,20,35,.08); }
+    .sidebar-safety { margin: 104px 5px 0; padding: 10px; border-radius: 11px; color: #7b7481; background: rgba(255,255,255,.5); font-size: 8px; line-height: 1.5; }
+    .sidebar-safety strong { display: block; color: #5e5764; }
+
+    .manage-content { min-width: 0; overflow: auto; padding: 24px 25px 30px; background: radial-gradient(circle at 93% 0,rgba(117,113,249,.085),transparent 34%),rgba(250,249,251,.72); }
+    .manage-view { display: none; }
+    .manage-view.active { display: block; animation: manageReveal .18s ease; }
+    @keyframes manageReveal { from { opacity: .15; transform: translateY(3px); } }
+    .manage-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 17px; }
+    .manage-head h2 { margin: 0 0 3px; font-size: 23px; letter-spacing: -.035em; }
+    .manage-head p { margin: 0; color: #8a8490; font-size: 9px; }
+    .manage-actions { display: flex; gap: 7px; }
+    .ui-button { border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; color: #615b68; background: rgba(255,255,255,.8); font-size: 9px; font-weight: 740; cursor: pointer; }
+    .ui-button.primary { border-color: transparent; color: white; background: linear-gradient(135deg,var(--mid),var(--purple)); }
+    .ui-button.danger { color: var(--red); background: rgba(222,91,101,.07); }
+    .ui-button:disabled { cursor: not-allowed; opacity: .46; }
+
+    .overview-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .glass-card { overflow: hidden; border: 1px solid var(--line); border-radius: 15px; background: rgba(255,255,255,.7); box-shadow: 0 8px 22px rgba(42,32,58,.05); }
+    .glass-head { display: flex; align-items: center; justify-content: space-between; padding: 13px 14px; border-bottom: 1px solid var(--line); }
+    .glass-head strong { font-size: 11px; }
+    .glass-head span { color: #8f8996; font-size: 8px; }
+    .overview-account { display: grid; grid-template-columns: 120px 1fr 1fr; align-items: center; gap: 12px; padding: 11px 14px; }
+    .overview-account + .overview-account { border-top: 1px solid rgba(35,29,48,.07); }
+    .overview-account b { display: block; font-size: 9px; }
+    .overview-account small { color: #97919d; font-size: 7px; }
+    .overview-meter label { display: flex; justify-content: space-between; margin-bottom: 4px; color: #88828e; font-size: 7px; }
+    .sync-overview { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 220px; gap: 18px; padding: 14px; }
+    .sync-summary { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; }
+    .sync-summary div { padding: 10px; border-radius: 10px; background: rgba(117,113,249,.055); text-align: center; }
+    .sync-summary b { display: block; font-size: 17px; }
+    .sync-summary span { color: #918b97; font-size: 7px; }
+    .sync-quick { display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
+
+    .policy-banner { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; padding: 11px 13px; border: 1px solid rgba(200,120,80,.18); border-radius: 12px; color: #765b4e; background: rgba(248,236,229,.72); font-size: 9px; }
+    .policy-banner strong { display: block; color: #59433a; }
+    .policy-banner button { margin-left: auto; }
+    .account-table { overflow: visible; }
+    .account-row-ui { position: relative; display: grid; grid-template-columns: 1.1fr .7fr .55fr auto; align-items: center; gap: 12px; padding: 12px 14px; }
+    .account-row-ui + .account-row-ui { border-top: 1px solid var(--line); }
+    .account-id { display: flex; align-items: center; gap: 9px; }
+    .account-id b { display: block; font-size: 10px; }
+    .account-id small { display: block; color: #99939f; font-size: 7px; }
+    .tiny-label { display: block; color: #9b95a1; font-size: 7px; text-transform: uppercase; }
+    .tiny-value { color: #605a66; font-size: 8px; }
+    .account-buttons { display: flex; gap: 5px; }
+    .account-buttons .ui-button { padding: 6px 7px; font-size: 8px; }
+    .status-pill { display: inline-flex; padding: 4px 6px; border-radius: 999px; color: #20825c; background: rgba(45,180,125,.1); font-size: 7px; font-weight: 760; }
+    .status-pill.stale { color: #a26c10; background: rgba(227,163,43,.12); }
+
+    .sync-workspace { display: grid; grid-template-columns: 1fr 270px; gap: 12px; }
+    .sync-row-ui { display: grid; grid-template-columns: 1fr 90px 90px; align-items: center; gap: 12px; padding: 11px 13px; }
+    .sync-row-ui + .sync-row-ui { border-top: 1px solid var(--line); }
+    .sync-app { display: flex; align-items: center; gap: 9px; }
+    .sync-app b { display: block; font-size: 9px; }
+    .sync-app small { display: block; color: #98929e; font-size: 7px; }
+    .app-state { font-size: 8px; color: var(--green); }
+    .app-state.warn { color: #bb7a14; }
+    .app-state.purple { color: var(--purple); }
+    .preview-panel { padding-bottom: 12px; }
+    .preview-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin: 11px; padding: 4px; border-radius: 9px; background: rgba(87,79,99,.08); }
+    .preview-tabs button { border: 0; border-radius: 7px; padding: 7px; color: #817b87; background: transparent; font-size: 8px; font-weight: 730; }
+    .preview-tabs button.active { color: #4d4654; background: white; box-shadow: 0 1px 3px rgba(0,0,0,.07); }
+    .preview-lines { margin: 0 13px; padding: 0; list-style: none; }
+    .preview-lines li { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 8px; }
+    .preview-lines span { color: #908a95; }
+    .preview-warning { margin: 11px 12px; padding: 9px; border-radius: 8px; color: #786b84; background: rgba(117,113,249,.07); font-size: 7px; line-height: 1.45; }
+    .preview-panel > .ui-button { width: calc(100% - 24px); margin: 0 12px; }
+
+    .settings-grid-ui { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
+    .setting-card { padding: 14px; }
+    .setting-card h3 { margin: 0 0 4px; font-size: 11px; }
+    .setting-card > p { margin: 0 0 12px; color: #918b97; font-size: 8px; line-height: 1.45; }
+    .path-field { display: flex; align-items: center; gap: 7px; padding: 8px; border-radius: 8px; background: rgba(86,78,97,.055); }
+    .path-field code { overflow: hidden; flex: 1; color: #625c68; font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+    .setting-line-ui { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 8px; }
+    .setting-line-ui:last-child { border-bottom: 0; }
+    .setting-line-ui span { color: #948e99; }
+
+    .mock-overlay { position: absolute; z-index: 9; inset: 48px 0 0 188px; display: none; align-items: center; justify-content: center; background: rgba(38,30,48,.28); backdrop-filter: blur(3px); }
+    .mock-overlay.open { display: flex; }
+    .mock-dialog { width: 390px; overflow: hidden; border: 1px solid rgba(255,255,255,.8); border-radius: 17px; background: rgba(252,250,253,.97); box-shadow: 0 25px 70px rgba(23,16,32,.28); }
+    .mock-dialog-head { padding: 18px 19px 10px; }
+    .mock-dialog h3 { margin: 0 0 4px; font-size: 16px; }
+    .mock-dialog p { margin: 0; color: #857e8b; font-size: 9px; line-height: 1.5; }
+    .mock-dialog-body { padding: 8px 19px 17px; }
+    .mock-input { width: 100%; margin-top: 7px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; background: white; font-size: 9px; }
+    .dialog-safety { margin-top: 11px; padding: 9px; border-radius: 8px; color: #6f6877; background: rgba(117,113,249,.07); font-size: 8px; line-height: 1.45; }
+    .mock-dialog-actions { display: flex; justify-content: flex-end; gap: 7px; padding: 12px 19px; border-top: 1px solid var(--line); background: rgba(243,240,245,.72); }
+
+    .stage-toast { position: absolute; z-index: 20; right: 28px; bottom: 26px; padding: 10px 12px; border: 1px solid rgba(255,255,255,.18); border-radius: 10px; color: white; background: rgba(27,22,34,.9); box-shadow: 0 12px 30px rgba(10,8,16,.22); opacity: 0; transform: translateY(6px); transition: .18s ease; font-size: 9px; pointer-events: none; }
+    .stage-toast.show { opacity: 1; transform: none; }
+    .decision-card { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-top: 18px; padding: 18px 20px; border: 1px solid rgba(255,255,255,.9); border-radius: 18px; background: rgba(255,255,255,.7); box-shadow: 0 14px 40px rgba(42,32,58,.08); }
+    .decision-card strong { display: block; margin-bottom: 3px; }
+    .decision-card span { color: var(--muted); font-size: 12px; }
+    .decision-button { border: 0; border-radius: 12px; padding: 11px 15px; color: white; background: linear-gradient(135deg,var(--mid),var(--purple)); font-weight: 770; cursor: pointer; }
+
+    @media (max-width: 1100px) {
+      .extension-head { align-items: flex-start; flex-direction: column; }
+      .demo-stage { overflow-x: auto; }
+      .manage-window { min-width: 880px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="page-header">
+    <div>
+      <div class="eyebrow"><span class="eyebrow-dot"></span> UI exploration · 3 directions</div>
+      <h1>하나의 DotSync,<br>세 가지 사용 방식.</h1>
+      <p>설정 동기화와 Claude·Codex 복수 계정 사용량을 한 앱에 담았습니다. 시안은 기능이 아니라 <strong>정보 구조와 사용 리듬</strong>이 다릅니다.</p>
+    </div>
+    <nav class="sticky-nav" aria-label="시안 바로가기">
+      <a href="#concept-a">A · 메뉴바</a>
+      <a href="#concept-b">B · 대시보드</a>
+      <a href="#concept-c">C · 분할형</a>
+    </nav>
+  </header>
+
+  <main class="concepts">
+    <section id="concept-a" class="concept" data-choice="a-menubar-companion">
+      <div class="concept-heading">
+        <div class="concept-title">
+          <div class="concept-letter">A</div>
+          <div><h2>Menu Bar Companion</h2><p>항상 열어두고 5초 안에 확인·실행하는 초경량 방향</p></div>
+        </div>
+        <button class="select-button" onclick="toggleSelect(this.closest('.concept'))">이 방향 선택</button>
+      </div>
+
+      <div class="mock-stage a-stage">
+        <div class="desktop-menubar">
+          <div>● Finder&nbsp;&nbsp;&nbsp;파일&nbsp;&nbsp;&nbsp;편집&nbsp;&nbsp;&nbsp;보기</div>
+          <div class="right"><span class="menubar-pill">DS&nbsp; 73% · 2↕</span><span>⌁</span><span>100%</span><span>8월 20일 오후 4:21</span></div>
+        </div>
+
+        <div class="popover">
+          <div class="pop-header">
+            <div class="pop-brand"><div class="brand-mark">D</div><div><strong>DotSync</strong><small>방금 업데이트됨 · 원본 설정 읽기 전용</small></div></div>
+            <button class="icon-button">⚙</button>
+          </div>
+
+          <div class="pop-summary">
+            <div><b>73%</b><span>가장 높은 주간 사용량 · Claude 회사</span></div>
+            <div><b>2</b><span>동기화가 필요한 앱</span></div>
+          </div>
+
+          <div class="section-label"><span>Usage</span><em>4 accounts</em></div>
+          <div class="provider-block">
+            <div class="provider-title"><div class="service-icon claude">AI</div><strong>Claude</strong><span>2 accounts</span></div>
+            <div class="account-line">
+              <div class="account-meta"><b>개인 · Max</b><span>2분 전</span></div>
+              <div class="meter-pair">
+                <div class="meter"><small><span>5시간</span><b>42%</b></small><div class="mini-progress"><i style="width:42%;background:var(--claude)"></i></div></div>
+                <div class="meter"><small><span>주간</span><b>58%</b></small><div class="mini-progress"><i style="width:58%;background:var(--claude)"></i></div></div>
+              </div>
+            </div>
+            <div class="account-line">
+              <div class="account-meta"><b>회사 · Team</b><span>5분 전</span></div>
+              <div class="meter-pair">
+                <div class="meter"><small><span>5시간</span><b>18%</b></small><div class="mini-progress"><i style="width:18%;background:var(--claude)"></i></div></div>
+                <div class="meter"><small><span>주간</span><b>73%</b></small><div class="mini-progress"><i style="width:73%;background:var(--amber)"></i></div></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="provider-block">
+            <div class="provider-title"><div class="service-icon codex">⌘</div><strong>Codex</strong><span>2 accounts</span></div>
+            <div class="account-line">
+              <div class="account-meta"><b>개인 · Plus</b><span>방금</span></div>
+              <div class="meter-pair">
+                <div class="meter"><small><span>5시간</span><b>31%</b></small><div class="mini-progress"><i style="width:31%;background:var(--purple)"></i></div></div>
+                <div class="meter"><small><span>주간</span><b>47%</b></small><div class="mini-progress"><i style="width:47%;background:var(--purple)"></i></div></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="section-label"><span>Config sync</span><em>~/Desktop/dotsync_config</em></div>
+          <div class="sync-list">
+            <div class="sync-line"><span class="status-dot"></span><b>4개 앱</b><span class="state">동기화됨</span></div>
+            <div class="sync-line"><span class="status-dot amber"></span><b>Ghostty</b><span class="state">로컬이 최신 · +2 −1</span></div>
+            <div class="sync-line"><span class="status-dot purple"></span><b>Codex</b><span class="state">폴더가 최신 · 1개 파일</span></div>
+          </div>
+          <div class="pop-actions"><button class="backup-button">↑ Backup to folder</button><button class="apply-button">↓ Apply to Mac</button></div>
+          <div class="pop-footer"><span>마지막 백업 · 오늘 15:48</span><span>전체 창 열기 ↗</span></div>
+        </div>
+      </div>
+
+      <div class="concept-footer">
+        <div class="rationale"><strong>핵심 아이디어</strong><span>메뉴바 아이콘 하나가 “가장 높은 사용률”과 “동기화 필요 수”를 동시에 요약합니다. 팝오버에서 바로 확인하고 backup/apply를 실행합니다.</span></div>
+        <div class="best-for"><strong>잘 맞는 경우</strong><span>앱을 관리 도구보다 배경 유틸리티로 느끼고 싶을 때. 설정 화면은 별도 창으로 최소화합니다.</span></div>
+      </div>
+    </section>
+
+    <section id="concept-b" class="concept" data-choice="b-command-center">
+      <div class="concept-heading">
+        <div class="concept-title">
+          <div class="concept-letter">B</div>
+          <div><h2>Command Center</h2><p>상태·기록·문제를 한 화면에서 운영하는 밀도 높은 대시보드</p></div>
+        </div>
+        <button class="select-button" onclick="toggleSelect(this.closest('.concept'))">이 방향 선택</button>
+      </div>
+
+      <div class="mock-stage b-stage">
+        <div class="dashboard-window">
+          <div class="dash-titlebar"><div class="mac-dots"><i></i><i></i><i></i></div><strong>DotSync</strong></div>
+          <div class="dash-shell">
+            <aside class="dash-sidebar">
+              <div class="dash-logo"><div class="brand-mark">D</div><strong>dotsync</strong></div>
+              <div class="dash-nav-label">Workspace</div>
+              <div class="dash-nav-item active"><b>⌂</b>Overview</div>
+              <div class="dash-nav-item"><b>⇄</b>Config Sync</div>
+              <div class="dash-nav-item"><b>◴</b>AI Usage</div>
+              <div class="dash-nav-item"><b>◫</b>Activity</div>
+              <div class="dash-nav-label">Manage</div>
+              <div class="dash-nav-item"><b>⌘</b>Tracked Apps</div>
+              <div class="dash-nav-item"><b>◎</b>Accounts</div>
+              <div class="dash-nav-item"><b>⚙</b>Settings</div>
+              <div class="sidebar-bottom"><strong>읽기 전용 보호 활성</strong>Claude·Codex 원본 프로필에는 어떤 변경도 기록하지 않습니다.</div>
+            </aside>
+
+            <section class="dash-main">
+              <div class="dash-main-head">
+                <div><h3>Good afternoon, Hyun.</h3><p>2개 앱에 동기화가 필요하고 Claude 회사 계정이 주간 73%를 사용했습니다.</p></div>
+                <div class="dash-top-actions"><button class="dark-button">새로고침</button><button class="dark-button">Apply</button><button class="dark-button primary">Backup all</button></div>
+              </div>
+
+              <div class="usage-grid">
+                <div class="usage-panel">
+                  <div class="usage-panel-head"><div class="service-icon claude">AI</div><strong>Claude usage</strong><span>2 accounts · 2분 전</span></div>
+                  <div class="dark-account"><div class="dark-account-name"><b>개인</b><small>Max 20x</small></div><div class="dark-meter"><label><span>5시간</span><b>42%</b></label><div class="mini-progress"><i style="width:42%;background:#ce835e"></i></div></div><div class="dark-meter"><label><span>주간</span><b>58%</b></label><div class="mini-progress"><i style="width:58%;background:#ce835e"></i></div></div></div>
+                  <div class="dark-account"><div class="dark-account-name"><b>회사</b><small>Team · 주간 주의</small></div><div class="dark-meter"><label><span>5시간</span><b>18%</b></label><div class="mini-progress"><i style="width:18%;background:#ce835e"></i></div></div><div class="dark-meter"><label><span>주간</span><b>73%</b></label><div class="mini-progress"><i style="width:73%;background:var(--amber)"></i></div></div></div>
+                </div>
+                <div class="usage-panel">
+                  <div class="usage-panel-head"><div class="service-icon codex">⌘</div><strong>Codex usage</strong><span>2 accounts · 방금</span></div>
+                  <div class="dark-account"><div class="dark-account-name"><b>개인</b><small>Plus</small></div><div class="dark-meter"><label><span>5시간</span><b>31%</b></label><div class="mini-progress"><i style="width:31%;background:#8782ff"></i></div></div><div class="dark-meter"><label><span>주간</span><b>47%</b></label><div class="mini-progress"><i style="width:47%;background:#8782ff"></i></div></div></div>
+                  <div class="dark-account"><div class="dark-account-name"><b>회사</b><small>Business</small></div><div class="dark-meter"><label><span>5시간</span><b>12%</b></label><div class="mini-progress"><i style="width:12%;background:#8782ff"></i></div></div><div class="dark-meter"><label><span>주간</span><b>22%</b></label><div class="mini-progress"><i style="width:22%;background:#8782ff"></i></div></div></div>
+                </div>
+              </div>
+
+              <div class="dash-lower">
+                <div class="dark-card">
+                  <div class="dark-card-head"><strong>Config sync</strong><span>6 tracked apps · ~/Desktop/dotsync_config</span></div>
+                  <div class="app-table-row"><div class="app-cell"><span class="app-glyph">AI</span>Claude Code</div><span class="dark-muted">12 files</span><span class="state-chip">Clean</span><span class="dark-muted">오늘 15:48</span></div>
+                  <div class="app-table-row"><div class="app-cell"><span class="app-glyph">⌘</span>Codex</div><span class="dark-muted">8 files</span><span class="state-chip purple">Folder newer</span><span class="dark-muted">1 change</span></div>
+                  <div class="app-table-row"><div class="app-cell"><span class="app-glyph">&gt;_</span>Ghostty</div><span class="dark-muted">1 file</span><span class="state-chip warn">Local newer</span><span class="dark-muted">+2 −1</span></div>
+                  <div class="app-table-row"><div class="app-cell"><span class="app-glyph">H</span>Herdr</div><span class="dark-muted">1 file</span><span class="state-chip">Clean</span><span class="dark-muted">어제 18:30</span></div>
+                  <div class="app-table-row"><div class="app-cell"><span class="app-glyph">BT</span>BetterTouchTool</div><span class="dark-muted">2 presets</span><span class="state-chip">Clean</span><span class="dark-muted">오늘 15:48</span></div>
+                  <div class="app-table-row"><div class="app-cell"><span class="app-glyph">Z</span>zsh</div><span class="dark-muted">1 file</span><span class="state-chip">Clean</span><span class="dark-muted">오늘 15:48</span></div>
+                </div>
+
+                <div class="dark-card">
+                  <div class="dark-card-head"><strong>Recent activity</strong><span>View all</span></div>
+                  <div class="activity-row"><i></i><div><b>Backup complete</b><span>Claude · Herdr · BTT · zsh</span></div></div>
+                  <div class="activity-row"><i class="purple"></i><div><b>Codex usage refreshed</b><span>두 계정 모두 최신 · 방금</span></div></div>
+                  <div class="activity-row"><i class="amber"></i><div><b>Ghostty changed locally</b><span>config.ghostty · +2 −1</span></div></div>
+                  <div class="activity-row"><i></i><div><b>Apply backup created</b><span>.backups/20260820_142910</span></div></div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+
+      <div class="concept-footer">
+        <div class="rationale"><strong>핵심 아이디어</strong><span>기존 CLI의 상태·미리보기·결과를 데스크톱 운영 대시보드로 확장합니다. 사용량, 파일 상태, 최근 실행 결과를 한눈에 추적합니다.</span></div>
+        <div class="best-for"><strong>잘 맞는 경우</strong><span>동기화 변경 내역과 장애를 자주 살피고, 장기적으로 앱·계정·기록 기능이 늘어날 가능성이 클 때.</span></div>
+      </div>
+    </section>
+
+    <section id="concept-c" class="concept" data-choice="c-native-split">
+      <div class="concept-heading">
+        <div class="concept-title">
+          <div class="concept-letter">C</div>
+          <div><h2>Native Split View</h2><p>설정 동기화와 사용량을 동등하게 놓은 차분한 macOS 유틸리티</p></div>
+        </div>
+        <button class="select-button" onclick="toggleSelect(this.closest('.concept'))">이 방향 선택</button>
+      </div>
+
+      <div class="mock-stage c-stage">
+        <div class="native-window">
+          <div class="native-titlebar"><div class="mac-dots"><i></i><i></i><i></i></div><strong>DotSync Overview</strong><div class="tools"><button class="tool-square">↻</button><button class="tool-square">⚙</button></div></div>
+          <div class="native-body">
+            <aside class="native-sidebar">
+              <div class="native-side-label">DotSync</div>
+              <div class="native-side-row active"><b>⌂</b>Overview</div>
+              <div class="native-side-row"><b>⇄</b>Sync</div>
+              <div class="native-side-row"><b>◴</b>Usage</div>
+              <div class="native-side-label">Configuration</div>
+              <div class="native-side-row"><b>▦</b>Apps</div>
+              <div class="native-side-row"><b>◎</b>Accounts</div>
+              <div class="native-side-row"><b>⌁</b>Backups</div>
+              <div class="native-side-label">General</div>
+              <div class="native-side-row"><b>⚙</b>Settings</div>
+              <div class="native-side-row"><b>?</b>About</div>
+            </aside>
+
+            <section class="native-content">
+              <div class="native-head">
+                <div><h3>Overview</h3><p>동기화 상태와 AI 사용량을 나란히 확인합니다.</p></div>
+                <div class="folder-control">▣&nbsp; ~/Desktop/dotsync_config&nbsp;&nbsp;⌄</div>
+              </div>
+
+              <div class="split-workspace">
+                <div class="native-panel">
+                  <div class="native-panel-head"><strong>Config Sync</strong><span>6 apps · 2 need attention</span></div>
+                  <div class="sync-health"><div class="health-ring"><b>4/6</b></div><div><strong>대부분 동기화되었습니다</strong><span>Ghostty는 로컬, Codex는 폴더 쪽이 최신입니다.</span></div></div>
+                  <div class="native-app-row"><div class="native-app-name"><span class="app-glyph">AI</span><div><b>Claude Code</b><small>settings · plugins · rules</small></div></div><span class="native-state">동기화됨</span></div>
+                  <div class="native-app-row"><div class="native-app-name"><span class="app-glyph">⌘</span><div><b>Codex</b><small>1개 파일이 폴더에서 변경됨</small></div></div><span class="native-state purple">Apply 가능</span></div>
+                  <div class="native-app-row"><div class="native-app-name"><span class="app-glyph">&gt;_</span><div><b>Ghostty</b><small>config.ghostty · +2 −1</small></div></div><span class="native-state warn">Backup 가능</span></div>
+                  <div class="native-app-row"><div class="native-app-name"><span class="app-glyph">H</span><div><b>Herdr</b><small>config.toml</small></div></div><span class="native-state">동기화됨</span></div>
+                  <div class="native-app-row"><div class="native-app-name"><span class="app-glyph">BT</span><div><b>BetterTouchTool</b><small>2 presets</small></div></div><span class="native-state">동기화됨</span></div>
+                  <div class="native-app-row"><div class="native-app-name"><span class="app-glyph">Z</span><div><b>zsh</b><small>~/.zshrc</small></div></div><span class="native-state">동기화됨</span></div>
+                  <div class="native-actions"><button>↓ Apply selected</button><button class="primary">↑ Backup selected</button></div>
+                </div>
+
+                <div class="native-panel">
+                  <div class="native-panel-head"><strong>AI Usage</strong><span>4 accounts · read only</span></div>
+                  <div class="account-card">
+                    <div class="account-card-head"><div class="service-icon claude">AI</div><div><b>Claude · 회사</b><small>Team</small></div><span class="fresh">5분 전</span></div>
+                    <div class="account-buckets"><div><div class="bucket-top"><span>5시간</span><b>18%</b></div><div class="mini-progress"><i style="width:18%;background:var(--claude)"></i></div><div class="reset-note">2시간 14분 후 초기화</div></div><div><div class="bucket-top"><span>주간</span><b>73%</b></div><div class="mini-progress"><i style="width:73%;background:var(--amber)"></i></div><div class="reset-note">월요일 오전 9:00 초기화</div></div></div>
+                  </div>
+                  <div class="account-card">
+                    <div class="account-card-head"><div class="service-icon claude">AI</div><div><b>Claude · 개인</b><small>Max 20x</small></div><span class="fresh">2분 전</span></div>
+                    <div class="account-buckets"><div><div class="bucket-top"><span>5시간</span><b>42%</b></div><div class="mini-progress"><i style="width:42%;background:var(--claude)"></i></div><div class="reset-note">3시간 02분 후 초기화</div></div><div><div class="bucket-top"><span>주간</span><b>58%</b></div><div class="mini-progress"><i style="width:58%;background:var(--claude)"></i></div><div class="reset-note">일요일 오후 6:00 초기화</div></div></div>
+                  </div>
+                  <div class="account-card">
+                    <div class="account-card-head"><div class="service-icon codex">⌘</div><div><b>Codex · 개인</b><small>Plus</small></div><span class="fresh">방금</span></div>
+                    <div class="account-buckets"><div><div class="bucket-top"><span>5시간</span><b>31%</b></div><div class="mini-progress"><i style="width:31%;background:var(--purple)"></i></div><div class="reset-note">1시간 47분 후 초기화</div></div><div><div class="bucket-top"><span>주간</span><b>47%</b></div><div class="mini-progress"><i style="width:47%;background:var(--purple)"></i></div><div class="reset-note">화요일 오전 1:00 초기화</div></div></div>
+                  </div>
+                  <div class="privacy-strip">⌾ 원본 보호&nbsp; · &nbsp;~/.claude와 ~/.codex는 조회만 하며, 로그인·토큰·설정 파일을 수정하지 않습니다.</div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+
+      <div class="concept-footer">
+        <div class="rationale"><strong>핵심 아이디어</strong><span>두 핵심 기능을 좌우 패널로 고정해 어느 한쪽도 부가 기능처럼 보이지 않게 합니다. macOS 설정 앱과 가까운 익숙하고 차분한 구조입니다.</span></div>
+        <div class="best-for"><strong>잘 맞는 경우</strong><span>기능을 빠르게 이해할 수 있는 네이티브 앱을 원하고, 운영 기록보다 현재 상태와 명확한 작업 흐름이 중요할 때.</span></div>
+      </div>
+    </section>
+  </main>
+
+  <template id="extended-concept-a">
+    <main class="extended-page">
+      <header class="extension-head">
+        <div>
+          <div class="eyebrow"><span class="eyebrow-dot"></span> Concept A · interaction extension</div>
+          <h1>Menu Bar Companion<br>+ Management Window</h1>
+          <p>평소에는 원본 A의 작은 메뉴바 팝오버로 확인하고, 계정 관리나 상세 동기화가 필요할 때만 같은 앱의 전체 창을 엽니다.</p>
+        </div>
+        <div class="mode-switch" aria-label="화면 전환">
+          <button class="active" data-mode="popover">1 · 메뉴바 팝오버</button>
+          <button data-mode="window">2 · 전체 관리창</button>
+        </div>
+      </header>
+
+      <div class="flow-note"><span>평소 5초 확인</span><span class="flow-arrow">→</span><span>필요할 때 전체 관리</span><span class="flow-arrow">→</span><span>작업 후 다시 메뉴바로</span></div>
+
+      <section class="demo-stage" id="demo-stage">
+        <div class="desktop-menubar">
+          <div>● Finder&nbsp;&nbsp;&nbsp;파일&nbsp;&nbsp;&nbsp;편집&nbsp;&nbsp;&nbsp;보기</div>
+          <div class="right"><span class="menubar-pill">DS&nbsp; 81% · 1↕</span><span>⌁</span><span>100%</span><span>8월 21일 오후 5:42</span></div>
+        </div>
+
+        <div class="desktop-note"><strong>평소에는 이것만 보입니다</strong>메뉴바의 DS 아이콘을 누르면 작은 팝오버가 열리고, 닫으면 백그라운드에서 조용히 대기합니다.</div>
+
+        <div class="popover demo-popover">
+          <div class="pop-header">
+            <div class="pop-brand"><div class="brand-mark">D</div><div><strong>DotSync</strong><small>방금 업데이트됨 · 로컬 전용</small></div></div>
+            <button class="icon-button" data-open-view="settings">⚙</button>
+          </div>
+
+          <div class="pop-summary">
+            <div><b>81%</b><span>가장 높은 주간 사용량 · Codex 회사</span></div>
+            <div><b>1</b><span>동기화가 필요한 앱</span></div>
+          </div>
+
+          <div class="section-label"><span>Usage</span><em>2 Codex accounts</em></div>
+          <div class="provider-disabled"><strong><span class="service-icon claude">AI</span>Claude · 정책 확인 중</strong>Anthropic 허용 전까지 구독 로그인과 사용량 조회는 비활성화됩니다.</div>
+          <div class="provider-block">
+            <div class="provider-title"><div class="service-icon codex">⌘</div><strong>Codex</strong><span>2 accounts</span></div>
+            <div class="account-line">
+              <div class="account-meta"><b>개인 · Plus</b><span>방금</span></div>
+              <div class="meter-pair">
+                <div class="meter"><small><span>5시간</span><b>31%</b></small><div class="mini-progress"><i style="width:31%;background:var(--purple)"></i></div></div>
+                <div class="meter"><small><span>주간</span><b>47%</b></small><div class="mini-progress"><i style="width:47%;background:var(--purple)"></i></div></div>
+              </div>
+            </div>
+            <div class="account-line">
+              <div class="account-meta"><b>회사 · Business</b><span>18분 전</span></div>
+              <div class="meter-pair">
+                <div class="meter"><small><span>5시간</span><b>24%</b></small><div class="mini-progress"><i style="width:24%;background:var(--purple)"></i></div></div>
+                <div class="meter"><small><span>주간</span><b>81%</b></small><div class="mini-progress"><i style="width:81%;background:var(--amber)"></i></div></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="section-label"><span>Config sync</span><em>~/Desktop/dotsync_config</em></div>
+          <div class="sync-list">
+            <div class="sync-line"><span class="status-dot"></span><b>3개 앱</b><span class="state">동기화됨</span></div>
+            <div class="sync-line"><span class="status-dot amber"></span><b>Ghostty</b><span class="state">로컬이 최신 · +2 −1</span></div>
+          </div>
+          <div class="pop-actions"><button class="backup-button" data-toast="Backup 미리보기를 전체 창에서 엽니다." data-open-view="sync">↑ Backup preview</button><button class="apply-button" data-toast="Apply 미리보기를 전체 창에서 엽니다." data-open-view="sync">↓ Apply preview</button></div>
+          <div class="pop-footer"><span>마지막 백업 · 오늘 15:48</span><button class="open-manager" data-open-view="overview">전체 관리창 열기 ↗</button></div>
+        </div>
+
+        <div class="manage-window" id="manage-window">
+          <div class="manage-titlebar">
+            <div class="mac-dots"><i></i><i></i><i></i></div>
+            <strong>DotSync</strong>
+            <div class="manage-tools"><button data-toast="최신 상태를 확인했습니다.">↻</button><button id="close-manager" title="메뉴바 팝오버로 돌아가기">⌄</button></div>
+          </div>
+
+          <div class="manage-shell">
+            <aside class="manage-sidebar">
+              <div class="manage-brand"><div class="brand-mark">D</div><div><strong>DotSync</strong><small>Local control center</small></div></div>
+              <div class="manage-label">Workspace</div>
+              <button class="manage-nav active" data-manage-view="overview"><b>⌂</b>Overview</button>
+              <button class="manage-nav" data-manage-view="accounts"><b>◎</b>Accounts</button>
+              <button class="manage-nav" data-manage-view="sync"><b>⇄</b>Config Sync</button>
+              <div class="manage-label">General</div>
+              <button class="manage-nav" data-manage-view="settings"><b>⚙</b>Settings</button>
+              <div class="sidebar-safety"><strong>⌾ 원본 보호 활성</strong>계정 기능은 ~/.claude와 ~/.codex를 수정하지 않습니다.</div>
+            </aside>
+
+            <section class="manage-content">
+              <div class="manage-view active" id="manage-overview">
+                <div class="manage-head"><div><h2>Overview</h2><p>팝오버보다 넓게 계정과 동기화 상태를 확인합니다.</p></div><div class="manage-actions"><button class="ui-button" data-toast="Codex 계정 2개를 새로고침합니다.">새로고침</button><button class="ui-button primary" data-manage-view="sync">Backup preview</button></div></div>
+                <div class="overview-grid">
+                  <article class="glass-card">
+                    <div class="glass-head"><strong>Codex usage</strong><span>2 accounts · 방금</span></div>
+                    <div class="overview-account"><div><b>개인</b><small>Plus · hyun@example.com</small></div><div class="overview-meter"><label><span>5시간</span><b>31%</b></label><div class="mini-progress"><i style="width:31%;background:var(--purple)"></i></div></div><div class="overview-meter"><label><span>주간</span><b>47%</b></label><div class="mini-progress"><i style="width:47%;background:var(--purple)"></i></div></div></div>
+                    <div class="overview-account"><div><b>회사</b><small>Business · 18분 전</small></div><div class="overview-meter"><label><span>5시간</span><b>24%</b></label><div class="mini-progress"><i style="width:24%;background:var(--purple)"></i></div></div><div class="overview-meter"><label><span>주간</span><b>81%</b></label><div class="mini-progress"><i style="width:81%;background:var(--amber)"></i></div></div></div>
+                  </article>
+                  <article class="glass-card">
+                    <div class="glass-head"><strong>Claude usage</strong><span>Policy disabled</span></div>
+                    <div style="padding:18px 16px;color:#7b6670;font-size:9px;line-height:1.6"><div class="service-icon claude" style="margin-bottom:10px">AI</div><b style="display:block;color:#5c4650;margin-bottom:4px">현재 계정을 연결할 수 없습니다</b>공식 CLI 기술 경로는 준비되어 있지만 Anthropic의 명시적 허용 전까지 로그인과 조회 버튼을 노출하지 않습니다.</div>
+                  </article>
+                  <article class="glass-card sync-overview">
+                    <div class="sync-summary"><div><b>3</b><span>Clean</span></div><div><b>1</b><span>Changed</span></div><div><b>0</b><span>Missing</span></div><div><b>0</b><span>Error</span></div></div>
+                    <div class="sync-quick"><button class="ui-button" data-manage-view="sync">Apply preview</button><button class="ui-button primary" data-manage-view="sync">Backup preview</button></div>
+                  </article>
+                </div>
+              </div>
+
+              <div class="manage-view" id="manage-accounts">
+                <div class="manage-head"><div><h2>Accounts</h2><p>DotSync가 새로 만든 격리 프로필만 관리합니다.</p></div><div class="manage-actions"><button class="ui-button" disabled>+ Claude account</button><button class="ui-button primary" data-dialog="add">+ Codex account</button></div></div>
+                <div class="policy-banner"><div class="service-icon claude">AI</div><div><strong>Claude 계정 기능 일시 중단</strong>Anthropic 허용 확인 전까지 계정 추가와 사용량 조회를 제공하지 않습니다.</div><button class="ui-button" data-toast="정책 설명을 확인했습니다.">설명</button></div>
+                <article class="glass-card account-table">
+                  <div class="glass-head"><strong>Codex · 2 accounts</strong><span>각 계정마다 독립된 CODEX_HOME</span></div>
+                  <div class="account-row-ui"><div class="account-id"><div class="service-icon codex">⌘</div><div><b>개인 Max</b><small>hyun@example.com</small></div></div><div><span class="tiny-label">Plan</span><span class="tiny-value">ChatGPT Plus</span></div><div><span class="status-pill">로그인됨</span></div><div class="account-buttons"><button class="ui-button" data-toast="이름 변경 창을 엽니다.">이름</button><button class="ui-button" data-toast="공식 재인증을 시작합니다.">재인증</button><button class="ui-button danger" data-dialog="delete" data-account="개인 Max">삭제</button></div></div>
+                  <div class="account-row-ui"><div class="account-id"><div class="service-icon codex">⌘</div><div><b>회사 Pro</b><small>hyun@studio.example</small></div></div><div><span class="tiny-label">Plan</span><span class="tiny-value">ChatGPT Business</span></div><div><span class="status-pill stale">18분 지남</span></div><div class="account-buttons"><button class="ui-button" data-toast="이름 변경 창을 엽니다.">이름</button><button class="ui-button" data-toast="공식 재인증을 시작합니다.">재인증</button><button class="ui-button danger" data-dialog="delete" data-account="회사 Pro">삭제</button></div></div>
+                </article>
+              </div>
+
+              <div class="manage-view" id="manage-sync">
+                <div class="manage-head"><div><h2>Config Sync</h2><p>항상 변경 내용을 미리 보고 Backup 또는 Apply를 실행합니다.</p></div><div class="manage-actions"><button class="ui-button" data-toast="macOS 폴더 선택기를 엽니다.">폴더 변경</button><button class="ui-button" data-toast="상태를 다시 검사했습니다.">상태 검사</button></div></div>
+                <div class="sync-workspace">
+                  <article class="glass-card">
+                    <div class="glass-head"><strong>~/Desktop/dotsync_config</strong><span>4 tracked apps</span></div>
+                    <div class="sync-row-ui"><div class="sync-app"><span class="app-glyph">AI</span><div><b>Claude Code</b><small>settings · rules</small></div></div><span class="app-state">Clean</span><span class="tiny-value">오늘 15:48</span></div>
+                    <div class="sync-row-ui"><div class="sync-app"><span class="app-glyph">&gt;_</span><div><b>Ghostty</b><small>config · +2 −1</small></div></div><span class="app-state warn">Local newer</span><span class="tiny-value">방금</span></div>
+                    <div class="sync-row-ui"><div class="sync-app"><span class="app-glyph">BT</span><div><b>BetterTouchTool</b><small>2 presets</small></div></div><span class="app-state">Clean</span><span class="tiny-value">오늘 15:48</span></div>
+                    <div class="sync-row-ui"><div class="sync-app"><span class="app-glyph">Z</span><div><b>zsh</b><small>~/.zshrc</small></div></div><span class="app-state">Clean</span><span class="tiny-value">어제 18:30</span></div>
+                  </article>
+                  <aside class="glass-card preview-panel">
+                    <div class="glass-head"><strong id="preview-heading">Backup preview</strong><span>1 app</span></div>
+                    <div class="preview-tabs"><button class="active" data-preview="backup">Backup</button><button data-preview="apply">Apply</button></div>
+                    <ul class="preview-lines"><li><b>Ghostty</b><span>config 덮어쓰기</span></li><li><b>변경</b><span>+2 −1</span></li><li><b>영향 파일</b><span>1개</span></li></ul>
+                    <div class="preview-warning" id="preview-warning">동기화 폴더만 변경합니다. 로컬 앱 설정은 그대로 유지됩니다.</div>
+                    <button class="ui-button primary" id="preview-execute" data-dialog="backup">Backup 실행</button>
+                  </aside>
+                </div>
+              </div>
+
+              <div class="manage-view" id="manage-settings">
+                <div class="manage-head"><div><h2>Settings</h2><p>저장 위치와 개인정보 경계를 확인합니다.</p></div></div>
+                <div class="settings-grid-ui">
+                  <article class="glass-card setting-card"><h3>동기화 폴더</h3><p>Backup과 Apply가 사용하는 사용자 선택 폴더입니다.</p><div class="path-field"><span>⌁</span><code>~/Desktop/dotsync_config</code><button class="ui-button" data-toast="macOS 폴더 선택기를 엽니다.">변경</button></div></article>
+                  <article class="glass-card setting-card"><h3>DotSync 앱 데이터</h3><p>계정 프로필과 사용량 캐시는 동기화되지 않습니다.</p><div class="path-field"><span>⌂</span><code>~/Library/Application Support/DotSync</code><button class="ui-button" data-toast="Finder에서 앱 데이터 폴더를 엽니다.">Finder</button></div></article>
+                  <article class="glass-card setting-card"><h3>Refresh</h3><p>팝오버가 열려 있을 때 사용자가 요청한 계정만 갱신합니다.</p><div class="setting-line-ui"><b>신선도 기준</b><span>15분</span></div><div class="setting-line-ui"><b>개인 Max</b><span>2분 전</span></div><div class="setting-line-ui"><b>회사 Pro</b><span>18분 전 · Stale</span></div></article>
+                  <article class="glass-card setting-card"><h3>Privacy</h3><p>사용량 계정과 기존 앱 설정 동기화 권한을 분리합니다.</p><div class="setting-line-ui"><b>~/.claude · ~/.codex</b><span>계정 기능에서 수정 안 함</span></div><div class="setting-line-ui"><b>Provider access</b><span>공식 CLI만</span></div><div class="setting-line-ui"><b>Apply</b><span>미리보기 + 백업 필수</span></div></article>
+                </div>
+              </div>
+            </section>
+
+            <div class="mock-overlay" id="mock-overlay">
+              <div class="mock-dialog">
+                <div class="mock-dialog-head"><h3 id="dialog-title">Codex 계정 추가</h3><p id="dialog-copy">새 계정 전용 폴더에서 공식 Codex 로그인을 시작합니다.</p></div>
+                <div class="mock-dialog-body" id="dialog-body"><input class="mock-input" value="새 Codex 계정"><div class="dialog-safety">기존 ~/.codex 로그인은 가져오거나 전환하지 않습니다. 인증 파일은 DotSync 전용 CODEX_HOME에만 저장됩니다.</div></div>
+                <div class="mock-dialog-actions"><button class="ui-button" data-close-dialog>취소</button><button class="ui-button primary" id="dialog-confirm">공식 로그인 계속</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="stage-toast" id="stage-toast">검토 시안에서는 실제 작업을 실행하지 않습니다.</div>
+      </section>
+
+      <section class="decision-card">
+        <div><strong>이 구조가 원본 A의 확장으로 자연스러운가요?</strong><span>메뉴바는 빠른 확인, 전체 창은 계정·동기화·설정처럼 실수하면 안 되는 작업에 사용합니다.</span></div>
+        <button class="decision-button" data-choice="approve-menu-bar-plus-manager" id="approve-extension">이 방향이 좋음</button>
+      </section>
+    </main>
+  </template>
+
+  <script>
+    const extendedTemplate = document.getElementById('extended-concept-a');
+    document.body.innerHTML = extendedTemplate.innerHTML;
+
+    const demoStage = document.getElementById('demo-stage');
+    const modeButtons = document.querySelectorAll('[data-mode]');
+    const stageToast = document.getElementById('stage-toast');
+    let stageToastTimer;
+
+    function setMode(mode) {
+      demoStage.classList.toggle('window-mode', mode === 'window');
+      modeButtons.forEach(button => button.classList.toggle('active', button.dataset.mode === mode));
+    }
+
+    function showToast(message) {
+      stageToast.textContent = message || '검토 시안에서는 실제 작업을 실행하지 않습니다.';
+      stageToast.classList.add('show');
+      clearTimeout(stageToastTimer);
+      stageToastTimer = setTimeout(() => stageToast.classList.remove('show'), 2100);
+    }
+
+    function showManageView(view) {
+      setMode('window');
+      document.querySelectorAll('.manage-view').forEach(panel => panel.classList.toggle('active', panel.id === `manage-${view}`));
+      document.querySelectorAll('.manage-nav').forEach(button => button.classList.toggle('active', button.dataset.manageView === view));
+    }
+
+    modeButtons.forEach(button => button.addEventListener('click', () => setMode(button.dataset.mode)));
+    document.getElementById('close-manager').addEventListener('click', () => setMode('popover'));
+    document.querySelectorAll('[data-open-view]').forEach(button => button.addEventListener('click', () => showManageView(button.dataset.openView)));
+    document.querySelectorAll('[data-manage-view]').forEach(button => button.addEventListener('click', () => showManageView(button.dataset.manageView)));
+    document.querySelectorAll('[data-toast]').forEach(button => button.addEventListener('click', () => showToast(button.dataset.toast)));
+
+    let previewMode = 'backup';
+    document.querySelectorAll('[data-preview]').forEach(button => button.addEventListener('click', () => {
+      previewMode = button.dataset.preview;
+      document.querySelectorAll('[data-preview]').forEach(item => item.classList.toggle('active', item === button));
+      document.getElementById('preview-heading').textContent = previewMode === 'apply' ? 'Apply preview' : 'Backup preview';
+      document.getElementById('preview-warning').textContent = previewMode === 'apply' ? '로컬 설정을 덮어쓰기 전에 현재 설정을 자동 백업합니다.' : '동기화 폴더만 변경합니다. 로컬 앱 설정은 그대로 유지됩니다.';
+      const execute = document.getElementById('preview-execute');
+      execute.textContent = previewMode === 'apply' ? 'Apply 확인' : 'Backup 실행';
+      execute.dataset.dialog = previewMode;
+    }));
+
+    const overlay = document.getElementById('mock-overlay');
+    const dialogTitle = document.getElementById('dialog-title');
+    const dialogCopy = document.getElementById('dialog-copy');
+    const dialogBody = document.getElementById('dialog-body');
+    const dialogConfirm = document.getElementById('dialog-confirm');
+
+    function openDialog(kind, account) {
+      if (kind === 'add') {
+        dialogTitle.textContent = 'Codex 계정 추가';
+        dialogCopy.textContent = '새 계정 전용 폴더에서 공식 Codex 로그인을 시작합니다.';
+        dialogBody.innerHTML = '<input class="mock-input" value="새 Codex 계정"><div class="dialog-safety">기존 ~/.codex 로그인은 가져오거나 전환하지 않습니다. 인증 파일은 DotSync 전용 CODEX_HOME에만 저장됩니다.</div>';
+        dialogConfirm.textContent = '공식 로그인 계속';
+        dialogConfirm.className = 'ui-button primary';
+      } else if (kind === 'delete') {
+        dialogTitle.textContent = `‘${account}’ 계정을 삭제할까요?`;
+        dialogCopy.textContent = '선택한 DotSync 관리 계정에만 적용됩니다.';
+        dialogBody.innerHTML = '<div class="dialog-safety">기존 기본 Claude·Codex 설치와 다른 관리 계정은 변경되지 않습니다. 공식 로그아웃이 실패하면 계정 폴더를 보존합니다.</div>';
+        dialogConfirm.textContent = '로그아웃 후 삭제';
+        dialogConfirm.className = 'ui-button danger';
+      } else if (kind === 'apply') {
+        dialogTitle.textContent = 'Apply를 실행할까요?';
+        dialogCopy.textContent = '동기화 폴더의 설정으로 로컬 앱 설정을 바꿉니다.';
+        dialogBody.innerHTML = '<div class="dialog-safety">덮어쓰기 전에 현재 설정을 .backups 폴더에 저장합니다. 미리보기 이후 파일이 바뀌면 실행을 중단합니다.</div>';
+        dialogConfirm.textContent = '백업 후 Apply';
+        dialogConfirm.className = 'ui-button danger';
+      } else {
+        dialogTitle.textContent = 'Backup을 실행할까요?';
+        dialogCopy.textContent = '로컬 설정을 선택한 동기화 폴더에 저장합니다.';
+        dialogBody.innerHTML = '<div class="dialog-safety">로컬 앱 설정은 변경하지 않습니다. 미리보기 이후 파일이 바뀌면 실행을 중단합니다.</div>';
+        dialogConfirm.textContent = 'Backup 실행';
+        dialogConfirm.className = 'ui-button primary';
+      }
+      overlay.classList.add('open');
+    }
+
+    document.addEventListener('click', event => {
+      const trigger = event.target.closest('[data-dialog]');
+      if (trigger) openDialog(trigger.dataset.dialog, trigger.dataset.account || '계정');
+      if (event.target.closest('[data-close-dialog]')) overlay.classList.remove('open');
+    });
+    dialogConfirm.addEventListener('click', () => { overlay.classList.remove('open'); showToast('검토 시안에서는 실제 계정이나 파일을 변경하지 않습니다.'); });
+
+    document.getElementById('approve-extension').addEventListener('click', event => {
+      const button = event.currentTarget;
+      button.textContent = '✓ 선택 표시됨';
+      if (typeof window.toggleSelect === 'function') window.toggleSelect(button);
+      showToast('선택을 기록했습니다. 대화창에도 의견을 남겨 주세요.');
+    });
+  </script>
+</body>
+</html>

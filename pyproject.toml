@@ -17,6 +17,9 @@ dotsync = "dotsync.cli:main"
 [tool.setuptools.packages.find]
 where = ["lib"]
 
+[tool.setuptools.package-data]
+"dotsync.web" = ["static/*.html", "static/*.css", "static/*.mjs"]
+
 [tool.pytest.ini_options]
 pythonpath = ["lib"]
 testpaths = ["tests"]

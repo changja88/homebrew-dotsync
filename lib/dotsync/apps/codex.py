@@ -246,6 +246,8 @@ class CodexApp(App):
             source=change.source,
             dest=change.dest,
             details=", ".join(details),
+            source_manifest=change.source_manifest,
+            dest_manifest=change.dest_manifest,
         )
 
     def _read_sanitized_config(self, path: Path) -> str:

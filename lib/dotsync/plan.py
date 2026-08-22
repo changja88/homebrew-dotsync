@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Literal
@@ -29,10 +30,32 @@ class Change:
     details: str = ""
     file_changes: tuple[str, ...] = ()
     diffable: bool = True
+    source_manifest: tuple[str, ...] | None = None
+    dest_manifest: tuple[str, ...] | None = None
 
     @property
     def is_change(self) -> bool:
         return self.kind != "unchanged"
+
+    def to_dict(self, *, relative_to: Path | None = None) -> dict[str, object]:
+        """Return a JSON-safe plan record without including file contents."""
+        base = (relative_to or Path.cwd()).absolute()
+        return {
+            "label": self.label,
+            "kind": self.kind,
+            "source": _path_snapshot(
+                self.source,
+                relative_to=base,
+                manifest=self.source_manifest,
+            ),
+            "dest": _path_snapshot(
+                self.dest,
+                relative_to=base,
+                manifest=self.dest_manifest,
+            ),
+            "file_changes": list(self.file_changes),
+            "diffable": self.diffable,
+        }
 
 
 @dataclass(frozen=True)
@@ -49,11 +72,122 @@ class AppPlan:
     def changed_labels(self) -> list[str]:
         return [c.label for c in self.changes if c.is_change]
 
+    def to_dict(self, *, relative_to: Path | None = None) -> dict[str, object]:
+        """Return a JSON-safe app plan in its declared change order."""
+        return {
+            "app": self.app,
+            "direction": self.direction,
+            "description": self.description,
+            "changes": [
+                change.to_dict(relative_to=relative_to) for change in self.changes
+            ],
+        }
+
 
 def _hash(path: Path) -> str:
     h = hashlib.sha256()
     h.update(path.read_bytes())
     return h.hexdigest()
+
+
+def path_fingerprint(path: Path) -> str:
+    """Return a stable, non-reversible identifier for an absolute path."""
+    value = str(path.absolute()).encode("utf-8")
+    return f"sha256:{hashlib.sha256(value).hexdigest()}"
+
+
+def _relative_identifier(path: Path, root: Path) -> str | None:
+    try:
+        relative = path.absolute().relative_to(root.absolute())
+    except ValueError:
+        return None
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("unsafe relative path identifier")
+    identifier = relative.as_posix()
+    return identifier if identifier not in ("", ".") else "."
+
+
+def _path_reference(path: Path, *, sync_root: Path) -> dict[str, str]:
+    sync_identifier = _relative_identifier(path, sync_root)
+    if sync_identifier is not None:
+        return {"scope": "sync", "id": sync_identifier}
+
+    local_identifier = _relative_identifier(path, Path.home())
+    if local_identifier is not None:
+        return {"scope": "local", "id": local_identifier}
+
+    return {"scope": "external", "id": path_fingerprint(path)}
+
+
+def _path_snapshot(
+    path: Path | None,
+    *,
+    relative_to: Path,
+    manifest: tuple[str, ...] | None = None,
+) -> dict[str, object] | None:
+    """Describe the filesystem state used by a plan without storing bytes."""
+    if path is None:
+        return None
+
+    snapshot: dict[str, object] = _path_reference(path, sync_root=relative_to)
+    if path.is_symlink():
+        stat = path.lstat()
+        target = os.readlink(path)
+        snapshot.update(
+            kind="symlink",
+            mtime_ns=stat.st_mtime_ns,
+            target_sha256=hashlib.sha256(os.fsencode(target)).hexdigest(),
+        )
+        return snapshot
+    if not path.exists():
+        snapshot["kind"] = "missing"
+        return snapshot
+
+    if path.is_file():
+        stat = path.stat()
+        snapshot["mtime_ns"] = stat.st_mtime_ns
+        snapshot.update(kind="file", sha256=_hash(path))
+        return snapshot
+    if path.is_dir():
+        snapshot["kind"] = "directory"
+        if manifest is not None:
+            snapshot["files"] = [
+                _manifest_entry(path, identifier) for identifier in manifest
+            ]
+        return snapshot
+
+    snapshot["kind"] = "other"
+    return snapshot
+
+
+def _manifest_entry(root: Path, identifier: str) -> dict[str, object]:
+    relative = Path(identifier)
+    if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+        raise ValueError("unsafe snapshot manifest identifier")
+    child = root / relative
+    entry: dict[str, object] = {"id": relative.as_posix()}
+    if child.is_symlink():
+        stat = child.lstat()
+        target = os.readlink(child)
+        entry.update(
+            kind="symlink",
+            mtime_ns=stat.st_mtime_ns,
+            target_sha256=hashlib.sha256(os.fsencode(target)).hexdigest(),
+        )
+    elif not child.exists():
+        entry["kind"] = "missing"
+    elif child.is_file():
+        stat = child.stat()
+        entry.update(
+            kind="file",
+            mtime_ns=stat.st_mtime_ns,
+            sha256=_hash(child),
+        )
+    elif child.is_dir():
+        entry["kind"] = "directory"
+    else:
+        entry["kind"] = "other"
+    return entry
 
 
 def _root_safety_error(path: Path, root: Path | None) -> str:
@@ -181,6 +315,8 @@ def plan_tree_mirror(
     removes = dest_files - source_files
     common = source_files & dest_files
     updates = {rel for rel in common if _hash(source / rel) != _hash(dest / rel)}
+    source_manifest = tuple(rel.as_posix() for rel in sorted(source_files))
+    dest_manifest = tuple(rel.as_posix() for rel in sorted(dest_files))
 
     parts: list[str] = []
     if creates:
@@ -191,7 +327,14 @@ def plan_tree_mirror(
         parts.append(f"{len(removes)} remove")
 
     if not parts:
-        return Change(label=label, kind="unchanged", source=source, dest=dest)
+        return Change(
+            label=label,
+            kind="unchanged",
+            source=source,
+            dest=dest,
+            source_manifest=source_manifest,
+            dest_manifest=dest_manifest,
+        )
     kind: ChangeKind = "create" if creates and not updates and not removes else "update"
     entries = [f"+ {rel.as_posix()}" for rel in sorted(creates)]
     entries += [f"~ {rel.as_posix()}" for rel in sorted(updates)]
@@ -203,4 +346,6 @@ def plan_tree_mirror(
         dest=dest,
         details=", ".join(parts),
         file_changes=tuple(entries),
+        source_manifest=source_manifest,
+        dest_manifest=dest_manifest,
     )

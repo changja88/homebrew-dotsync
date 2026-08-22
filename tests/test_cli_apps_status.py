@@ -15,9 +15,12 @@ def test_status_reports_diff(fake_home, monkeypatch, tmp_path, capsys):
     rc = main(["status"])
     assert rc == 0
     out = capsys.readouterr().out
+    assert "status" in out
+    assert str(target) in out
     assert "zsh" in out
     assert "dirty" in out
     assert "⚠" in out  # design-system glyph for dirty
+    assert "update" in out
 
 
 def test_status_shows_direction_hint(fake_home, monkeypatch, tmp_path, capsys):
