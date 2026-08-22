@@ -1038,3 +1038,485 @@ dialog form {
     animation-iteration-count: 1;
   }
 }
+
+/* Reminders-style native macOS presentation. */
+:root {
+  --reminders-accent: #ff9f0a;
+  --reminders-blue: #0a84ff;
+  --reminders-red: #ff453a;
+  --reminders-green: #30d158;
+  --reminders-purple: #bf5af2;
+  --ink: #1d1d1f;
+  --muted: #6e6e73;
+  --line: rgba(60, 60, 67, 0.18);
+  --surface: #ffffff;
+  --surface-strong: #ffffff;
+  --sidebar: #f1f1f3;
+  --canvas: #ffffff;
+}
+
+body {
+  display: block;
+  color: var(--ink);
+  background: var(--canvas);
+}
+
+button {
+  border-color: rgba(60, 60, 67, 0.18);
+  border-radius: 7px;
+  padding: 6px 10px;
+  background: rgba(118, 118, 128, 0.08);
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: none;
+}
+
+button:hover:not(:disabled) {
+  border-color: rgba(60, 60, 67, 0.24);
+  background: rgba(118, 118, 128, 0.14);
+}
+
+button.primary,
+.primary {
+  border-color: transparent;
+  color: white;
+  background: var(--reminders-accent);
+  box-shadow: none;
+}
+
+button.danger {
+  color: var(--reminders-red);
+  background: rgba(255, 69, 58, 0.08);
+}
+
+:focus-visible {
+  outline-color: rgba(10, 132, 255, 0.82);
+}
+
+.manager {
+  display: block;
+  width: 100vw;
+  min-height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: var(--canvas);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.manager-shell {
+  display: grid;
+  height: 100vh;
+  min-height: 0;
+  grid-template-columns: 290px minmax(0, 1fr);
+}
+
+.manager-sidebar {
+  min-height: 0;
+  padding: 20px 14px 14px;
+  border-right: 1px solid var(--line);
+  background: var(--sidebar);
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 8px 18px;
+}
+
+.sidebar-header h1 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: -0.025em;
+}
+
+.sidebar-header p {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.sidebar-header .icon-button {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(118, 118, 128, 0.1);
+  font-size: 16px;
+}
+
+.manager-sidebar nav {
+  display: block;
+}
+
+.nav-smart-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.manager-sidebar nav .nav-smart-grid button {
+  display: grid;
+  min-height: 78px;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: 1fr auto;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 12px;
+  padding: 10px 11px;
+  color: var(--ink);
+  background: rgba(118, 118, 128, 0.14);
+  text-align: left;
+  box-shadow: none;
+}
+
+.manager-sidebar nav .nav-smart-grid button:hover:not(:disabled) {
+  background: rgba(118, 118, 128, 0.2);
+}
+
+.manager-sidebar nav .nav-smart-grid button.active {
+  color: var(--ink);
+  background: rgba(118, 118, 128, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(60, 60, 67, 0.08);
+}
+
+.nav-smart-grid button strong {
+  grid-column: 1 / -1;
+  font-size: 13px;
+}
+
+.nav-icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 50%;
+  color: white;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.overview-icon { background: var(--reminders-blue); }
+.accounts-icon { background: var(--reminders-accent); }
+.sync-icon { background: var(--reminders-green); }
+.settings-icon { background: #636366; }
+
+.nav-label {
+  padding: 22px 8px 7px;
+  color: #8e8e93;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.manager-sidebar nav .nav-list-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 8px;
+  padding: 7px 9px;
+  color: var(--ink);
+  background: transparent;
+  text-align: left;
+}
+
+.manager-sidebar nav .nav-list-item + .nav-list-item {
+  margin-top: 2px;
+}
+
+.manager-sidebar nav .nav-list-item .nav-icon {
+  width: 24px;
+  height: 24px;
+  font-size: 12px;
+}
+
+.manager-sidebar nav .nav-list-item strong {
+  font-size: 13px;
+}
+
+.manager-sidebar nav .nav-list-item.active {
+  color: var(--ink);
+  background: rgba(118, 118, 128, 0.2);
+  box-shadow: none;
+}
+
+.privacy-note {
+  margin: auto 4px 0;
+  padding: 12px 9px 2px;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  color: var(--muted);
+  background: transparent;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.privacy-note strong {
+  margin-bottom: 3px;
+  color: var(--reminders-green);
+}
+
+#manager-content {
+  min-width: 0;
+  overflow: auto;
+  padding: 38px 44px 48px;
+  background: var(--canvas);
+}
+
+.page-heading {
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.page-heading h2 {
+  margin: 0 0 3px;
+  color: var(--reminders-accent);
+  font-size: 34px;
+  font-weight: 750;
+  letter-spacing: -0.04em;
+}
+
+.page-heading p {
+  font-size: 12px;
+}
+
+.page-actions {
+  align-self: flex-start;
+}
+
+.page-actions button.primary {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.provider-card,
+.sync-card,
+.glass-card,
+.empty-state,
+.error-card {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.glass-card {
+  overflow: visible;
+}
+
+.glass-heading,
+.panel-heading,
+.provider-heading {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.glass-heading strong,
+.panel-heading strong,
+.provider-heading strong {
+  font-size: 13px;
+}
+
+.overview-grid,
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 22px;
+}
+
+.usage-panel {
+  grid-column: auto;
+}
+
+.overview-account,
+.account-row,
+.sync-app-row {
+  background: var(--surface);
+}
+
+.overview-account {
+  padding: 15px 0;
+}
+
+.overview-account + .overview-account,
+.account-row + .account-row,
+.sync-app-row + .sync-app-row {
+  border-top: 1px solid var(--line);
+}
+
+.account-row {
+  padding: 14px 0;
+}
+
+.service-icon,
+.app-glyph {
+  border-radius: 50%;
+  background: #1c1c1e;
+}
+
+.status-pill {
+  color: #248a3d;
+  background: transparent;
+  padding: 0;
+}
+
+.status-pill.stale,
+.status-pill.error {
+  color: #b25000;
+  background: transparent;
+}
+
+.policy-banner {
+  margin: 0 0 20px;
+  padding: 11px 0;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  color: var(--muted);
+  background: transparent;
+}
+
+.policy-banner strong {
+  color: var(--reminders-accent);
+}
+
+.sync-workspace {
+  gap: 28px;
+}
+
+.preview-panel {
+  padding: 0 16px 16px;
+  border-radius: 12px;
+  background: rgba(118, 118, 128, 0.08);
+}
+
+.preview-tabs {
+  background: rgba(118, 118, 128, 0.12);
+}
+
+.setting-card {
+  padding: 0;
+}
+
+.setting-card h3 {
+  color: var(--reminders-accent);
+  font-size: 14px;
+}
+
+.path-field {
+  border-radius: 8px;
+  background: rgba(118, 118, 128, 0.08);
+}
+
+.empty-state,
+.error-card {
+  padding: 24px 0;
+}
+
+.popover {
+  border: 0;
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.brand-mark {
+  border-radius: 50%;
+  background: var(--reminders-accent);
+  box-shadow: none;
+}
+
+.summary-strip {
+  border: 0;
+  background: rgba(118, 118, 128, 0.1);
+}
+
+#global-progress,
+.meter progress,
+.sync-app-row input {
+  accent-color: var(--reminders-accent);
+}
+
+dialog {
+  border-color: var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.22);
+}
+
+dialog form {
+  background: var(--sidebar);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #f5f5f7;
+    --muted: #98989d;
+    --line: rgba(84, 84, 88, 0.65);
+    --surface: #1c1c1e;
+    --surface-strong: #2c2c2e;
+    --sidebar: #242426;
+    --canvas: #1c1c1e;
+  }
+
+  .manager,
+  .popover,
+  dialog {
+    background: var(--canvas);
+  }
+
+  .manager-sidebar nav .nav-smart-grid button,
+  .manager-sidebar nav .nav-list-item.active,
+  .sidebar-header .icon-button {
+    background: rgba(118, 118, 128, 0.28);
+  }
+
+  button,
+  dialog form {
+    background: rgba(118, 118, 128, 0.22);
+  }
+
+  button:hover:not(:disabled) {
+    background: rgba(118, 118, 128, 0.32);
+  }
+
+  button.primary,
+  .primary {
+    background: var(--reminders-accent);
+  }
+
+  .policy-card,
+  .policy-banner {
+    color: var(--muted);
+    background: transparent;
+  }
+}
+
+@media (max-width: 760px) {
+  .manager-shell {
+    grid-template-columns: 190px minmax(0, 1fr);
+  }
+
+  .manager-brand > div,
+  .privacy-note,
+  .nav-label {
+    display: block;
+  }
+
+  #manager-content {
+    padding: 28px 24px 36px;
+  }
+
+  .account-row,
+  .overview-account,
+  .sync-workspace {
+    grid-template-columns: 1fr;
+  }
+}

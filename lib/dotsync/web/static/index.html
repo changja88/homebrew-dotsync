@@ -55,30 +55,38 @@
     </section>
 
     <section class="manager" data-surface="manager" hidden aria-label="DotSync management">
-      <header class="manager-titlebar">
-        <span class="window-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-        <strong>DotSync</strong>
-        <button class="icon-button" type="button" data-action="refresh-all" aria-label="새로고침">↻</button>
-      </header>
       <div class="manager-shell">
         <aside class="manager-sidebar">
-          <div class="manager-brand">
-            <span class="brand-mark" aria-hidden="true">D</span>
+          <header class="sidebar-header">
             <div>
               <h1>DotSync</h1>
-              <p>Local control center</p>
+              <p>로컬 계정과 설정 관리</p>
             </div>
-          </div>
-          <span class="nav-label">Workspace</span>
+            <button class="icon-button" type="button" data-action="refresh-all" aria-label="새로고침">↻</button>
+          </header>
           <nav aria-label="주요 화면">
-            <button type="button" data-destination="overview"><span aria-hidden="true">⌂</span>Overview</button>
-            <button type="button" data-destination="accounts"><span aria-hidden="true">◎</span>Accounts</button>
-            <button type="button" data-destination="sync"><span aria-hidden="true">⇄</span>Config Sync</button>
-            <span class="nav-label">General</span>
-            <button type="button" data-destination="settings"><span aria-hidden="true">⚙</span>Settings</button>
+            <div class="nav-smart-grid">
+              <button type="button" data-destination="overview">
+                <span class="nav-icon overview-icon" aria-hidden="true">⌂</span>
+                <strong>Overview</strong>
+              </button>
+              <button type="button" data-destination="accounts">
+                <span class="nav-icon accounts-icon" aria-hidden="true">◎</span>
+                <strong>Accounts</strong>
+              </button>
+            </div>
+            <span class="nav-label">DotSync</span>
+            <button class="nav-list-item" type="button" data-destination="sync">
+              <span class="nav-icon sync-icon" aria-hidden="true">⇄</span>
+              <strong>Config Sync</strong>
+            </button>
+            <button class="nav-list-item" type="button" data-destination="settings">
+              <span class="nav-icon settings-icon" aria-hidden="true">⚙</span>
+              <strong>Settings</strong>
+            </button>
           </nav>
           <p class="privacy-note">
-            <strong>⌾ 원본 보호 활성</strong>
+            <strong>원본 보호 활성</strong>
             계정 기능은 ~/.claude와 ~/.codex를 읽거나 수정하지 않습니다.
           </p>
         </aside>

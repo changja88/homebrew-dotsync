@@ -35,6 +35,8 @@ def test_packaged_ui_has_both_concept_a_surfaces(package_assets):
 
     assert 'data-surface="popover"' in html
     assert 'data-surface="manager"' in html
+    assert 'class="manager-titlebar"' not in html
+    assert 'class="window-dots"' not in html
     for destination in ("overview", "accounts", "sync", "settings"):
         assert f'data-destination="{destination}"' in html
 
@@ -85,8 +87,7 @@ def test_styles_preserve_accessibility_and_compact_popover_contract(package_asse
     assert "@media (max-width: 320px)" in styles
     assert "width: 360px" in styles
     assert "min-height: 560px" in styles
-    for value in ("#f780e2", "#c069f0", "#7571f9"):
-        assert value in styles
+    assert "#ff9f0a" in styles
 
 
 def test_module_imports_are_local_and_entrypoint_is_external(package_assets):
