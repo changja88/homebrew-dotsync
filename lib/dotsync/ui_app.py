@@ -1,9 +1,8 @@
-"""Explicit production composition root for browser and native DotSync UI."""
+"""Explicit production composition root for the browser DotSync UI."""
 
 from __future__ import annotations
 
 import socket
-import sys
 import webbrowser
 from pathlib import Path
 
@@ -16,7 +15,6 @@ from dotsync.macos_actions import (
     open_provider_login_url,
     reveal_in_finder,
 )
-from dotsync.native_host import run_native_host
 from dotsync.providers.claude import ClaudeUsageProvider
 from dotsync.providers.codex import CodexUsageProvider
 from dotsync.sync_service import SyncService
@@ -85,23 +83,9 @@ def run_browser_ui(*, open_browser: bool) -> int:
     application = build_web_application(idle_shutdown_enabled=True)
     with run_ui_server(application) as server:
         if open_browser:
-            webbrowser.open(
-                server.launch_url_for(
-                    surface="manager",
-                    destination="overview",
-                )
-            )
+            webbrowser.open(server.launch_url_for(destination="overview"))
         server.wait()
     return 0
-
-
-def run_native_ui() -> int:
-    application = build_web_application(idle_shutdown_enabled=False)
-    return run_native_host(
-        application,
-        control=sys.stdin.buffer,
-        handshake=sys.stdout.buffer,
-    )
 
 
 def check_ui_installation() -> None:

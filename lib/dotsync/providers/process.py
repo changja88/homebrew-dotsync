@@ -26,6 +26,8 @@ from .base import ProviderError
 _PASSTHROUGH_VARIABLES = frozenset(
     {
         "PATH",
+        "USER",
+        "LOGNAME",
         "LANG",
         "LC_ALL",
         "LC_ADDRESS",
@@ -88,12 +90,20 @@ def provider_environment(
     }
     home = account_root / "home"
     tmp = account_root / "tmp"
-    env["HOME"] = str(home)
     env["TMPDIR"] = str(tmp)
     if provider == "claude":
+        user_home = env.get("HOME") or str(Path.home())
+        if not Path(user_home).is_absolute():
+            raise ProviderError(
+                "process_start_failed",
+                "The macOS user home is unavailable.",
+            )
+        env["HOME"] = user_home
         env["CLAUDE_CONFIG_DIR"] = str(home)
+        env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = str(home)
         env["CLAUDE_CODE_TMPDIR"] = str(tmp)
     else:
+        env["HOME"] = str(home)
         env["CODEX_HOME"] = str(home)
     return env
 

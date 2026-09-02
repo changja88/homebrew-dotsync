@@ -259,6 +259,7 @@ def read_private_json(path: Path, *, root: Path) -> Any:
 class _ScannedDirectory:
     descriptor: int | None
     files: list[str] = field(default_factory=list)
+    links: list[str] = field(default_factory=list)
     directories: list[tuple[str, "_ScannedDirectory"]] = field(default_factory=list)
 
 
@@ -270,21 +271,32 @@ def _close_tree(tree: _ScannedDirectory) -> None:
         tree.descriptor = None
 
 
-def _scan_tree(descriptor: int) -> _ScannedDirectory:
+def _scan_tree(
+    descriptor: int,
+    *,
+    allow_symlinks: bool = False,
+) -> _ScannedDirectory:
     tree = _ScannedDirectory(descriptor)
     try:
         with os.scandir(os.dup(descriptor)) as entries:
             for entry in entries:
                 if entry.is_symlink():
-                    raise UnsafePrivatePath(
-                        f"symlink is not allowed in private path: {entry.name}"
-                    )
+                    if not allow_symlinks:
+                        raise UnsafePrivatePath(
+                            f"symlink is not allowed in private path: {entry.name}"
+                        )
+                    tree.links.append(entry.name)
                 if entry.is_dir(follow_symlinks=False):
                     child = _open_directory_at(descriptor, entry.name)
-                    tree.directories.append((entry.name, _scan_tree(child)))
+                    tree.directories.append(
+                        (
+                            entry.name,
+                            _scan_tree(child, allow_symlinks=allow_symlinks),
+                        )
+                    )
                 elif entry.is_file(follow_symlinks=False):
                     tree.files.append(entry.name)
-                else:
+                elif not entry.is_symlink():
                     raise UnsafePrivatePath(
                         f"unsupported private tree entry: {entry.name}"
                     )
@@ -299,6 +311,8 @@ def _remove_scanned_tree(tree: _ScannedDirectory) -> None:
     try:
         for name in tree.files:
             os.unlink(name, dir_fd=tree.descriptor)
+        for name in tree.links:
+            os.unlink(name, dir_fd=tree.descriptor)
         for name, child in tree.directories:
             _remove_scanned_tree(child)
             os.rmdir(name, dir_fd=tree.descriptor)
@@ -307,7 +321,12 @@ def _remove_scanned_tree(tree: _ScannedDirectory) -> None:
         tree.descriptor = None
 
 
-def validate_private_tree(path: Path, *, allowed_root: Path) -> bool:
+def validate_private_tree(
+    path: Path,
+    *,
+    allowed_root: Path,
+    allow_symlinks: bool = False,
+) -> bool:
     """Validate a regular private tree without following links or mutating it."""
     root_parts, relative = _relative_parts(path, allowed_root)
     try:
@@ -324,7 +343,7 @@ def validate_private_tree(path: Path, *, allowed_root: Path) -> bool:
             target_fd = _open_directory_at(parent_fd, relative[-1])
         except FileNotFoundError:
             return False
-        tree = _scan_tree(target_fd)
+        tree = _scan_tree(target_fd, allow_symlinks=allow_symlinks)
         return True
     finally:
         if tree is not None:
@@ -336,6 +355,8 @@ def _tree_matches_fresh_validation(
     parent_fd: int,
     name: str,
     expected_metadata: os.stat_result,
+    *,
+    allow_symlinks: bool,
 ) -> bool:
     """Return true only for a freshly scanned tree with the expected identity."""
     target_fd: int | None = None
@@ -358,7 +379,7 @@ def _tree_matches_fresh_validation(
             return False
         scan_fd = target_fd
         target_fd = None
-        tree = _scan_tree(scan_fd)
+        tree = _scan_tree(scan_fd, allow_symlinks=allow_symlinks)
         final_metadata = _entry_metadata(parent_fd, name)
         return bool(
             final_metadata is not None
@@ -380,6 +401,7 @@ def move_private_tree(
     destination: Path,
     *,
     allowed_root: Path,
+    allow_symlinks: bool = False,
 ) -> bool:
     """Atomically move one validated tree within a descriptor-anchored root."""
     absolute_source, private_root = _within_root(source, allowed_root)
@@ -417,7 +439,7 @@ def move_private_tree(
             source_fd = _open_directory_at(source_parent_fd, source_relative[-1])
         except FileNotFoundError:
             return False
-        tree = _scan_tree(source_fd)
+        tree = _scan_tree(source_fd, allow_symlinks=allow_symlinks)
         assert tree.descriptor is not None
         scanned_metadata = os.fstat(tree.descriptor)
 
@@ -460,7 +482,7 @@ def move_private_tree(
             destination_parent_fd,
             destination_relative[-1],
         )
-        moved_tree = _scan_tree(moved_fd)
+        moved_tree = _scan_tree(moved_fd, allow_symlinks=allow_symlinks)
         _close_tree(moved_tree)
         os.fsync(source_parent_fd)
         if destination_parent_fd != source_parent_fd:
@@ -472,6 +494,7 @@ def move_private_tree(
                 destination_parent_fd,
                 destination_relative[-1],
                 scanned_metadata,
+                allow_symlinks=allow_symlinks,
             )
             if isinstance(error, Exception):
                 detail = "interrupted" if destination_is_valid else "unsafe"
@@ -527,7 +550,12 @@ def remove_empty_private_directory(path: Path, *, allowed_root: Path) -> bool:
         os.close(parent_fd)
 
 
-def remove_private_tree(path: Path, *, allowed_root: Path) -> None:
+def remove_private_tree(
+    path: Path,
+    *,
+    allowed_root: Path,
+    allow_symlinks: bool = False,
+) -> None:
     """Remove a regular private tree only after a descriptor-anchored scan."""
     target, root = _within_root(path, allowed_root)
     if target == root:
@@ -547,7 +575,7 @@ def remove_private_tree(path: Path, *, allowed_root: Path) -> None:
             return
         scan_fd = target_fd
         target_fd = None
-        tree = _scan_tree(scan_fd)
+        tree = _scan_tree(scan_fd, allow_symlinks=allow_symlinks)
         try:
             _remove_scanned_tree(tree)
         except BaseException:

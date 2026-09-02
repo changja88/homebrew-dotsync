@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Iterator, Protocol
 
 from dotsync.accounts import (
+    AccountConflict,
     AccountNotFound,
     AccountStore,
     AccountStoreError,
@@ -181,7 +182,13 @@ class UsageService:
                     report,
                     cancel_event=cancel_event,
                 )
-            return self._accounts.set_identity(account.id, identity, "ready")
+            try:
+                return self._accounts.set_identity(account.id, identity, "ready")
+            except AccountConflict:
+                raise ProviderError(
+                    "account_conflict",
+                    "This provider account is already managed by DotSync.",
+                ) from None
 
     def refresh(
         self,
@@ -244,13 +251,20 @@ class UsageService:
         effective_cancel_event = (
             job_context.cancel_event if job_context is not None else cancel_event
         )
-        with self._account_operation(account_id):
+        with self._account_operation(
+            account_id,
+            wait_cancel_event=effective_cancel_event,
+        ):
             if self._recover_deletion(account_id, job_context):
                 return
             account = self._accounts.get(account_id)
             profile_root = self._paths.account_root(account.provider, account.id)
             cache_root = self._paths.usage / account.id
-            validate_private_tree(profile_root, allowed_root=self._paths.root)
+            validate_private_tree(
+                profile_root,
+                allowed_root=self._paths.root,
+                allow_symlinks=True,
+            )
             validate_private_tree(cache_root, allowed_root=self._paths.root)
 
             if not force_local and account.state != "logged_out":
@@ -336,11 +350,21 @@ class UsageService:
         return True
 
     @contextmanager
-    def _account_operation(self, account_id: str) -> Iterator[None]:
+    def _account_operation(
+        self,
+        account_id: str,
+        *,
+        wait_cancel_event: threading.Event | None = None,
+    ) -> Iterator[None]:
         validated_id = _validate_account_id(account_id)
         lock = self._coordination.lock_for_account(validated_id)
-        if not lock.acquire(blocking=False):
-            raise OperationConflict("an account operation is already running")
+        if wait_cancel_event is None:
+            if not lock.acquire(blocking=False):
+                raise OperationConflict("an account operation is already running")
+        else:
+            while not lock.acquire(timeout=0.05):
+                if wait_cancel_event.is_set():
+                    raise _cancelled_provider_error("logout")
         try:
             yield
         finally:

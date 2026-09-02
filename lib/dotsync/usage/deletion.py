@@ -114,6 +114,7 @@ class AccountDeletion:
             self.profile,
             self.staged_profile,
             allowed_root=self.paths.root,
+            allow_symlinks=True,
         )
         move_private_tree(
             self.cache,
@@ -127,6 +128,7 @@ class AccountDeletion:
             remove_private_tree(
                 self.staged_profile,
                 allowed_root=self.root,
+                allow_symlinks=True,
             )
             remove_private_tree(
                 self.staged_cache,
@@ -143,6 +145,7 @@ class AccountDeletion:
             remove_private_tree(
                 self.root,
                 allowed_root=self.paths.root / ".deletions",
+                allow_symlinks=True,
             )
         except FileNotFoundError:
             return

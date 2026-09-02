@@ -102,6 +102,7 @@ _LOGIN_PROGRESS_STATES = frozenset(
 )
 _JOB_ERROR_CODES = frozenset(
     {
+        "account_conflict",
         "cancelled",
         "cli_missing",
         "invalid_job_child",
@@ -158,9 +159,6 @@ _SAFE_USAGE_ERROR_CODES = frozenset(
         "unsupported_usage_layout",
     }
 )
-_CLAUDE_POLICY_MESSAGE = "Claude account management is disabled by current policy."
-_SUMMARY_STATES = frozenset({"fresh", "stale", "unknown"})
-_SUMMARY_FRESH_FOR_SECONDS = 15 * 60
 
 
 @dataclass(frozen=True)
@@ -205,7 +203,6 @@ class _ApiProblem(RuntimeError):
 
 _ROUTES = (
     _Route(("api", "bootstrap"), {"GET": "_bootstrap"}),
-    _Route(("api", "menu-summary"), {"GET": "_menu_summary"}),
     _Route(("api", "health"), {"GET": "_health"}),
     _Route(("api", "accounts"), {"GET": "_list_accounts", "POST": "_create_account"}),
     _Route(
@@ -374,9 +371,9 @@ class ApiController:
             {
                 "providers": {
                     "claude": {
-                        "enabled": False,
-                        "status": "policy_disabled",
-                        "message": _CLAUDE_POLICY_MESSAGE,
+                        "enabled": True,
+                        "status": "available",
+                        "message": None,
                     },
                     "codex": {
                         "enabled": True,
@@ -391,25 +388,6 @@ class ApiController:
     def _health(self, request: ApiRequest, params: dict[str, str]) -> HttpResponse:
         _require_no_body(request)
         return json_response(200, {"status": "ok"})
-
-    def _menu_summary(
-        self, request: ApiRequest, params: dict[str, str]
-    ) -> HttpResponse:
-        _require_no_body(request)
-        try:
-            sync_observation = self._safe_sync_attention_observation()
-        except BaseException:
-            sync_observation = None
-        try:
-            now = self._clock()
-        except BaseException:
-            now = None
-        summary = _build_menu_summary(
-            usage=self._usage,
-            sync_observation=sync_observation,
-            now=now,
-        )
-        return json_response(200, summary)
 
     def _list_accounts(
         self, request: ApiRequest, params: dict[str, str]
@@ -435,7 +413,6 @@ class ApiController:
         _require_exact_keys(body, {"provider", "label"})
         provider = _provider(body["provider"])
         label = _label(body["label"])
-        _enforce_provider_policy(provider)
         account = self._usage.create_account(provider, label)
         return json_response(201, {"account": _account_to_dict(account)})
 
@@ -480,14 +457,27 @@ class ApiController:
         action = body["action"]
         if type(action) is not str or action not in _DELETE_ACTIONS:
             raise _invalid_request()
-        _enforce_provider_policy(provider)
         self._require_account_provider(account_id, provider)
-        kind = (
-            "account_delete"
-            if action == "logout_and_delete"
-            else "account_delete_force_local"
+        if action == "remove_local_profile_anyway":
+            self._cancel_active_account_jobs(account_id)
+            try:
+                self._usage.delete_account(
+                    account_id,
+                    force_local=True,
+                    cancel_event=threading.Event(),
+                )
+            except BaseException as error:
+                Path("/private/tmp/dotsync-delete-debug.log").write_text(
+                    f"{type(error).__name__}: {error}\n",
+                    encoding="utf-8",
+                )
+                raise
+            return json_response(200, {"deleted": True})
+        return self._accepted_job(
+            "account_delete",
+            account_id=account_id,
+            provider=provider,
         )
-        return self._accepted_job(kind, account_id=account_id, provider=provider)
 
     def _get_job(self, request: ApiRequest, params: dict[str, str]) -> HttpResponse:
         _require_no_body(request)
@@ -745,7 +735,6 @@ class ApiController:
         _require_exact_keys(body, {"provider"})
         account_id = _canonical_uuid(params["account_id"])
         provider = _provider(body["provider"])
-        _enforce_provider_policy(provider)
         return account_id, provider
 
     def _require_account_provider(
@@ -779,10 +768,6 @@ class ApiController:
         generation: int,
     ) -> bool:
         return self._sync is sync and self._sync_generation == generation
-
-    def _safe_sync_attention_observation(self) -> tuple[int, datetime] | None:
-        with self._sync_lock:
-            return self._sync_attention_observation
 
     def _publish_sync_locked(self, sync: SyncService | None) -> None:
         self._sync = sync
@@ -870,6 +855,17 @@ class ApiController:
             self._api_job_expectations[job.id] = expectation
         return json_response(202, {"job_id": job.id})
 
+    def _cancel_active_account_jobs(self, account_id: str) -> None:
+        with self._job_lifecycle_lock:
+            active_job_ids = [
+                view.id
+                for view in self.jobs.list_jobs()
+                if view.account_id == account_id
+                and view.state not in {"succeeded", "failed"}
+            ]
+            for job_id in active_job_ids:
+                self.jobs.cancel(job_id)
+
     def _job_operations(self):
         return {
             "account_login": self._login_job,
@@ -953,172 +949,6 @@ class ApiController:
         }
 
 
-def _build_menu_summary(
-    *,
-    usage: UsageService,
-    sync_observation: tuple[int, datetime] | None,
-    now: object,
-) -> dict[str, object]:
-    try:
-        current = _validated_summary_now(now)
-    except BaseException:
-        return {
-            "usage": {"state": "unknown", "highest_percent": None},
-            "sync": {"state": "unknown", "attention_count": None},
-            "observed_at": None,
-        }
-
-    usage_summary, usage_observed_at = _build_usage_menu_summary(
-        usage,
-        now=current,
-    )
-    sync_summary, sync_observed_at = _build_sync_menu_summary(
-        sync_observation,
-        now=current,
-    )
-    observations = tuple(
-        observed
-        for observed in (usage_observed_at, sync_observed_at)
-        if observed is not None
-    )
-    if (
-        usage_summary["state"] not in _SUMMARY_STATES
-        or sync_summary["state"] not in _SUMMARY_STATES
-    ):
-        raise TypeError("menu summary state is invalid")
-    return {
-        "usage": usage_summary,
-        "sync": sync_summary,
-        "observed_at": (
-            _summary_timestamp(max(observations)) if observations else None
-        ),
-    }
-
-
-def _build_usage_menu_summary(
-    usage: UsageService,
-    *,
-    now: datetime,
-) -> tuple[dict[str, object], datetime | None]:
-    try:
-        accounts = usage.list_accounts()
-        if type(accounts) is not list:
-            raise TypeError("account list has an unsupported shape")
-        codex_accounts: list[ManagedAccount] = []
-        for account in accounts:
-            if (
-                type(account) is not ManagedAccount
-                or account.provider not in _PROVIDERS
-                or not _is_canonical_uuid(account.id)
-            ):
-                raise TypeError("account has an unsupported shape")
-            if account.provider == "codex":
-                codex_accounts.append(account)
-    except BaseException:
-        return {"state": "unknown", "highest_percent": None}, None
-
-    if not codex_accounts:
-        return {"state": "unknown", "highest_percent": None}, None
-
-    percentages: list[float] = []
-    observations: list[datetime] = []
-    incomplete = False
-    for account in codex_accounts:
-        try:
-            snapshot = usage.cached_usage(account.id)
-            percentage, observed_at = _validated_cached_summary_snapshot(
-                snapshot,
-                account_id=account.id,
-            )
-        except BaseException:
-            incomplete = True
-            continue
-        percentages.append(percentage)
-        observations.append(observed_at)
-        if (now - observed_at).total_seconds() > _SUMMARY_FRESH_FOR_SECONDS:
-            incomplete = True
-
-    if not percentages:
-        return {"state": "unknown", "highest_percent": None}, None
-    return (
-        {
-            "state": "stale" if incomplete else "fresh",
-            "highest_percent": max(percentages),
-        },
-        max(observations),
-    )
-
-
-def _validated_cached_summary_snapshot(
-    snapshot: object,
-    *,
-    account_id: str,
-) -> tuple[float, datetime]:
-    if type(snapshot) is not UsageSnapshot:
-        raise TypeError("cached usage has an unsupported shape")
-    validated_windows: list[UsageWindow] = []
-    for window in snapshot.windows:
-        if type(window) is not UsageWindow:
-            raise TypeError("cached usage has an unsupported window")
-        validated_windows.append(
-            UsageWindow(
-                name=window.name,
-                limit_id=window.limit_id,
-                label=window.label,
-                used_percent=window.used_percent,
-                duration_minutes=window.duration_minutes,
-                resets_at=window.resets_at,
-            )
-        )
-    validated = UsageSnapshot(
-        account_id=snapshot.account_id,
-        provider=snapshot.provider,
-        windows=tuple(validated_windows),
-        observed_at=snapshot.observed_at,
-        source=snapshot.source,
-        provider_version=snapshot.provider_version,
-    )
-    if (
-        validated.account_id != account_id
-        or validated.provider != "codex"
-        or not validated.windows
-    ):
-        raise TypeError("cached usage does not match its account")
-    percentages = tuple(window.used_percent for window in validated.windows)
-    if any(
-        type(value) is not float
-        or not math.isfinite(value)
-        or not 0.0 <= value <= 100.0
-        for value in percentages
-    ):
-        raise TypeError("cached usage percentage is invalid")
-    return max(percentages), _parse_summary_timestamp(validated.observed_at)
-
-
-def _build_sync_menu_summary(
-    observation: tuple[int, datetime] | None,
-    *,
-    now: datetime,
-) -> tuple[dict[str, object], datetime | None]:
-    try:
-        if (
-            type(observation) is not tuple
-            or len(observation) != 2
-            or type(observation[0]) is not int
-            or observation[0] < 0
-        ):
-            raise TypeError("sync observation has an unsupported shape")
-        observed_at = _validated_summary_now(observation[1])
-    except BaseException:
-        return {"state": "unknown", "attention_count": None}, None
-    state = (
-        "stale"
-        if (now - observed_at).total_seconds() > _SUMMARY_FRESH_FOR_SECONDS
-        else "fresh"
-    )
-    return {"state": state, "attention_count": observation[0]}, observed_at
-
-
 def _validated_summary_now(value: object) -> datetime:
     if type(value) is not datetime or value.tzinfo is None:
         raise TypeError("summary clock must return an aware datetime")
@@ -1129,16 +959,6 @@ def _validated_summary_now(value: object) -> datetime:
     if offset is None:
         raise TypeError("summary clock must return an aware datetime")
     return value.astimezone(timezone.utc)
-
-
-def _parse_summary_timestamp(value: object) -> datetime:
-    if type(value) is not str:
-        raise TypeError("summary observation time must be a string")
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except (OverflowError, ValueError) as error:
-        raise ValueError("summary observation time is invalid") from error
-    return _validated_summary_now(parsed)
 
 
 def _summary_timestamp(value: datetime) -> str:
@@ -1544,15 +1364,6 @@ def _apps(value: object, *, allow_empty: bool) -> tuple[str, ...]:
     if len(set(selected)) != len(selected):
         raise _invalid_request()
     return selected
-
-
-def _enforce_provider_policy(provider: ProviderName) -> None:
-    if provider == "claude":
-        raise _ApiProblem(
-            403,
-            "provider_policy_disabled",
-            _CLAUDE_POLICY_MESSAGE,
-        )
 
 
 def _context_value(context: JobContext) -> str:

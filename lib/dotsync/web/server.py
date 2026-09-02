@@ -447,7 +447,6 @@ class RunningUIServer:
     def launch_url_for(
         self,
         *,
-        surface: Literal["popover", "manager"] = "manager",
         destination: Literal[
             "overview", "accounts", "sync", "settings"
         ] = "overview",
@@ -455,7 +454,6 @@ class RunningUIServer:
         query = urlencode(
             {
                 "token": self._server.application.token,
-                "surface": surface,
                 "destination": destination,
             }
         )
@@ -463,10 +461,7 @@ class RunningUIServer:
 
     @property
     def launch_url(self) -> str:
-        return self.launch_url_for(
-            surface="manager",
-            destination="overview",
-        )
+        return self.launch_url_for(destination="overview")
 
     def wait(self, *, timeout: float | None = None) -> bool:
         return self._stopped.wait(timeout=timeout)

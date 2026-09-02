@@ -118,6 +118,12 @@ class AccountStore:
             validated_state = _validate_state(state)
             accounts = self._load()
             current = self._find(accounts, validated_id)
+            _ensure_unique_identity(
+                accounts,
+                current.provider,
+                validated_identity,
+                excluding_id=current.id,
+            )
             replacement = ManagedAccount(
                 id=current.id,
                 provider=current.provider,
@@ -298,6 +304,30 @@ def _ensure_unique_label(
         ):
             raise AccountConflict(
                 f"account label already exists for {provider}: {account.label}"
+            )
+
+
+def _ensure_unique_identity(
+    accounts: list[ManagedAccount],
+    provider: ProviderName,
+    identity: ProviderIdentity,
+    *,
+    excluding_id: str,
+) -> None:
+    """Reject a second managed login for the same provider account."""
+    if identity.email is None or not identity.email.strip():
+        return
+    normalized_email = identity.email.strip().casefold()
+    for account in accounts:
+        existing_email = account.identity.email
+        if (
+            account.provider == provider
+            and account.id != excluding_id
+            and existing_email is not None
+            and existing_email.strip().casefold() == normalized_email
+        ):
+            raise AccountConflict(
+                "provider account is already managed by DotSync"
             )
 
 

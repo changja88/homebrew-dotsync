@@ -91,52 +91,12 @@ button.danger {
   display: none !important;
 }
 
-.brand-mark {
-  display: grid;
-  flex: 0 0 auto;
-  width: 36px;
-  height: 36px;
-  place-items: center;
-  border-radius: 11px;
-  color: white;
-  background: var(--brand-gradient);
-  box-shadow: 0 7px 18px rgba(140, 83, 218, 0.28);
-  font-weight: 900;
-}
-
 .icon-button {
   display: grid;
   width: 32px;
   height: 32px;
   padding: 0;
   place-items: center;
-}
-
-.popover {
-  display: flex;
-  width: 360px;
-  max-width: 100vw;
-  min-height: 560px;
-  max-height: 560px;
-  flex-direction: column;
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.8);
-  border-radius: 22px;
-  background: rgba(252, 250, 253, 0.93);
-  box-shadow: 0 30px 80px rgba(12, 8, 23, 0.42);
-  backdrop-filter: blur(40px) saturate(1.4);
-}
-
-.popover-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 15px 14px 11px;
-}
-
-.brand-copy {
-  min-width: 0;
-  flex: 1;
 }
 
 .brand-copy h1,
@@ -154,72 +114,6 @@ button.danger {
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.summary-strip {
-  display: grid;
-  margin: 0 12px 10px;
-  grid-template-columns: 1fr 1fr;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: var(--surface);
-}
-
-.summary-strip > div {
-  min-width: 0;
-  padding: 11px;
-}
-
-.summary-strip > div + div {
-  border-left: 1px solid var(--line);
-}
-
-.summary-strip strong {
-  display: block;
-  font-size: 18px;
-  letter-spacing: -0.04em;
-}
-
-.summary-strip span {
-  display: block;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 9px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-#global-progress {
-  width: calc(100% - 24px);
-  height: 4px;
-  margin: -3px 12px 7px;
-  accent-color: var(--purple);
-}
-
-#popover-content {
-  min-height: 0;
-  flex: 1;
-  overflow: auto;
-  scrollbar-width: thin;
-}
-
-.section-label {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 7px 15px 5px;
-  color: var(--muted);
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.section-label span:last-child {
-  font-weight: 650;
-  letter-spacing: 0;
-  text-transform: none;
 }
 
 .provider-card,
@@ -294,39 +188,13 @@ button.danger {
   font-size: 11px;
 }
 
-.account-compact {
-  gap: 9px;
-  padding: 9px 11px;
-}
-
 .account-compact + .account-compact,
 .sync-row + .sync-row,
 .setting-line + .setting-line {
   border-top: 1px solid var(--line);
 }
 
-.account-compact > div:first-child {
-  min-width: 78px;
-}
-
 .account-compact b,
-.account-compact small {
-  display: block;
-}
-
-.account-compact b {
-  overflow: hidden;
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.account-compact small {
-  margin-top: 2px;
-  color: var(--muted);
-  font-size: 8px;
-}
-
 .meter-grid {
   display: grid;
   min-width: 0;
@@ -382,36 +250,6 @@ button.danger {
 
 .status-dot.unknown {
   background: var(--purple);
-}
-
-.popover-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  padding: 2px 12px 11px;
-}
-
-.popover-actions button {
-  padding: 10px 7px;
-  font-size: 10px;
-}
-
-.popover-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 43px;
-  padding: 6px 10px 6px 14px;
-  border-top: 1px solid var(--line);
-  color: var(--muted);
-}
-
-.popover-footer > button:first-child {
-  border: 0;
-  padding: 4px 0;
-  color: var(--muted);
-  background: transparent;
-  font-size: 10px;
 }
 
 .manager {
@@ -946,7 +784,6 @@ dialog form {
     --shadow: 0 26px 70px rgba(0, 0, 0, 0.34);
   }
 
-  .popover,
   .manager,
   dialog {
     background: rgba(32, 27, 42, 0.94);
@@ -1016,17 +853,6 @@ dialog form {
   .overview-account,
   .account-row {
     grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 320px) {
-  .popover {
-    width: min(320px, 100vw);
-    border-radius: 0;
-  }
-
-  .account-compact > div:first-child {
-    min-width: 68px;
   }
 }
 
@@ -1419,25 +1245,6 @@ button.danger {
   padding: 24px 0;
 }
 
-.popover {
-  border: 0;
-  border-radius: 14px;
-  background: var(--surface);
-  box-shadow: none;
-  backdrop-filter: none;
-}
-
-.brand-mark {
-  border-radius: 50%;
-  background: var(--reminders-accent);
-  box-shadow: none;
-}
-
-.summary-strip {
-  border: 0;
-  background: rgba(118, 118, 128, 0.1);
-}
-
 #global-progress,
 .meter progress,
 .sync-app-row input {
@@ -1467,7 +1274,6 @@ dialog form {
   }
 
   .manager,
-  .popover,
   dialog {
     background: var(--canvas);
   }

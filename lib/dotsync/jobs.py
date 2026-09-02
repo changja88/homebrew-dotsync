@@ -140,6 +140,7 @@ _WORKER_JOIN_SECONDS = 0.25
 _ERROR_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SAFE_PROVIDER_CODES = frozenset(
     {
+        "account_conflict",
         "cli_missing",
         "login_cancelled",
         "logout_cancelled",
