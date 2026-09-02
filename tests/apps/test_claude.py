@@ -1134,20 +1134,45 @@ def test_mirror_tree_replaces_directory_with_file(tmp_path):
     assert (dst / "conflict.md").read_text() == "file\n"
 
 
-def test_sync_from_refuses_symlink_in_global_rule_directory(fake_home, tmp_path):
+def test_sync_from_skips_symlink_in_global_rule_directory_and_warns(
+    fake_home, tmp_path
+):
     _make_local(fake_home)
     outside = tmp_path / "secret.md"
     outside.write_text("secret\n")
     commands = fake_home / ".claude" / "commands"
     commands.mkdir()
     (commands / "leak.md").symlink_to(outside)
+    (commands / "safe.md").write_text("safe\n")
     target = tmp_path / "configs"
     target.mkdir()
 
-    with pytest.raises(RuntimeError, match="symlink"):
-        ClaudeApp().sync_from(target)
+    app = ClaudeApp()
+    app.sync_from(target)
 
+    assert (target / "claude" / "commands" / "safe.md").read_text() == "safe\n"
     assert not (target / "claude" / "commands" / "leak.md").exists()
+    assert not (target / "claude" / "commands" / "leak.md").is_symlink()
+    assert app.warnings == ["commands/leak.md is a symlink; skipped"]
+
+
+def test_sync_from_keeps_stored_files_behind_a_local_symlink(fake_home, tmp_path):
+    _make_local(fake_home)
+    canonical = tmp_path / "agents-skills" / "herdr"
+    canonical.mkdir(parents=True)
+    (canonical / "SKILL.md").write_text("canonical\n")
+    skills = fake_home / ".claude" / "skills"
+    skills.mkdir()
+    (skills / "herdr").symlink_to(canonical, target_is_directory=True)
+    target = tmp_path / "configs"
+    stored_herdr = target / "claude" / "skills" / "herdr"
+    stored_herdr.mkdir(parents=True)
+    (stored_herdr / "SKILL.md").write_text("from another machine\n")
+
+    ClaudeApp().sync_from(target)
+
+    assert (stored_herdr / "SKILL.md").read_text() == "from another machine\n"
+    assert (canonical / "SKILL.md").read_text() == "canonical\n"
 
 
 def test_sync_from_copies_global_md(fake_home, tmp_path):
@@ -1189,6 +1214,35 @@ def test_sync_from_refuses_broken_local_global_md_symlink_without_removing_store
         ClaudeApp().sync_from(target)
 
     assert (target / "claude" / "CLAUDE.md").read_text() == "preserved\n"
+
+
+def test_sync_to_keeps_local_symlink_and_never_writes_through_it(
+    fake_home, tmp_path
+):
+    _make_local(fake_home)
+    canonical = tmp_path / "agents-skills" / "herdr"
+    canonical.mkdir(parents=True)
+    (canonical / "SKILL.md").write_text("ORIGINAL\n")
+    local_skills = fake_home / ".claude" / "skills"
+    local_skills.mkdir()
+    (local_skills / "herdr").symlink_to(canonical, target_is_directory=True)
+    target = tmp_path / "configs"
+    stored = _make_minimal_stored(target)
+    (stored / "skills" / "herdr").mkdir(parents=True)
+    (stored / "skills" / "herdr" / "SKILL.md").write_text("NEW\n")
+    (stored / "skills" / "other").mkdir()
+    (stored / "skills" / "other" / "SKILL.md").write_text("OTHER\n")
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    app = ClaudeApp()
+    app.sync_to(target, backup)
+
+    assert (local_skills / "herdr").is_symlink()
+    assert (canonical / "SKILL.md").read_text() == "ORIGINAL\n"
+    assert (local_skills / "other" / "SKILL.md").read_text() == "OTHER\n"
+    assert not (backup / "claude" / "skills" / "herdr").exists()
+    assert app.warnings == ["skills/herdr is a symlink; skipped"]
 
 
 def test_sync_to_restores_global_md_with_backup(fake_home, tmp_path):
@@ -1274,15 +1328,14 @@ def test_status_reports_symlink_stored_root_without_reading_target(fake_home, tm
     assert "symlink" in status.details
 
 
-def test_status_reports_unknown_for_symlinked_local_global_rule_file(
-    fake_home, tmp_path
-):
-    _make_local(fake_home)
+def test_status_ignores_symlinked_local_global_rule_entry(fake_home, tmp_path):
+    _make_local(fake_home, settings={"theme": "x"})
     cdir = fake_home / ".claude"
     (cdir / "commands").mkdir()
     outside = tmp_path / "outside-command.md"
     outside.write_text("SECRET\n")
     (cdir / "commands" / "leak.md").symlink_to(outside)
+    (cdir / "commands" / "safe.md").write_text("safe\n")
     target = tmp_path / "configs"
     stored = _make_minimal_stored(target)
     (stored / "commands").mkdir()
@@ -1290,8 +1343,7 @@ def test_status_reports_unknown_for_symlinked_local_global_rule_file(
 
     status = ClaudeApp().status(target)
 
-    assert status.state == "unknown"
-    assert "symlink" in status.details
+    assert status.state == "clean"
 
 
 def test_status_dirty_when_global_md_differs(fake_home, tmp_path):

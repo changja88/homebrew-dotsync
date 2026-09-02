@@ -19,7 +19,16 @@ from dotsync.apps.base import (
     _hash,
 )
 from dotsync.apps.mcp_sanitizer import filter_claude_mcp_servers
-from dotsync.plan import AppPlan, Change, plan_file_copy, plan_tree_mirror
+from dotsync.plan import (
+    AppPlan,
+    Change,
+    TreeScan,
+    blocked_by_symlink,
+    diff_trees,
+    plan_file_copy,
+    plan_tree_mirror,
+    scan_tree,
+)
 
 GLOBAL_RULE_DIRECTORIES = ("commands", "agents", "skills", "output-styles")
 PLUGIN_RUNTIME_KEYS = {
@@ -58,31 +67,21 @@ class ClaudeApp(App):
     def _stored(self, target_dir: Path) -> Path:
         return target_dir / self.name
 
-    def _tree_files(self, root: Path) -> set[Path]:
-        if not root.exists():
-            return set()
-        ensure_not_symlink(root, str(root))
-        if not root.is_dir():
-            raise RuntimeError(f"{root} is not a directory")
-        files: set[Path] = set()
-        for f in root.rglob("*"):
-            rel = f.relative_to(root)
-            ensure_not_symlink(f, str(rel))
-            if f.is_file():
-                files.add(rel)
-        return files
+    def _scan(self, root: Path) -> TreeScan:
+        try:
+            return scan_tree(root)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
 
     def _diff_tree(
         self, local: Path, stored: Path
     ) -> tuple[set[Path], set[Path], set[Path]]:
         """Return (added_in_stored, removed_in_stored, modified) relative paths."""
-        local_files = self._tree_files(local)
-        stored_files = self._tree_files(stored)
-        added = stored_files - local_files
-        removed = local_files - stored_files
-        common = local_files & stored_files
-        modified = {rel for rel in common if _hash(local / rel) != _hash(stored / rel)}
-        return added, removed, modified
+        try:
+            diff = diff_trees(local, stored)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+        return set(diff.removes), set(diff.creates), set(diff.updates)
 
     def _mirror_tree(
         self,
@@ -92,14 +91,18 @@ class ClaudeApp(App):
         source_root: Path | None = None,
         dest_root: Path | None = None,
     ) -> None:
-        """Strict full mirror: make dst's file tree match src."""
+        """Make dst's regular files match src's; symlinked entries stay untouched."""
         ensure_directory(src, str(src), root=source_root)
         ensure_directory(dst, str(dst), root=dest_root)
         dst.mkdir(parents=True, exist_ok=True)
-        src_rels = self._tree_files(src)
-        dst_rels = self._tree_files(dst)
+        src_scan = self._scan(src)
+        dst_scan = self._scan(dst)
+        blocked = blocked_by_symlink(src_scan.files, dst_scan.symlinks)
+        kept = blocked_by_symlink(dst_scan.files, src_scan.symlinks)
+        for rel in sorted(src_scan.symlinks | dst_scan.symlinks):
+            self._note_skipped_symlink(f"{src.name}/{rel.as_posix()}")
 
-        for rel in src_rels:
+        for rel in sorted(src_scan.files - set(blocked)):
             target = dst / rel
             if target.is_dir() and not target.is_symlink():
                 shutil.rmtree(target)
@@ -114,13 +117,13 @@ class ClaudeApp(App):
                 dest_root=dest_root,
             )
 
-        for rel in dst_rels - src_rels:
+        for rel in dst_scan.files - src_scan.files - set(kept):
             target = dst / rel
             if target.exists() or target.is_symlink():
                 target.unlink()
 
         subdirs = sorted(
-            (d for d in dst.rglob("*") if d.is_dir()),
+            (d for d in dst.rglob("*") if d.is_dir() and not d.is_symlink()),
             key=lambda p: len(p.parts),
             reverse=True,
         )
@@ -1033,7 +1036,7 @@ class ClaudeApp(App):
             stored_dir = stored / name
             if stored_dir.exists() or stored_dir.is_symlink():
                 ensure_directory(stored_dir, f"{name}/", root=target_dir)
-                self._tree_files(stored_dir)
+                self._scan(stored_dir)
 
     def _validate_sync_to_optional_paths(self, stored: Path, target_dir: Path) -> None:
         cdir = self._claude_dir()
@@ -1049,7 +1052,7 @@ class ClaudeApp(App):
             local_dir = cdir / name
             if stored_dir.exists() and (local_dir.exists() or local_dir.is_symlink()):
                 ensure_directory(local_dir, f"{name}/")
-                self._tree_files(local_dir)
+                self._scan(local_dir)
 
         for plugin_name in self._installed_plugin_names(
             stored / "plugins" / "installed_plugins.json"

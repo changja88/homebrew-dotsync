@@ -184,6 +184,16 @@ class App(ABC):
         # reads this after each sync so partial failures aren't silenced.
         self.warnings: list[str] = []
 
+    def _note_skipped_symlink(self, label: str) -> None:
+        """Record (once) that a symlinked entry was left alone, and say so."""
+        from dotsync import ui
+
+        msg = f"{label} is a symlink; skipped"
+        if msg in self.warnings:
+            return
+        self.warnings.append(msg)
+        ui.warn(msg)
+
     def _run_external(
         self,
         cmd: list[str],
