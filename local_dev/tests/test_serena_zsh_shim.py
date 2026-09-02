@@ -14,62 +14,6 @@ from local_dev.serena_mcp_management.serena_zsh_shim import (
 )
 
 
-def _guarded_graphify_hook(marker: str) -> str:
-    """A minimal installed hook carrying Graphify's linked-worktree guard."""
-    marker_end = marker.replace("-start", "-end")
-    return f"""#!/bin/sh
-{marker}
-_GFY_GITDIR=$(cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd)
-_GFY_COMMONDIR=$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)
-if [ -n "$_GFY_COMMONDIR" ] && [ "$_GFY_GITDIR" != "$_GFY_COMMONDIR" ]; then
-  exit 0
-fi
-graphify update . >/dev/null 2>&1
-{marker_end}
-"""
-
-
-@pytest.mark.no_subprocess_block
-@pytest.mark.parametrize("unsafe_kind", ["action-before-guard", "duplicate-block"])
-def test_zsh_shim_graphify_hook_guard_must_dominate_one_managed_block(
-    tmp_path, unsafe_kind,
-):
-    shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(
-        tmp_path
-    )
-    marker = "# graphify-hook-start"
-    marker_end = "# graphify-hook-end"
-    safe_block = _guarded_graphify_hook(marker)
-    if unsafe_kind == "action-before-guard":
-        hook_text = safe_block.replace(
-            f"{marker}\n", f"{marker}\ngraphify update .\n", 1
-        )
-    else:
-        hook_text = safe_block + safe_block
-    hook_path = tmp_path / "post-commit"
-    hook_path.write_text(hook_text)
-
-    result = subprocess.run(
-        [
-            "zsh",
-            "-fc",
-            (
-                f"source {shlex.quote(str(shim_path))}; "
-                "_dotsync_agent_graphify_hook_worktree_safe "
-                f"{shlex.quote(str(hook_path))} "
-                f"{shlex.quote(marker)} {shlex.quote(marker_end)}; "
-                "print safe=$?"
-            ),
-        ],
-        env={**os.environ, "HOME": str(tmp_path)},
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-
-    assert "safe=1" in result.stdout
-
-
 def test_render_zsh_shim_defines_codex_and_claude_functions():
     text = render_zsh_shim(
         launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
@@ -131,252 +75,6 @@ def test_install_shim_removes_stale_runtime_bytecode(tmp_path):
     )
 
     assert not stale_cache.parent.exists()
-
-
-def test_render_zsh_shim_defines_graphify_split_helpers():
-    text = render_zsh_shim(
-        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
-        python_executable=Path("/repo/.venv/bin/python3"),
-        codex_binary=Path("/opt/homebrew/bin/codex"),
-        claude_binary=Path("/opt/homebrew/bin/claude"),
-    )
-
-    # The four preflight rows must be checked individually, otherwise a
-    # missing global skill or graph cannot surface. A single combined
-    # probe was insufficient and showed false ✓ when run outside a project.
-    assert "_dotsync_agent_graphify_global_installed" in text
-    assert "_dotsync_agent_graphify_graph_built" in text
-    assert "_dotsync_agent_graphify_integration_installed" in text
-    assert "_dotsync_agent_graphify_hooks_installed" in text
-
-
-@pytest.mark.no_subprocess_block
-def test_zsh_shim_graphify_integration_codex_returns_installed_when_hook_check_present(tmp_path):
-    shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "AGENTS.md").write_text(
-        "# AGENTS.md\n\n"
-        "## graphify\n\n"
-        "This project has a graphify knowledge graph at graphify-out/.\n"
-    )
-    codex_dir = project / ".codex"
-    codex_dir.mkdir()
-    (codex_dir / "hooks.json").write_text(
-        '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command",'
-        '"command":"/Users/hyun/.local/bin/graphify hook-check"}]}]}}\n'
-    )
-
-    result = subprocess.run(
-        [
-            "zsh",
-            "-fc",
-            (
-                f"source {shim_path}; "
-                f"_dotsync_agent_graphify_integration_installed {project} codex; "
-                "print integration=$?"
-            ),
-        ],
-        env={**os.environ, "HOME": str(tmp_path)},
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    assert "integration=0" in result.stdout
-
-
-@pytest.mark.no_subprocess_block
-def test_zsh_shim_graphify_hooks_check_respects_core_hooks_path(tmp_path):
-    shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
-    project = tmp_path / "project"
-    hooks_dir = project / ".githooks"
-    project.mkdir()
-    subprocess.run(["git", "-C", str(project), "init"], check=True, capture_output=True)
-    subprocess.run(
-        ["git", "-C", str(project), "config", "core.hooksPath", ".githooks"],
-        check=True,
-        capture_output=True,
-    )
-    hooks_dir.mkdir(parents=True)
-    (hooks_dir / "post-commit").write_text(
-        _guarded_graphify_hook("# graphify-hook-start")
-    )
-    (hooks_dir / "post-checkout").write_text(
-        _guarded_graphify_hook("# graphify-checkout-hook-start")
-    )
-
-    result = subprocess.run(
-        [
-            "zsh",
-            "-fc",
-            (
-                f"source {shim_path}; "
-                f"_dotsync_agent_graphify_hooks_installed {project}; "
-                "print hooks=$?"
-            ),
-        ],
-        env={**os.environ, "HOME": str(tmp_path)},
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-
-    assert "hooks=0" in result.stdout
-
-
-@pytest.mark.no_subprocess_block
-def test_zsh_shim_graphify_hooks_rejects_legacy_worktree_unsafe_hooks(tmp_path):
-    """Graphify 블록 밖의 git-dir 비교는 구형 훅을 안전하게 만들지 않는다."""
-    shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
-    project = tmp_path / "project"
-    project.mkdir()
-    subprocess.run(["git", "-C", str(project), "init"], check=True, capture_output=True)
-    hooks_dir = project / ".git" / "hooks"
-    (hooks_dir / "post-commit").write_text(
-        "#!/bin/sh\n"
-        "git rev-parse --git-dir >/dev/null\n"
-        "git rev-parse --git-common-dir >/dev/null\n"
-        "# graphify-hook-start\necho rebuild\n# graphify-hook-end\n"
-    )
-    (hooks_dir / "post-checkout").write_text(
-        "#!/bin/sh\n"
-        "git rev-parse --git-dir >/dev/null\n"
-        "git rev-parse --git-common-dir >/dev/null\n"
-        "# graphify-checkout-hook-start\necho rebuild\n"
-        "# graphify-checkout-hook-end\n"
-    )
-
-    result = subprocess.run(
-        [
-            "zsh",
-            "-fc",
-            (
-                f"source {shim_path}; "
-                f"_dotsync_agent_graphify_hooks_installed {project}; "
-                "print hooks=$?"
-            ),
-        ],
-        env={**os.environ, "HOME": str(tmp_path)},
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-
-    assert "hooks=1" in result.stdout
-
-
-@pytest.mark.no_subprocess_block
-def test_zsh_shim_graphify_hooks_rejects_non_guard_git_probes_inside_marker(
-    tmp_path,
-):
-    """git-dir/common-dir 조회만 있고 비교·탈출이 없으면 guarded hook이 아니다."""
-    shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(tmp_path)
-    project = tmp_path / "project"
-    project.mkdir()
-    subprocess.run(["git", "-C", str(project), "init"], check=True, capture_output=True)
-    hooks_dir = project / ".git" / "hooks"
-    for name, marker in (
-        ("post-commit", "graphify-hook"),
-        ("post-checkout", "graphify-checkout-hook"),
-    ):
-        (hooks_dir / name).write_text(
-            "#!/bin/sh\n"
-            f"# {marker}-start\n"
-            "git rev-parse --git-dir >/dev/null\n"
-            "git rev-parse --git-common-dir >/dev/null\n"
-            "echo rebuild\n"
-            f"# {marker}-end\n"
-        )
-
-    result = subprocess.run(
-        [
-            "zsh",
-            "-fc",
-            (
-                f"source {shim_path}; "
-                f"_dotsync_agent_graphify_hooks_installed {project}; "
-                "print hooks=$?"
-            ),
-        ],
-        env={**os.environ, "HOME": str(tmp_path)},
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-
-    assert "hooks=1" in result.stdout
-
-
-@pytest.mark.no_subprocess_block
-def test_zsh_shim_graphify_hooks_check_resolves_linked_worktree_common_dir(
-    tmp_path,
-):
-    shim_path, _real_codex, _real_claude, _launcher = _write_zsh_fixture(
-        tmp_path
-    )
-    repository = tmp_path / "repository"
-    worktree = tmp_path / "worktree"
-    repository.mkdir()
-    subprocess.run(
-        ["git", "-C", str(repository), "init"],
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repository),
-            "-c",
-            "user.name=Test User",
-            "-c",
-            "user.email=test@example.com",
-            "commit",
-            "--allow-empty",
-            "-m",
-            "initial",
-        ],
-        check=True,
-        capture_output=True,
-    )
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repository),
-            "worktree",
-            "add",
-            "--detach",
-            str(worktree),
-        ],
-        check=True,
-        capture_output=True,
-    )
-    hooks_dir = repository / ".git" / "hooks"
-    (hooks_dir / "post-commit").write_text(
-        _guarded_graphify_hook("# graphify-hook-start")
-    )
-    (hooks_dir / "post-checkout").write_text(
-        _guarded_graphify_hook("# graphify-checkout-hook-start")
-    )
-
-    result = subprocess.run(
-        [
-            "zsh",
-            "-fc",
-            (
-                f"source {shim_path}; "
-                f"_dotsync_agent_graphify_hooks_installed {worktree}; "
-                "print hooks=$?"
-            ),
-        ],
-        env={**os.environ, "HOME": str(tmp_path)},
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-
-    assert "hooks=0" in result.stdout
 
 
 def test_render_zsh_shim_defers_clear_to_launcher_after_codex_cleanup():
@@ -663,14 +361,22 @@ def test_render_zsh_shim_packs_preflight_status_env_vars():
         claude_binary=Path("/opt/homebrew/bin/claude"),
     )
     assert "SERENA_AGENT_PREFLIGHT_SERENA_STATUS" in text
-    # The launcher reads four split graphify statuses; the old combined
-    # SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS is no longer consumed and must
-    # not be exported (otherwise reviewers will assume it still drives UI).
-    assert "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS" in text
-    assert "SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS" in text
-    assert "SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS" in text
-    assert "SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS" in text
-    assert "SERENA_AGENT_PREFLIGHT_GRAPHIFY_STATUS=" not in text
+    # graphify statuses are probed by the launcher (graphify_probe.py); an
+    # export here would override the probe with stale shell-side greps.
+    assert "SERENA_AGENT_PREFLIGHT_GRAPHIFY_" not in text
+
+
+def test_render_zsh_shim_leaves_graphify_probing_to_launcher():
+    """shim이 Graphify 파일 형식을 알면 Graphify가 문구를 바꿀 때마다 깨진다."""
+    text = render_zsh_shim(
+        launcher_path=Path("/repo/local_dev/serena_mcp_management/serena_agent_launcher.py"),
+        python_executable=Path("/repo/.venv/bin/python3"),
+        codex_binary=Path("/opt/homebrew/bin/codex"),
+        claude_binary=Path("/opt/homebrew/bin/claude"),
+    )
+    assert "_dotsync_agent_graphify_" not in text
+    assert "graphify-out" not in text
+    assert "graphify_probe.py" in text
 
 
 def test_render_zsh_shim_no_longer_exports_cleanup_prediction_env():

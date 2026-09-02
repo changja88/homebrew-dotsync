@@ -107,153 +107,10 @@ _dotsync_agent_serena_project_available() {
   [[ -f "$project_root/.serena/project.yml" ]]
 }
 
-_dotsync_agent_graphify_available() {
-  command -v graphify >/dev/null 2>&1
-}
-
-# graphify writes its own absolute path into the files it installs (hook JSON
-# pins the executable, the git hook pins its interpreter). A `uv tool` install
-# does not survive a clean macOS reinstall, so those pins can dangle while the
-# file still greps clean — registered is not the same as runnable. Files with no
-# absolute graphify path (inline-shell hooks) have nothing to verify and pass.
-# A pin starts a shell word (line start, whitespace, `=`, or a quote) — a `/`
-# continuing `${HOME}` or a relative path like graphify-out/.graphify_python is
-# not a pin, and treating it as one fails every probe against real hooks.
-_dotsync_agent_graphify_pins_runnable() {
-  local file="$1"
-  [[ -f "$file" ]] || return 0
-
-  local pins
-  pins="$(grep -oE "(^|[[:space:]='\"])/[^ \"']*graphif[^ \"']*" "$file" 2>/dev/null \
-    | sed -E "s/^[[:space:]='\"]//" | sort -u)"
-  [[ -n "$pins" ]] || return 0
-
-  local pin
-  while IFS= read -r pin; do
-    [[ -n "$pin" ]] || continue
-    [[ -e "$pin" ]] || return 1
-  done <<< "$pins"
-  return 0
-}
-
-_dotsync_agent_graphify_global_installed() {
-  local client="$1"
-  case "$client" in
-    claude) [[ -d "$HOME/.claude/skills/graphify" ]] ;;
-    *)      [[ -d "$HOME/.codex/skills/graphify" ]] ;;
-  esac
-}
-
-_dotsync_agent_graphify_graph_built() {
-  local project_root="$1"
-  [[ -f "$project_root/graphify-out/graph.json" ]]
-}
-
-_dotsync_agent_graphify_integration_installed() {
-  local project_root="$1"
-  local client="$2"
-  local md_file=""
-  local cfg_file=""
-  case "$client" in
-    claude)
-      md_file="$project_root/CLAUDE.md"
-      cfg_file="$project_root/.claude/settings.json"
-      ;;
-    *)
-      md_file="$project_root/AGENTS.md"
-      cfg_file="$project_root/.codex/hooks.json"
-      ;;
-  esac
-  [[ -f "$md_file" && -f "$cfg_file" ]] || return 1
-  grep -q "graphify-out" "$md_file" 2>/dev/null || return 1
-  case "$client" in
-    claude)
-      grep -q "graphify-out" "$cfg_file" 2>/dev/null || return 1
-      ;;
-    *)
-      grep -q "graphify" "$cfg_file" 2>/dev/null || return 1
-      grep -q "hook-check" "$cfg_file" 2>/dev/null || return 1
-      ;;
-  esac
-  _dotsync_agent_graphify_pins_runnable "$cfg_file" || return 1
-  return 0
-}
-
-_dotsync_agent_graphify_hook_worktree_safe() {
-  local file="$1"
-  local marker="$2"
-  local marker_end="$3"
-  local section=""
-  local guard_line=""
-  local guard_end_line=""
-  [[ -f "$file" ]] || return 1
-  [[ "$(grep -Fxc "$marker" "$file" 2>/dev/null)" == "1" ]] || return 1
-  [[ "$(grep -Fxc "$marker_end" "$file" 2>/dev/null)" == "1" ]] || return 1
-  section="$(sed -n "/^${marker}\$/,/^${marker_end}\$/p" "$file" 2>/dev/null)"
-  [[ "$section" == *"$marker_end"* ]] || return 1
-  [[ "$(print -r -- "$section" | grep -Fxc \
-    '_GFY_GITDIR=$(cd "$(git rev-parse --git-dir 2>/dev/null)" 2>/dev/null && pwd)' \
-  )" == "1" ]] || return 1
-  [[ "$(print -r -- "$section" | grep -Fxc \
-    '_GFY_COMMONDIR=$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)' \
-  )" == "1" ]] || return 1
-  [[ "$(print -r -- "$section" | grep -Fxc \
-    'if [ -n "$_GFY_COMMONDIR" ] && [ "$_GFY_GITDIR" != "$_GFY_COMMONDIR" ]; then' \
-  )" == "1" ]] || return 1
-  guard_line="$(print -r -- "$section" | grep -nFx \
-    'if [ -n "$_GFY_COMMONDIR" ] && [ "$_GFY_GITDIR" != "$_GFY_COMMONDIR" ]; then' \
-    | cut -d: -f1)"
-  guard_end_line="$(print -r -- "$section" | awk -v start="$guard_line" \
-    'NR > start && $0 == "fi" { print NR; exit }')"
-  [[ -n "$guard_end_line" ]] || return 1
-  print -r -- "$section" | awk -v start="$guard_line" -v end="$guard_end_line" '
-    NR > start && NR < end && $0 ~ /^[[:space:]]*exit 0[[:space:]]*$/ { found = 1 }
-    END { exit(found ? 0 : 1) }
-  ' || return 1
-  print -r -- "$section" | awk -v guard_end="$guard_end_line" '
-    /(^|[[:space:]])graphify[[:space:]]+update([[:space:]]|$)|"\$GRAPHIFY_PYTHON"[[:space:]]+-c/ {
-      found = 1
-      if (NR <= guard_end) unsafe = 1
-    }
-    END { exit(found && !unsafe ? 0 : 1) }
-  ' || return 1
-  return 0
-}
-
-_dotsync_agent_graphify_hooks_installed() {
-  local project_root="$1"
-  local pc=""
-  local pco=""
-
-  pc="$(git -C "$project_root" rev-parse --git-path hooks/post-commit 2>/dev/null)" \
-    || return 1
-  pco="$(git -C "$project_root" rev-parse --git-path hooks/post-checkout 2>/dev/null)" \
-    || return 1
-
-  case "$pc" in
-    /*) ;;
-    *) pc="$project_root/$pc" ;;
-  esac
-  case "$pco" in
-    /*) ;;
-    *) pco="$project_root/$pco" ;;
-  esac
-
-  [[ -f "$pc" && -f "$pco" ]] || return 1
-  grep -q "graphify-hook-start" "$pc" 2>/dev/null || return 1
-  grep -q "graphify-checkout-hook-start" "$pco" 2>/dev/null || return 1
-  # Graphify 0.9.14+ deliberately skips automatic rebuilds in linked
-  # worktrees. Marker-only legacy hooks still rebuild a rogue worktree-local
-  # graph, so treat them as outdated and let the launcher offer a refresh.
-  _dotsync_agent_graphify_hook_worktree_safe \
-    "$pc" "# graphify-hook-start" "# graphify-hook-end" || return 1
-  _dotsync_agent_graphify_hook_worktree_safe \
-    "$pco" "# graphify-checkout-hook-start" \
-    "# graphify-checkout-hook-end" || return 1
-  _dotsync_agent_graphify_pins_runnable "$pc" || return 1
-  _dotsync_agent_graphify_pins_runnable "$pco" || return 1
-  return 0
-}
+# Graphify's installed state (CLI, user skill, graph, project integration,
+# git hooks) is probed by the launcher itself — see graphify_probe.py — using
+# the markers Graphify writes for its own use. Earlier this shim grepped the
+# text of Graphify's hook commands and broke whenever Graphify reworded them.
 
 claude() {
   local interactive=0
@@ -268,23 +125,8 @@ claude() {
   local project_root="$(_dotsync_agent_project_root "$PWD")"
   local serena_status="managed"
   _dotsync_agent_serena_project_available "$project_root" || serena_status="missing"
-  local graphify_cli_status="installed"
-  _dotsync_agent_graphify_available || graphify_cli_status="missing"
-  local graphify_global_status="installed"
-  _dotsync_agent_graphify_global_installed claude || graphify_global_status="missing"
-  local graphify_graph_status="built"
-  _dotsync_agent_graphify_graph_built "$project_root" || graphify_graph_status="missing"
-  local graphify_integration_status="installed"
-  _dotsync_agent_graphify_integration_installed "$project_root" claude || graphify_integration_status="missing"
-  local graphify_hook_status="installed"
-  _dotsync_agent_graphify_hooks_installed "$project_root" || graphify_hook_status="missing"
 
   SERENA_AGENT_PREFLIGHT_SERENA_STATUS="$serena_status" \
-  SERENA_AGENT_PREFLIGHT_GRAPHIFY_CLI_STATUS="$graphify_cli_status" \
-  SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS="$graphify_global_status" \
-  SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS="$graphify_graph_status" \
-  SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS="$graphify_integration_status" \
-  SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS="$graphify_hook_status" \
   SERENA_AGENT_CLIENT=claude \
   SERENA_AGENT_QUIET=1 \
   SERENA_AGENT_INTERACTIVE="$interactive" \
@@ -307,23 +149,8 @@ codex() {
   local project_root="$(_dotsync_agent_project_root "$PWD")"
   local serena_status="managed"
   _dotsync_agent_serena_project_available "$project_root" || serena_status="missing"
-  local graphify_cli_status="installed"
-  _dotsync_agent_graphify_available || graphify_cli_status="missing"
-  local graphify_global_status="installed"
-  _dotsync_agent_graphify_global_installed codex || graphify_global_status="missing"
-  local graphify_graph_status="built"
-  _dotsync_agent_graphify_graph_built "$project_root" || graphify_graph_status="missing"
-  local graphify_integration_status="installed"
-  _dotsync_agent_graphify_integration_installed "$project_root" codex || graphify_integration_status="missing"
-  local graphify_hook_status="installed"
-  _dotsync_agent_graphify_hooks_installed "$project_root" || graphify_hook_status="missing"
 
   SERENA_AGENT_PREFLIGHT_SERENA_STATUS="$serena_status" \
-  SERENA_AGENT_PREFLIGHT_GRAPHIFY_CLI_STATUS="$graphify_cli_status" \
-  SERENA_AGENT_PREFLIGHT_GRAPHIFY_GLOBAL_STATUS="$graphify_global_status" \
-  SERENA_AGENT_PREFLIGHT_GRAPHIFY_GRAPH_STATUS="$graphify_graph_status" \
-  SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS="$graphify_integration_status" \
-  SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS="$graphify_hook_status" \
   SERENA_AGENT_CLIENT=codex \
   SERENA_AGENT_QUIET=1 \
   SERENA_AGENT_INTERACTIVE="$interactive" \

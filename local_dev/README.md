@@ -64,7 +64,36 @@ of crashing.
 
 Graphify preflight paths follow current graphifyy behavior: the codex
 user-level skill lives at `~/.codex/skills/graphify` (claude:
-`~/.claude/skills/graphify`).
+`~/.claude/skills/graphify`, or `$CLAUDE_CONFIG_DIR/skills/graphify`).
+
+**Graphify probes (`graphify_probe.py`).** The five Graphify preflight rows
+(cli / global skill / graph / integration / hook) are computed by the launcher,
+not the zsh shim, and only from the markers Graphify itself uses to find its
+own files: the `## graphify` section header in `CLAUDE.md`/`AGENTS.md`, a
+`hooks.PreToolUse` entry mentioning `graphify` in `.claude/settings.json` /
+`.codex/hooks.json`, and the `# graphify-hook-start` /
+`# graphify-checkout-hook-start` blocks in the git hooks. The *wording* of
+Graphify's hook commands is deliberately never inspected — it changed from
+inline shell to `graphify hook-guard …` without a release note, and every
+shim-side grep of it produced a false "missing" that re-asked "set it up?" on
+each launch. Two runnability checks remain: an absolute executable pinned into
+a hook must still exist, and an installed git hook must carry Graphify's
+linked-worktree guard (`--git-common-dir` inside the marker block).
+`tests/test_graphify_probe_contract.py` runs the real installed `graphify`
+against a temp project and asserts the probe recognises what it wrote; it is
+skipped when `graphify` is not on PATH, so run `make -C local_dev test` after
+a Graphify upgrade to catch drift before the next launch does.
+
+**Setup guard (`graphify_setup_guard.py`).** After a `Yes` on an integration
+or hook prompt, the launcher re-runs the probe. If `graphify … install` exited
+0 but the probe still reports missing, the row is shown as a warning
+(`dotsync probe can't confirm it (graphify X.Y.Z); won't ask again until it
+changes`) and the outcome is recorded under the launcher runtime root
+(`graphify-setup-guard.json`, keyed by project, component, Graphify version
+and a fingerprint of the files involved). Later launches print an info row
+instead of the prompt until the Graphify version or those files change. The
+same re-verification runs after an upgrade refresh. A wrong probe can
+therefore cost one warning, never a prompt on every launch.
 
 ## Serena MCP Management
 
@@ -341,7 +370,8 @@ newer release produces a default-No `Upgrade Graphify now?` prompt. Accepting
 runs the official `uv tool upgrade graphifyy` flow and verifies the installed
 version again before reporting success. The same consent also refreshes any
 already-installed user skill, project integration, and hooks so they stay in
-sync with the new CLI. A linked worktree refreshes only the user skill and
+sync with the new CLI, then re-runs the Graphify probe on the refreshed
+integration and hooks (see *Setup guard* above). A linked worktree refreshes only the user skill and
 prints the exact integration/hook commands to run from the primary checkout;
 the linked worktree itself remains query-only. Missing components still follow
 the existing setup prompts. An unavailable network/version probe is

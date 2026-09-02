@@ -44,6 +44,7 @@ from local_dev.serena_mcp_management.memory_management import (
     MemoryInventory,
     scan_memory_inventory,
 )
+from local_dev.serena_mcp_management import graphify_probe, graphify_setup_guard
 from local_dev.serena_mcp_management.graphify_version import (
     MINIMUM_VERSION as GRAPHIFY_MINIMUM_VERSION,
     installed_version as inspect_graphify_version,
@@ -516,6 +517,7 @@ def _main_v2(args: list[str]) -> int:
 
     real_binary = find_real_binary(client_type)
     if interactive:
+        _populate_graphify_preflight_environ(project_root, client_type)
         _render_preflight_overview_v2()
 
     if not serena_opted_in(project_root):
@@ -1460,6 +1462,81 @@ def _graphify_integration_install(project_root: Path, client: str) -> int:
     return proc.returncode
 
 
+def _populate_graphify_preflight_environ(project_root: Path, client: str) -> None:
+    """Export the graphify preflight statuses the box and prompts read.
+
+    The zsh shim used to compute these with its own greps of Graphify's files;
+    they now come from ``graphify_probe`` so the launcher can re-run the same
+    probe after an install. Values already present in the environment win.
+    """
+    graphify_probe.populate_environ(graphify_probe.probe(project_root, client))
+
+
+_SETUP_UNCONFIRMED = "dotsync probe can't confirm it"
+_SETUP_SUPPRESSED_DETAIL = (
+    "set up earlier . dotsync probe can't confirm it; not asking again until "
+    "graphify or the files change"
+)
+
+
+def _graphify_component_state(
+    component: str, project_root: Path, client: str
+) -> tuple[str, str]:
+    """(probe status, fingerprint) for a setup component: integration or hook."""
+    if component == "integration":
+        return (
+            graphify_probe.integration_status(project_root, client),
+            graphify_probe.integration_fingerprint(project_root, client),
+        )
+    return (
+        graphify_probe.hook_status(project_root),
+        graphify_probe.hook_fingerprint(project_root),
+    )
+
+
+def _graphify_setup_suppressed(component: str, project_root: Path, client: str) -> bool:
+    """A previous install succeeded but stayed invisible to the probe, unchanged since."""
+    _status, fingerprint = _graphify_component_state(component, project_root, client)
+    return graphify_setup_guard.is_suppressed(
+        project_root, component, _graphify_installed_version(), fingerprint
+    )
+
+
+def _verify_graphify_component(
+    *,
+    component: str,
+    label: str,
+    detail: str,
+    project_root: Path,
+    client: str,
+    stream: TextIO,
+) -> None:
+    """After a successful install, confirm the probe sees it; otherwise warn once.
+
+    A successful ``graphify ... install`` that the probe still cannot see means
+    the probe lags this Graphify version. Re-asking next launch would repeat the
+    same no-op install forever, so remember the outcome instead and say so.
+    """
+    status, fingerprint = _graphify_component_state(component, project_root, client)
+    if status == "installed":
+        stream.write(render_inline_row(label, detail, status="done"))
+        stream.flush()
+        return
+    version = _graphify_installed_version()
+    remembered = graphify_setup_guard.record(project_root, component, version, fingerprint)
+    tail = (
+        "won't ask again until it changes"
+        if remembered
+        else "could not save that, so it may ask again"
+    )
+    stream.write(render_inline_row(
+        label,
+        f"{detail} . {_SETUP_UNCONFIRMED} (graphify {version or 'unknown'}); {tail}",
+        status="warn",
+    ))
+    stream.flush()
+
+
 def _client_node_need(client: str) -> NodeNeed:
     """The Node.js need for the active client's plugins/MCP/statusLine."""
     if client == "claude":
@@ -1589,7 +1666,13 @@ def _refresh_graphify_after_upgrade_v2(
     stream: TextIO,
 ) -> None:
     """Refresh existing Graphify components covered by upgrade consent."""
-    def refresh(label: str, detail: str, action: Callable[[], int]) -> None:
+    def refresh(
+        label: str,
+        detail: str,
+        action: Callable[[], int],
+        *,
+        verify_component: str | None = None,
+    ) -> None:
         try:
             rc = action()
         except OSError as exc:
@@ -1597,6 +1680,16 @@ def _refresh_graphify_after_upgrade_v2(
                 label, f"refresh failed: {exc}", status="warn"
             ))
             stream.flush()
+            return
+        if rc == 0 and verify_component is not None:
+            _verify_graphify_component(
+                component=verify_component,
+                label=label,
+                detail=detail,
+                project_root=project_root,
+                client=client,
+                stream=stream,
+            )
             return
         if rc == 0:
             stream.write(render_inline_row(label, detail, status="done"))
@@ -1634,12 +1727,14 @@ def _refresh_graphify_after_upgrade_v2(
             "graphify integration",
             "project integration refreshed",
             lambda: install_integration(project_root, client),
+            verify_component="integration",
         )
     if hook_status == "installed":
         refresh(
             "graphify hook",
             "hooks refreshed",
             lambda: install_hooks(project_root),
+            verify_component="hook",
         )
 
 
@@ -1830,7 +1925,20 @@ def _run_preflight_v2(
         "SERENA_AGENT_PREFLIGHT_GRAPHIFY_INTEGRATION_STATUS", "unknown"
     )
     integration_present = integration_status == "installed"
-    if integration_status == "missing":
+    integration_detail = (
+        "CLAUDE.md + .claude/settings.json registered"
+        if client == "claude"
+        else "AGENTS.md + .codex/hooks.json registered"
+    )
+    if integration_status == "missing" and _graphify_setup_suppressed(
+        "integration", project_root, client
+    ):
+        out.write(render_inline_row(
+            "graphify integration", _SETUP_SUPPRESSED_DETAIL, status="info"
+        ))
+        out.flush()
+        integration_present = True
+    elif integration_status == "missing":
         cmd = (
             "graphify claude install" if client == "claude" else "graphify codex install"
         )
@@ -1847,12 +1955,14 @@ def _run_preflight_v2(
             rc = install_integration_fn(project_root, client)
             if rc == 0:
                 integration_present = True
-                if client == "claude":
-                    _emit("graphify integration",
-                          "CLAUDE.md + .claude/settings.json registered", ok=True)
-                else:
-                    _emit("graphify integration",
-                          "AGENTS.md + .codex/hooks.json registered", ok=True)
+                _verify_graphify_component(
+                    component="integration",
+                    label="graphify integration",
+                    detail=integration_detail,
+                    project_root=project_root,
+                    client=client,
+                    stream=out,
+                )
             else:
                 _emit("graphify integration",
                       f"integration install failed (exit {rc})", ok=False)
@@ -1860,7 +1970,16 @@ def _run_preflight_v2(
     hook_status = os.environ.get(
         "SERENA_AGENT_PREFLIGHT_GRAPHIFY_HOOK_STATUS", "unknown"
     )
-    if hook_status == "missing" and integration_present:
+    if (
+        hook_status == "missing"
+        and integration_present
+        and _graphify_setup_suppressed("hook", project_root, client)
+    ):
+        out.write(render_inline_row(
+            "graphify hook", _SETUP_SUPPRESSED_DETAIL, status="info"
+        ))
+        out.flush()
+    elif hook_status == "missing" and integration_present:
         # graphify hooks are git post-commit/post-checkout hooks, so a git repo
         # is a hard prerequisite — `graphify hook install` aborts otherwise. When
         # the project isn't a repo yet, offer a one-line `git init` instead of
@@ -1893,8 +2012,14 @@ def _run_preflight_v2(
         if proceed:
             rc = install_hook_fn(project_root)
             if rc == 0:
-                _emit("graphify hook",
-                      "post-commit + post-checkout hooks installed", ok=True)
+                _verify_graphify_component(
+                    component="hook",
+                    label="graphify hook",
+                    detail="post-commit + post-checkout hooks installed",
+                    project_root=project_root,
+                    client=client,
+                    stream=out,
+                )
             else:
                 _emit("graphify hook", f"hook install failed (exit {rc})", ok=False)
 
