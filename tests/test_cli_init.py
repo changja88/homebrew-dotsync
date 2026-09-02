@@ -139,9 +139,9 @@ def test_init_interactive_picker_keeps_detected_on_bare_enter(
     monkeypatch.setenv("PATH", "")
 
     target = tmp_path / "i"
-    # folder + 6 picker fallback answers (sorted: bettertouchtool, claude,
-    # codex, ghostty, herdr, zsh). Bare Enter keeps each row's default.
-    answers = iter([str(target), "", "", "", "", "", ""])
+    # folder + 7 picker fallback answers (sorted: bettertouchtool, claude,
+    # codex, ghostty, herdr, skills, zsh). Bare Enter keeps each row's default.
+    answers = iter([str(target), "", "", "", "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     rc = main(["init"])
@@ -168,7 +168,7 @@ def test_init_interactive_picker_lets_user_change_selection(
     # bettertouchtool, claude, codex, ghostty, herdr, zsh.
     # Default is N for unselected items, Y for the preselected zsh.
     # User picks ghostty (toggle on) + zsh (default), drops everything else.
-    answers = iter([str(target), "n", "n", "n", "y", "n", ""])
+    answers = iter([str(target), "n", "n", "n", "y", "n", "", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     rc = main(["init"])
@@ -243,8 +243,8 @@ def test_init_interactive_default_dir_on_empty_input(fake_home, monkeypatch):
     _no_btt(monkeypatch, fake_home)
     (fake_home / ".zshrc").write_text("X")
 
-    # bare Enter for the dir prompt + 6 picker fallback answers (Enter on each)
-    answers = iter(["", "", "", "", "", "", ""])
+    # bare Enter for the dir prompt + 7 picker fallback answers (Enter on each)
+    answers = iter(["", "", "", "", "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     rc = main(["init"])
@@ -260,8 +260,8 @@ def test_init_interactive_custom_dir_overrides_default(
     (fake_home / ".zshrc").write_text("X")
     custom = tmp_path / "elsewhere"
 
-    # custom path + 6 picker fallback answers (Enter on each)
-    answers = iter([str(custom), "", "", "", "", "", ""])
+    # custom path + 7 picker fallback answers (Enter on each)
+    answers = iter([str(custom), "", "", "", "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     rc = main(["init"])
@@ -315,7 +315,7 @@ def test_init_step_headers_visible(fake_home, tmp_path, monkeypatch, capsys):
     _no_btt(monkeypatch, fake_home)
 
     target = tmp_path / "i"
-    answers = iter([str(target), "", "", "", "", "", ""])
+    answers = iter([str(target), "", "", "", "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     rc = main(["init"])
@@ -356,7 +356,7 @@ def test_init_btt_auto_uses_single_discovered_preset(
 
     target = tmp_path / "i"
     # folder + 6 picker fallback Enters (preselected: bettertouchtool, zsh)
-    answers = iter([str(target), "", "", "", "", "", ""])
+    answers = iter([str(target), "", "", "", "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     rc = main(["init"])
@@ -388,7 +388,7 @@ def test_init_btt_auto_tracks_every_discovered_preset(
     )
 
     target = tmp_path / "i"
-    answers = iter([str(target), "", "", "", "", "", ""])
+    answers = iter([str(target), "", "", "", "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     rc = main(["init"])
@@ -418,7 +418,7 @@ def test_init_btt_falls_back_to_default_when_discovery_empty(
     )
 
     target = tmp_path / "i"
-    answers = iter([str(target), "", "", "", "", "", ""])
+    answers = iter([str(target), "", "", "", "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     rc = main(["init"])
@@ -590,7 +590,7 @@ def test_init_interactive_prompts_and_accepts_default(fake_home, tmp_path, monke
 
     target = tmp_path / "configs"
     # dir + 6 picker fallback Enters + rc-add prompt Enter
-    answers = iter([str(target), "", "", "", "", "", "", ""])
+    answers = iter([str(target), "", "", "", "", "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     code = main(["init"])
@@ -606,7 +606,7 @@ def test_init_interactive_decline_skips_rc(fake_home, tmp_path, monkeypatch):
 
     target = tmp_path / "configs"
     # dir + 6 picker fallback Enters + 'n' on rc prompt
-    answers = iter([str(target), "", "", "", "", "", "", "n"])
+    answers = iter([str(target), "", "", "", "", "", "", "", "n"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     code = main(["init"])

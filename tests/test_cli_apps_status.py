@@ -56,7 +56,7 @@ def test_config_error_uses_ui_error_styling(fake_home, monkeypatch, tmp_path, ca
 def test_apps_lets_user_change_tracked_set_via_picker(fake_home, monkeypatch, tmp_path):
     """`dotsync apps` runs the same picker as init Step 2. Under pytest
     (non-TTY) the picker falls back to per-app y/n in sorted order:
-    bettertouchtool, claude, codex, ghostty, herdr, zsh."""
+    bettertouchtool, claude, codex, ghostty, herdr, skills, zsh."""
     target = tmp_path / "configs"
     target.mkdir()
     save_config(Config(dir=target, apps=["zsh"]))
@@ -66,8 +66,8 @@ def test_apps_lets_user_change_tracked_set_via_picker(fake_home, monkeypatch, tm
         fake_home / "no-btt.app",
     )
 
-    # btt=n, claude=y, codex=n, ghostty=n, herdr=n, zsh=Enter (keeps Y)
-    answers = iter(["n", "y", "n", "n", "n", ""])
+    # btt=n, claude=y, codex=n, ghostty=n, herdr=n, skills=n, zsh=Enter (keeps Y)
+    answers = iter(["n", "y", "n", "n", "n", "n", ""])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
 
     rc = main(["apps"])
@@ -78,6 +78,7 @@ def test_apps_lets_user_change_tracked_set_via_picker(fake_home, monkeypatch, tm
     assert '"codex"' not in cfg_text
     assert '"ghostty"' not in cfg_text
     assert '"herdr"' not in cfg_text
+    assert '"skills"' not in cfg_text
     assert '"bettertouchtool"' not in cfg_text
 
 

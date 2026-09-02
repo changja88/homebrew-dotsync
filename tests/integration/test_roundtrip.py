@@ -1,9 +1,13 @@
 """Round-trip idempotency: backup→apply and apply→backup must not mutate the
 non-source side. Regression net for Phase 4's default sync_from/sync_to."""
 
+import json
 from pathlib import Path
+from unittest.mock import patch
+
 from dotsync.apps.codex import CodexApp
 from dotsync.apps.herdr import HerdrApp
+from dotsync.apps.skills import SkillsApp
 from dotsync.apps.ghostty import GhosttyApp
 from dotsync.apps.zsh import ZshApp
 
@@ -199,3 +203,34 @@ def test_ghostty_from_then_to_creates_backup_before_overwriting(fake_home, tmp_p
     assert (backup / "ghostty" / "config.ghostty").read_text() == "MUTATED\n"
     # Local now matches the stored snapshot (which is ORIGINAL from sync_from)
     assert local.read_text() == "ORIGINAL\n"
+
+
+def test_skills_from_then_to_does_not_change_local_or_run_npx(fake_home, tmp_path):
+    agents = fake_home / ".agents"
+    canonical = agents / "skills" / "herdr"
+    canonical.mkdir(parents=True)
+    (canonical / "SKILL.md").write_text("# herdr\n")
+    (fake_home / ".claude" / "skills").mkdir(parents=True)
+    (fake_home / ".claude" / "skills" / "herdr").symlink_to(
+        canonical, target_is_directory=True
+    )
+    lock = agents / ".skill-lock.json"
+    lock_text = json.dumps(
+        {
+            "version": 3,
+            "skills": {"herdr": {"source": "ogulcancelik/herdr", "sourceType": "github"}},
+        }
+    )
+    lock.write_text(lock_text)
+    target = tmp_path / "sync"
+    target.mkdir()
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    SkillsApp().sync_from(target)
+    with patch("dotsync.apps.base.subprocess.run") as run:
+        SkillsApp().sync_to(target, backup)
+
+    run.assert_not_called()
+    assert (fake_home / ".claude" / "skills" / "herdr").is_symlink()
+    assert lock.read_text() == lock_text

@@ -11,6 +11,7 @@ from dotsync.apps.base import App
 from dotsync.apps.claude import ClaudeApp
 from dotsync.apps.codex import CodexApp
 from dotsync.apps.herdr import HerdrApp
+from dotsync.apps.skills import SkillsApp
 from dotsync.apps.ghostty import GhosttyApp
 from dotsync.apps.bettertouchtool import BetterTouchToolApp
 from dotsync.apps.zsh import ZshApp
@@ -20,6 +21,7 @@ APP_CLASSES: tuple[type[App], ...] = (
     ClaudeApp,
     CodexApp,
     HerdrApp,
+    SkillsApp,
     GhosttyApp,
     BetterTouchToolApp,
     ZshApp,
