@@ -1,8 +1,14 @@
+from pathlib import Path
+
+import pytest
+
 from dotsync.plan import (
     Change,
     AppPlan,
+    diff_trees,
     plan_file_copy,
     plan_tree_mirror,
+    scan_tree,
 )
 
 
@@ -120,7 +126,7 @@ def test_plan_tree_mirror_reports_unchanged_for_matching_trees(tmp_path):
     assert change.details == ""
 
 
-def test_plan_tree_mirror_reports_unknown_for_symlink_source(tmp_path):
+def test_plan_tree_mirror_skips_symlink_entries(tmp_path):
     outside = tmp_path / "outside"
     outside.write_text("secret")
     src = tmp_path / "src"
@@ -131,8 +137,53 @@ def test_plan_tree_mirror_reports_unknown_for_symlink_source(tmp_path):
 
     change = plan_tree_mirror("rules/", src, dst)
 
-    assert change.kind == "unknown"
-    assert "symlink" in change.details
+    assert change.kind == "unchanged"
+    assert change.details == "1 symlink skipped"
+
+
+def test_scan_tree_classifies_links_and_does_not_descend_into_them(tmp_path):
+    root = tmp_path / "root"
+    real = tmp_path / "real"
+    (real / "deep").mkdir(parents=True)
+    (real / "deep" / "hidden.md").write_text("hidden")
+    (root / "plain").mkdir(parents=True)
+    (root / "plain" / "SKILL.md").write_text("plain")
+    (root / "linked").symlink_to(real, target_is_directory=True)
+    (root / "file-link").symlink_to(real / "deep" / "hidden.md")
+
+    scan = scan_tree(root)
+
+    assert scan.files == frozenset({Path("plain/SKILL.md")})
+    assert scan.symlinks == frozenset({Path("linked"), Path("file-link")})
+
+
+def test_scan_tree_rejects_symlinked_root(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    root = tmp_path / "root"
+    root.symlink_to(real, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="symlink"):
+        scan_tree(root)
+
+
+def test_diff_trees_leaves_files_behind_a_link_on_either_side_alone(tmp_path):
+    canonical = tmp_path / "canonical"
+    canonical.mkdir()
+    (canonical / "SKILL.md").write_text("canonical")
+    local = tmp_path / "local"
+    stored = tmp_path / "stored"
+    local.mkdir()
+    (local / "herdr").symlink_to(canonical, target_is_directory=True)
+    (stored / "herdr").mkdir(parents=True)
+    (stored / "herdr" / "SKILL.md").write_text("from another machine")
+
+    backup = diff_trees(local, stored)  # local → stored
+    apply = diff_trees(stored, local)  # stored → local
+
+    assert backup.removes == frozenset()
+    assert apply.creates == frozenset()
+    assert backup.skipped == apply.skipped == frozenset({Path("herdr")})
 
 
 def test_plan_tree_mirror_reports_unknown_for_file_source(tmp_path):

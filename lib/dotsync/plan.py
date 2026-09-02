@@ -128,24 +128,81 @@ def plan_file_copy(
     )
 
 
-def _tree_files(root: Path, ignored_top_dirs: Iterable[str] = ()) -> set[Path]:
+@dataclass(frozen=True)
+class TreeScan:
+    """One directory walked without following links (paths relative to root)."""
+
+    files: frozenset[Path]
+    symlinks: frozenset[Path]
+
+
+def scan_tree(root: Path, ignored_top_dirs: Iterable[str] = ()) -> TreeScan:
+    """Classify every entry under `root` as a regular file or a symlink.
+
+    rglob does not descend into symlinked directories, so nothing beneath a
+    link is visited and the scan never reads through one. Raises ValueError
+    when `root` itself is a symlink or not a directory; an absent root scans
+    empty.
+    """
     ignored = tuple(ignored_top_dirs)
     if not root.exists():
-        return set()
+        return TreeScan(frozenset(), frozenset())
     if root.is_symlink():
         raise ValueError(f"{root} is a symlink")
     if not root.is_dir():
         raise ValueError(f"{root} is not a directory")
     files: set[Path] = set()
-    for f in root.rglob("*"):
-        rel = f.relative_to(root)
+    symlinks: set[Path] = set()
+    for entry in root.rglob("*"):
+        rel = entry.relative_to(root)
         if rel.parts and rel.parts[0] in ignored:
             continue
-        if f.is_symlink():
-            raise ValueError(f"{f} is a symlink")
-        if f.is_file():
+        if entry.is_symlink():
+            symlinks.add(rel)
+        elif entry.is_file():
             files.add(rel)
-    return files
+    return TreeScan(frozenset(files), frozenset(symlinks))
+
+
+def blocked_by_symlink(
+    files: Iterable[Path], symlinks: frozenset[Path]
+) -> dict[Path, Path]:
+    """Map each file that is, or sits under, a symlinked entry to that link."""
+    blocked: dict[Path, Path] = {}
+    for rel in files:
+        for candidate in (rel, *rel.parents):
+            if candidate in symlinks:
+                blocked[rel] = candidate
+                break
+    return blocked
+
+
+@dataclass(frozen=True)
+class TreeDiff:
+    """What mirroring `source` onto `dest` would touch; links are left alone."""
+
+    creates: frozenset[Path]
+    updates: frozenset[Path]
+    removes: frozenset[Path]
+    skipped: frozenset[Path]  # symlinked entries on either side
+
+
+def diff_trees(
+    source: Path, dest: Path, ignored_top_dirs: Iterable[str] = ()
+) -> TreeDiff:
+    src = scan_tree(source, ignored_top_dirs)
+    dst = scan_tree(dest, ignored_top_dirs)
+    src_files = src.files - set(blocked_by_symlink(src.files, dst.symlinks))
+    dst_files = dst.files - set(blocked_by_symlink(dst.files, src.symlinks))
+    common = src_files & dst_files
+    return TreeDiff(
+        creates=frozenset(src_files - dst_files),
+        updates=frozenset(
+            rel for rel in common if _hash(source / rel) != _hash(dest / rel)
+        ),
+        removes=frozenset(dst_files - src_files),
+        skipped=src.symlinks | dst.symlinks,
+    )
 
 
 def plan_tree_mirror(
@@ -171,31 +228,39 @@ def plan_tree_mirror(
         return Change(label=label, kind="missing-source", source=source, dest=dest)
 
     try:
-        source_files = _tree_files(source, ignored_top_dirs)
-        dest_files = _tree_files(dest, ignored_top_dirs)
+        diff = diff_trees(source, dest, ignored_top_dirs)
     except ValueError as exc:
         return Change(
             label=label, kind="unknown", source=source, dest=dest, details=str(exc)
         )
-    creates = source_files - dest_files
-    removes = dest_files - source_files
-    common = source_files & dest_files
-    updates = {rel for rel in common if _hash(source / rel) != _hash(dest / rel)}
 
     parts: list[str] = []
-    if creates:
-        parts.append(f"{len(creates)} create")
-    if updates:
-        parts.append(f"{len(updates)} update")
-    if removes:
-        parts.append(f"{len(removes)} remove")
+    if diff.creates:
+        parts.append(f"{len(diff.creates)} create")
+    if diff.updates:
+        parts.append(f"{len(diff.updates)} update")
+    if diff.removes:
+        parts.append(f"{len(diff.removes)} remove")
+    if diff.skipped:
+        parts.append(f"{len(diff.skipped)} symlink skipped")
 
-    if not parts:
-        return Change(label=label, kind="unchanged", source=source, dest=dest)
-    kind: ChangeKind = "create" if creates and not updates and not removes else "update"
-    entries = [f"+ {rel.as_posix()}" for rel in sorted(creates)]
-    entries += [f"~ {rel.as_posix()}" for rel in sorted(updates)]
-    entries += [f"− {rel.as_posix()}" for rel in sorted(removes)]
+    if not (diff.creates or diff.updates or diff.removes):
+        return Change(
+            label=label,
+            kind="unchanged",
+            source=source,
+            dest=dest,
+            details=", ".join(parts),
+        )
+    kind: ChangeKind = (
+        "create" if diff.creates and not diff.updates and not diff.removes else "update"
+    )
+    entries = [f"+ {rel.as_posix()}" for rel in sorted(diff.creates)]
+    entries += [f"~ {rel.as_posix()}" for rel in sorted(diff.updates)]
+    entries += [f"− {rel.as_posix()}" for rel in sorted(diff.removes)]
+    entries += [
+        f"↷ {rel.as_posix()} (symlink, skipped)" for rel in sorted(diff.skipped)
+    ]
     return Change(
         label=label,
         kind=kind,
