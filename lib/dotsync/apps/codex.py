@@ -17,7 +17,16 @@ from dotsync.apps.base import (
 )
 from dotsync.apps.mcp_sanitizer import sanitize_codex_config, sanitize_codex_config_text
 from dotsync.diffinfo import summarize_pair
-from dotsync.plan import AppPlan, Change, plan_file_copy, plan_tree_mirror
+from dotsync.plan import (
+    AppPlan,
+    Change,
+    TreeScan,
+    blocked_by_symlink,
+    diff_trees,
+    plan_file_copy,
+    plan_tree_mirror,
+    scan_tree,
+)
 
 OPTIONAL_FILES = (
     "AGENTS.md",
@@ -59,23 +68,11 @@ class CodexApp(App):
     def _is_ignored_rel(rel: Path, ignored_top_dirs: tuple[str, ...]) -> bool:
         return bool(rel.parts and rel.parts[0] in ignored_top_dirs)
 
-    def _tree_files(
-        self, root: Path, ignored_top_dirs: tuple[str, ...] = ()
-    ) -> set[Path]:
-        if not root.exists():
-            return set()
-        ensure_not_symlink(root, str(root))
-        if not root.is_dir():
-            raise RuntimeError(f"{root} is not a directory")
-        files: set[Path] = set()
-        for f in root.rglob("*"):
-            rel = f.relative_to(root)
-            if self._is_ignored_rel(rel, ignored_top_dirs):
-                continue
-            ensure_not_symlink(f, str(rel))
-            if f.is_file():
-                files.add(rel)
-        return files
+    def _scan(self, root: Path, ignored_top_dirs: tuple[str, ...] = ()) -> TreeScan:
+        try:
+            return scan_tree(root, ignored_top_dirs)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
 
     def _diff_tree(
         self,
@@ -84,13 +81,11 @@ class CodexApp(App):
         ignored_top_dirs: tuple[str, ...] = (),
     ) -> tuple[set[Path], set[Path], set[Path]]:
         """Return (added_in_stored, removed_in_stored, modified) relative paths."""
-        local_files = self._tree_files(local, ignored_top_dirs)
-        stored_files = self._tree_files(stored, ignored_top_dirs)
-        added = stored_files - local_files
-        removed = local_files - stored_files
-        common = local_files & stored_files
-        modified = {rel for rel in common if _hash(local / rel) != _hash(stored / rel)}
-        return added, removed, modified
+        try:
+            diff = diff_trees(local, stored, ignored_top_dirs)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+        return set(diff.removes), set(diff.creates), set(diff.updates)
 
     def _mirror_tree(
         self,
@@ -102,14 +97,18 @@ class CodexApp(App):
         source_root: Path | None = None,
         dest_root: Path | None = None,
     ) -> None:
-        """Mirror managed files from src to dst, preserving ignored dst trees."""
+        """Mirror managed files from src to dst; ignored trees and symlinks stay."""
         ensure_directory(src, str(src), root=source_root)
         ensure_directory(dst, str(dst), root=dest_root)
         dst.mkdir(parents=True, exist_ok=True)
-        src_rels = self._tree_files(src, ignored_top_dirs)
-        dst_rels = self._tree_files(dst, ignored_top_dirs)
+        src_scan = self._scan(src, ignored_top_dirs)
+        dst_scan = self._scan(dst, ignored_top_dirs)
+        blocked = blocked_by_symlink(src_scan.files, dst_scan.symlinks)
+        kept = blocked_by_symlink(dst_scan.files, src_scan.symlinks)
+        for rel in sorted(src_scan.symlinks | dst_scan.symlinks):
+            self._note_skipped_symlink(f"{src.name}/{rel.as_posix()}")
 
-        for rel in src_rels:
+        for rel in sorted(src_scan.files - set(blocked)):
             target = dst / rel
             if target.is_dir() and not target.is_symlink():
                 shutil.rmtree(target)
@@ -124,7 +123,7 @@ class CodexApp(App):
                 dest_root=dest_root,
             )
 
-        for rel in dst_rels - src_rels:
+        for rel in dst_scan.files - src_scan.files - set(kept):
             target = dst / rel
             if target.exists() or target.is_symlink():
                 target.unlink()
@@ -140,7 +139,7 @@ class CodexApp(App):
                     ignored.unlink()
 
         subdirs = sorted(
-            (d for d in dst.rglob("*") if d.is_dir()),
+            (d for d in dst.rglob("*") if d.is_dir() and not d.is_symlink()),
             key=lambda p: len(p.parts),
             reverse=True,
         )
@@ -354,11 +353,11 @@ class CodexApp(App):
             if stored_dir.exists() or stored_dir.is_symlink():
                 ignored = self._ignored_top_dirs(name)
                 ensure_directory(stored_dir, f"{name}/", root=target_dir)
-                self._tree_files(stored_dir, ignored)
+                self._scan(stored_dir, ignored)
                 local_dir_for_name = local_dir / name
                 if local_dir_for_name.exists() or local_dir_for_name.is_symlink():
                     ensure_directory(local_dir_for_name, f"{name}/")
-                    self._tree_files(local_dir_for_name, ignored)
+                    self._scan(local_dir_for_name, ignored)
 
     def _optional_file_status(self, stored: Path) -> AppStatus | None:
         optional_file_changes: list[str] = []

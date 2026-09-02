@@ -108,7 +108,7 @@ def test_sync_from_mirrors_rules_directory(fake_home, tmp_path):
     assert not (target / "codex" / "rules" / "stale.rules").exists()
 
 
-def test_sync_from_refuses_symlink_in_rules_directory(fake_home, tmp_path):
+def test_sync_from_skips_symlink_in_rules_directory_and_warns(fake_home, tmp_path):
     outside = tmp_path / "secret.rules"
     outside.write_text("secret\n")
     cdir = _codex_dir(fake_home)
@@ -116,13 +116,17 @@ def test_sync_from_refuses_symlink_in_rules_directory(fake_home, tmp_path):
     (cdir / "config.toml").write_text("X\n")
     (cdir / "rules").mkdir()
     (cdir / "rules" / "leak.rules").symlink_to(outside)
+    (cdir / "rules" / "safe.rules").write_text("safe\n")
     target = tmp_path / "configs"
     target.mkdir()
 
-    with pytest.raises(RuntimeError, match="symlink"):
-        _codex_app().sync_from(target)
+    app = _codex_app()
+    app.sync_from(target)
 
+    assert (target / "codex" / "rules" / "safe.rules").read_text() == "safe\n"
+    assert not (target / "codex" / "rules" / "leak.rules").is_symlink()
     assert not (target / "codex" / "rules" / "leak.rules").exists()
+    assert app.warnings == ["rules/leak.rules is a symlink; skipped"]
 
 
 def test_sync_from_refuses_symlink_stored_app_root(fake_home, tmp_path):
@@ -687,7 +691,7 @@ def test_sync_to_refuses_file_stored_rules_before_backup(fake_home, tmp_path):
     assert not (backup / "codex" / "rules").exists()
 
 
-def test_sync_to_refuses_symlink_in_local_rules_before_backup(fake_home, tmp_path):
+def test_sync_to_keeps_local_rules_symlink_and_skips_it_in_backup(fake_home, tmp_path):
     outside = tmp_path / "outside.rules"
     outside.write_text("SECRET\n")
     cdir = _codex_dir(fake_home)
@@ -702,12 +706,15 @@ def test_sync_to_refuses_symlink_in_local_rules_before_backup(fake_home, tmp_pat
     backup = tmp_path / "backup"
     backup.mkdir()
 
-    with pytest.raises(RuntimeError, match="symlink"):
-        _codex_app().sync_to(target, backup)
+    app = _codex_app()
+    app.sync_to(target, backup)
 
-    assert (cdir / "config.toml").read_text() == "OLD\n"
+    assert (cdir / "config.toml").read_text() == "NEW\n"
+    assert (cdir / "rules" / "safe.rules").read_text() == "SAFE\n"
+    assert (cdir / "rules" / "leak.rules").is_symlink()
     assert outside.read_text() == "SECRET\n"
     assert not (backup / "codex" / "rules" / "leak.rules").exists()
+    assert app.warnings == ["rules/leak.rules is a symlink; skipped"]
 
 
 def test_sync_to_preserves_local_system_skills(fake_home, tmp_path):
