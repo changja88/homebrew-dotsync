@@ -10,7 +10,7 @@ A CLI that consolidates your macOS app configs into **one folder of your choice*
 
 ### Purpose
 
-dotsync consolidates your macOS app configs (Claude Code, Codex CLI, Herdr, Ghostty, BetterTouchTool, zsh) into **one folder of your choice** and keeps it in two-way sync with the apps. That folder can be anywhere — a fresh directory like `~/my-configs`, or a folder you already track in git or sync via iCloud Drive. Tool (dotsync) and data (the folder) are separated, so setting up a new Mac is just a matter of bringing the folder along.
+dotsync consolidates your macOS app configs (Claude Code, Codex CLI, Herdr, agent skills from `npx skills`, Ghostty, BetterTouchTool, zsh) into **one folder of your choice** and keeps it in two-way sync with the apps. That folder can be anywhere — a fresh directory like `~/my-configs`, or a folder you already track in git or sync via iCloud Drive. Tool (dotsync) and data (the folder) are separated, so setting up a new Mac is just a matter of bringing the folder along.
 
 ### Install
 
@@ -56,11 +56,12 @@ dotsync init
 #   ▸ [x] claude              installed
 #     [x] codex               installed
 #     [x] herdr               installed
+#     [x] skills              installed
 #     [x] ghostty             installed
 #     [x] bettertouchtool     installed · 2 presets
 #     [x] zsh                 installed
 #
-# ✔ tracked: claude · codex · herdr · ghostty · bettertouchtool · zsh
+# ✔ tracked: claude · codex · herdr · skills · ghostty · bettertouchtool · zsh
 # ✔ BetterTouchTool presets = Master_bt, Mini_bt   (auto-detected)
 # ✔ config saved → /Users/you/Desktop/dotsync_config/dotsync.toml
 ```
@@ -214,6 +215,8 @@ dotsync intentionally excludes dynamic local Serena MCP URLs from Codex config s
 
 **Herdr sync tracks only `~/.config/herdr/config.toml`.** Session and runtime state such as `session*.json`, plugin registry state, logs, sockets, and lock files are intentionally excluded. Existing dotsync users can enable Herdr with `dotsync apps` (or include `herdr` when replacing the list with `dotsync config apps ...`); existing tracked-app selections are never changed automatically.
 
+**Skills sync records what `npx skills add -g` installed, not the files.** `backup` reads `~/.agents/.skill-lock.json` and writes `skills/skills.json` with each skill's source and the managed agents (`claude-code`, `codex`) whose `~/.claude/skills/<name>` / `~/.codex/skills/<name>` link points at it — the lock file itself is never copied, since it can hold a GitHub token. `apply` runs `npx -y skills add <source> --global --skill <name> --agent <agent> --yes` for every recorded skill that is missing locally; failures, a missing `npx`, and non-GitHub sources are reported as warnings. Skills installed with `--copy` are plain directories and sync as files through the claude/codex apps instead.
+
 **BetterTouchTool must be running** for `backup` / `apply` / `status` — dotsync drives BTT via `osascript`. If BTT isn't running, `status` reports `unknown` and `backup` / `apply` raise an error. Preset names are treated as literal BTT names; empty names, path separators, quotes, and control characters are rejected before any AppleScript is generated.
 
 #### 4. Check sync state (per-file sha256 diff)
@@ -254,7 +257,7 @@ dotsync config apps claude,zsh            # replace the tracked-apps list (for a
 dotsync config btt-presets MyPreset,Other # replace BTT preset list (comma-separated)
 ```
 
-`dotsync config show` includes app-specific options such as BTT presets. If you set `backup_dir` manually in `dotsync.toml`, it must resolve inside the sync folder; absolute or relative paths that escape the sync folder, including symlink escapes, are rejected. Symlinks inside managed app config are also rejected instead of followed, so previews and syncs do not read or write through linked paths.
+`dotsync config show` includes app-specific options such as BTT presets. If you set `backup_dir` manually in `dotsync.toml`, it must resolve inside the sync folder; absolute or relative paths that escape the sync folder, including symlink escapes, are rejected. Top-level managed files and directories that are symlinks are rejected instead of followed. Inside mirrored directories such as Claude `skills/` or Codex `rules/`, symlinked entries (for example the links `npx skills add` creates) are skipped with a warning and never read or written through, and `apply` leaves them in place.
 
 > Newly-saved `dotsync.toml` files write BTT options under an `[options.bettertouchtool]` sub-table (the legacy `bettertouchtool_presets = [...]` form is still read for backward compatibility).
 
@@ -268,7 +271,7 @@ Picker keys:
 In non-TTY environments (CI, piped stdin) it automatically falls back to
 sequential per-app y/n prompts.
 
-Supported apps: `claude`, `codex`, `herdr`, `ghostty`, `bettertouchtool`, `zsh`
+Supported apps: `claude`, `codex`, `herdr`, `skills`, `ghostty`, `bettertouchtool`, `zsh`
 
 ### Adding a new app
 
@@ -282,7 +285,7 @@ Help: `dotsync --help`, `dotsync <command> --help`. All output respects `NO_COLO
 
 ### 목적
 
-dotsync는 macOS의 앱 설정(Claude Code, Codex CLI, Herdr, Ghostty, BetterTouchTool, zsh)을 **사용자가 지정한 단일 폴더**에 모아서 양방향으로 동기화한다. 그 폴더는 어디든 OK — 새 폴더(`~/my-configs`)일 수도 있고, 이미 git이나 iCloud Drive로 관리 중인 폴더일 수도 있다. 도구(dotsync)와 데이터(폴더)를 분리해서, 새 Mac 셋업도 폴더만 옮겨오면 끝난다.
+dotsync는 macOS의 앱 설정(Claude Code, Codex CLI, Herdr, `npx skills`로 설치한 agent skill, Ghostty, BetterTouchTool, zsh)을 **사용자가 지정한 단일 폴더**에 모아서 양방향으로 동기화한다. 그 폴더는 어디든 OK — 새 폴더(`~/my-configs`)일 수도 있고, 이미 git이나 iCloud Drive로 관리 중인 폴더일 수도 있다. 도구(dotsync)와 데이터(폴더)를 분리해서, 새 Mac 셋업도 폴더만 옮겨오면 끝난다.
 
 ### 설치
 
@@ -325,11 +328,12 @@ dotsync init
 #   ▸ [x] claude              installed
 #     [x] codex               installed
 #     [x] herdr               installed
+#     [x] skills              installed
 #     [x] ghostty             installed
 #     [x] bettertouchtool     installed · 2 presets
 #     [x] zsh                 installed
 #
-# ✔ tracked: claude · codex · herdr · ghostty · bettertouchtool · zsh
+# ✔ tracked: claude · codex · herdr · skills · ghostty · bettertouchtool · zsh
 # ✔ BetterTouchTool presets = Master_bt, Mini_bt   (auto-detected)
 # ✔ config saved → /Users/you/Desktop/dotsync_config/dotsync.toml
 ```
@@ -481,6 +485,8 @@ dotsync 는 Codex 설정을 sync 할 때 동적 로컬 Serena MCP URL 을 의도
 
 **Herdr sync는 `~/.config/herdr/config.toml`만 추적한다.** `session*.json`, plugin registry state, log, socket, lock 파일 같은 session/runtime 상태는 의도적으로 제외한다. 기존 dotsync 사용자는 `dotsync apps`에서 Herdr를 켜거나 `dotsync config apps ...`로 목록을 교체할 때 `herdr`를 포함하면 된다. 기존 추적 앱 선택은 자동으로 바꾸지 않는다.
 
+**Skills sync는 `npx skills add -g`로 무엇을 설치했는지를 기록하고, 파일은 복사하지 않는다.** `backup`은 `~/.agents/.skill-lock.json`을 읽어 각 스킬의 source와, `~/.claude/skills/<name>` / `~/.codex/skills/<name>` 링크가 그 스킬을 가리키는 관리 대상 에이전트(`claude-code`, `codex`)를 `skills/skills.json`에 쓴다. lock 파일에는 GitHub 토큰이 들어갈 수 있어 그대로 복사하지 않는다. `apply`는 로컬에 없는 스킬마다 `npx -y skills add <source> --global --skill <name> --agent <agent> --yes`를 실행하고, 실패·`npx` 없음·GitHub가 아닌 source는 warning으로 보고한다. `--copy`로 설치한 스킬은 일반 디렉터리이므로 claude/codex 앱이 파일로 동기화한다.
+
 **BetterTouchTool 은 실행 중이어야 한다.** `backup` / `apply` / `status` 모두 `osascript` 으로 BTT 를 제어하기 때문. BTT 가 꺼져 있으면 `status` 는 `unknown`, `backup` / `apply` 는 에러로 멈춘다. preset 이름은 BTT 이름 그대로 취급되며, 빈 이름, 경로 구분자, 따옴표, 제어문자는 AppleScript 생성 전에 거부된다.
 
 #### 4. 동기화 상태 확인 (파일별 sha256 비교)
@@ -521,7 +527,7 @@ dotsync config apps claude,zsh            # 추적 앱 일괄 교체 (자동화�
 dotsync config btt-presets MyPreset,Other # BTT preset 목록 일괄 교체 (콤마 구분)
 ```
 
-`dotsync config show` 는 BTT preset 같은 앱별 옵션도 함께 보여준다. `dotsync.toml` 에서 `backup_dir` 를 직접 지정한다면 반드시 sync 폴더 내부로 resolve 되어야 한다. 절대/상대 경로가 sync 폴더 밖으로 나가거나 symlink 를 통해 밖으로 빠지면 거부된다. 관리 대상 앱 설정 내부의 symlink 도 따라가지 않고 거부하므로 preview 와 sync 가 linked path 를 읽거나 쓰지 않는다.
+`dotsync config show` 는 BTT preset 같은 앱별 옵션도 함께 보여준다. `dotsync.toml` 에서 `backup_dir` 를 직접 지정한다면 반드시 sync 폴더 내부로 resolve 되어야 한다. 절대/상대 경로가 sync 폴더 밖으로 나가거나 symlink 를 통해 밖으로 빠지면 거부된다. 최상위 관리 파일·디렉터리가 symlink 이면 따라가지 않고 거부한다. Claude `skills/` 나 Codex `rules/` 처럼 미러링하는 디렉터리 안의 symlink 항목(예: `npx skills add` 가 만든 링크)은 warning 과 함께 건너뛰며, 읽거나 쓰지 않고 `apply` 때도 그대로 둔다.
 
 > 새로 저장되는 `dotsync.toml`은 BTT 옵션을 `[options.bettertouchtool]` 서브 테이블로 적는다 (기존 `bettertouchtool_presets = [...]` 형식도 호환을 위해 계속 읽힌다).
 
@@ -534,7 +540,7 @@ picker 키 안내:
 
 CI나 파이프 같은 비-TTY 환경에서는 자동으로 앱별 y/n 프롬프트로 fallback 한다.
 
-지원 앱: `claude`, `codex`, `herdr`, `ghostty`, `bettertouchtool`, `zsh`
+지원 앱: `claude`, `codex`, `herdr`, `skills`, `ghostty`, `bettertouchtool`, `zsh`
 
 ### 새 앱 추가
 
