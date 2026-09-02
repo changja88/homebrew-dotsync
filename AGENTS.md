@@ -5,7 +5,7 @@ This file gives Codex persistent project guidance for this repository.
 ## Repository Identity
 
 This repository is the `changja88/homebrew-dotsync` Homebrew tap. It contains
-three closely related deliverables:
+two closely related deliverables:
 
 - `dotsync`, a Python CLI under `lib/dotsync/` with entry points at
   `bin/dotsync` and `dotsync.cli:main`.
@@ -32,7 +32,7 @@ between local app locations and one user-chosen sync folder.
 ## Core Architecture
 
 - `lib/dotsync/cli.py` owns argparse command dispatch for `welcome`, `init`,
-  `config`, `apps`, `status`, `backup`, `apply`, and `ui`.
+  `config`, `apps`, `status`, `backup`, and `apply`.
 - `lib/dotsync/config.py` owns sync-folder discovery and `dotsync.toml`
   persistence. Config lives only at `<sync folder>/dotsync.toml`.
 - `lib/dotsync/backup.py` creates `apply` backups inside the sync folder, normally
@@ -59,22 +59,11 @@ between local app locations and one user-chosen sync folder.
   explicitly requested.
 - `dotsync` itself must not make network calls. External tools invoked by a
   user's existing app CLI are acceptable when already part of app behavior.
-- The original config-sync commands must not create files outside the
-  user-selected sync folder, except for the explicit, consent-based shell rc
-  update handled by `shellrc.py` and `cli.py`, and the local-file backup/write
-  behavior of an explicitly confirmed `apply`.
+- The tool must not create files outside the user-selected sync folder, except
+  for the explicit, consent-based shell rc update handled by `shellrc.py` and
+  `cli.py`.
 - Never create `~/.dotsync`, `~/.config/dotsync`, or any hidden global pointer
   file for application state.
-- UI account metadata and usage caches may live only under
-  `~/Library/Application Support/DotSync/`.
-- Codex credentials for a managed account may live only in that account's
-  DotSync-owned `CODEX_HOME` under the Application Support root. Account and
-  usage operations must never write the default `~/.codex`, `~/.claude`, or
-  `~/.claude.json` profiles.
-- Future profile-scoped Claude Keychain behavior remains internal. Public
-  Claude account operations stay policy-disabled until explicit Anthropic
-  permission is recorded; do not replace them with private OAuth, cookies, or
-  direct provider HTTP calls.
 - Public command names are important: `backup` means local app config to sync
   folder; `apply` means sync folder to local app config. The internal app
   plugin methods still use `sync_from` and `sync_to`.
@@ -111,22 +100,31 @@ When adding an app:
 
 See `docs/adding-an-app.md` for the detailed checklist.
 
-## Development and Verification Workflow
+## Testing Discipline
 
-Do not use TDD for application development unless the user explicitly asks for
-it. Do not add automated tests by default.
+This codebase was built test-first. For behavior changes, follow this order:
 
-Work in short user-visible slices:
+1. Add or update a failing test.
+2. Run the targeted test and confirm it fails for the expected reason.
+3. Implement the smallest change that makes it pass.
+4. Run the relevant targeted tests.
+5. Run the full test suite when the change has shared behavior or release
+   impact.
 
-1. Implement only the requested change.
-2. Run the minimum build, syntax, or packaging checks needed to produce a usable
-   artifact.
-3. Publish and reinstall the application so the user can inspect the real
-   installed build.
-4. Use the user's feedback to choose the next small change.
+Common commands:
 
-Do not treat a large passing test count as proof that the installed GUI works.
-Actual installed-app behavior and user acceptance are the completion criteria.
+```bash
+make test
+.venv/bin/python3 -m pytest
+.venv/bin/python3 -m pytest tests/test_config.py -v
+.venv/bin/python3 -m pytest tests/apps/test_claude.py::test_status_clean -v
+PYTHONPATH=lib python3 -m dotsync --help
+PYTHONPATH=lib python3 bin/dotsync --help
+```
+
+Tests isolate `$HOME`, scrub `DOTSYNC_DIR`, and block accidental
+`subprocess.run` calls by default in `tests/conftest.py`. If a test needs an
+external command, mock or monkeypatch it explicitly.
 
 ## Documentation Expectations
 

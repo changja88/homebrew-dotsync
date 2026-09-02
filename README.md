@@ -34,36 +34,6 @@ dotsync reuses it — no duplicate install. Otherwise Homebrew pulls in
 
 > Always start with **`dotsync init`** — it picks the sync folder. After that, `backup` / `apply` work from anywhere.
 
-#### What `dotsync ui` provides
-
-`dotsync ui` starts a local-only web server and opens the management UI in your
-browser: accounts, usage, Config Sync, and settings.
-
-- Add two or more isolated Codex subscription accounts. Every account starts with
-  an explicit fresh official-CLI login in a DotSync-owned `CODEX_HOME`; usage is
-  read through the official `codex app-server` interface. Login and Refresh are
-  explicit actions—opening or closing either window never refreshes a provider.
-- Claude account and usage actions are policy-disabled. DotSync does not fall back
-  to private OAuth endpoints, browser cookies, or private provider HTTP APIs.
-- Account metadata, managed Codex credentials, and cached usage live under
-  `~/Library/Application Support/DotSync/`. Account and usage operations never
-  write `~/.claude`, `~/.claude.json`, or the default `~/.codex` profile. DotSync
-  is not affiliated with Anthropic or OpenAI.
-- Config Sync remains a separate, explicit feature. Backup previews local-to-folder
-  changes. Apply shows a destructive overwrite warning, previews folder-to-local
-  changes, requires confirmation, and backs up local files before writing them.
-  This confirmed config-sync behavior is the intentional exception to the
-  provider-profile no-write rule; account screens never invoke Apply.
-- The UI server stops on its own once the browser tab is closed. Nothing runs at
-  login, and there is no automatic provider refresh.
-
-To verify the UI installation without creating app state or contacting a
-provider:
-
-```bash
-dotsync ui --check
-```
-
 ### Usage
 
 #### 1. One-time setup — pick a sync folder and the apps to track
@@ -122,7 +92,7 @@ dotsync init --yes --quiet --no-hints
 dotsync init --yes --no-shell-init
 ```
 
-**The configuration-sync CLI creates no state outside the sync folder you chose.** Its settings live in `<sync folder>/dotsync.toml`, and backups accumulate in `<sync folder>/.backups/`. The single setup exception—opt-in by design—is the one-line `export DOTSYNC_DIR="…"` that `init` writes into your shell rc (see below); pass `--no-shell-init` to disable. A confirmed `apply` is the separate run-time exception that backs up and writes selected local app configs. The account/usage app data described above lives only under Application Support.
+**dotsync creates no files or directories anywhere on your machine outside the sync folder you chose.** All settings live in `<sync folder>/dotsync.toml`, and backups accumulate in `<sync folder>/.backups/`. The single exception — opt-in by design — is the one-line `export DOTSYNC_DIR="…"` that `init` writes into your shell rc (see below); pass `--no-shell-init` to disable.
 
 #### How does dotsync find the sync folder?
 
@@ -333,35 +303,6 @@ Python 3.12 또는 3.13 이 canonical 경로 (`/opt/homebrew/bin/python3.{12,13}
 
 > 첫 단계는 항상 **`dotsync init`** — sync 폴더를 정한다. 그 다음 `backup` / `apply`가 동작한다.
 
-#### `dotsync ui`가 제공하는 기능
-
-`dotsync ui`는 로컬 전용 웹 서버를 띄우고 브라우저에서 관리 UI를 연다. 계정,
-사용량, Config Sync, 설정을 다룬다.
-
-- 두 개 이상의 격리된 Codex 정액제 계정을 추가할 수 있다. 각 계정은 DotSync가
-  소유한 `CODEX_HOME`에서 공식 CLI로 새 로그인을 명시적으로 시작하며, 사용량은
-  공식 `codex app-server` 인터페이스로 읽는다. 로그인과 Refresh는 명시적 동작이고,
-  창을 열거나 닫는 것만으로 provider refresh가 실행되지 않는다.
-- Claude 계정·사용량 동작은 정책상 비활성화돼 있다. private OAuth endpoint,
-  browser cookie, private provider HTTP API로 우회하지 않는다.
-- 계정 metadata, 관리 Codex credential, 사용량 cache는
-  `~/Library/Application Support/DotSync/` 아래에만 둔다. 계정·사용량 동작은
-  `~/.claude`, `~/.claude.json`, 기본 `~/.codex` profile을 쓰지 않는다. DotSync는
-  Anthropic 또는 OpenAI와 제휴한 제품이 아니다.
-- Config Sync는 별도의 명시적 기능이다. Backup은 로컬→폴더 변경을 preview하고,
-  Apply는 로컬 설정 덮어쓰기 경고와 폴더→로컬 변경 preview를 보여준 뒤 확인을
-  요구하며 쓰기 전에 로컬 파일을 백업한다. 이 확인된 config-sync 동작만
-  provider-profile no-write 규칙의 의도된 예외이고, 계정 화면은 Apply를 호출하지
-  않는다.
-- 브라우저 탭을 닫으면 UI 서버는 스스로 종료된다. 로그인 시 실행되는 것은 없고
-  자동 provider refresh도 없다.
-
-app state를 만들거나 provider에 접속하지 않고 UI 설치를 진단하려면:
-
-```bash
-dotsync ui --check
-```
-
 ### 사용법
 
 #### 1. 처음 한 번 — sync 폴더 정하고 추적할 앱 고르기
@@ -419,7 +360,7 @@ dotsync init --yes --quiet --no-hints
 dotsync init --yes --no-shell-init
 ```
 
-**설정 동기화 CLI는 사용자가 지정한 sync 폴더 밖에 자체 상태를 만들지 않는다.** 설정은 `<sync 폴더>/dotsync.toml`에 저장되고, 백업도 `<sync 폴더>/.backups/`에 쌓인다. 설정 단계의 유일한 예외는 설계상 opt-in인 `init`의 셸 rc 한 줄 `export DOTSYNC_DIR="…"`이다(아래 참고). `--no-shell-init`으로 끌 수 있다. 실행 시에는 확인된 `apply`만 선택한 로컬 앱 설정을 백업하고 쓰는 별도 예외다. 위 계정·사용량 앱 데이터는 Application Support 아래에만 둔다.
+**dotsync는 사용자가 지정한 sync 폴더 외에는 컴퓨터 어디에도 파일/디렉토리를 만들지 않는다.** 모든 설정은 `<sync 폴더>/dotsync.toml`에만 저장되고, 백업도 `<sync 폴더>/.backups/`에 쌓인다. 단 하나의 예외는 — 설계상 opt-in으로 — `init`이 셸 rc에 추가하는 `export DOTSYNC_DIR="…"` 한 줄이다 (아래 참고). `--no-shell-init`으로 끌 수 있다.
 
 #### dotsync는 sync 폴더를 어떻게 찾나?
 

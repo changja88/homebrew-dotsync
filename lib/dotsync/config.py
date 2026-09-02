@@ -20,8 +20,6 @@ Backups default to:
 from __future__ import annotations
 import json
 import os
-import secrets
-import stat
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,10 +46,6 @@ def supported_apps() -> set[str]:
 
 class ConfigError(Exception):
     """Raised when config is missing or invalid."""
-
-
-class ConfigWriteUncertain(OSError):
-    """Raised after config replacement when directory durability is uncertain."""
 
 
 def folder_config_path(folder: Path) -> Path:
@@ -111,11 +105,6 @@ def load_config() -> Config:
             "  • run dotsync from inside the sync folder (or any subdir)\n"
             "  • run `dotsync init --dir <path> --yes` to create a new one"
         )
-    return load_config_from(folder)
-
-
-def load_config_from(folder: Path) -> Config:
-    """Load one explicitly selected sync folder without global discovery."""
     if not folder.is_absolute():
         raise ConfigError(f"{ENV_VAR} must be an absolute path, got: {folder}")
     if not folder.exists():
@@ -238,12 +227,6 @@ def save_config(cfg: Config) -> None:
     """Write the sync folder's dotsync.toml. Touches no other location."""
     cfg.dir.mkdir(parents=True, exist_ok=True)
 
-    _atomic_write_config(folder_config_path(cfg.dir), _serialize_config(cfg))
-
-
-def _serialize_config(cfg: Config) -> str:
-    """Render a config without performing filesystem mutation."""
-
     lines = [
         "apps = [" + ", ".join(_toml_value(a) for a in cfg.apps) + "]",
         "",
@@ -267,200 +250,4 @@ def _serialize_config(cfg: Config) -> str:
             lines.append(f"{key} = {_toml_value(val)}")
         lines.append("")
 
-    return "\n".join(lines)
-
-
-def initialize_config_file(directory_fd: int, cfg: Config) -> None:
-    """Create a missing config through one already-validated directory."""
-    content = _serialize_config(cfg).encode("utf-8")
-    staging_name, descriptor = _open_initializer_staging_file(directory_fd)
-    try:
-        _write_all(descriptor, content)
-        os.fsync(descriptor)
-        os.fsync(directory_fd)
-        os.link(
-            staging_name,
-            FOLDER_CONFIG_FILENAME,
-            src_dir_fd=directory_fd,
-            dst_dir_fd=directory_fd,
-            follow_symlinks=False,
-        )
-        os.unlink(staging_name, dir_fd=directory_fd)
-        staging_name = ""
-        os.fsync(directory_fd)
-    finally:
-        try:
-            if staging_name:
-                _unlink_initializer_staging(directory_fd, staging_name)
-        finally:
-            os.close(descriptor)
-
-
-def _open_initializer_staging_file(directory_fd: int) -> tuple[str, int]:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-    for _ in range(100):
-        staging_name = f".dotsync.toml.init.{secrets.token_hex(16)}"
-        try:
-            descriptor = os.open(
-                staging_name,
-                flags,
-                0o666,
-                dir_fd=directory_fd,
-            )
-        except FileExistsError:
-            continue
-        return staging_name, descriptor
-    raise FileExistsError("could not create a config initializer staging file")
-
-
-def _write_all(descriptor: int, content: bytes) -> None:
-    offset = 0
-    while offset < len(content):
-        written = os.write(descriptor, content[offset:])
-        if written <= 0:
-            raise OSError("config write made no progress")
-        offset += written
-
-
-def _unlink_initializer_staging(
-    directory_fd: int,
-    staging_name: str,
-) -> None:
-    try:
-        os.unlink(staging_name, dir_fd=directory_fd)
-    except OSError:
-        return
-    try:
-        os.fsync(directory_fd)
-    except OSError:
-        pass
-
-
-def _atomic_write_config(path: Path, content: str) -> None:
-    parent_fd = os.open(
-        path.parent,
-        os.O_RDONLY | os.O_DIRECTORY,
-    )
-    target_fd: int | None = None
-    temporary_fd: int | None = None
-    temporary_name: str | None = None
-    try:
-        target_fd = _open_existing_config(parent_fd, path.name)
-
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-        for _ in range(100):
-            temporary_name = f".dotsync.toml.{secrets.token_hex(16)}"
-            try:
-                temporary_fd = os.open(
-                    temporary_name,
-                    flags,
-                    0o666,
-                    dir_fd=parent_fd,
-                )
-            except FileExistsError:
-                temporary_name = None
-                continue
-            break
-        else:
-            raise FileExistsError("could not create a temporary config file")
-
-        try:
-            assert temporary_fd is not None
-            _write_all(temporary_fd, content.encode("utf-8"))
-            os.fsync(temporary_fd)
-            if not _config_target_identity_is_current(
-                parent_fd,
-                path.name,
-                target_fd,
-            ):
-                raise ConfigError("dotsync.toml changed during save")
-            if target_fd is not None:
-                target_mode = stat.S_IMODE(os.fstat(target_fd).st_mode)
-                os.fchmod(temporary_fd, target_mode)
-                os.fsync(temporary_fd)
-            os.close(temporary_fd)
-            temporary_fd = None
-            if not _config_target_identity_is_current(
-                parent_fd,
-                path.name,
-                target_fd,
-            ):
-                raise ConfigError("dotsync.toml changed during save")
-            os.replace(
-                temporary_name,
-                path.name,
-                src_dir_fd=parent_fd,
-                dst_dir_fd=parent_fd,
-            )
-            temporary_name = None
-            try:
-                os.fsync(parent_fd)
-            except OSError:
-                raise ConfigWriteUncertain(
-                    "config replacement durability is uncertain"
-                ) from None
-            final_fd = os.open(
-                path.name,
-                os.O_RDONLY | os.O_NOFOLLOW,
-                dir_fd=parent_fd,
-            )
-            try:
-                if not stat.S_ISREG(os.fstat(final_fd).st_mode):
-                    raise ConfigError("dotsync.toml must be a regular file")
-            finally:
-                os.close(final_fd)
-        except BaseException:
-            if temporary_fd is not None:
-                os.close(temporary_fd)
-                temporary_fd = None
-            if temporary_name is not None:
-                try:
-                    os.unlink(temporary_name, dir_fd=parent_fd)
-                except FileNotFoundError:
-                    pass
-            raise
-    finally:
-        if target_fd is not None:
-            os.close(target_fd)
-        os.close(parent_fd)
-
-
-def _open_existing_config(parent_fd: int, name: str) -> int | None:
-    flags = os.O_RDONLY | os.O_NOFOLLOW
-    if hasattr(os, "O_CLOEXEC"):
-        flags |= os.O_CLOEXEC
-    if hasattr(os, "O_NONBLOCK"):
-        flags |= os.O_NONBLOCK
-    try:
-        descriptor = os.open(name, flags, dir_fd=parent_fd)
-    except FileNotFoundError:
-        return None
-    except OSError as error:
-        try:
-            metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            raise error
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ConfigError("dotsync.toml must be a regular file") from None
-        raise
-    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-        os.close(descriptor)
-        raise ConfigError("dotsync.toml must be a regular file")
-    return descriptor
-
-
-def _config_target_identity_is_current(
-    parent_fd: int,
-    name: str,
-    target_fd: int | None,
-) -> bool:
-    try:
-        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        return target_fd is None
-    if target_fd is None or not stat.S_ISREG(current.st_mode):
-        return False
-    opened = os.fstat(target_fd)
-    return (current.st_dev, current.st_ino) == (opened.st_dev, opened.st_ino)
+    folder_config_path(cfg.dir).write_text("\n".join(lines))
