@@ -343,3 +343,44 @@ def test_the_lock_file_is_not_an_account(fake_home):
         pass
     assert (fake_home / ".claude-accounts" / ".lock").exists()
     assert accounts.saved_accounts() == []
+
+
+def test_label_defaults_to_the_account_name(fake_home, fake_accounts_cli):
+    _saved(fake_home, fake_accounts_cli, "bob", BOB, "b1")
+    assert accounts.label("bob") == "bob"
+
+
+def test_rename_sets_the_label_and_keeps_the_folder_and_login(fake_home, fake_accounts_cli):
+    cli = fake_accounts_cli
+    folder = _saved(fake_home, cli, "bob", BOB, "b1")
+
+    accounts.rename("bob", "  밥 업무용  ")
+
+    assert accounts.label("bob") == "밥 업무용"
+    assert "밥 업무용" in (folder / ".dotsync-account.json").read_text(encoding="utf-8")
+    assert accounts.saved_accounts() == ["bob"]
+    assert cli.keychain[cli.service_for(folder)] == "b1"
+    assert _doc(folder / ".claude.json")["oauthAccount"] == BOB
+
+
+def test_rename_accepts_forty_characters(fake_home, fake_accounts_cli):
+    _saved(fake_home, fake_accounts_cli, "bob", BOB, "b1")
+    accounts.rename("bob", "x" * 40)
+    assert accounts.label("bob") == "x" * 40
+
+
+@pytest.mark.parametrize("text", ["", "   ", "x" * 41])
+def test_rename_rejects_blank_or_long_labels(fake_home, fake_accounts_cli, text):
+    _saved(fake_home, fake_accounts_cli, "bob", BOB, "b1")
+    assert _code(lambda: accounts.rename("bob", text)) == "invalid_label"
+    assert accounts.label("bob") == "bob"
+
+
+def test_rename_of_an_unknown_account_is_not_found(fake_home, fake_accounts_cli):
+    assert _code(lambda: accounts.rename("ghost", "x")) == "not_found"
+
+
+def test_label_ignores_a_corrupt_label_file(fake_home, fake_accounts_cli):
+    folder = _saved(fake_home, fake_accounts_cli, "bob", BOB, "b1")
+    (folder / ".dotsync-account.json").write_text("{")
+    assert accounts.label("bob") == "bob"

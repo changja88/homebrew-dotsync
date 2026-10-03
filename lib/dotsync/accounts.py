@@ -39,6 +39,9 @@ _RESERVED_NAMES = {"default"}
 _ITEM_NOT_FOUND = 44
 # How long a command waits for another account command to finish.
 LOCK_WAIT_SECONDS = 60.0
+# The dotsync app's display name for an account lives in its folder.
+_LABEL_FILE = ".dotsync-account.json"
+LABEL_MAX = 40
 
 
 class AccountError(RuntimeError):
@@ -136,6 +139,29 @@ def account_email(name: str) -> str | None:
     return _email(_oauth_account(accounts_root() / name / ".claude.json"))
 
 
+def label(name: str) -> str:
+    """The name the dotsync app shows; the account name until renamed."""
+    try:
+        doc = json.loads((account_dir(name) / _LABEL_FILE).read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return name
+    value = doc.get("label") if isinstance(doc, dict) else None
+    return value if isinstance(value, str) and value.strip() else name
+
+
+def rename(name: str, new_label: str) -> None:
+    """Change the name shown for `name`. The folder — and so the login — stays."""
+    folder = _existing_dir(name)
+    text = new_label.strip()
+    if not text or len(text) > LABEL_MAX:
+        raise AccountError(f"a label needs 1–{LABEL_MAX} characters", "invalid_label")
+    write_text_safely(
+        folder / _LABEL_FILE,
+        json.dumps({"label": text}, indent=2, ensure_ascii=False),
+        _LABEL_FILE,
+    )
+
+
 def seat_email() -> str | None:
     """Email of the login Claude uses now (the default config folder)."""
     return _email(_oauth_account(_seat_config()))
@@ -164,7 +190,7 @@ def account_info(name: str) -> dict:
     logged_in = is_logged_in(name)
     return {
         "name": name,
-        "label": name,
+        "label": label(name),
         "email": account_email(name) if logged_in else None,
         "logged_in": logged_in,
     }

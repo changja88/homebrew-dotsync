@@ -99,7 +99,10 @@ def _build_parser() -> argparse.ArgumentParser:
     account_list = account_sub.add_parser("list", help="show saved accounts and the one in use")
     account_remove = account_sub.add_parser("remove", help="log out a saved account and delete it")
     account_remove.add_argument("name")
-    for account_cmd in (account_login, account_use, account_list, account_remove):
+    account_rename = account_sub.add_parser("rename", help="change the name shown for an account")
+    account_rename.add_argument("name")
+    account_rename.add_argument("label")
+    for account_cmd in (account_login, account_use, account_list, account_remove, account_rename):
         account_cmd.add_argument(
             "--json", action="store_true", help="print one JSON object (for the dotsync app)"
         )
@@ -756,6 +759,9 @@ def _account_result(args) -> dict:
     if args.account_cmd == "remove":
         accounts.remove(args.name)
         return {"removed": args.name}
+    if args.account_cmd == "rename":
+        accounts.rename(args.name, args.label)
+        return accounts.account_info(args.name)
     raise AssertionError(f"unknown account command {args.account_cmd}")
 
 
@@ -792,6 +798,10 @@ def _account_text(args) -> int:
         accounts.remove(args.name)
         ui.ok(f"removed {args.name}")
         return 0
+    if args.account_cmd == "rename":
+        accounts.rename(args.name, args.label)
+        ui.ok(f"{args.name} is now shown as {accounts.label(args.name)}")
+        return 0
     return 2
 
 
@@ -802,7 +812,8 @@ def _print_accounts() -> None:
         print(f"  ● {'(not saved)':<16} {seat['email']}")
     for info in snap["accounts"]:
         mark = "●" if info["name"] == snap["active"] else " "
-        print(f"  {mark} {info['name']:<16} {info['email'] or '(not logged in)'}")
+        shown = info["label"] if info["label"] == info["name"] else f"{info['label']} ({info['name']})"
+        print(f"  {mark} {shown:<16} {info['email'] or '(not logged in)'}")
     if not snap["accounts"]:
         ui.dim("no saved accounts — add one with: dotsync account login <name>")
 

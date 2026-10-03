@@ -312,3 +312,30 @@ def test_account_list_does_not_wait_for_the_lock(fake_home, fake_accounts_cli, m
     monkeypatch.setattr(accounts, "LOCK_WAIT_SECONDS", 0.2)
     with accounts.locked():
         assert main(["account", "list", "--json"]) == 0
+
+
+def test_account_rename_json(fake_home, fake_accounts_cli, capsys):
+    _saved(fake_home, fake_accounts_cli, "bob", BOB, "b1")
+
+    assert main(["account", "rename", "bob", "밥", "--json"]) == 0
+
+    assert _json_out(capsys) == {
+        "name": "bob", "label": "밥", "email": "bob@example.com", "logged_in": True,
+    }
+
+
+def test_account_rename_text(fake_home, fake_accounts_cli, capsys):
+    _saved(fake_home, fake_accounts_cli, "bob", BOB, "b1")
+    assert main(["account", "rename", "bob", "밥"]) == 0
+    assert "밥" in capsys.readouterr().out
+
+
+def test_account_list_text_shows_a_label_and_its_name(fake_home, fake_accounts_cli, capsys):
+    _saved(fake_home, fake_accounts_cli, "bob", BOB, "b1")
+    main(["account", "rename", "bob", "밥"])
+    capsys.readouterr()
+
+    assert main(["account", "list"]) == 0
+
+    out = capsys.readouterr().out
+    assert "밥" in out and "(bob)" in out
