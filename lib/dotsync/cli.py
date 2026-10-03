@@ -7,7 +7,7 @@ import json
 import signal
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Sequence
 from dotsync import __version__, accounts, ui, diffinfo
@@ -864,7 +864,9 @@ def _window_text(window: dict | None) -> str:
         return "—"
     if window["resets_at"] is None:
         return f"{window['percent']:>3}%"
-    reset = datetime.fromisoformat(window["resets_at"].replace("Z", "+00:00")).astimezone()
+    reset = datetime.fromisoformat(window["resets_at"].replace("Z", "+00:00"))
+    # Claude reports resets like 05:59:59.85, which people read as 06:00.
+    reset = (reset + timedelta(seconds=30)).replace(second=0, microsecond=0).astimezone()
     return f"{window['percent']:>3}% (resets {reset:%m-%d %H:%M})"
 
 

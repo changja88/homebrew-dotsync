@@ -410,6 +410,36 @@ def test_account_usage_text(fake_home, fake_accounts_cli, capsys):
     assert "dotsync account login bob" in out
 
 
+@pytest.fixture
+def utc_local_time():
+    import os
+    import time
+
+    saved = os.environ.get("TZ")
+    os.environ["TZ"] = "UTC"
+    time.tzset()
+    yield
+    if saved is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = saved
+    time.tzset()
+
+
+def test_account_usage_text_rounds_resets_to_the_nearest_minute(
+    fake_home, fake_accounts_cli, utc_local_time, capsys
+):
+    # Claude reports resets like 05:59:59.85; people read that as 06:00.
+    cli = fake_accounts_cli
+    _saved(fake_home, cli, "alice", ALICE, "a1")
+    _seat(fake_home, cli, ALICE, "a2")
+    cli.reply_usage("seat", FIVE, (15, "2026-10-09T05:59:59.850000+00:00"))
+
+    assert main(["account", "usage"]) == 0
+
+    assert "15% (resets 10-09 06:00)" in capsys.readouterr().out
+
+
 def test_account_usage_json_without_claude(fake_home, fake_accounts_cli, monkeypatch, capsys):
     import shutil
 

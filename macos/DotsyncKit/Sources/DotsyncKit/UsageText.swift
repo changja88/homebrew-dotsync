@@ -25,13 +25,15 @@ public enum UsageText {
         "주간 한도 다 씀 · \(resetDate(reset, timeZone: timeZone)) 초기화"
     }
 
-    /// "10/7(수) 09:00"
+    /// "10/7(수) 09:00". Rounds to the nearest minute: Claude reports resets
+    /// like 08:59:59.85, which people read as 09:00.
     public static func resetDate(_ date: Date, timeZone: TimeZone = .current) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "ko_KR")
         formatter.timeZone = timeZone
         formatter.dateFormat = "M/d(E) HH:mm"
-        return formatter.string(from: date)
+        let minute = (date.timeIntervalSince1970 / 60).rounded() * 60
+        return formatter.string(from: Date(timeIntervalSince1970: minute))
     }
 
     /// "방금", "3분 전", "2시간 전", "1일 전"; "갱신 전" before the first refresh.

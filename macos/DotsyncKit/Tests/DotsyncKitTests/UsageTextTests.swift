@@ -40,6 +40,13 @@ func after(days: Int = 0, hours: Int = 0, minutes: Int = 0, seconds: Int = 0) ->
     #expect(UsageText.resetDate(reset, timeZone: seoul) == "10/7(수) 09:00")
 }
 
+@Test func resetDateRoundsToTheNearestMinute() {
+    // Claude reports resets like 02:59:59.85 UTC; people read that as 12:00 KST.
+    let almostNoon = Date(timeIntervalSince1970: 1_791_082_799)  // 2026-10-04 02:59:59 UTC
+    #expect(UsageText.resetDate(almostNoon, timeZone: seoul) == "10/4(일) 12:00")
+    #expect(UsageText.fullWeek(reset: almostNoon, timeZone: seoul) == "주간 한도 다 씀 · 10/4(일) 12:00 초기화")
+}
+
 @Test func agoCountsUpFromJustNow() {
     #expect(UsageText.ago(nil, now: now) == "갱신 전")
     #expect(UsageText.ago(after(seconds: -30), now: now) == "방금")
