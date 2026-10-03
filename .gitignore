@@ -98,3 +98,10 @@ dotsync.toml
 
 # --- uv lockfile (project is stdlib-only; lock has no real content) -----
 uv.lock
+
+# --- dotsync.app (macos/) -----------------------------------------------
+macos/dotsync.xcodeproj/
+macos/App/Info.plist
+macos/Widget/Info.plist
+macos/DotsyncKit/.build/
+macos/DotsyncKit/.swiftpm/
