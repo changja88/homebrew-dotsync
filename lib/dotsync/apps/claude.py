@@ -16,6 +16,7 @@ from dotsync.apps.base import (
     ensure_directory,
     ensure_not_symlink,
     ensure_path_within_root,
+    is_npx_skills_link,
     read_skills_ignore,
     write_text_safely,
     _hash,
@@ -48,9 +49,9 @@ PLUGIN_RUNTIME_KEYS = {
 # 1. Run `PYTHONPATH=lib python3 -m dotsync status` and confirm the Claude row
 #    reports clean or lists CLAUDE.md / global-rule directories naturally.
 # 2. Use an isolated DOTSYNC_DIR under /tmp, run `dotsync init --apps claude`
-#    with `--yes --no-shell-init`, then `dotsync backup claude`; confirm stored
+#    with `--yes --no-shell-init`, then `dotsync push claude`; confirm stored
 #    `claude/` contains existing CLAUDE.md and global-rule directories.
-# 3. Set HOME to a fake /tmp home and run `dotsync apply claude --yes`; confirm the
+# 3. Set HOME to a fake /tmp home and run `dotsync pull claude --yes`; confirm the
 #    same global-rule items are restored under the fake ~/.claude/.
 # 4. Remove the temporary DOTSYNC_DIR and fake HOME directories.
 
@@ -59,13 +60,20 @@ class ClaudeApp(App):
     name = "claude"
     description = "Claude Code (settings + plugins + MCP servers + global rules)"
 
-    def __init__(self, skills_ignore: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self, skills_ignore: tuple[str, ...] = (), skills_app_tracked: bool = False
+    ) -> None:
         super().__init__()
         self.skills_ignore = tuple(skills_ignore)
+        # The skills app records `npx skills` links, so skipping them is expected.
+        self.skills_app_tracked = skills_app_tracked
 
     @classmethod
     def from_config(cls, cfg) -> "ClaudeApp":
-        return cls(skills_ignore=read_skills_ignore(cfg, cls.name))
+        return cls(
+            skills_ignore=read_skills_ignore(cfg, cls.name),
+            skills_app_tracked="skills" in cfg.apps,
+        )
 
     @classmethod
     def is_present_locally(cls) -> bool:
@@ -128,6 +136,10 @@ class ClaudeApp(App):
         blocked = blocked_by_symlink(src_scan.files, dst_scan.symlinks)
         kept = blocked_by_symlink(dst_scan.files, src_scan.symlinks)
         for rel in sorted(src_scan.symlinks | dst_scan.symlinks):
+            if self.skills_app_tracked and (
+                is_npx_skills_link(src / rel) or is_npx_skills_link(dst / rel)
+            ):
+                continue
             self._note_skipped_symlink(f"{src.name}/{rel.as_posix()}")
 
         for rel in sorted(src_scan.files - set(blocked)):
@@ -226,21 +238,14 @@ class ClaudeApp(App):
                     self._remove_managed_path(stale_dir, f"{name}/", root=target_dir)
                     ui.ok(f"{name}/ removed")
 
-    def _sync_to_global_rules(self, target_dir: Path, backup_dir: Path) -> None:
+    def _sync_to_global_rules(self, target_dir: Path) -> None:
         """Restore present stored user-level Claude global rules to local."""
         cdir = self._claude_dir()
         stored = self._stored(target_dir)
-        bdir = backup_dir / self.name
 
         stored_md = stored / "CLAUDE.md"
         local_md = cdir / "CLAUDE.md"
         if stored_md.exists():
-            ensure_directory(bdir, "claude backup", root=backup_dir)
-            bdir.mkdir(parents=True, exist_ok=True)
-            if local_md.exists():
-                copy_file_safely(
-                    local_md, bdir / "CLAUDE.md", "CLAUDE.md", dest_root=backup_dir
-                )
             ensure_directory(cdir, "~/.claude/")
             cdir.mkdir(parents=True, exist_ok=True)
             copy_file_safely(stored_md, local_md, "CLAUDE.md", source_root=target_dir)
@@ -251,13 +256,11 @@ class ClaudeApp(App):
             local_dir = cdir / name
             if stored_dir.exists():
                 ensure_directory(stored_dir, f"{name}/", root=target_dir)
-                ignored = self._ignored_top_dirs(name)
-                if local_dir.exists():
-                    self._mirror_tree(
-                        local_dir, bdir / name, ignored, dest_root=backup_dir
-                    )
                 self._mirror_tree(
-                    stored_dir, local_dir, ignored, source_root=target_dir
+                    stored_dir,
+                    local_dir,
+                    self._ignored_top_dirs(name),
+                    source_root=target_dir,
                 )
                 ui.ok(f"{name}/")
 
@@ -993,7 +996,7 @@ class ClaudeApp(App):
 
         self._sync_from_global_rules(target_dir)
 
-    def sync_to(self, target_dir: Path, backup_dir: Path) -> None:
+    def sync_to(self, target_dir: Path) -> None:
         stored = self._stored(target_dir)
         ensure_directory(stored, "claude/", root=target_dir)
         self._validate_stored_global_rules(stored, target_dir)
@@ -1006,30 +1009,6 @@ class ClaudeApp(App):
         ensure_directory(cdir / "plugins", "~/.claude/plugins/")
         (cdir / "plugins").mkdir(parents=True, exist_ok=True)
 
-        bdir = backup_dir / self.name
-        ensure_directory(bdir, "claude backup", root=backup_dir)
-        bdir.mkdir(parents=True, exist_ok=True)
-        ensure_directory(bdir / "plugins", "plugins/", root=backup_dir)
-        (bdir / "plugins").mkdir(parents=True, exist_ok=True)
-
-        for src, rel in [
-            (cdir / "settings.json", "settings.json"),
-            (
-                cdir / "plugins" / "installed_plugins.json",
-                "plugins/installed_plugins.json",
-            ),
-            (
-                cdir / "plugins" / "known_marketplaces.json",
-                "plugins/known_marketplaces.json",
-            ),
-            (self._claude_json(), ".claude.json"),
-        ]:
-            if src.exists():
-                dst = bdir / rel
-                ensure_path_within_root(dst, backup_dir, rel)
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                copy_file_safely(src, dst, rel, dest_root=backup_dir)
-        ui.dim(f"backup → {bdir}")
 
         copy_file_safely(
             stored / "settings.json",
@@ -1080,16 +1059,6 @@ class ClaudeApp(App):
             ensure_directory(local_plugin_dir, f"plugins/{plugin_name}/")
             local_plugin_dir.mkdir(parents=True, exist_ok=True)
             local_cfg = local_plugin_dir / "config.json"
-            if local_cfg.exists():
-                bdst = bdir / "plugins" / plugin_name
-                ensure_directory(bdst, f"plugins/{plugin_name}/", root=backup_dir)
-                bdst.mkdir(parents=True, exist_ok=True)
-                copy_file_safely(
-                    local_cfg,
-                    bdst / "config.json",
-                    f"plugins/{plugin_name}/config.json",
-                    dest_root=backup_dir,
-                )
             copy_file_safely(
                 src,
                 local_cfg,
@@ -1103,7 +1072,7 @@ class ClaudeApp(App):
 
         self._enforce_disabled(stored / "settings.json")
 
-        self._sync_to_global_rules(target_dir, backup_dir)
+        self._sync_to_global_rules(target_dir)
 
         ui.dim("hint: restart Claude Code to pick up new plugins")
 
@@ -1234,7 +1203,7 @@ class ClaudeApp(App):
         if base.state == "unknown":
             return base
         # Plugin files also carry runtime metadata Claude Code rewrites on its
-        # own; compare them the way backup/apply plans do.
+        # own; compare them the way push/pull plans do.
         base = diff_files(
             [settings_pair]
             + [

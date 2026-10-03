@@ -15,6 +15,15 @@ from dotsync.plan import AppPlan, plan_file_copy
 StatusState = Literal["clean", "dirty", "missing", "unknown"]
 
 
+def is_npx_skills_link(path: Path) -> bool:
+    """True for a link `npx skills add -g` made into ~/.agents/skills; the
+    skills app records those, so file mirrors may skip them without a warning."""
+    if not path.is_symlink():
+        return False
+    root = (Path.home() / ".agents" / "skills").resolve()
+    return root in path.resolve().parents
+
+
 def read_skills_ignore(cfg, app_name: str) -> tuple[str, ...]:
     """Read `[options.<app>] skills_ignore`: top-level skill directory names
     another tool installs and updates itself, so dotsync leaves them alone."""
@@ -302,12 +311,11 @@ class App(ABC):
             copy_file_safely(pair.local, pair.stored, pair.label, dest_root=target_dir)
             ui.sub(pair.label)
 
-    def sync_to(self, target_dir: Path, backup_dir: Path) -> None:
-        """target_dir/<self.name>/ → local app config, after backing up local.
+    def sync_to(self, target_dir: Path) -> None:
+        """target_dir/<self.name>/ → local app config.
 
-        Default: walk tracked_files(), for each pair (a) verify .stored exists,
-        (b) if .local exists copy it to backup_dir/<self.name>/<label>, (c)
-        copy .stored over .local.
+        Default: walk tracked_files(), verify every .stored exists, then copy
+        each .stored over its .local.
         """
         from dotsync import ui
 
@@ -328,12 +336,6 @@ class App(ABC):
             ensure_path_within_root(pair.stored, target_dir, pair.label)
         for pair in pairs:
             pair.local.parent.mkdir(parents=True, exist_ok=True)
-            if pair.local.exists():
-                bdst = backup_dir / self.name / pair.label
-                ensure_path_within_root(bdst, backup_dir, pair.label)
-                bdst.parent.mkdir(parents=True, exist_ok=True)
-                copy_file_safely(pair.local, bdst, pair.label, dest_root=backup_dir)
-                ui.dim(f"backup → {bdst}")
             copy_file_safely(
                 pair.stored, pair.local, pair.label, source_root=target_dir
             )
@@ -413,7 +415,7 @@ class App(ABC):
 
     def _finish_unchanged(self) -> None:
         """Close a per-app sync section with a dim 'unchanged' line — used
-        by `dotsync apply` when local already matches stored, so the user can
+        by `dotsync pull` when local already matches stored, so the user can
         see at a glance which apps did vs. didn't move."""
         from dotsync import ui
 

@@ -195,37 +195,24 @@ def test_init_prints_next_steps_with_apps_command_hint(
     out = capsys.readouterr().out
     assert "DOTSYNC_DIR" in out
     assert "dotsync apps" in out
-    assert "dotsync backup --all" in out
-    assert "dotsync apply --all" in out
+    assert "dotsync push --all" in out
+    assert "dotsync pull --all" in out
 
 
-def test_init_shows_welcome_by_default(fake_home, tmp_path, monkeypatch, capsys):
-    (fake_home / ".zshrc").write_text("X")
-    _no_btt(monkeypatch, fake_home)
-    target = tmp_path / "w"
-    rc = main(["init", "--dir", str(target), "--yes"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "█" in out  # welcome ASCII logo
-    assert "Quickstart" in out
-
-
-def test_init_quiet_skips_welcome(fake_home, tmp_path, monkeypatch, capsys):
+def test_init_prints_no_banner(fake_home, tmp_path, monkeypatch, capsys):
     (fake_home / ".zshrc").write_text("X")
     _no_btt(monkeypatch, fake_home)
     target = tmp_path / "wq"
-    rc = main(["init", "--dir", str(target), "--yes", "--quiet"])
+    rc = main(["init", "--dir", str(target), "--yes"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "█" not in out
 
 
-def test_welcome_subcommand(capsys):
-    rc = main(["welcome"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "█" in out
-    assert "dotsync init" in out
+def test_welcome_is_not_a_command(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(["welcome"])
+    assert exc.value.code == 2
 
 
 def test_init_yes_without_dir_uses_default_desktop_path(fake_home, monkeypatch):
@@ -283,7 +270,6 @@ def test_init_no_hints_skips_next_steps_block(fake_home, tmp_path, capsys):
             "--apps",
             "zsh",
             "--yes",
-            "--quiet",
             "--no-hints",
         ]
     )
@@ -296,11 +282,8 @@ def test_init_no_hints_skips_next_steps_block(fake_home, tmp_path, capsys):
 def test_init_no_hints_also_suppresses_adopt_branch_hints(fake_home, tmp_path, capsys):
     target = tmp_path / "existing"
     target.mkdir()
-    (target / "dotsync.toml").write_text(
-        'apps = ["zsh"]\n\n[options]\nbackup_keep = 10\n'
-        'bettertouchtool_preset = "Master_bt"\n'
-    )
-    rc = main(["init", "--dir", str(target), "--yes", "--quiet", "--no-hints"])
+    (target / "dotsync.toml").write_text('apps = ["zsh"]\n')
+    rc = main(["init", "--dir", str(target), "--yes", "--no-hints"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "next steps" not in out
@@ -327,14 +310,13 @@ def test_init_step_headers_visible(fake_home, tmp_path, monkeypatch, capsys):
     assert "tracked:" in out
 
 
-def test_no_args_shows_welcome(capsys):
-    """`dotsync` with no subcommand should print the welcome banner
-    (quickstart guidance) and exit 0, not raise argparse error."""
+def test_no_args_prints_help(capsys):
+    """`dotsync` with no subcommand prints the usage/help and exits 0."""
     rc = main([])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "██████╗" in out  # ASCII logo present (block chars)
-    assert "Quickstart" in out
+    assert "usage: dotsync" in out
+    assert "█" not in out
 
 
 def test_init_btt_auto_uses_single_discovered_preset(
@@ -405,7 +387,7 @@ def test_init_btt_falls_back_to_default_when_discovery_empty(
     fake_home, tmp_path, monkeypatch
 ):
     """No presets discovered (BTT not running, schema drift, etc.) →
-    DEFAULT_BTT_PRESETS used silently. No prompt under the new flow."""
+    the default preset is recorded. No prompt under the new flow."""
     (fake_home / ".zshrc").write_text("X")
     bttapp = fake_home / "Applications" / "BetterTouchTool.app"
     bttapp.mkdir(parents=True)
@@ -424,7 +406,7 @@ def test_init_btt_falls_back_to_default_when_discovery_empty(
     rc = main(["init"])
     assert rc == 0
     cfg_text = (target / "dotsync.toml").read_text()
-    assert 'bettertouchtool_presets = ["Master_bt"]' in cfg_text
+    assert '[options.bettertouchtool]\npresets = ["Master_bt"]' in cfg_text
 
 
 def test_init_btt_presets_flag_skips_discovery(fake_home, tmp_path, monkeypatch):
@@ -458,7 +440,7 @@ def test_init_btt_presets_flag_skips_discovery(fake_home, tmp_path, monkeypatch)
 def test_init_btt_yes_without_flag_uses_default_skips_discovery(
     fake_home, tmp_path, monkeypatch
 ):
-    """--yes without --btt-presets must not consult discovery; DEFAULT_BTT_PRESETS wins.
+    """--yes without --btt-presets must not consult discovery; the default preset wins.
     --yes mode is deterministic regardless of what BTT happens to have on the machine."""
     (fake_home / ".zshrc").write_text("X")
     bttapp = fake_home / "Applications" / "BetterTouchTool.app"
@@ -478,7 +460,7 @@ def test_init_btt_yes_without_flag_uses_default_skips_discovery(
     rc = main(["init", "--dir", str(target), "--yes"])
     assert rc == 0
     cfg_text = (target / "dotsync.toml").read_text()
-    assert 'bettertouchtool_presets = ["Master_bt"]' in cfg_text
+    assert '[options.bettertouchtool]\npresets = ["Master_bt"]' in cfg_text
 
 
 # ---------- shell rc auto-init -------------------------------------------

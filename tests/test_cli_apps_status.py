@@ -132,7 +132,7 @@ def test_apps_toggle_on_btt_auto_discovers_presets(fake_home, monkeypatch, tmp_p
     a separate `dotsync config btt-presets` step."""
     target = tmp_path / "configs"
     target.mkdir()
-    save_config(Config(dir=target, apps=["zsh"], bettertouchtool_presets=["Old"]))
+    save_config(Config(dir=target, apps=["zsh"]))
     monkeypatch.setenv("DOTSYNC_DIR", str(target))
 
     monkeypatch.setattr(

@@ -24,22 +24,17 @@ def test_sync_to_backs_up_then_overwrites(fake_home, tmp_path):
     target = tmp_path / "configs"
     (target / "zsh").mkdir(parents=True)
     (target / "zsh" / ".zshrc").write_text("NEW\n")
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
-    ZshApp().sync_to(target, backup)
+    ZshApp().sync_to(target)
 
     assert (fake_home / ".zshrc").read_text() == "NEW\n"
-    assert (backup / "zsh" / ".zshrc").read_text() == "OLD\n"
 
 
 def test_sync_to_missing_target_raises(fake_home, tmp_path):
     target = tmp_path / "configs"
     target.mkdir()
-    backup = tmp_path / "backup"
-    backup.mkdir()
     with pytest.raises(FileNotFoundError, match="zsh/.zshrc"):
-        ZshApp().sync_to(target, backup)
+        ZshApp().sync_to(target)
 
 
 def test_status_clean_when_files_match(fake_home, tmp_path):

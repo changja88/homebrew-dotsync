@@ -239,13 +239,11 @@ def _ok_run(run) -> None:
 def test_sync_to_reinstalls_missing_skill_with_exact_argv(fake_home, tmp_path):
     target = tmp_path / "sync"
     _stored_manifest(target, {"herdr": _entry(["claude-code", "codex"])})
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
     with patch("dotsync.apps.base.subprocess.run") as run:
         _ok_run(run)
         app = SkillsApp()
-        app.sync_to(target, backup)
+        app.sync_to(target)
 
     assert [c.args[0] for c in run.call_args_list] == [
         [
@@ -261,11 +259,9 @@ def test_sync_to_skips_skill_already_present(fake_home, tmp_path):
     _install(fake_home, "herdr", ("claude-code",))
     target = tmp_path / "sync"
     _stored_manifest(target, {"herdr": _entry(["claude-code"])})
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
     with patch("dotsync.apps.base.subprocess.run") as run:
-        SkillsApp().sync_to(target, backup)
+        SkillsApp().sync_to(target)
 
     run.assert_not_called()
 
@@ -274,12 +270,10 @@ def test_sync_to_reinstalls_when_an_agent_link_is_missing(fake_home, tmp_path):
     _install(fake_home, "herdr", ("claude-code",))
     target = tmp_path / "sync"
     _stored_manifest(target, {"herdr": _entry(["claude-code", "codex"])})
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
     with patch("dotsync.apps.base.subprocess.run") as run:
         _ok_run(run)
-        SkillsApp().sync_to(target, backup)
+        SkillsApp().sync_to(target)
 
     assert run.call_count == 1
 
@@ -287,12 +281,10 @@ def test_sync_to_reinstalls_when_an_agent_link_is_missing(fake_home, tmp_path):
 def test_sync_to_only_targets_managed_agents(fake_home, tmp_path):
     target = tmp_path / "sync"
     _stored_manifest(target, {"herdr": _entry(["cursor", "claude-code"])})
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
     with patch("dotsync.apps.base.subprocess.run") as run:
         _ok_run(run)
-        SkillsApp().sync_to(target, backup)
+        SkillsApp().sync_to(target)
 
     argv = run.call_args_list[0].args[0]
     assert argv.count("--agent") == 1
@@ -302,12 +294,10 @@ def test_sync_to_only_targets_managed_agents(fake_home, tmp_path):
 def test_sync_to_skips_skill_without_managed_agent(fake_home, tmp_path):
     target = tmp_path / "sync"
     _stored_manifest(target, {"herdr": _entry(["cursor"])})
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
     with patch("dotsync.apps.base.subprocess.run") as run:
         app = SkillsApp()
-        app.sync_to(target, backup)
+        app.sync_to(target)
 
     run.assert_not_called()
     assert app.warnings == []
@@ -319,12 +309,10 @@ def test_sync_to_warns_on_non_github_source(fake_home, tmp_path):
         target,
         {"mine": _entry(["claude-code"], source="/Users/me/mine", source_type="local")},
     )
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
     with patch("dotsync.apps.base.subprocess.run") as run:
         app = SkillsApp()
-        app.sync_to(target, backup)
+        app.sync_to(target)
 
     run.assert_not_called()
     assert app.warnings == [
@@ -335,15 +323,13 @@ def test_sync_to_warns_on_non_github_source(fake_home, tmp_path):
 def test_sync_to_warns_when_install_fails(fake_home, tmp_path):
     target = tmp_path / "sync"
     _stored_manifest(target, {"herdr": _entry(["claude-code"])})
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
     with patch("dotsync.apps.base.subprocess.run") as run:
         run.return_value.returncode = 1
         run.return_value.stdout = ""
         run.return_value.stderr = "boom\n"
         app = SkillsApp()
-        app.sync_to(target, backup)
+        app.sync_to(target)
 
     assert app.warnings == ["skills add herdr failed (rc=1): boom"]
 
@@ -357,13 +343,11 @@ def test_sync_to_warns_once_when_npx_is_missing(fake_home, tmp_path):
             "archify": _entry(["claude-code"], source="tt-a1i/archify"),
         },
     )
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
     with patch("dotsync.apps.base.subprocess.run") as run:
         run.side_effect = FileNotFoundError("npx")
         app = SkillsApp()
-        app.sync_to(target, backup)
+        app.sync_to(target)
 
     assert run.call_count == 1
     assert app.warnings == ["skills add skipped: npx not installed"]
@@ -373,12 +357,10 @@ def test_sync_to_never_copies_the_lock_into_the_sync_folder(fake_home, tmp_path)
     lock = _write_lock(fake_home, {"herdr": HERDR}, extra={"githubToken": "x"})
     target = tmp_path / "sync"
     _stored_manifest(target, {"herdr": _entry(["claude-code"])})
-    backup = target / ".backups" / "20261003_120000"
-    backup.mkdir(parents=True)
 
     with patch("dotsync.apps.base.subprocess.run") as run:
         _ok_run(run)
-        SkillsApp().sync_to(target, backup)
+        SkillsApp().sync_to(target)
 
     assert [p for p in target.rglob("*") if p.name == ".skill-lock.json"] == []
     assert "githubToken" in lock.read_text()
@@ -388,12 +370,10 @@ def test_sync_to_rejects_bad_manifest_before_running_anything(fake_home, tmp_pat
     target = tmp_path / "sync"
     (target / "skills").mkdir(parents=True)
     (target / "skills" / "skills.json").write_text('{"herdr": {"agents": []}}')
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
     with patch("dotsync.apps.base.subprocess.run") as run:
         with pytest.raises(RuntimeError, match="source"):
-            SkillsApp().sync_to(target, backup)
+            SkillsApp().sync_to(target)
 
     run.assert_not_called()
 
@@ -401,11 +381,9 @@ def test_sync_to_rejects_bad_manifest_before_running_anything(fake_home, tmp_pat
 def test_sync_to_missing_manifest_raises(fake_home, tmp_path):
     target = tmp_path / "sync"
     target.mkdir()
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
     with pytest.raises(FileNotFoundError, match="skills.json"):
-        SkillsApp().sync_to(target, backup)
+        SkillsApp().sync_to(target)
 
 
 def test_plan_to_reports_a_kind_per_skill(fake_home, tmp_path):

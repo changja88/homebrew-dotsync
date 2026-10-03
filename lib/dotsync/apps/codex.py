@@ -1,5 +1,5 @@
 """Codex CLI sync — user-authored settings, instructions, rules, skills, and the
-plugins the user installed (recorded in plugins.json, reinstalled on apply)."""
+plugins the user installed (recorded in plugins.json, reinstalled on pull)."""
 
 from __future__ import annotations
 import json
@@ -15,6 +15,7 @@ from dotsync.apps.base import (
     ensure_directory,
     ensure_not_symlink,
     ensure_path_within_root,
+    is_npx_skills_link,
     read_skills_ignore,
     write_text_safely,
 )
@@ -26,7 +27,7 @@ from dotsync.apps.codex_plugins import (
     plugin_id,
     split_plugin_tables,
 )
-from dotsync.apps.mcp_sanitizer import sanitize_codex_config_text
+from dotsync.apps.mcp_sanitizer import sanitize_codex_config, sanitize_codex_config_text
 from dotsync.diffinfo import summarize_texts
 from dotsync.plan import (
     AppPlan,
@@ -57,13 +58,20 @@ class CodexApp(App):
         "Codex CLI settings (config + global instructions + user rules/skills)"
     )
 
-    def __init__(self, skills_ignore: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self, skills_ignore: tuple[str, ...] = (), skills_app_tracked: bool = False
+    ) -> None:
         super().__init__()
         self.skills_ignore = tuple(skills_ignore)
+        # The skills app records `npx skills` links, so skipping them is expected.
+        self.skills_app_tracked = skills_app_tracked
 
     @classmethod
     def from_config(cls, cfg) -> "CodexApp":
-        return cls(skills_ignore=read_skills_ignore(cfg, cls.name))
+        return cls(
+            skills_ignore=read_skills_ignore(cfg, cls.name),
+            skills_app_tracked="skills" in cfg.apps,
+        )
 
     @classmethod
     def is_present_locally(cls) -> bool:
@@ -136,6 +144,10 @@ class CodexApp(App):
         blocked = blocked_by_symlink(src_scan.files, dst_scan.symlinks)
         kept = blocked_by_symlink(dst_scan.files, src_scan.symlinks)
         for rel in sorted(src_scan.symlinks | dst_scan.symlinks):
+            if self.skills_app_tracked and (
+                is_npx_skills_link(src / rel) or is_npx_skills_link(dst / rel)
+            ):
+                continue
             self._note_skipped_symlink(f"{src.name}/{rel.as_posix()}")
 
         for rel in sorted(src_scan.files - set(blocked)):
@@ -199,22 +211,6 @@ class CodexApp(App):
             if root is not None:
                 ensure_path_within_root(path, root, label)
             path.unlink()
-
-    def _backup_file(self, local: Path, backup_dir: Path, label: str) -> None:
-        if not local.exists():
-            return
-        bdst = backup_dir / self.name / label
-        ensure_path_within_root(bdst, backup_dir, label)
-        bdst.parent.mkdir(parents=True, exist_ok=True)
-        copy_file_safely(local, bdst, label, dest_root=backup_dir)
-        ui.dim(f"backup → {bdst}")
-
-    def _backup_tree(self, local: Path, backup_dir: Path, label: str) -> None:
-        if not local.exists():
-            return
-        bdst = backup_dir / self.name / label
-        self._mirror_tree(local, bdst, dest_root=backup_dir)
-        ui.dim(f"backup → {bdst}")
 
     @staticmethod
     def _merge_statuses(statuses: list[AppStatus]) -> AppStatus:
@@ -285,10 +281,21 @@ class CodexApp(App):
         return settings
 
     def _applied_config(self, stored_config: Path) -> str:
-        """Stored settings plus the marketplace/plugin tables Codex wrote locally."""
+        """Stored settings plus the marketplace/plugin tables Codex wrote locally.
+
+        When the settings already match and there is no stale Serena URL to
+        drop, the local file is kept byte for byte, so a pull does not reorder
+        tables Codex placed mid-file."""
         local = self._config_path()
         local_text = local.read_text() if local.exists() else ""
-        return merge_plugin_tables(self._read_portable_config(stored_config), local_text)
+        stored_settings = self._read_portable_config(stored_config)
+        if (
+            local.exists()
+            and not sanitize_codex_config(local_text).changed
+            and split_plugin_tables(local_text)[0] == stored_settings
+        ):
+            return local_text
+        return merge_plugin_tables(stored_settings, local_text)
 
     def _plan_config(
         self,
@@ -571,7 +578,7 @@ class CodexApp(App):
 
     def _restore_plugins(self, stored: Path) -> None:
         """Add recorded marketplaces and install recorded plugins this machine
-        lacks; what is already there is left alone, so apply is repeatable."""
+        lacks; what is already there is left alone, so pull is repeatable."""
         path = stored / MANIFEST
         if not path.exists() and not path.is_symlink():
             return
@@ -748,7 +755,7 @@ class CodexApp(App):
                     self._remove_managed_path(stale_dir, f"{name}/", root=target_dir)
                     ui.sub(f"{name}/ removed")
 
-    def sync_to(self, target_dir: Path, backup_dir: Path) -> None:
+    def sync_to(self, target_dir: Path) -> None:
         stored = self._stored(target_dir)
         stored_config = stored / "config.toml"
         self._validate_sync_to_paths(stored, target_dir)
@@ -758,7 +765,6 @@ class CodexApp(App):
 
         local_config = self._config_path()
         applied = self._applied_config(stored_config)
-        self._backup_file(local_config, backup_dir, "config.toml")
         write_text_safely(local_config, applied, "config.toml")
         ui.sub("config.toml")
 
@@ -767,7 +773,6 @@ class CodexApp(App):
             if not stored_file.exists():
                 continue
             local_file = local_dir / name
-            self._backup_file(local_file, backup_dir, name)
             copy_file_safely(stored_file, local_file, name, source_root=target_dir)
             ui.sub(name)
 
@@ -777,7 +782,6 @@ class CodexApp(App):
                 continue
             ensure_directory(stored_dir, f"{name}/", root=target_dir)
             local_dir_for_name = local_dir / name
-            self._backup_tree(local_dir_for_name, backup_dir, name)
             self._mirror_tree(
                 stored_dir,
                 local_dir_for_name,

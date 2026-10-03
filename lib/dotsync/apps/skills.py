@@ -1,4 +1,4 @@
-"""Agent skills installed with `npx skills` — record sources, reinstall on apply.
+"""Agent skills installed with `npx skills` — record sources, reinstall on pull.
 
 `npx skills add -g` keeps the canonical copy under `~/.agents/skills/<name>/`
 and links it into each agent's skills dir. The global lock file records only
@@ -145,7 +145,7 @@ class SkillsApp(App):
                 parts.append(f"~{name}")
         return ", ".join(parts)
 
-    # ----- backup ---------------------------------------------------------
+    # ----- push -----------------------------------------------------------
 
     def plan_from(self, target_dir: Path) -> AppPlan:
         lock = self._lock_path()
@@ -220,7 +220,7 @@ class SkillsApp(App):
             return AppStatus(state="clean")
         return AppStatus(state="dirty", details=diff)
 
-    # ----- apply ----------------------------------------------------------
+    # ----- pull -----------------------------------------------------------
 
     def _is_installed(self, skill: str, agents: list[str]) -> bool:
         if not self._canonical_dir(skill).is_dir():
@@ -294,14 +294,12 @@ class SkillsApp(App):
             )
         return AppPlan(self.name, "to", changes, self.description)
 
-    def sync_to(self, target_dir: Path, backup_dir: Path) -> None:
+    def sync_to(self, target_dir: Path) -> None:
         stored = self._stored(target_dir)
         ensure_directory(stored, "skills/", root=target_dir)
         manifest = self._read_stored_manifest(target_dir)
         managed = self._managed_agent_dirs()
 
-        # No apply backup of the lock: it can hold a GitHub token, so it never
-        # enters the sync folder, and dotsync never writes it (npx does).
 
         npx_missing = False
         for name, entry in sorted(manifest.items()):

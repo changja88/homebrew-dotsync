@@ -33,23 +33,18 @@ def test_sync_to_backs_up_and_writes(fake_home, tmp_path):
     target = tmp_path / "configs"
     (target / "ghostty").mkdir(parents=True)
     (target / "ghostty" / "config.ghostty").write_text("NEW\n")
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
-    GhosttyApp().sync_to(target, backup)
+    GhosttyApp().sync_to(target)
 
     assert (gdir / "config.ghostty").read_text() == "NEW\n"
-    assert (backup / "ghostty" / "config.ghostty").read_text() == "OLD\n"
 
 
 def test_sync_to_creates_local_dir_if_missing(fake_home, tmp_path):
     target = tmp_path / "configs"
     (target / "ghostty").mkdir(parents=True)
     (target / "ghostty" / "config.ghostty").write_text("X\n")
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
-    GhosttyApp().sync_to(target, backup)
+    GhosttyApp().sync_to(target)
 
     assert (_ghostty_dir(fake_home) / "config.ghostty").read_text() == "X\n"
 

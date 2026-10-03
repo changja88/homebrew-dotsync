@@ -36,8 +36,8 @@ class Dotsync < Formula
   def caveats
     <<~EOS
       Get started:
-        dotsync welcome   # quickstart guide
         dotsync init      # pick a sync folder + auto-detect apps
+        dotsync --help    # all commands
 
       `dotsync init` will offer to add `export DOTSYNC_DIR=...` to your
       shell rc (~/.zshrc or ~/.bash_profile) so dotsync works from any

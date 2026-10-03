@@ -19,7 +19,7 @@ def test_concrete_subclass_works(tmp_path):
             (target_dir / self.name).mkdir(parents=True, exist_ok=True)
             (target_dir / self.name / "f.txt").write_text("hi")
 
-        def sync_to(self, target_dir, backup_dir):
+        def sync_to(self, target_dir):
             pass
 
     app = FakeApp()
@@ -35,7 +35,7 @@ def test_status_default_is_unknown(tmp_path):
         def sync_from(self, target_dir):
             pass
 
-        def sync_to(self, target_dir, backup_dir):
+        def sync_to(self, target_dir):
             pass
 
     s = MinimalApp().status(tmp_path)
@@ -130,7 +130,7 @@ def test_finish_ok_emits_done_line(capsys, monkeypatch):
         def sync_from(self, target_dir):
             pass
 
-        def sync_to(self, target_dir, backup_dir):
+        def sync_to(self, target_dir):
             pass
 
     FakeApp()._finish_ok()
@@ -141,7 +141,7 @@ def test_finish_ok_emits_done_line(capsys, monkeypatch):
 
 def test_finish_unchanged_emits_dim_line(capsys, monkeypatch):
     """`App._finish_unchanged()` is the canonical 'nothing to do here'
-    marker for `dotsync apply` when local and stored are byte-identical."""
+    marker for `dotsync pull` when local and stored are byte-identical."""
     monkeypatch.setenv("NO_COLOR", "1")
 
     class FakeApp(App):
@@ -151,7 +151,7 @@ def test_finish_unchanged_emits_dim_line(capsys, monkeypatch):
         def sync_from(self, target_dir):
             pass
 
-        def sync_to(self, target_dir, backup_dir):
+        def sync_to(self, target_dir):
             pass
 
     FakeApp()._finish_unchanged()
@@ -192,7 +192,7 @@ def test_app_from_config_default_returns_instance_with_no_args(tmp_path):
         def sync_from(self, target_dir):
             pass
 
-        def sync_to(self, target_dir, backup_dir):
+        def sync_to(self, target_dir):
             pass
 
     cfg = Config(dir=tmp_path, apps=["toy"])
@@ -210,7 +210,7 @@ def test_app_tracked_files_default_returns_empty(tmp_path):
         def sync_from(self, target_dir):
             pass
 
-        def sync_to(self, target_dir, backup_dir):
+        def sync_to(self, target_dir):
             pass
 
     assert _Toy().tracked_files(tmp_path) == []
@@ -309,7 +309,7 @@ def test_default_sync_from_raises_when_local_missing(tmp_path):
         _Toy().sync_from(target)
 
 
-def test_default_sync_to_backs_up_then_copies_stored_over_local(tmp_path):
+def test_default_sync_to_copies_stored_over_local(tmp_path):
     from dotsync.apps.base import App, FilePair
 
     home = tmp_path / "home"
@@ -318,8 +318,6 @@ def test_default_sync_to_backs_up_then_copies_stored_over_local(tmp_path):
     target = tmp_path / "sync"
     (target / "toy").mkdir(parents=True)
     (target / "toy" / "live.txt").write_text("NEW")
-    backup = tmp_path / "bk"
-    backup.mkdir()
 
     class _Toy(App):
         name = "toy"
@@ -329,9 +327,8 @@ def test_default_sync_to_backs_up_then_copies_stored_over_local(tmp_path):
                 FilePair(home / "live.txt", target_dir / "toy" / "live.txt", "live.txt")
             ]
 
-    _Toy().sync_to(target, backup)
+    _Toy().sync_to(target)
     assert (home / "live.txt").read_text() == "NEW"
-    assert (backup / "toy" / "live.txt").read_text() == "OLD"
 
 
 def test_default_sync_to_refuses_symlink_local_destination(tmp_path):
@@ -345,8 +342,6 @@ def test_default_sync_to_refuses_symlink_local_destination(tmp_path):
     stored = tmp_path / "sync" / "toy" / "live.txt"
     stored.parent.mkdir(parents=True)
     stored.write_text("NEW")
-    backup = tmp_path / "bk"
-    backup.mkdir()
 
     class _Toy(App):
         name = "toy"
@@ -355,7 +350,7 @@ def test_default_sync_to_refuses_symlink_local_destination(tmp_path):
             return [FilePair(local, stored, "live.txt")]
 
     with pytest.raises(RuntimeError, match="symlink"):
-        _Toy().sync_to(tmp_path / "sync", backup)
+        _Toy().sync_to(tmp_path / "sync")
     assert outside.read_text() == "VICTIM"
 
 
@@ -371,8 +366,6 @@ def test_default_sync_to_refuses_symlink_stored_parent(tmp_path):
     local = tmp_path / "home" / "live.txt"
     local.parent.mkdir()
     local.write_text("OLD")
-    backup = tmp_path / "bk"
-    backup.mkdir()
 
     class _Toy(App):
         name = "toy"
@@ -381,9 +374,8 @@ def test_default_sync_to_refuses_symlink_stored_parent(tmp_path):
             return [FilePair(local, target_dir / "toy" / "live.txt", "live.txt")]
 
     with pytest.raises(RuntimeError, match="symlink"):
-        _Toy().sync_to(target, backup)
+        _Toy().sync_to(target)
     assert local.read_text() == "OLD"
-    assert not (backup / "toy" / "live.txt").exists()
 
 
 def test_default_sync_to_raises_when_stored_missing(tmp_path):
@@ -393,8 +385,6 @@ def test_default_sync_to_raises_when_stored_missing(tmp_path):
     home.mkdir()
     target = tmp_path / "sync"
     (target / "toy").mkdir(parents=True)
-    backup = tmp_path / "bk"
-    backup.mkdir()
 
     class _Toy(App):
         name = "toy"
@@ -403,7 +393,7 @@ def test_default_sync_to_raises_when_stored_missing(tmp_path):
             return [FilePair(home / "x.txt", target_dir / "toy" / "x.txt", "x.txt")]
 
     with pytest.raises(FileNotFoundError, match="x.txt"):
-        _Toy().sync_to(target, backup)
+        _Toy().sync_to(target)
 
 
 def test_default_status_uses_diff_files_over_tracked_pairs(tmp_path):

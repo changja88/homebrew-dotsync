@@ -42,7 +42,7 @@ def test_build_app_bettertouchtool_uses_config_presets(tmp_path):
     cfg = Config(
         dir=tmp_path,
         apps=["bettertouchtool"],
-        bettertouchtool_presets=["MyPreset", "Other"],
+        app_options={"bettertouchtool": {"presets": ["MyPreset", "Other"]}},
     )
     app = build_app("bettertouchtool", cfg)
     assert app.presets == ["MyPreset", "Other"]
@@ -94,7 +94,11 @@ def test_build_app_uses_from_config_polymorphism(tmp_path, monkeypatch):
         return original.__func__(cls, cfg)
 
     monkeypatch.setattr(BetterTouchToolApp, "from_config", spy)
-    cfg = Config(dir=tmp_path, apps=["bettertouchtool"], bettertouchtool_presets=["X"])
+    cfg = Config(
+        dir=tmp_path,
+        apps=["bettertouchtool"],
+        app_options={"bettertouchtool": {"presets": ["X"]}},
+    )
     app = build_app("bettertouchtool", cfg)
 
     assert len(calls) == 1 and calls[0] is cfg

@@ -31,12 +31,10 @@ between local app locations and one user-chosen sync folder.
 
 ## Core Architecture
 
-- `lib/dotsync/cli.py` owns argparse command dispatch for `welcome`, `init`,
-  `config`, `apps`, `status`, `backup`, and `apply`.
+- `lib/dotsync/cli.py` owns argparse command dispatch for `init`, `config`,
+  `apps`, `status`, `push`, and `pull`. A bare `dotsync` prints the help.
 - `lib/dotsync/config.py` owns sync-folder discovery and `dotsync.toml`
   persistence. Config lives only at `<sync folder>/dotsync.toml`.
-- `lib/dotsync/backup.py` creates `apply` backups inside the sync folder, normally
-  `<sync folder>/.backups/<timestamp>/<app>/`.
 - `lib/dotsync/shellrc.py` owns shell rc detection and idempotent
   `DOTSYNC_DIR` export insertion/update logic.
 - `lib/dotsync/ui.py` and `lib/dotsync/ui_picker.py` own terminal output,
@@ -64,11 +62,14 @@ between local app locations and one user-chosen sync folder.
   `cli.py`.
 - Never create `~/.dotsync`, `~/.config/dotsync`, or any hidden global pointer
   file for application state.
-- Public command names are important: `backup` means local app config to sync
-  folder; `apply` means sync folder to local app config. The internal app
-  plugin methods still use `sync_from` and `sync_to`.
-- `apply` must back up local files before overwriting. `backup` does not back
-  up the sync folder.
+- Public command names are important: `push` means local app config to sync
+  folder; `pull` means sync folder to local app config. The internal app
+  plugin methods still use `sync_from` and `sync_to(target_dir)`.
+- dotsync keeps no backup copies in either direction. Every `push`/`pull`
+  previews the plan and asks for confirmation (unless `--yes`/`--dry-run`);
+  that preview is the safety net, so keep it accurate.
+- `dotsync.toml` holds only `apps` and `[options.<app>]` tables; reject any
+  other key under `[options]` instead of ignoring it.
 
 ## App Plugin Pattern
 

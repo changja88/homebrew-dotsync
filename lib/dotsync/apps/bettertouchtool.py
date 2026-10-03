@@ -28,6 +28,9 @@ from dotsync.plan import AppPlan, Change
 # the export and raises "BTT export file was not created" on every run.
 _EXPORT_WAIT_TIMEOUT = 5.0
 
+# BTT's stock starter preset; used when no preset names are configured.
+DEFAULT_PRESETS: tuple[str, ...] = ("Master_bt",)
+
 # BTT regenerates BTTPresetUUID on every export_preset call, may rewrite
 # BTTLastUpdatedAt during app updates or database migrations, records
 # BTTLastUsed runtime history when triggers fire, bumps app runtime counters in
@@ -115,13 +118,8 @@ class BetterTouchToolApp(App):
 
     @classmethod
     def from_config(cls, cfg) -> "BetterTouchToolApp":
-        # Precedence: new app_options namespace > legacy bettertouchtool_presets field.
-        # The legacy field is preserved for one release cycle so existing dotsync.toml
-        # files keep working until users save through the new code path.
         opts = cfg.app_options.get(cls.name, {}) if hasattr(cfg, "app_options") else {}
-        if "presets" in opts:
-            return cls(presets=list(opts["presets"]))
-        return cls(presets=cfg.bettertouchtool_presets)
+        return cls(presets=list(opts.get("presets") or []))
 
     @classmethod
     def discover_preset_names(cls) -> list[str]:
@@ -211,14 +209,15 @@ class BetterTouchToolApp(App):
         if flag_value:
             presets = [p.strip() for p in flag_value.split(",") if p.strip()]
             return {"presets": cls._validated_presets(presets)}
-        # Toggling BTT on (was-not, now-is) interactively → auto-discover.
-        was = cls.name in prev_apps
-        if interactive and not was:
+        # Already tracked → keep what dotsync.toml says.
+        if cls.name in prev_apps:
+            return None
+        # Newly tracked: discover interactively, else record the default.
+        if interactive:
             discovered = cls.discover_preset_names()
             if discovered:
                 return {"presets": discovered}
-        # No change requested.
-        return None
+        return {"presets": list(DEFAULT_PRESETS)}
 
     @classmethod
     def extra_config_subcommands(cls, subparser) -> None:
@@ -255,7 +254,7 @@ class BetterTouchToolApp(App):
 
     def __init__(self, presets: list[str] | None = None):
         super().__init__()
-        selected = list(presets) if presets else ["Master_bt"]
+        selected = list(presets) if presets else list(DEFAULT_PRESETS)
         self.presets = self._validated_presets(selected)
 
     def _stored(self, target_dir: Path, preset: str) -> Path:
@@ -398,7 +397,7 @@ class BetterTouchToolApp(App):
                 raise RuntimeError(f"BTT export file was not created: {dst}")
             ui.sub(f"presets/{preset}.bttpreset")
 
-    def sync_to(self, target_dir: Path, backup_dir: Path) -> None:
+    def sync_to(self, target_dir: Path) -> None:
         # First pass: verify every preset has a stored .bttpreset before
         # importing any of them — fail-fast keeps the local BTT state intact
         # if the sync folder is missing files.
@@ -417,29 +416,6 @@ class BetterTouchToolApp(App):
         for preset in self.presets:
             ui.dim(f"preset: {preset}")
             src = self._ensure_stored_preset(target_dir, preset)
-            backup_target = backup_dir / self.name / f"{preset}.bttpreset"
-            ensure_path_within_root(backup_target, backup_dir, f"{preset}.bttpreset")
-            backup_target.parent.mkdir(parents=True, exist_ok=True)
-            export_script = (
-                f'tell application "BetterTouchTool" to export_preset '
-                f"{self._applescript_string(preset)} outputPath "
-                f"{self._applescript_string(backup_target)} compress false includeSettings true"
-            )
-            if backup_target.exists():
-                backup_target.unlink()
-            try:
-                self._osascript(export_script, auto_launch=True)
-                if self._wait_for_export(backup_target):
-                    ui.dim(f"backup → {backup_target}")
-                else:
-                    ui.warn(
-                        f"existing preset backup file did not appear for {preset} (continuing anyway)"
-                    )
-            except RuntimeError:
-                ui.warn(
-                    f"existing preset backup failed for {preset} (continuing anyway)"
-                )
-
             import_script = (
                 f'tell application "BetterTouchTool" to import_preset '
                 f"{self._applescript_string(src)}"

@@ -6,18 +6,11 @@ from dotsync.config import (
     save_config,
     find_sync_folder,
     folder_config_path,
-    default_backup_dir,
-    DEFAULT_BACKUP_KEEP,
-    DEFAULT_BTT_PRESETS,
 )
 
 
 def test_folder_config_path_is_dotsync_toml(tmp_path):
     assert folder_config_path(tmp_path) == tmp_path / "dotsync.toml"
-
-
-def test_default_backup_dir_is_inside_sync_folder(tmp_path):
-    assert default_backup_dir(tmp_path) == tmp_path / ".backups"
 
 
 # ----- find_sync_folder ------------------------------------------------------
@@ -86,54 +79,12 @@ def test_load_via_env(monkeypatch, tmp_path):
     folder = tmp_path / "x"
     folder.mkdir()
     (folder / "dotsync.toml").write_text(
-        'apps = ["zsh", "claude"]\n\n[options]\n'
-        "backup_keep = 7\n"
-        'bettertouchtool_presets = ["Foo", "Bar"]\n'
+        'apps = ["zsh", "claude"]\n'
     )
     monkeypatch.setenv("DOTSYNC_DIR", str(folder))
     cfg = load_config()
     assert cfg.dir == folder
     assert cfg.apps == ["zsh", "claude"]
-    assert cfg.backup_keep == 7
-    assert cfg.bettertouchtool_presets == ["Foo", "Bar"]
-    # default backup_dir is inside sync folder
-    assert cfg.backup_dir == folder / ".backups"
-
-
-def test_load_migrates_legacy_btt_preset_to_list(monkeypatch, tmp_path):
-    """Legacy `bettertouchtool_preset = "X"` (single string) reads as ["X"]."""
-    folder = tmp_path / "legacy"
-    folder.mkdir()
-    (folder / "dotsync.toml").write_text(
-        'apps = ["bettertouchtool"]\n\n[options]\n'
-        'bettertouchtool_preset = "Master_bt"\n'
-    )
-    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
-    cfg = load_config()
-    assert cfg.bettertouchtool_presets == ["Master_bt"]
-
-
-def test_load_prefers_new_btt_presets_over_legacy(monkeypatch, tmp_path):
-    """If both keys exist (transitional state), prefer the new list key."""
-    folder = tmp_path / "both"
-    folder.mkdir()
-    (folder / "dotsync.toml").write_text(
-        'apps = ["bettertouchtool"]\n\n[options]\n'
-        'bettertouchtool_preset = "Old"\n'
-        'bettertouchtool_presets = ["New1", "New2"]\n'
-    )
-    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
-    cfg = load_config()
-    assert cfg.bettertouchtool_presets == ["New1", "New2"]
-
-
-def test_load_btt_presets_default_when_unset(monkeypatch, tmp_path):
-    folder = tmp_path / "unset"
-    folder.mkdir()
-    (folder / "dotsync.toml").write_text('apps = ["zsh"]\n')
-    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
-    cfg = load_config()
-    assert cfg.bettertouchtool_presets == list(DEFAULT_BTT_PRESETS)
 
 
 def test_load_via_cwd_ascending(monkeypatch, tmp_path):
@@ -199,89 +150,6 @@ def test_load_rejects_falsey_options_when_not_table(monkeypatch, tmp_path, value
         load_config()
 
 
-def test_load_rejects_absolute_backup_dir(monkeypatch, tmp_path):
-    folder = tmp_path / "x"
-    folder.mkdir()
-    (folder / "dotsync.toml").write_text(
-        f'apps = ["zsh"]\n\n[options]\nbackup_dir = "{tmp_path / "outside"}"\n'
-    )
-    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
-    with pytest.raises(ConfigError, match="backup_dir"):
-        load_config()
-
-
-def test_load_allows_absolute_backup_dir_inside_sync_folder(monkeypatch, tmp_path):
-    folder = tmp_path / "x"
-    folder.mkdir()
-    backup_dir = folder / "custom-backups"
-    (folder / "dotsync.toml").write_text(
-        f'apps = ["zsh"]\n\n[options]\nbackup_dir = "{backup_dir}"\n'
-    )
-    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
-    assert load_config().backup_dir == backup_dir
-
-
-def test_load_rejects_backup_dir_relative_escape(monkeypatch, tmp_path):
-    folder = tmp_path / "x"
-    folder.mkdir()
-    (folder / "dotsync.toml").write_text(
-        'apps = ["zsh"]\n\n[options]\nbackup_dir = "../outside"\n'
-    )
-    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
-    with pytest.raises(ConfigError, match="backup_dir"):
-        load_config()
-
-
-def test_load_rejects_backup_dir_symlink_escape(monkeypatch, tmp_path):
-    folder = tmp_path / "x"
-    folder.mkdir()
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (folder / "linked-backups").symlink_to(outside)
-    (folder / "dotsync.toml").write_text(
-        'apps = ["zsh"]\n\n[options]\nbackup_dir = "linked-backups"\n'
-    )
-    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
-    with pytest.raises(ConfigError, match="backup_dir"):
-        load_config()
-
-
-def test_load_rejects_default_backup_dir_symlink_escape(monkeypatch, tmp_path):
-    folder = tmp_path / "x"
-    folder.mkdir()
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (folder / ".backups").symlink_to(outside, target_is_directory=True)
-    (folder / "dotsync.toml").write_text('apps = ["zsh"]\n')
-    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
-    with pytest.raises(ConfigError, match="backup_dir"):
-        load_config()
-
-
-@pytest.mark.parametrize("value", ['["bad"]', "false", "0", '""'])
-def test_load_rejects_backup_dir_non_string_or_empty(monkeypatch, tmp_path, value):
-    folder = tmp_path / "x"
-    folder.mkdir()
-    (folder / "dotsync.toml").write_text(
-        f'apps = ["zsh"]\n\n[options]\nbackup_dir = {value}\n'
-    )
-    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
-    with pytest.raises(ConfigError, match="backup_dir"):
-        load_config()
-
-
-@pytest.mark.parametrize("value", ['"many"', "-1"])
-def test_load_rejects_invalid_backup_keep(monkeypatch, tmp_path, value):
-    folder = tmp_path / "x"
-    folder.mkdir()
-    (folder / "dotsync.toml").write_text(
-        f'apps = ["zsh"]\n\n[options]\nbackup_keep = {value}\n'
-    )
-    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
-    with pytest.raises(ConfigError, match="backup_keep"):
-        load_config()
-
-
 # ----- save_config -----------------------------------------------------------
 
 
@@ -311,39 +179,6 @@ def test_save_then_load_roundtrip(monkeypatch, tmp_path):
     loaded = load_config()
     assert loaded.dir == folder
     assert loaded.apps == ["claude", "zsh"]
-    assert loaded.backup_dir == folder / ".backups"
-    assert loaded.backup_keep == DEFAULT_BACKUP_KEEP
-    assert loaded.bettertouchtool_presets == list(DEFAULT_BTT_PRESETS)
-
-
-def test_bettertouchtool_presets_roundtrip(monkeypatch, tmp_path):
-    folder = tmp_path / "x"
-    folder.mkdir()
-    cfg = Config(
-        dir=folder,
-        apps=["bettertouchtool"],
-        bettertouchtool_presets=["MyCustomPreset", "Other"],
-    )
-    save_config(cfg)
-    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
-    loaded = load_config()
-    assert loaded.bettertouchtool_presets == ["MyCustomPreset", "Other"]
-
-
-def test_save_writes_new_btt_presets_key(tmp_path):
-    """save_config must emit `bettertouchtool_presets = [...]` (new schema),
-    not the legacy `bettertouchtool_preset = "..."` key."""
-    folder = tmp_path / "fresh"
-    folder.mkdir()
-    cfg = Config(
-        dir=folder,
-        apps=["bettertouchtool"],
-        bettertouchtool_presets=["A", "B"],
-    )
-    save_config(cfg)
-    text = (folder / "dotsync.toml").read_text()
-    assert 'bettertouchtool_presets = ["A", "B"]' in text
-    assert "bettertouchtool_preset =" not in text
 
 
 def test_save_creates_folder_if_missing(tmp_path):
@@ -352,17 +187,6 @@ def test_save_creates_folder_if_missing(tmp_path):
     save_config(cfg)
     assert folder.exists()
     assert (folder / "dotsync.toml").exists()
-
-
-def test_config_backup_dir_defaults_to_sync_folder_subdir(tmp_path):
-    cfg = Config(dir=tmp_path, apps=["zsh"])
-    assert cfg.backup_dir == tmp_path / ".backups"
-
-
-def test_config_backup_dir_explicit_override(tmp_path):
-    custom = tmp_path / "custom-bk"
-    cfg = Config(dir=tmp_path, apps=["zsh"], backup_dir=custom)
-    assert cfg.backup_dir == custom
 
 
 def test_load_corrupted_toml_raises_config_error(monkeypatch, tmp_path):
@@ -385,8 +209,7 @@ def test_load_reads_app_options_subtables(monkeypatch, tmp_path):
     folder = tmp_path / "x"
     folder.mkdir()
     (folder / "dotsync.toml").write_text(
-        'apps = ["bettertouchtool"]\n\n[options]\n'
-        "backup_keep = 5\n\n"
+        'apps = ["bettertouchtool"]\n\n'
         "[options.bettertouchtool]\n"
         'presets = ["A", "B"]\n'
     )
@@ -426,3 +249,36 @@ def test_save_escapes_strings_for_toml(monkeypatch, tmp_path):
         'Preset "Q"',
         "Back\\slash",
     ]
+
+
+@pytest.mark.parametrize(
+    "line, key",
+    [
+        ("backup_keep = 10", "backup_keep"),
+        ('backup_dir = ".backups"', "backup_dir"),
+        ('bettertouchtool_presets = ["A"]', "bettertouchtool_presets"),
+        ('bettertouchtool_preset = "A"', "bettertouchtool_preset"),
+    ],
+)
+def test_load_rejects_options_that_are_not_app_tables(monkeypatch, tmp_path, line, key):
+    folder = tmp_path / "x"
+    folder.mkdir()
+    (folder / "dotsync.toml").write_text(f'apps = ["zsh"]\n\n[options]\n{line}\n')
+    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
+
+    with pytest.raises(ConfigError, match=key):
+        load_config()
+
+
+def test_save_writes_only_apps_and_app_option_tables(tmp_path):
+    cfg = Config(
+        dir=tmp_path,
+        apps=["bettertouchtool"],
+        app_options={"bettertouchtool": {"presets": ["A"]}},
+    )
+
+    save_config(cfg)
+
+    assert (tmp_path / "dotsync.toml").read_text() == (
+        'apps = ["bettertouchtool"]\n\n[options.bettertouchtool]\npresets = ["A"]\n'
+    )

@@ -74,13 +74,11 @@ def test_sync_to_imports_every_preset(tmp_path):
     presets_dir.mkdir(parents=True)
     (presets_dir / "Master_bt.bttpreset").write_text("<bttpreset/>")
     (presets_dir / "Mini_bt.bttpreset").write_text("<bttpreset/>")
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
     with patch(
         "dotsync.apps.bettertouchtool.subprocess.run", side_effect=_osascript_done
     ) as run:
-        BetterTouchToolApp(presets=["Master_bt", "Mini_bt"]).sync_to(target, backup)
+        BetterTouchToolApp(presets=["Master_bt", "Mini_bt"]).sync_to(target)
 
     cmds = [" ".join(c.args[0]) for c in run.call_args_list]
     assert any("import_preset" in c and "Master_bt" in c for c in cmds)
@@ -235,10 +233,10 @@ def _make_btt_subprocess(stored_text_per_preset: dict[str, str]):
 
 
 def test_plan_to_reports_unchanged_when_live_matches_stored(tmp_path):
-    """After `dotsync backup`, every preset's live BTT state matches the stored
+    """After `dotsync push`, every preset's live BTT state matches the stored
     bytes (modulo BTTPresetUUID, which status() normalizes). plan_to MUST
-    surface that as 'unchanged' — otherwise `dotsync apply` immediately after
-    `dotsync backup` falsely shows every BTT preset needing an update.
+    surface that as 'unchanged' — otherwise `dotsync pull` immediately after
+    `dotsync push` falsely shows every BTT preset needing an update.
     Regression: plan_to used to skip the live-vs-stored comparison entirely
     and always returned 'update' whenever the stored file existed."""
     target = tmp_path / "configs"
@@ -306,14 +304,12 @@ def test_sync_to_imports_preset(tmp_path):
     presets_dir = target / "bettertouchtool" / "presets"
     presets_dir.mkdir(parents=True)
     (presets_dir / "Master_bt.bttpreset").write_text("<bttpreset/>")
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
     with patch(
         "dotsync.apps.bettertouchtool.subprocess.run",
         side_effect=_osascript_done_no_export,
     ) as run:
-        BetterTouchToolApp(presets=["Master_bt"]).sync_to(target, backup)
+        BetterTouchToolApp(presets=["Master_bt"]).sync_to(target)
 
     calls = [c.args[0] for c in run.call_args_list]
     assert any("import_preset" in " ".join(c) for c in calls)
@@ -324,8 +320,6 @@ def test_sync_to_launches_btt_and_retries_missing_value(tmp_path):
     presets_dir = target / "bettertouchtool" / "presets"
     presets_dir.mkdir(parents=True)
     (presets_dir / "Master_bt.bttpreset").write_text("<bttpreset/>")
-    backup = tmp_path / "backup"
-    backup.mkdir()
     calls: list[list[str]] = []
 
     def fake_run(cmd, capture_output, text):
@@ -339,19 +333,18 @@ def test_sync_to_launches_btt_and_retries_missing_value(tmp_path):
         return R()
 
     with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=fake_run):
-        BetterTouchToolApp(presets=["Master_bt"]).sync_to(target, backup)
+        BetterTouchToolApp(presets=["Master_bt"]).sync_to(target)
 
     assert any(c[:3] == ["open", "-gja", "BetterTouchTool"] for c in calls)
-    assert sum("import_preset" in " ".join(c) for c in calls) == 1
+    # The first import got "missing value"; it is retried once after launching BTT.
+    assert sum("import_preset" in " ".join(c) for c in calls) == 2
 
 
 def test_sync_to_missing_preset_raises(tmp_path):
     target = tmp_path / "configs"
     (target / "bettertouchtool" / "presets").mkdir(parents=True)
-    backup = tmp_path / "backup"
-    backup.mkdir()
     with pytest.raises(FileNotFoundError, match="bttpreset"):
-        BetterTouchToolApp(presets=["Master_bt"]).sync_to(target, backup)
+        BetterTouchToolApp(presets=["Master_bt"]).sync_to(target)
 
 
 def test_sync_from_refuses_symlink_stored_app_root(tmp_path):
@@ -360,8 +353,6 @@ def test_sync_from_refuses_symlink_stored_app_root(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
     (target / "bettertouchtool").symlink_to(outside, target_is_directory=True)
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
     with patch(
         "dotsync.apps.bettertouchtool.subprocess.run", side_effect=_osascript_done
@@ -379,15 +370,13 @@ def test_sync_to_refuses_symlink_stored_preset(tmp_path):
     outside = tmp_path / "outside.bttpreset"
     outside.write_text("<secret/>")
     (presets_dir / "Master_bt.bttpreset").symlink_to(outside)
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
     with patch(
         "dotsync.apps.bettertouchtool.subprocess.run",
         side_effect=_osascript_done_no_export,
     ):
         with pytest.raises(RuntimeError, match="symlink"):
-            BetterTouchToolApp(presets=["Master_bt"]).sync_to(target, backup)
+            BetterTouchToolApp(presets=["Master_bt"]).sync_to(target)
 
 
 def test_sync_from_escapes_quote_in_export_path(tmp_path, monkeypatch):
@@ -417,39 +406,6 @@ def test_sync_from_escapes_quote_in_export_path(tmp_path, monkeypatch):
 
     assert '\\"quoted\\"' in scripts[0]
     assert 'configs "quoted"' not in scripts[0]
-
-
-def test_sync_to_escapes_quote_in_backup_path(tmp_path, monkeypatch):
-    target = tmp_path / "configs"
-    presets_dir = target / "bettertouchtool" / "presets"
-    presets_dir.mkdir(parents=True)
-    (presets_dir / "Master_bt.bttpreset").write_text("<bttpreset/>")
-    backup = tmp_path / 'backup "quoted"'
-    backup.mkdir()
-    scripts = []
-
-    def fake_run(cmd, capture_output, text):
-        scripts.append(cmd[2])
-
-        class R:
-            returncode = 0
-            stdout = "done"
-            stderr = ""
-
-        return R()
-
-    def fake_wait(self, path, timeout=None):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("<bttpreset/>")
-        return True
-
-    monkeypatch.setattr("dotsync.apps.bettertouchtool.subprocess.run", fake_run)
-    monkeypatch.setattr(BetterTouchToolApp, "_wait_for_export", fake_wait)
-
-    BetterTouchToolApp(presets=["Master_bt"]).sync_to(target, backup)
-
-    assert '\\"quoted\\"' in scripts[0]
-    assert 'backup "quoted"' not in scripts[0]
 
 
 def test_is_present_locally_true_when_btt_app_exists(monkeypatch, tmp_path):
@@ -1330,19 +1286,19 @@ def test_btt_from_config_reads_presets(tmp_path):
     cfg = Config(
         dir=tmp_path,
         apps=["bettertouchtool"],
-        bettertouchtool_presets=["Alpha", "Beta"],
+        app_options={"bettertouchtool": {"presets": ["Alpha", "Beta"]}},
     )
     app = BetterTouchToolApp.from_config(cfg)
     assert app.presets == ["Alpha", "Beta"]
 
 
 def test_btt_from_config_falls_back_to_default_when_unset(tmp_path):
-    from dotsync.apps.bettertouchtool import BetterTouchToolApp
-    from dotsync.config import Config, DEFAULT_BTT_PRESETS
+    from dotsync.apps.bettertouchtool import DEFAULT_PRESETS, BetterTouchToolApp
+    from dotsync.config import Config
 
-    cfg = Config(dir=tmp_path, apps=[])  # bettertouchtool_presets defaults
+    cfg = Config(dir=tmp_path, apps=[])
     app = BetterTouchToolApp.from_config(cfg)
-    assert app.presets == list(DEFAULT_BTT_PRESETS)
+    assert app.presets == list(DEFAULT_PRESETS)
 
 
 def test_btt_from_config_reads_app_options(tmp_path):
@@ -1379,21 +1335,6 @@ def test_btt_from_config_rejects_unsafe_preset_names(tmp_path):
 
     with pytest.raises(ValueError, match="preset"):
         BetterTouchToolApp.from_config(cfg)
-
-
-def test_btt_from_config_falls_back_to_legacy_field_when_app_options_empty(tmp_path):
-    """Existing dotsync.toml with bettertouchtool_presets only (no [options.bettertouchtool])
-    must keep working without manual migration."""
-    from dotsync.apps.bettertouchtool import BetterTouchToolApp
-    from dotsync.config import Config
-
-    cfg = Config(
-        dir=tmp_path,
-        apps=["bettertouchtool"],
-        bettertouchtool_presets=["Legacy"],  # no app_options
-    )
-    app = BetterTouchToolApp.from_config(cfg)
-    assert app.presets == ["Legacy"]
 
 
 def test_btt_extra_init_args_registers_presets_flag():

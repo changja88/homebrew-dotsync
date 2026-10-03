@@ -23,6 +23,6 @@ class ZshApp(App):
             )
         ]
 
-    def sync_to(self, target_dir: Path, backup_dir: Path) -> None:
-        super().sync_to(target_dir, backup_dir)
+    def sync_to(self, target_dir: Path) -> None:
+        super().sync_to(target_dir)
         ui.dim("hint: open a new shell or `source ~/.zshrc`")

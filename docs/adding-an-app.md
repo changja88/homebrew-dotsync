@@ -31,7 +31,7 @@ class YourApp(App):
 ```
 
 That's it for a simple app. The default `sync_from`/`sync_to`/`status` walk
-`tracked_files()` automatically — including backup before overwrite.
+`tracked_files()` automatically.
 
 ## 2. Register the class
 
@@ -78,9 +78,8 @@ For round-trip safety, append to `tests/integration/test_roundtrip.py`:
 def test_yourapp_from_then_to_does_not_change_local(fake_home, tmp_path):
     (fake_home / ".yourapprc").write_text("X")
     target = tmp_path / "sync"; target.mkdir()
-    backup = tmp_path / "bk"; backup.mkdir()
     YourApp().sync_from(target)
-    YourApp().sync_to(target, backup)
+    YourApp().sync_to(target)
     assert (fake_home / ".yourapprc").read_text() == "X"
 ```
 
@@ -96,7 +95,7 @@ lists. Both sections must stay in parity per `CLAUDE.md`.
 | App-specific options (preset names, theme) | Override `from_config(cls, cfg)` to read `cfg.app_options[cls.name]`; add `extra_init_args(parser)` for CLI flags; add `resolve_options(args, *, prev_apps, new_apps, interactive)` for init-time discovery. See `BetterTouchToolApp` for a worked example. |
 | External process (CLI/AppleScript) | Use `self._run_external(cmd, desc=..., fail_mode="warn"\|"raise")` from `App`. fail_mode="warn" auto-collects failures into `self.warnings` which the cli summary surfaces. |
 | Multi-file or directory tree | Return multiple `FilePair`s. The default impls already iterate them. |
-| Custom backup/import flow | Override `sync_to` directly; you can still call `super().sync_to()` for the file-copy half if your custom logic is post-hoc (see `ZshApp.sync_to` for the pattern — calls `super()` then adds a hint message). |
+| Custom import flow | Override `sync_to(target_dir)` directly; you can still call `super().sync_to()` for the file-copy half if your custom logic is post-hoc (see `ZshApp.sync_to` for the pattern — calls `super()` then adds a hint message). |
 | Status that compares non-files (live exports) | Override `status()`; reuse `diff_files` for any file portion. See `BetterTouchToolApp.status` for a worked example with `osascript` live diff. |
 | Custom CLI subcommand (`dotsync config <name>-...`) | Implement `extra_config_subcommands(subparser)` to register, and `handle_config_subcommand(args, cfg)` to handle. Return `int` (exit code) on match, `None` if not your subcommand. |
 
@@ -105,10 +104,9 @@ lists. Both sections must stay in parity per `CLAUDE.md`.
 - **stdlib only.** No `requests`, no `pydantic`, no `click`. Allowed: `tomllib`, `argparse`, `shutil`, `pathlib`, `subprocess`, `json`, `dataclasses`, `abc`, `hashlib`, `re`, `sqlite3`. The Homebrew formula stays single-`python@3.12`-dep.
 - **macOS only.** No Linux branches. macOS-specific paths (`~/Library/Application Support/...`) are fine.
 - **No network calls** from dotsync itself. External processes that hit the network (claude plugin install, BTT) are OK if invoked via the user's existing CLI.
-- **`backup` = local→folder, `apply` = folder→local.** Internally, app
-  plugins still implement `sync_from` and `sync_to`. `apply` always backs up
-  local first; `backup` never backs up the sync folder (the user's sync folder
-  is their git responsibility).
+- **`push` = local→folder, `pull` = folder→local.** Internally, app
+  plugins still implement `sync_from` and `sync_to`. Neither keeps backup
+  copies; the preview and the y/N confirmation are the safety net.
 
 ## Checklist
 

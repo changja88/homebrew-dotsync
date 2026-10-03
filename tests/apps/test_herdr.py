@@ -33,13 +33,10 @@ def test_sync_to_backs_up_config_and_preserves_runtime_state(fake_home, tmp_path
     target = tmp_path / "sync"
     (target / "herdr").mkdir(parents=True)
     (target / "herdr" / "config.toml").write_text("NEW\n")
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
-    HerdrApp().sync_to(target, backup)
+    HerdrApp().sync_to(target)
 
     assert (local_dir / "config.toml").read_text() == "NEW\n"
-    assert (backup / "herdr" / "config.toml").read_text() == "OLD\n"
     assert (local_dir / "session.json").read_text() == "SESSION\n"
 
 
@@ -47,10 +44,8 @@ def test_sync_to_creates_local_config_directory(fake_home, tmp_path):
     target = tmp_path / "sync"
     (target / "herdr").mkdir(parents=True)
     (target / "herdr" / "config.toml").write_text("NEW\n")
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
-    HerdrApp().sync_to(target, backup)
+    HerdrApp().sync_to(target)
 
     assert (_herdr_dir(fake_home) / "config.toml").read_text() == "NEW\n"
 

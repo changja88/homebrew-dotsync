@@ -3,7 +3,7 @@
 `config.toml` carries `[marketplaces.*]` / `[plugins.*]` tables that Codex
 rewrites by itself: local paths of the marketplaces it bundles, plus
 `last_updated` / `last_revision`. dotsync stores the rest of the file and
-records the user's plugins in `plugins.json`; `apply` reinstalls them with
+records the user's plugins in `plugins.json`; `pull` reinstalls them with
 the Codex CLI and keeps the local tables Codex wrote.
 """
 

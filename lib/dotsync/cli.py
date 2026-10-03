@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Sequence
 from dotsync import __version__, ui, diffinfo
 from dotsync.apps import APP_CLASSES, APP_NAMES, build_app, detect_present
-from dotsync.backup import new_backup_session, rotate_backups
 from dotsync.config import (
     Config,
     ConfigError,
@@ -23,7 +22,6 @@ from dotsync.shellrc import (
     export_line,
     update_shell_rc,
 )
-from dotsync.welcome import print_welcome
 
 # Existing call sites use this name; alias to the registry's source of truth.
 SUPPORTED_APPS = APP_NAMES
@@ -57,7 +55,6 @@ def _build_parser() -> argparse.ArgumentParser:
     init.add_argument(
         "--yes", action="store_true", help="non-interactive: skip prompts"
     )
-    init.add_argument("--quiet", action="store_true", help="skip the welcome banner")
     init.add_argument(
         "--no-hints", action="store_true", help="skip the post-init 'next steps' block"
     )
@@ -66,8 +63,6 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="don't add `export DOTSYNC_DIR=...` to ~/.zshrc (or ~/.bash_profile)",
     )
-
-    sub.add_parser("welcome", help="print the welcome banner")
 
     cfg = sub.add_parser("config", help="manage config")
     cfg_sub = cfg.add_subparsers(dest="cfg_cmd", required=True)
@@ -82,31 +77,13 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("apps", help="pick which apps to track (same UI as init)")
     sub.add_parser("status", help="report sync state")
 
-    backup = sub.add_parser("backup", help="local → folder")
-    _add_sync_args(backup)
+    push = sub.add_parser("push", help="local app configs → sync folder")
+    _add_sync_args(push)
 
-    apply = sub.add_parser("apply", help="folder → local")
-    _add_sync_args(apply)
+    pull = sub.add_parser("pull", help="sync folder → local app configs")
+    _add_sync_args(pull)
 
     return p
-
-
-def _normalize_legacy_command(argv: Sequence[str] | None) -> list[str] | None:
-    if argv is None:
-        argv = sys.argv[1:]
-    normalized = list(argv)
-    if not normalized:
-        return normalized
-    if normalized[0] == "from":
-        normalized[0] = "backup"
-    elif normalized[0] == "to":
-        normalized[0] = "apply"
-    return normalized
-
-
-def cmd_welcome(args) -> int:
-    print_welcome()
-    return 0
 
 
 def _default_sync_dir() -> Path:
@@ -114,9 +91,6 @@ def _default_sync_dir() -> Path:
 
 
 def cmd_init(args) -> int:
-    if not args.quiet:
-        print_welcome()
-
     # Step 1 — Sync folder ----------------------------------------------------
     dir_path = _resolve_sync_folder(args)
     dir_path.mkdir(parents=True, exist_ok=True)
@@ -346,13 +320,13 @@ def _print_init_hints(folder: Path, rc_result: "ShellRcResult | None" = None) ->
     # 2. first sync
     print(f"  {bullet} 2. {bold('Take a snapshot of your local configs')}")
     print()
-    print(f"         {primary_bold('dotsync backup --all')}")
+    print(f"         {primary_bold('dotsync push --all')}")
     print()
 
     # 3. restore on another machine
     print(f"  {bullet} 3. {bold('On another machine — pull configs from the folder')}")
     print()
-    print(f"         {primary_bold('dotsync apply --all')}")
+    print(f"         {primary_bold('dotsync pull --all')}")
     print()
 
     # Trailing dim hints — quiet pointers to the everyday commands.
@@ -370,9 +344,6 @@ def cmd_config(args) -> int:
         cfg = load_config()
         print(f"dir = {cfg.dir}")
         print(f"apps = {cfg.apps}")
-        print(f"backup_dir = {cfg.backup_dir}")
-        print(f"backup_keep = {cfg.backup_keep}")
-        print(f"bettertouchtool_presets = {cfg.bettertouchtool_presets}")
         print(f"app_options = {cfg.app_options}")
         return 0
     if args.cfg_cmd == "dir":
@@ -616,7 +587,7 @@ def cmd_from(args) -> int:
     cfg.dir.mkdir(parents=True, exist_ok=True)
 
     ui.banner(
-        "dotsync backup",
+        "dotsync push",
         f"{len(apps)} app{'s' if len(apps) != 1 else ''}  →  {cfg.dir}",
     )
     print()
@@ -671,7 +642,7 @@ def cmd_to(args) -> int:
     cfg.dir.mkdir(parents=True, exist_ok=True)
 
     ui.banner(
-        "dotsync apply",
+        "dotsync pull",
         f"{len(apps)} app{'s' if len(apps) != 1 else ''}  ←  {cfg.dir}",
     )
     print()
@@ -683,7 +654,6 @@ def cmd_to(args) -> int:
         plan.app: bool(plan.changes) and not plan.has_changes for plan in plans
     }
 
-    session: Path | None = None
     start = time.monotonic()
     changed: list[str] = []
     unchanged: list[str] = []
@@ -698,11 +668,7 @@ def cmd_to(args) -> int:
             print()
             continue
         try:
-            if session is None:
-                session = new_backup_session(cfg.backup_dir)
-                ui.kv("backup", str(session))
-                print()
-            app.sync_to(cfg.dir, session)
+            app.sync_to(cfg.dir)
             app._finish_ok()
             changed.append(name)
         except (FileNotFoundError, RuntimeError) as e:
@@ -711,8 +677,6 @@ def cmd_to(args) -> int:
         if app.warnings:
             warnings_by_app[name] = list(app.warnings)
         print()
-    if session is not None:
-        rotate_backups(cfg.backup_dir, cfg.backup_keep)
     ui.summary(
         ok=len(changed) + len(unchanged),
         error=len(failed),
@@ -727,25 +691,22 @@ def cmd_to(args) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
-    argv = _normalize_legacy_command(argv)
     args = parser.parse_args(argv)
     try:
         if args.cmd is None:
-            print_welcome()
+            parser.print_help()
             return 0
         if args.cmd == "init":
             return cmd_init(args)
-        if args.cmd == "welcome":
-            return cmd_welcome(args)
         if args.cmd == "config":
             return cmd_config(args)
         if args.cmd == "apps":
             return cmd_apps(args)
         if args.cmd == "status":
             return cmd_status(args)
-        if args.cmd == "backup":
+        if args.cmd == "push":
             return cmd_from(args)
-        if args.cmd == "apply":
+        if args.cmd == "pull":
             return cmd_to(args)
         parser.print_help()
         return 2

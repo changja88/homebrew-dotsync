@@ -12,9 +12,6 @@ How does dotsync know where the sync folder is then?
 
 Real config lives at:
   <sync-folder>/dotsync.toml
-
-Backups default to:
-  <sync-folder>/.backups/<YYYYMMDD_HHMMSS>/<app>/
 """
 
 from __future__ import annotations
@@ -25,15 +22,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
-DEFAULT_BACKUP_KEEP = 10
-# BetterTouchTool can sync multiple presets at once. The default list ships
-# with one entry to match BTT's stock starter preset; new installs without
-# any explicit configuration fall back to this.
-DEFAULT_BTT_PRESETS: tuple[str, ...] = ("Master_bt",)
-
 ENV_VAR = "DOTSYNC_DIR"
 FOLDER_CONFIG_FILENAME = "dotsync.toml"
-DEFAULT_BACKUP_SUBDIR = ".backups"
 
 
 def supported_apps() -> set[str]:
@@ -52,30 +42,12 @@ def folder_config_path(folder: Path) -> Path:
     return folder / FOLDER_CONFIG_FILENAME
 
 
-def default_backup_dir(folder: Path) -> Path:
-    return folder / DEFAULT_BACKUP_SUBDIR
-
-
 @dataclass
 class Config:
     dir: Path
     apps: List[str]
-    backup_dir: Optional[Path] = None
-    backup_keep: int = DEFAULT_BACKUP_KEEP
-    # TODO: remove `bettertouchtool_presets` once one release has passed with
-    # `app_options` as the canonical home. BTT now reads from
-    # `cfg.app_options["bettertouchtool"]["presets"]` via from_config(); this
-    # field exists only as a legacy fallback for dotsync.toml files saved
-    # before Phase 6/7. When removed, also drop the legacy fallback in
-    # BetterTouchToolApp.from_config and the legacy migration in _read_btt_presets.
-    bettertouchtool_presets: List[str] = field(
-        default_factory=lambda: list(DEFAULT_BTT_PRESETS)
-    )
+    # [options.<app>] tables, each parsed by that app's from_config().
     app_options: dict = field(default_factory=dict)
-
-    def __post_init__(self):
-        if self.backup_dir is None:
-            self.backup_dir = default_backup_dir(self.dir)
 
 
 def find_sync_folder() -> Optional[Path]:
@@ -142,20 +114,16 @@ def load_config() -> Config:
     options = data.get("options", {})
     if not isinstance(options, dict):
         raise ConfigError(f"`options` must be a table, got: {type(options).__name__}")
-    backup_dir = _read_backup_dir(folder, options.get("backup_dir"))
-    backup_keep = _read_backup_keep(options.get("backup_keep", DEFAULT_BACKUP_KEEP))
-    btt_presets = _read_btt_presets(options)
-    # tomllib materializes [options.x] as nested dict values within `options`.
-    app_options = {k: v for k, v in options.items() if isinstance(v, dict)}
+    # tomllib materializes [options.x] as nested dict values within `options`;
+    # anything else there is a leftover key from an older dotsync.
+    stray = sorted(k for k, v in options.items() if not isinstance(v, dict))
+    if stray:
+        raise ConfigError(
+            f"unsupported option {', '.join(stray)} in [options] of {cfg_file}; "
+            "only [options.<app>] tables are allowed — remove the line"
+        )
 
-    return Config(
-        dir=folder,
-        apps=apps,
-        backup_dir=backup_dir,
-        backup_keep=backup_keep,
-        bettertouchtool_presets=btt_presets,
-        app_options=app_options,
-    )
+    return Config(dir=folder, apps=apps, app_options=options)
 
 
 def _toml_value(v) -> str:
@@ -172,57 +140,6 @@ def _toml_value(v) -> str:
     raise TypeError(f"unsupported app_options value type: {type(v).__name__}")
 
 
-def _read_backup_dir(folder: Path, value) -> Path:
-    raw = Path(".backups") if value is None else None
-    if value is not None and not isinstance(value, str):
-        raise ConfigError(
-            f"`backup_dir` must point inside the sync folder, "
-            f"got: {type(value).__name__}"
-        )
-    if isinstance(value, str):
-        if not value:
-            raise ConfigError("`backup_dir` must point inside the sync folder")
-        raw = Path(value).expanduser()
-    assert raw is not None
-    folder_real = folder.resolve()
-    backup_dir = raw.resolve() if raw.is_absolute() else (folder / raw).resolve()
-    if backup_dir != folder_real and folder_real not in backup_dir.parents:
-        raise ConfigError("`backup_dir` must stay inside the sync folder")
-    return backup_dir
-
-
-def _read_backup_keep(value) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ConfigError(
-            f"`backup_keep` must be a non-negative integer, got: {type(value).__name__}"
-        )
-    if value < 0:
-        raise ConfigError("`backup_keep` must be a non-negative integer")
-    return value
-
-
-def _read_btt_presets(options: dict) -> List[str]:
-    """Resolve BTT presets from on-disk options, with legacy migration.
-
-    Precedence: new `bettertouchtool_presets` list → legacy
-    `bettertouchtool_preset` single string → DEFAULT_BTT_PRESETS.
-    The legacy single-string form is auto-migrated to a one-element list
-    so users with old dotsync.toml files keep working without manual edits.
-    """
-    new_value = options.get("bettertouchtool_presets")
-    if new_value is not None:
-        if not isinstance(new_value, list):
-            raise ConfigError(
-                f"`bettertouchtool_presets` must be a list of strings, "
-                f"got: {type(new_value).__name__}"
-            )
-        return [str(p) for p in new_value]
-    legacy = options.get("bettertouchtool_preset")
-    if legacy is not None:
-        return [str(legacy)]
-    return list(DEFAULT_BTT_PRESETS)
-
-
 def save_config(cfg: Config) -> None:
     """Write the sync folder's dotsync.toml. Touches no other location."""
     cfg.dir.mkdir(parents=True, exist_ok=True)
@@ -230,17 +147,7 @@ def save_config(cfg: Config) -> None:
     lines = [
         "apps = [" + ", ".join(_toml_value(a) for a in cfg.apps) + "]",
         "",
-        "[options]",
     ]
-    # Only persist backup_dir if it's not the default (keeps the file portable
-    # — moving the folder to another machine still uses default location).
-    default_bd = default_backup_dir(cfg.dir)
-    if cfg.backup_dir is not None and cfg.backup_dir != default_bd:
-        lines.append(f"backup_dir = {_toml_value(str(cfg.backup_dir))}")
-    lines.append(f"backup_keep = {cfg.backup_keep}")
-    presets_repr = ", ".join(_toml_value(p) for p in cfg.bettertouchtool_presets)
-    lines.append(f"bettertouchtool_presets = [{presets_repr}]")
-    lines.append("")
 
     for app_name, opts in cfg.app_options.items():
         if not opts:

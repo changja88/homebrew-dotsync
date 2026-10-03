@@ -193,15 +193,11 @@ def test_sync_to_backs_up_and_writes_config_and_agents(fake_home, tmp_path):
     (target / "codex").mkdir(parents=True)
     (target / "codex" / "config.toml").write_text("NEW\n")
     (target / "codex" / "AGENTS.md").write_text("NEW AGENTS\n")
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
-    _codex_app().sync_to(target, backup)
+    _codex_app().sync_to(target)
 
     assert (cdir / "config.toml").read_text() == "NEW\n"
     assert (cdir / "AGENTS.md").read_text() == "NEW AGENTS\n"
-    assert (backup / "codex" / "config.toml").read_text() == "OLD\n"
-    assert (backup / "codex" / "AGENTS.md").read_text() == "OLD AGENTS\n"
 
 
 def test_sync_to_refuses_symlink_stored_app_root(fake_home, tmp_path):
@@ -214,14 +210,11 @@ def test_sync_to_refuses_symlink_stored_app_root(fake_home, tmp_path):
     outside.mkdir()
     (outside / "config.toml").write_text("NEW\n")
     (target / "codex").symlink_to(outside, target_is_directory=True)
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
     with pytest.raises(RuntimeError, match="symlink"):
-        _codex_app().sync_to(target, backup)
+        _codex_app().sync_to(target)
 
     assert (cdir / "config.toml").read_text() == "OLD\n"
-    assert not (backup / "codex" / "config.toml").exists()
 
 
 def test_sync_to_refuses_symlink_stored_optional_file_before_mutating_config(
@@ -237,15 +230,12 @@ def test_sync_to_refuses_symlink_stored_optional_file_before_mutating_config(
     outside = tmp_path / "outside-agents.md"
     outside.write_text("SECRET\n")
     (stored / "AGENTS.md").symlink_to(outside)
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
     with pytest.raises(RuntimeError, match="symlink"):
-        _codex_app().sync_to(target, backup)
+        _codex_app().sync_to(target)
 
     assert (cdir / "config.toml").read_text() == "OLD\n"
     assert outside.read_text() == "SECRET\n"
-    assert not (backup / "codex").exists()
 
 
 def test_sync_to_without_stored_agents_keeps_local_agents(fake_home, tmp_path):
@@ -256,14 +246,11 @@ def test_sync_to_without_stored_agents_keeps_local_agents(fake_home, tmp_path):
     target = tmp_path / "configs"
     (target / "codex").mkdir(parents=True)
     (target / "codex" / "config.toml").write_text("NEW\n")
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
-    _codex_app().sync_to(target, backup)
+    _codex_app().sync_to(target)
 
     assert (cdir / "config.toml").read_text() == "NEW\n"
     assert (cdir / "AGENTS.md").read_text() == "KEEP ME\n"
-    assert not (backup / "codex" / "AGENTS.md").exists()
 
 
 def test_sync_to_restores_optional_files_with_backup(fake_home, tmp_path):
@@ -275,13 +262,10 @@ def test_sync_to_restores_optional_files_with_backup(fake_home, tmp_path):
     (target / "codex").mkdir(parents=True)
     (target / "codex" / "config.toml").write_text("NEW\n")
     (target / "codex" / "AGENTS.override.md").write_text("NEW OVERRIDE\n")
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
-    _codex_app().sync_to(target, backup)
+    _codex_app().sync_to(target)
 
     assert (cdir / "AGENTS.override.md").read_text() == "NEW OVERRIDE\n"
-    assert (backup / "codex" / "AGENTS.override.md").read_text() == "OLD OVERRIDE\n"
 
 
 def test_sync_to_mirrors_rules_directory_with_backup(fake_home, tmp_path):
@@ -296,16 +280,12 @@ def test_sync_to_mirrors_rules_directory_with_backup(fake_home, tmp_path):
     (target / "codex" / "config.toml").write_text("NEW\n")
     (target / "codex" / "rules" / "shared.rules").write_text("stored\n")
     (target / "codex" / "rules" / "new.rules").write_text("new\n")
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
-    _codex_app().sync_to(target, backup)
+    _codex_app().sync_to(target)
 
     assert (cdir / "rules" / "shared.rules").read_text() == "stored\n"
     assert (cdir / "rules" / "new.rules").read_text() == "new\n"
     assert not (cdir / "rules" / "old.rules").exists()
-    assert (backup / "codex" / "rules" / "old.rules").read_text() == "old\n"
-    assert (backup / "codex" / "rules" / "shared.rules").read_text() == "local\n"
 
 
 def test_sync_to_refuses_file_stored_rules_before_backup(fake_home, tmp_path):
@@ -319,15 +299,12 @@ def test_sync_to_refuses_file_stored_rules_before_backup(fake_home, tmp_path):
     stored.mkdir(parents=True)
     (stored / "config.toml").write_text("NEW\n")
     (stored / "rules").write_text("not a directory")
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
     with pytest.raises(RuntimeError, match="directory"):
-        _codex_app().sync_to(target, backup)
+        _codex_app().sync_to(target)
 
     assert (cdir / "config.toml").read_text() == "OLD\n"
     assert (cdir / "rules" / "keep.rules").read_text() == "keep\n"
-    assert not (backup / "codex" / "rules").exists()
 
 
 def test_sync_to_keeps_local_rules_symlink_and_skips_it_in_backup(fake_home, tmp_path):
@@ -342,17 +319,14 @@ def test_sync_to_keeps_local_rules_symlink_and_skips_it_in_backup(fake_home, tmp
     (target / "codex" / "rules").mkdir(parents=True)
     (target / "codex" / "config.toml").write_text("NEW\n")
     (target / "codex" / "rules" / "safe.rules").write_text("SAFE\n")
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
     app = _codex_app()
-    app.sync_to(target, backup)
+    app.sync_to(target)
 
     assert (cdir / "config.toml").read_text() == "NEW\n"
     assert (cdir / "rules" / "safe.rules").read_text() == "SAFE\n"
     assert (cdir / "rules" / "leak.rules").is_symlink()
     assert outside.read_text() == "SECRET\n"
-    assert not (backup / "codex" / "rules" / "leak.rules").exists()
     assert app.warnings == ["rules/leak.rules is a symlink; skipped"]
 
 
@@ -366,10 +340,8 @@ def test_sync_to_preserves_local_system_skills(fake_home, tmp_path):
     (target / "codex" / "skills" / "mine").mkdir(parents=True)
     (target / "codex" / "config.toml").write_text("NEW\n")
     (target / "codex" / "skills" / "mine" / "SKILL.md").write_text("# mine\n")
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
-    _codex_app().sync_to(target, backup)
+    _codex_app().sync_to(target)
 
     assert (cdir / "skills" / "mine" / "SKILL.md").read_text() == "# mine\n"
     assert (
@@ -680,10 +652,8 @@ def test_sync_to_excludes_dynamic_serena_mcp_from_local_config(fake_home, tmp_pa
     (stored / "config.toml").write_text(
         'model = "gpt-5.2"\n\n[mcp_servers.serena]\nurl = "http://127.0.0.1:9123/mcp"\n'
     )
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
-    _codex_app().sync_to(target, backup)
+    _codex_app().sync_to(target)
 
     assert "mcp_servers.serena" not in (cdir / "config.toml").read_text()
 
@@ -769,10 +739,8 @@ def test_sync_to_leaves_configured_ignored_skill_alone(fake_home, tmp_path):
     (target / "codex" / "skills" / "graphify").mkdir(parents=True)
     (target / "codex" / "config.toml").write_text("NEW\n")
     (target / "codex" / "skills" / "graphify" / "SKILL.md").write_text("# v1\n")
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
-    _codex_app_ignoring(tmp_path, "graphify").sync_to(target, backup)
+    _codex_app_ignoring(tmp_path, "graphify").sync_to(target)
 
     assert (cdir / "skills" / "graphify" / "SKILL.md").read_text() == "# v2\n"
 
@@ -908,10 +876,8 @@ def test_sync_to_keeps_local_plugin_tables_and_applies_stored_settings(
     target = tmp_path / "configs"
     (target / "codex").mkdir(parents=True)
     (target / "codex" / "config.toml").write_text('model = "new"\n')
-    backup = tmp_path / "backup"
-    backup.mkdir()
 
-    _codex_app().sync_to(target, backup)
+    _codex_app().sync_to(target)
 
     local = tomllib.loads((cdir / "config.toml").read_text())
     assert local["model"] == "new"
@@ -920,7 +886,7 @@ def test_sync_to_keeps_local_plugin_tables_and_applies_stored_settings(
     assert local["plugins"] == {"mine@my-market": {"enabled": True}}
 
 
-def _apply_manifest_setup(fake_home: Path, tmp_path: Path) -> tuple[Path, Path]:
+def _apply_manifest_setup(fake_home: Path, tmp_path: Path) -> Path:
     cdir = _codex_dir(fake_home)
     cdir.mkdir()
     (cdir / "config.toml").write_text('model = "x"\n')
@@ -932,18 +898,16 @@ def _apply_manifest_setup(fake_home: Path, tmp_path: Path) -> tuple[Path, Path]:
         [{"name": "my-market", "source": "me/my-market", "ref": "main", "sparse": ["plugins"]}],
         ["mine@my-market", "superpowers@openai-curated-remote"],
     )
-    backup = tmp_path / "backup"
-    backup.mkdir()
-    return target, backup
+    return target
 
 
 def test_sync_to_adds_missing_marketplace_then_installs_missing_plugins(
     fake_home, tmp_path, fake_codex_cli
 ):
-    target, backup = _apply_manifest_setup(fake_home, tmp_path)
+    target = _apply_manifest_setup(fake_home, tmp_path)
     fake_codex_cli.marketplace_sources = {"me/my-market": "my-market"}
 
-    _codex_app().sync_to(target, backup)
+    _codex_app().sync_to(target)
 
     assert fake_codex_cli.commands("plugin", "marketplace", "add") == [
         ["plugin", "marketplace", "add", "me/my-market", "--ref", "main",
@@ -963,11 +927,11 @@ def test_sync_to_adds_missing_marketplace_then_installs_missing_plugins(
 
 
 def test_sync_to_twice_installs_each_plugin_once(fake_home, tmp_path, fake_codex_cli):
-    target, backup = _apply_manifest_setup(fake_home, tmp_path)
+    target = _apply_manifest_setup(fake_home, tmp_path)
     fake_codex_cli.marketplace_sources = {"me/my-market": "my-market"}
 
-    _codex_app().sync_to(target, backup)
-    _codex_app().sync_to(target, backup)
+    _codex_app().sync_to(target)
+    _codex_app().sync_to(target)
 
     assert len(fake_codex_cli.commands("plugin", "marketplace", "add")) == 1
     assert len(fake_codex_cli.commands("plugin", "add")) == 2
@@ -976,10 +940,10 @@ def test_sync_to_twice_installs_each_plugin_once(fake_home, tmp_path, fake_codex
 def test_sync_to_skips_plugins_whose_marketplace_could_not_be_added(
     fake_home, tmp_path, fake_codex_cli
 ):
-    target, backup = _apply_manifest_setup(fake_home, tmp_path)
+    target = _apply_manifest_setup(fake_home, tmp_path)
     app = _codex_app()
 
-    app.sync_to(target, backup)
+    app.sync_to(target)
 
     assert fake_codex_cli.commands("plugin", "add") == [
         ["plugin", "add", "superpowers@openai-curated-remote", "--json"]
@@ -990,12 +954,12 @@ def test_sync_to_skips_plugins_whose_marketplace_could_not_be_added(
 def test_sync_to_warns_and_keeps_files_when_codex_cli_missing(
     fake_home, tmp_path, fake_codex_cli
 ):
-    target, backup = _apply_manifest_setup(fake_home, tmp_path)
+    target = _apply_manifest_setup(fake_home, tmp_path)
     (target / "codex" / "config.toml").write_text('model = "new"\n')
     fake_codex_cli.missing = True
     app = _codex_app()
 
-    app.sync_to(target, backup)
+    app.sync_to(target)
 
     assert (_codex_dir(fake_home) / "config.toml").read_text() == 'model = "new"\n'
     assert any("codex" in w for w in app.warnings)
@@ -1004,11 +968,11 @@ def test_sync_to_warns_and_keeps_files_when_codex_cli_missing(
 def test_sync_to_warns_on_invalid_plugins_json_without_running_codex(
     fake_home, tmp_path, fake_codex_cli
 ):
-    target, backup = _apply_manifest_setup(fake_home, tmp_path)
+    target = _apply_manifest_setup(fake_home, tmp_path)
     (target / "codex" / "plugins.json").write_text('{"plugins": "mine@my-market"}')
     app = _codex_app()
 
-    app.sync_to(target, backup)
+    app.sync_to(target)
 
     assert fake_codex_cli.calls == []
     assert any("plugins.json" in w for w in app.warnings)
@@ -1058,7 +1022,7 @@ def test_plan_from_reports_plugins_json_update(fake_home, tmp_path, fake_codex_c
 def test_plan_to_lists_marketplaces_and_plugins_to_install(
     fake_home, tmp_path, fake_codex_cli
 ):
-    target, _ = _apply_manifest_setup(fake_home, tmp_path)
+    target = _apply_manifest_setup(fake_home, tmp_path)
     fake_codex_cli.installed = [_plugin("superpowers@openai-curated-remote")]
 
     plan = _codex_app().plan_to(target)
@@ -1073,7 +1037,7 @@ def test_plan_to_lists_marketplaces_and_plugins_to_install(
 def test_plan_to_reports_unchanged_plugins_when_everything_is_installed(
     fake_home, tmp_path, fake_codex_cli
 ):
-    target, _ = _apply_manifest_setup(fake_home, tmp_path)
+    target = _apply_manifest_setup(fake_home, tmp_path)
     fake_codex_cli.marketplaces = [{"name": "my-market"}]
     fake_codex_cli.installed = [
         _plugin("mine@my-market"),
@@ -1092,12 +1056,12 @@ def test_plan_to_reports_unchanged_plugins_when_everything_is_installed(
 def test_sync_to_skips_restore_on_unexpected_plugin_list_output(
     fake_home, tmp_path, fake_codex_cli, raw
 ):
-    target, backup = _apply_manifest_setup(fake_home, tmp_path)
+    target = _apply_manifest_setup(fake_home, tmp_path)
     fake_codex_cli.marketplaces = [{"name": "my-market"}]
     fake_codex_cli.stdout = {"plugin list": raw}
     app = _codex_app()
 
-    app.sync_to(target, backup)
+    app.sync_to(target)
 
     assert fake_codex_cli.commands("plugin", "add") == []
     assert any("plugins restore skipped" in w for w in app.warnings)
@@ -1119,3 +1083,45 @@ def test_sync_from_keeps_plugins_json_on_unexpected_plugin_list_output(
 
     assert stored.read_text() == before
     assert any("plugins.json not updated" in w for w in app.warnings)
+
+
+def test_sync_from_is_quiet_about_npx_skill_links_when_skills_app_is_tracked(
+    fake_home, tmp_path
+):
+    from dotsync.apps.codex import CodexApp
+    from dotsync.config import Config
+
+    cdir = _codex_dir(fake_home)
+    (cdir / "skills").mkdir(parents=True)
+    (cdir / "config.toml").write_text('model = "x"\n')
+    canonical = fake_home / ".agents" / "skills" / "herdr"
+    canonical.mkdir(parents=True)
+    (canonical / "SKILL.md").write_text("# herdr\n")
+    (cdir / "skills" / "herdr").symlink_to(canonical, target_is_directory=True)
+    target = tmp_path / "configs"
+    app = CodexApp.from_config(Config(dir=tmp_path, apps=["codex", "skills"]))
+
+    app.sync_from(target)
+
+    assert app.warnings == []
+
+
+def test_pull_leaves_local_config_untouched_when_settings_match(fake_home, tmp_path):
+    cdir = _codex_dir(fake_home)
+    cdir.mkdir()
+    local_text = (
+        'model = "x"\n\n'
+        '[plugins."mine@my-market"]\nenabled = true\n\n'
+        '[tui]\ntheme = "dark"\n'
+    )
+    (cdir / "config.toml").write_text(local_text)
+    target = tmp_path / "configs"
+    (target / "codex").mkdir(parents=True)
+    (target / "codex" / "config.toml").write_text('model = "x"\n\n[tui]\ntheme = "dark"\n')
+    app = _codex_app()
+
+    plan = app.plan_to(target)
+    app.sync_to(target)
+
+    assert {c.label: c.kind for c in plan.changes}["config.toml"] == "unchanged"
+    assert (cdir / "config.toml").read_text() == local_text
