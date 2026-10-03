@@ -1,0 +1,54 @@
+name: dotsync
+options:
+  bundleIdPrefix: com.changja88
+  deploymentTarget:
+    macOS: "27.0"
+packages:
+  DotsyncKit:
+    path: DotsyncKit
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.4.0"
+    CURRENT_PROJECT_VERSION: "1"
+    DEVELOPMENT_TEAM: GR53VV7ZD2
+targets:
+  dotsync:
+    type: application
+    platform: macOS
+    sources: [App, Shared]
+    dependencies:
+      - package: DotsyncKit
+      - target: dotsyncWidget
+        embed: true
+    settings:
+      base:
+        PRODUCT_NAME: dotsync
+        PRODUCT_BUNDLE_IDENTIFIER: com.changja88.dotsync
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: dotsync
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSApplicationCategoryType: public.app-category.developer-tools
+        CFBundleURLTypes:
+          - CFBundleURLName: com.changja88.dotsync
+            CFBundleURLSchemes: [dotsync]
+  dotsyncWidget:
+    type: app-extension
+    platform: macOS
+    sources: [Widget, Shared]
+    dependencies:
+      - package: DotsyncKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.changja88.dotsync.widget
+    info:
+      path: Widget/Info.plist
+      properties:
+        CFBundleDisplayName: dotsync
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Development only: lets a locally built dotsync.app run this checkout's
+# dotsync before it is released. Point the app at it with
+#   defaults write com.changja88.dotsync cliPath "$PWD/macos/dev/dotsync-dev"
+# and undo with
+#   defaults delete com.changja88.dotsync cliPath
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+PYTHONPATH="$ROOT/lib" exec "${DOTSYNC_DEV_PYTHON:-$HOME/Desktop/homebrew-dotsync/.venv/bin/python3}" -m dotsync "$@"
