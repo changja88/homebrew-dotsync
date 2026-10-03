@@ -123,12 +123,24 @@ class FakeAccountsCli:
     """
 
     USER = "tester"
+    # Recorded 2026-10-04 from `claude -p … get_usage` with an empty,
+    # never-logged-in CLAUDE_CONFIG_DIR (exit 0).
+    NOT_LOGGED_IN_ANSWER = (
+        '{"type":"control_response","response":{"subtype":"success","request_id":"u1",'
+        '"response":{"session":{"total_cost_usd":0,"total_api_duration_ms":0,'
+        '"total_duration_ms":257,"total_lines_added":0,"total_lines_removed":0,'
+        '"model_usage":{}},"subscription_type":null,"rate_limits_available":false,'
+        '"rate_limits":null,"behaviors":null}}}\n'
+    )
 
     def __init__(self) -> None:
         self.keychain: dict[str, str] = {}
         self.browser: dict | None = None
         self.login_fails = False
         self.login_interrupted = False
+        self.usage: dict = {}
+        self.probes: list[str] = []
+        self.probe_hook = None
         self.ignore_writes = False
         self.calls: list[list[str]] = []
         self.stdin: list[str] = []
@@ -145,7 +157,7 @@ class FakeAccountsCli:
         if cmd[0] == "security":
             return self._security(cmd, input)
         if Path(cmd[0]).name == "claude":
-            return self._claude(cmd, env or {}, kwargs)
+            return self._claude(cmd, env or {}, {**kwargs, "input": input})
         raise AssertionError(f"unexpected command: {cmd!r}")
 
     def _security(self, cmd, stdin):
@@ -181,6 +193,8 @@ class FakeAccountsCli:
         import subprocess
         import sys
 
+        if cmd[1] == "-p":
+            return self._probe(cmd, env, kwargs)
         folder = Path(env["CLAUDE_CONFIG_DIR"])
         doc_path = folder / ".claude.json"
         doc = json.loads(doc_path.read_text()) if doc_path.exists() else {}
@@ -203,6 +217,60 @@ class FakeAccountsCli:
         if folder.exists():
             doc_path.write_text(json.dumps(doc, indent=2))
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    @staticmethod
+    def usage_answer(five, week, subscription="max") -> str:
+        """A logged-in `get_usage` answer shaped like the one recorded
+        2026-10-03; `five`/`week` are (utilization, resets_at) or None."""
+        import json
+
+        def window(w):
+            if w is None:
+                return None
+            return {"utilization": w[0], "resets_at": w[1], "limit_dollars": None,
+                    "used_dollars": None, "remaining_dollars": None, "locked_reason": None}
+
+        data = {
+            "session": {"total_cost_usd": 0, "model_usage": {}},
+            "subscription_type": subscription,
+            "rate_limits_available": True,
+            "rate_limits": {"five_hour": window(five), "seven_day": window(week),
+                            "seven_day_opus": None},
+        }
+        return json.dumps({"type": "control_response", "response": {
+            "subtype": "success", "request_id": "u1", "response": data}}) + "\n"
+
+    def reply_usage(self, key, five, week, subscription="max"):
+        self.usage[key] = (0, self.usage_answer(five, week, subscription))
+
+    def reply_not_logged_in(self, key):
+        self.usage[key] = (0, self.NOT_LOGGED_IN_ANSWER)
+
+    def reply_raw(self, key, stdout, returncode=0):
+        self.usage[key] = (returncode, stdout)
+
+    def reply_timeout(self, key):
+        self.usage[key] = "timeout"
+
+    def _probe(self, cmd, env, kwargs):
+        import json
+        import subprocess
+
+        assert json.loads(kwargs["input"]) == {
+            "type": "control_request", "request_id": "u1", "request": {"subtype": "get_usage"}
+        }
+        assert kwargs.get("timeout") == 30
+        key = Path(env["CLAUDE_CONFIG_DIR"]).name if "CLAUDE_CONFIG_DIR" in env else "seat"
+        self.probes.append(key)
+        if self.probe_hook is not None:
+            self.probe_hook(key)
+        if key not in self.usage:
+            raise AssertionError(f"unexpected usage probe for {key}")
+        reply = self.usage[key]
+        if reply == "timeout":
+            raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+        returncode, stdout = reply
+        return subprocess.CompletedProcess(cmd, returncode, stdout=stdout, stderr="")
 
     def argv_text(self) -> str:
         """Every argument passed on a command line, joined — secrets must
