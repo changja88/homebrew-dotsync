@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import argparse
+import contextlib
 import json
 import sys
 import time
@@ -709,15 +710,27 @@ def cmd_to(args) -> int:
     return 0 if not failed else 6
 
 
+# Account commands that change logins or run Claude; `list` only reads.
+_LOCKED_COMMANDS = {"login", "use", "remove", "rename", "usage"}
+
+
+def _account_lock(args):
+    if args.account_cmd in _LOCKED_COMMANDS:
+        return accounts.locked()
+    return contextlib.nullcontext()
+
+
 def cmd_account(args) -> int:
     if args.json:
         return _account_json(args)
-    return _account_text(args)
+    with _account_lock(args):
+        return _account_text(args)
 
 
 def _account_json(args) -> int:
     try:
-        result = _account_result(args)
+        with _account_lock(args):
+            result = _account_result(args)
     except accounts.AccountError as e:
         error = {"code": e.code, "message": str(e)}
         if isinstance(e, accounts.UnsavedLoginError):

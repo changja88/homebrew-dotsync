@@ -278,3 +278,37 @@ def test_account_json_unexpected_errors_are_failed(fake_home, fake_accounts_cli,
     monkeypatch.setattr(accounts, "snapshot", boom)
     assert main(["account", "list", "--json"]) == 1
     assert _json_out(capsys) == {"error": {"code": "failed", "message": "disk on fire"}}
+
+
+def test_account_use_json_is_busy_while_another_command_runs(fake_home, fake_accounts_cli, monkeypatch, capsys):
+    from dotsync import accounts
+
+    monkeypatch.setattr(accounts, "LOCK_WAIT_SECONDS", 0.2)
+    cli = fake_accounts_cli
+    _saved(fake_home, cli, "alice", ALICE, "a1")
+    _saved(fake_home, cli, "bob", BOB, "b1")
+    _seat(fake_home, cli, ALICE, "a2")
+
+    with accounts.locked():
+        assert main(["account", "use", "bob", "--json"]) == 1
+
+    assert _json_out(capsys)["error"]["code"] == "busy"
+    assert cli.keychain[SEAT] == "a2"
+
+
+def test_account_use_text_is_busy_while_another_command_runs(fake_home, fake_accounts_cli, monkeypatch, capsys):
+    from dotsync import accounts
+
+    monkeypatch.setattr(accounts, "LOCK_WAIT_SECONDS", 0.2)
+    _saved(fake_home, fake_accounts_cli, "bob", BOB, "b1")
+    with accounts.locked():
+        assert main(["account", "use", "bob"]) == 5
+    assert "another dotsync account command" in capsys.readouterr().err
+
+
+def test_account_list_does_not_wait_for_the_lock(fake_home, fake_accounts_cli, monkeypatch):
+    from dotsync import accounts
+
+    monkeypatch.setattr(accounts, "LOCK_WAIT_SECONDS", 0.2)
+    with accounts.locked():
+        assert main(["account", "list", "--json"]) == 0

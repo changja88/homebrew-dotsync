@@ -320,3 +320,26 @@ def test_remove_errors_have_codes(fake_home, fake_accounts_cli):
     _seat(fake_home, cli, ALICE, "a2")
     assert _code(lambda: accounts.remove("ghost")) == "not_found"
     assert _code(lambda: accounts.remove("alice")) == "active_account"
+
+
+def test_locked_gives_up_with_busy_while_another_command_holds_it(fake_home, monkeypatch):
+    monkeypatch.setattr(accounts, "LOCK_WAIT_SECONDS", 0.2)
+    with accounts.locked():
+        with pytest.raises(AccountError) as e:
+            with accounts.locked():
+                pass
+    assert e.value.code == "busy"
+
+
+def test_locked_is_free_again_after_a_command(fake_home):
+    with accounts.locked():
+        pass
+    with accounts.locked():
+        pass
+
+
+def test_the_lock_file_is_not_an_account(fake_home):
+    with accounts.locked():
+        pass
+    assert (fake_home / ".claude-accounts" / ".lock").exists()
+    assert accounts.saved_accounts() == []

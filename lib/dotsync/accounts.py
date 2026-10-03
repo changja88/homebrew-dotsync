@@ -16,6 +16,7 @@ from the default entry to that account's own entry.
 
 from __future__ import annotations
 
+import fcntl
 import getpass
 import hashlib
 import json
@@ -24,7 +25,10 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 from dotsync.apps.base import write_text_safely
 
@@ -33,6 +37,8 @@ _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _RESERVED_NAMES = {"default"}
 # `security find-generic-password` exit status for "no such item".
 _ITEM_NOT_FOUND = 44
+# How long a command waits for another account command to finish.
+LOCK_WAIT_SECONDS = 60.0
 
 
 class AccountError(RuntimeError):
@@ -88,6 +94,31 @@ def service_for(folder: Path) -> str:
     """The Keychain entry Claude Code uses when CLAUDE_CONFIG_DIR is `folder`."""
     digest = hashlib.sha256(str(folder).encode()).hexdigest()[:8]
     return f"{DEFAULT_SERVICE}-{digest}"
+
+
+@contextmanager
+def locked() -> Iterator[None]:
+    """Hold ~/.claude-accounts/.lock so only one command changes accounts at
+    a time — the dotsync app and a terminal can both run them."""
+    root = accounts_root()
+    root.mkdir(parents=True, exist_ok=True)
+    with open(root / ".lock", "w") as handle:
+        deadline = time.monotonic() + LOCK_WAIT_SECONDS
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise AccountError(
+                        "another dotsync account command is running — try again shortly",
+                        "busy",
+                    ) from None
+                time.sleep(0.1)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def saved_accounts() -> list[str]:
