@@ -93,9 +93,3 @@ struct UnsavedSeatRow: View {
         .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
     }
 }
-
-struct AccountSheet: View {
-    let sheet: AccountsModel.Sheet
-    let model: AccountsModel
-    var body: some View { Text("…").padding() }
-}
