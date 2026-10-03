@@ -254,6 +254,8 @@ Keep several claude.ai logins and switch the one Claude Code uses — the same e
 dotsync account login work      # save the account the browser approves as "work" (once per account)
 dotsync account use work        # make Claude use it
 dotsync account list            # saved accounts; ● marks the one in use
+dotsync account usage           # each account's 5-hour and weekly use and reset time
+dotsync account rename work "Work Max"   # change the name shown for it
 dotsync account remove work     # log it out and delete it
 ```
 
@@ -263,6 +265,8 @@ dotsync account remove work     # log it out and delete it
 - If the login in use isn't saved (the first time, for example), `use` asks before dropping it. Save it first with `dotsync account login <name>`.
 - Once you use `dotsync account`, switch with `use` instead of `/login`: `/login` replaces the login in use without handing it back, and that account then needs `dotsync account login` again.
 - Accounts are separate from syncing: they need no sync folder, and `push`/`pull` never touch them.
+- `usage` asks Claude Code itself (`claude -p` with its `get_usage` request), so it spends no tokens. The account in use is read through Claude's default folder, the others through their own folders, all at once; one slow account (30 s limit) doesn't hold up the rest.
+- Every `account` command takes `--json` and then prints exactly one JSON object — the dotsync app reads these. Errors come back as `{"error": {"code": …, "message": …}}` with exit status 1. Commands that change accounts or run Claude wait for each other (`~/.claude-accounts/.lock`).
 
 #### Change the folder or app list later
 
@@ -541,6 +545,8 @@ claude.ai 로그인 여러 개를 저장해 두고 Claude Code 가 쓰는 계정
 dotsync account login work      # 브라우저가 승인한 계정을 "work" 로 저장 (계정마다 한 번)
 dotsync account use work        # Claude 가 그 계정을 쓰게 함
 dotsync account list            # 저장된 계정 목록, ● 는 지금 쓰는 계정
+dotsync account usage           # 계정별 5시간·주간 사용량과 초기화 시각
+dotsync account rename work "업무용 Max"   # 보이는 이름 바꾸기
 dotsync account remove work     # 로그아웃하고 삭제
 ```
 
@@ -550,6 +556,8 @@ dotsync account remove work     # 로그아웃하고 삭제
 - 지금 쓰는 로그인이 저장돼 있지 않으면(처음 쓸 때 등) `use` 가 버려도 되는지 묻는다. 먼저 `dotsync account login <이름>` 으로 저장해 두면 된다.
 - `dotsync account` 를 쓰기 시작했으면 `/login` 대신 `use` 로 바꾼다. `/login` 은 쓰던 로그인을 돌려놓지 않고 덮어써서, 그 계정은 `dotsync account login` 을 다시 해야 한다.
 - 계정은 동기화와 별개다. sync 폴더가 필요 없고 `push`/`pull` 은 계정을 건드리지 않는다.
+- `usage` 는 Claude Code 에 직접 묻는다(`claude -p` 의 `get_usage` 요청). 토큰을 쓰지 않는다. 지금 쓰는 계정은 Claude 기본 폴더로, 나머지는 각자 폴더로 동시에 조회하고, 한 계정이 느려도(30초 제한) 나머지는 기다리지 않는다.
+- 모든 `account` 명령은 `--json` 을 받으면 JSON 객체 하나만 출력한다. dotsync 앱이 이걸 읽는다. 오류는 `{"error": {"code": …, "message": …}}` 와 종료 코드 1. 계정을 바꾸거나 Claude 를 실행하는 명령은 서로 기다린다(`~/.claude-accounts/.lock`).
 
 #### 폴더/앱 목록을 나중에 바꾸고 싶으면
 

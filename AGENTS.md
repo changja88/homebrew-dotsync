@@ -42,7 +42,13 @@ between local app locations and one user-chosen sync folder.
   (`dotsync account`). Saved logins are Claude Code config folders under
   `~/.claude-accounts/<name>`; `use` copies one into Claude's default Keychain
   entry and `~/.claude.json` after handing the login in use back to its own
-  account. Accounts are separate from syncing: no sync folder, no push/pull.
+  account. A display label lives in `<name>/.dotsync-account.json`; commands
+  that change accounts or run Claude hold `~/.claude-accounts/.lock`.
+  `lib/dotsync/claude_usage.py` asks Claude Code for one login's usage with
+  the undocumented `get_usage` control request (zero tokens). `--json` output
+  and its error codes are the contract the dotsync app depends on — change
+  them together with the app. Accounts are separate from syncing: no sync
+  folder, no push/pull.
 - `lib/dotsync/ui.py` and `lib/dotsync/ui_picker.py` own terminal output,
   colors, prompts, summaries, and picker behavior.
 - `lib/dotsync/apps/base.py` defines the app plugin contract:
