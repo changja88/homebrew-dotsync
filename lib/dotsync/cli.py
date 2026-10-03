@@ -6,7 +6,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Sequence
-from dotsync import __version__, ui, diffinfo
+from dotsync import __version__, accounts, ui, diffinfo
 from dotsync.apps import APP_CLASSES, APP_NAMES, build_app, detect_present
 from dotsync.config import (
     Config,
@@ -82,6 +82,21 @@ def _build_parser() -> argparse.ArgumentParser:
 
     pull = sub.add_parser("pull", help="sync folder → local app configs")
     _add_sync_args(pull)
+
+    account = sub.add_parser("account", help="save Claude Code logins and switch between them")
+    account_sub = account.add_subparsers(dest="account_cmd", required=True)
+    account_login = account_sub.add_parser(
+        "login", help="save the claude.ai account the browser approves under a name"
+    )
+    account_login.add_argument("name")
+    account_use = account_sub.add_parser("use", help="make Claude use a saved account")
+    account_use.add_argument("name")
+    account_use.add_argument(
+        "--yes", action="store_true", help="drop an unsaved login in use without asking"
+    )
+    account_sub.add_parser("list", help="show saved accounts and the one in use")
+    account_remove = account_sub.add_parser("remove", help="log out a saved account and delete it")
+    account_remove.add_argument("name")
 
     return p
 
@@ -689,6 +704,56 @@ def cmd_to(args) -> int:
     return 0 if not failed else 6
 
 
+def cmd_account(args) -> int:
+    if args.account_cmd == "login":
+        ui.step(f"logging in {args.name} — approve in the browser with the claude.ai account to save")
+        email = accounts.login(args.name)
+        ui.ok(f"saved {args.name} → {email}")
+        ui.dim(f"switch Claude to it with: dotsync account use {args.name}")
+        return 0
+    if args.account_cmd == "use":
+        try:
+            switched = accounts.use(args.name, allow_unsaved_overwrite=args.yes)
+        except accounts.UnsavedLoginError as e:
+            answer = ui.ask(
+                f"Claude's login in use ({e.email or 'unknown account'}) is not saved "
+                "in dotsync and will be dropped. Switch anyway? [y/N]",
+                accent="warn",
+            ).lower()
+            if answer not in ("y", "yes"):
+                ui.warn("cancelled — nothing changed")
+                return 1
+            switched = accounts.use(args.name, allow_unsaved_overwrite=True)
+        email = accounts.account_email(args.name)
+        if switched:
+            ui.ok(f"Claude now uses {args.name} ({email}) — running sessions follow, as after /login")
+        else:
+            ui.ok(f"{args.name} ({email}) is already in use")
+        return 0
+    if args.account_cmd == "list":
+        _print_accounts()
+        return 0
+    if args.account_cmd == "remove":
+        accounts.remove(args.name)
+        ui.ok(f"removed {args.name}")
+        return 0
+    return 2
+
+
+def _print_accounts() -> None:
+    names = accounts.saved_accounts()
+    active = accounts.active_account()
+    seat_email = accounts.seat_email()
+    if active is None and seat_email:
+        print(f"  ● {'(not saved)':<16} {seat_email}")
+    for name in names:
+        mark = "●" if name == active else " "
+        email = accounts.account_email(name) if accounts.is_logged_in(name) else None
+        print(f"  {mark} {name:<16} {email or '(not logged in)'}")
+    if not names:
+        ui.dim("no saved accounts — add one with: dotsync account login <name>")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -708,6 +773,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return cmd_from(args)
         if args.cmd == "pull":
             return cmd_to(args)
+        if args.cmd == "account":
+            return cmd_account(args)
         parser.print_help()
         return 2
     except ConfigError as e:

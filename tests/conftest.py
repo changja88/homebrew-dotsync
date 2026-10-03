@@ -107,3 +107,109 @@ def fake_codex_cli(monkeypatch):
     cli = FakeCodexCli()
     monkeypatch.setattr(subprocess, "run", cli)
     return cli
+
+
+class FakeAccountsCli:
+    """Stands in for `security` (the macOS Keychain) and `claude` for
+    `dotsync account`.
+
+    `keychain` maps a Keychain service name to its stored secret. `browser`
+    is the claude.ai account the browser approves at `claude auth login`:
+    {"oauthAccount": {...}, "secret": "..."}. `login_fails` makes the login
+    exit 1 and `ignore_writes` drops every Keychain write. The service name
+    for a config folder is computed here independently of dotsync, so tests
+    pin Claude Code's naming rule.
+    """
+
+    USER = "tester"
+
+    def __init__(self) -> None:
+        self.keychain: dict[str, str] = {}
+        self.browser: dict | None = None
+        self.login_fails = False
+        self.ignore_writes = False
+        self.calls: list[list[str]] = []
+        self.stdin: list[str] = []
+
+    @staticmethod
+    def service_for(folder: Path) -> str:
+        import hashlib
+
+        return "Claude Code-credentials-" + hashlib.sha256(str(folder).encode()).hexdigest()[:8]
+
+    def __call__(self, cmd, *args, input=None, env=None, **kwargs):
+        cmd = list(cmd)
+        self.calls.append(cmd)
+        if cmd[0] == "security":
+            return self._security(cmd, input)
+        if Path(cmd[0]).name == "claude":
+            return self._claude(cmd, env or {})
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    def _security(self, cmd, stdin):
+        import shlex
+        import subprocess
+
+        if cmd[1:] == ["-i"]:
+            self.stdin.append(stdin)
+            for line in stdin.splitlines():
+                words = shlex.split(line)
+                if not words:
+                    continue
+                assert words[0] == "add-generic-password" and "-U" in words, line
+                assert words[words.index("-a") + 1] == self.USER
+                service = words[words.index("-s") + 1]
+                if not self.ignore_writes:
+                    self.keychain[service] = bytes.fromhex(words[words.index("-X") + 1]).decode()
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[1] == "find-generic-password":
+            assert cmd[cmd.index("-a") + 1] == self.USER
+            service = cmd[cmd.index("-s") + 1]
+            if service not in self.keychain:
+                return subprocess.CompletedProcess(
+                    cmd, 44, stdout="",
+                    stderr="security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.\n",
+                )
+            out = self.keychain[service] + "\n" if "-w" in cmd else f'    "svce"<blob>="{service}"\n'
+            return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+        raise AssertionError(f"unexpected security command: {cmd!r}")
+
+    def _claude(self, cmd, env):
+        import json
+        import subprocess
+
+        folder = Path(env["CLAUDE_CONFIG_DIR"])
+        doc_path = folder / ".claude.json"
+        doc = json.loads(doc_path.read_text()) if doc_path.exists() else {}
+        if cmd[1:] == ["auth", "login"]:
+            if self.login_fails or self.browser is None:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+            folder.mkdir(parents=True, exist_ok=True)
+            doc["oauthAccount"] = self.browser["oauthAccount"]
+            self.keychain[self.service_for(folder)] = self.browser["secret"]
+        elif cmd[1:] == ["auth", "logout"]:
+            doc.pop("oauthAccount", None)
+            self.keychain.pop(self.service_for(folder), None)
+        else:
+            raise AssertionError(f"unexpected claude command: {cmd!r}")
+        if folder.exists():
+            doc_path.write_text(json.dumps(doc, indent=2))
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    def argv_text(self) -> str:
+        """Every argument passed on a command line, joined — secrets must
+        never show up here (they would be visible in the process list)."""
+        return " ".join(" ".join(c) for c in self.calls)
+
+
+@pytest.fixture
+def fake_accounts_cli(monkeypatch, fake_home):
+    import getpass
+    import shutil
+    import subprocess
+
+    cli = FakeAccountsCli()
+    monkeypatch.setattr(subprocess, "run", cli)
+    monkeypatch.setattr(getpass, "getuser", lambda: FakeAccountsCli.USER)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/fake/bin/{name}" if name == "claude" else None)
+    return cli

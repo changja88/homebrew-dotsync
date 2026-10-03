@@ -246,6 +246,24 @@ Legend:
 - `✗ missing` — at least one side is absent
 - `· unknown` — couldn't determine (e.g., BTT not running)
 
+#### 5. Switch Claude Code accounts
+
+Keep several claude.ai logins and switch the one Claude Code uses — the same effect as `/login`, without the browser each time. Running sessions follow the switch the way they follow a `/login`.
+
+```bash
+dotsync account login work      # save the account the browser approves as "work" (once per account)
+dotsync account use work        # make Claude use it
+dotsync account list            # saved accounts; ● marks the one in use
+dotsync account remove work     # log it out and delete it
+```
+
+- Claude Code saves each account itself: `login` runs `claude auth login` with `CLAUDE_CONFIG_DIR=~/.claude-accounts/<name>`, so the tokens stay in that folder's Keychain entry.
+- `use` copies that login into Claude's default Keychain entry and the account details into `~/.claude.json`. It first hands the login in use back to its own account, because Claude refreshes tokens as it runs and a used refresh token stops working.
+- Tokens reach `security` on stdin, never on a command line.
+- If the login in use isn't saved (the first time, for example), `use` asks before dropping it. Save it first with `dotsync account login <name>`.
+- Once you use `dotsync account`, switch with `use` instead of `/login`: `/login` replaces the login in use without handing it back, and that account then needs `dotsync account login` again.
+- Accounts are separate from syncing: they need no sync folder, and `push`/`pull` never touch them.
+
 #### Change the folder or app list later
 
 `dotsync apps` opens the same picker as init's Step 2. Toggling BTT on re-runs preset discovery and writes the result back to config — no separate command needed.
@@ -514,6 +532,24 @@ dirty 상태인 앱마다 파일별 변경 요약이 들여쓰기된 줄로 붙�
 - `⚠ dirty` — 다름; direction 은 `local-newer`, `folder-newer`, `diverged` (양쪽 섞임) 중 하나
 - `✗ missing` — 한쪽이라도 파일이 없음
 - `· unknown` — 비교 불가 (예: BTT 미실행)
+
+#### 5. Claude Code 계정 바꾸기
+
+claude.ai 로그인 여러 개를 저장해 두고 Claude Code 가 쓰는 계정을 바꾼다. `/login` 과 같은 효과지만 매번 브라우저를 거치지 않는다. 실행 중인 세션도 `/login` 때처럼 바뀐 계정을 따라간다.
+
+```bash
+dotsync account login work      # 브라우저가 승인한 계정을 "work" 로 저장 (계정마다 한 번)
+dotsync account use work        # Claude 가 그 계정을 쓰게 함
+dotsync account list            # 저장된 계정 목록, ● 는 지금 쓰는 계정
+dotsync account remove work     # 로그아웃하고 삭제
+```
+
+- 계정 저장은 Claude Code 가 직접 한다. `login` 은 `CLAUDE_CONFIG_DIR=~/.claude-accounts/<이름>` 으로 `claude auth login` 을 실행하므로 토큰은 그 폴더의 키체인 항목에 남는다.
+- `use` 는 그 로그인을 Claude 의 기본 키체인 항목에, 계정 정보를 `~/.claude.json` 에 복사한다. 그 전에 지금 쓰던 로그인을 원래 계정으로 돌려놓는다. Claude 는 쓰는 동안 토큰을 갱신하고, 한 번 쓴 갱신 토큰은 다시 못 쓰기 때문이다.
+- 토큰은 명령줄이 아니라 표준 입력으로 `security` 에 넘긴다.
+- 지금 쓰는 로그인이 저장돼 있지 않으면(처음 쓸 때 등) `use` 가 버려도 되는지 묻는다. 먼저 `dotsync account login <이름>` 으로 저장해 두면 된다.
+- `dotsync account` 를 쓰기 시작했으면 `/login` 대신 `use` 로 바꾼다. `/login` 은 쓰던 로그인을 돌려놓지 않고 덮어써서, 그 계정은 `dotsync account login` 을 다시 해야 한다.
+- 계정은 동기화와 별개다. sync 폴더가 필요 없고 `push`/`pull` 은 계정을 건드리지 않는다.
 
 #### 폴더/앱 목록을 나중에 바꾸고 싶으면
 

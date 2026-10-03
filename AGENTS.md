@@ -32,11 +32,17 @@ between local app locations and one user-chosen sync folder.
 ## Core Architecture
 
 - `lib/dotsync/cli.py` owns argparse command dispatch for `init`, `config`,
-  `apps`, `status`, `push`, and `pull`. A bare `dotsync` prints the help.
+  `apps`, `status`, `push`, `pull`, and `account`. A bare `dotsync` prints the
+  help.
 - `lib/dotsync/config.py` owns sync-folder discovery and `dotsync.toml`
   persistence. Config lives only at `<sync folder>/dotsync.toml`.
 - `lib/dotsync/shellrc.py` owns shell rc detection and idempotent
   `DOTSYNC_DIR` export insertion/update logic.
+- `lib/dotsync/accounts.py` owns Claude Code account switching
+  (`dotsync account`). Saved logins are Claude Code config folders under
+  `~/.claude-accounts/<name>`; `use` copies one into Claude's default Keychain
+  entry and `~/.claude.json` after handing the login in use back to its own
+  account. Accounts are separate from syncing: no sync folder, no push/pull.
 - `lib/dotsync/ui.py` and `lib/dotsync/ui_picker.py` own terminal output,
   colors, prompts, summaries, and picker behavior.
 - `lib/dotsync/apps/base.py` defines the app plugin contract:
@@ -59,7 +65,10 @@ between local app locations and one user-chosen sync folder.
   user's existing app CLI are acceptable when already part of app behavior.
 - The tool must not create files outside the user-selected sync folder, except
   for the explicit, consent-based shell rc update handled by `shellrc.py` and
-  `cli.py`.
+  `cli.py`, and the `~/.claude-accounts/<name>` folders an explicit
+  `dotsync account login` creates for Claude Code.
+- Claude tokens never go on a command line or into output: pass them to
+  `security` on stdin, and read a Keychain entry back after writing it.
 - Never create `~/.dotsync`, `~/.config/dotsync`, or any hidden global pointer
   file for application state.
 - Public command names are important: `push` means local app config to sync
