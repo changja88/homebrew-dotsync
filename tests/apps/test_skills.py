@@ -369,18 +369,19 @@ def test_sync_to_warns_once_when_npx_is_missing(fake_home, tmp_path):
     assert app.warnings == ["skills add skipped: npx not installed"]
 
 
-def test_sync_to_backs_up_lock_before_running(fake_home, tmp_path):
+def test_sync_to_never_copies_the_lock_into_the_sync_folder(fake_home, tmp_path):
     lock = _write_lock(fake_home, {"herdr": HERDR}, extra={"githubToken": "x"})
     target = tmp_path / "sync"
     _stored_manifest(target, {"herdr": _entry(["claude-code"])})
-    backup = tmp_path / "backup"
-    backup.mkdir()
+    backup = target / ".backups" / "20261003_120000"
+    backup.mkdir(parents=True)
 
     with patch("dotsync.apps.base.subprocess.run") as run:
         _ok_run(run)
         SkillsApp().sync_to(target, backup)
 
-    assert (backup / "skills" / ".skill-lock.json").read_text() == lock.read_text()
+    assert [p for p in target.rglob("*") if p.name == ".skill-lock.json"] == []
+    assert "githubToken" in lock.read_text()
 
 
 def test_sync_to_rejects_bad_manifest_before_running_anything(fake_home, tmp_path):

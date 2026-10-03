@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess  # noqa: F401 - tests patch this shared module object.
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from dotsync import ui
@@ -15,6 +16,7 @@ from dotsync.apps.base import (
     ensure_directory,
     ensure_not_symlink,
     ensure_path_within_root,
+    read_skills_ignore,
     write_text_safely,
     _hash,
 )
@@ -31,6 +33,9 @@ from dotsync.plan import (
 )
 
 GLOBAL_RULE_DIRECTORIES = ("commands", "agents", "skills", "output-styles")
+# Claude Code manages these itself: skills synced from the claude.ai account
+# and old versions it moved aside. Never stored, never removed locally.
+SKILL_IGNORED_TOP_DIRS = ("synced", ".trash")
 PLUGIN_RUNTIME_KEYS = {
     "installPath",
     "version",
@@ -54,6 +59,14 @@ class ClaudeApp(App):
     name = "claude"
     description = "Claude Code (settings + plugins + MCP servers + global rules)"
 
+    def __init__(self, skills_ignore: tuple[str, ...] = ()) -> None:
+        super().__init__()
+        self.skills_ignore = tuple(skills_ignore)
+
+    @classmethod
+    def from_config(cls, cfg) -> "ClaudeApp":
+        return cls(skills_ignore=read_skills_ignore(cfg, cls.name))
+
     @classmethod
     def is_present_locally(cls) -> bool:
         return (Path.home() / ".claude" / "settings.json").exists()
@@ -67,18 +80,30 @@ class ClaudeApp(App):
     def _stored(self, target_dir: Path) -> Path:
         return target_dir / self.name
 
-    def _scan(self, root: Path) -> TreeScan:
+    def _ignored_top_dirs(self, name: str) -> tuple[str, ...]:
+        if name != "skills":
+            return ()
+        return SKILL_IGNORED_TOP_DIRS + self.skills_ignore
+
+    @staticmethod
+    def _is_ignored_rel(rel: Path, ignored_top_dirs: tuple[str, ...]) -> bool:
+        return bool(rel.parts and rel.parts[0] in ignored_top_dirs)
+
+    def _scan(self, root: Path, ignored_top_dirs: tuple[str, ...] = ()) -> TreeScan:
         try:
-            return scan_tree(root)
+            return scan_tree(root, ignored_top_dirs)
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
 
     def _diff_tree(
-        self, local: Path, stored: Path
+        self,
+        local: Path,
+        stored: Path,
+        ignored_top_dirs: tuple[str, ...] = (),
     ) -> tuple[set[Path], set[Path], set[Path]]:
         """Return (added_in_stored, removed_in_stored, modified) relative paths."""
         try:
-            diff = diff_trees(local, stored)
+            diff = diff_trees(local, stored, ignored_top_dirs)
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
         return set(diff.removes), set(diff.creates), set(diff.updates)
@@ -87,16 +112,19 @@ class ClaudeApp(App):
         self,
         src: Path,
         dst: Path,
+        ignored_top_dirs: tuple[str, ...] = (),
         *,
+        purge_ignored_dst: bool = False,
         source_root: Path | None = None,
         dest_root: Path | None = None,
     ) -> None:
-        """Make dst's regular files match src's; symlinked entries stay untouched."""
+        """Make dst's regular files match src's; ignored trees and symlinks stay
+        unless `purge_ignored_dst` removes the ignored trees from dst."""
         ensure_directory(src, str(src), root=source_root)
         ensure_directory(dst, str(dst), root=dest_root)
         dst.mkdir(parents=True, exist_ok=True)
-        src_scan = self._scan(src)
-        dst_scan = self._scan(dst)
+        src_scan = self._scan(src, ignored_top_dirs)
+        dst_scan = self._scan(dst, ignored_top_dirs)
         blocked = blocked_by_symlink(src_scan.files, dst_scan.symlinks)
         kept = blocked_by_symlink(dst_scan.files, src_scan.symlinks)
         for rel in sorted(src_scan.symlinks | dst_scan.symlinks):
@@ -122,12 +150,18 @@ class ClaudeApp(App):
             if target.exists() or target.is_symlink():
                 target.unlink()
 
+        if purge_ignored_dst:
+            for name in ignored_top_dirs:
+                self._remove_managed_path(dst / name, f"{dst.name}/{name}", root=dest_root)
+
         subdirs = sorted(
             (d for d in dst.rglob("*") if d.is_dir() and not d.is_symlink()),
             key=lambda p: len(p.parts),
             reverse=True,
         )
         for d in subdirs:
+            if self._is_ignored_rel(d.relative_to(dst), ignored_top_dirs):
+                continue
             try:
                 d.rmdir()
             except OSError:
@@ -177,7 +211,14 @@ class ClaudeApp(App):
             if src_dir.is_symlink():
                 raise RuntimeError(f"{src_dir} is a symlink ({name}/); refusing to sync symlinks")
             if src_dir.exists():
-                self._mirror_tree(src_dir, stored / name, dest_root=target_dir)
+                ignored = self._ignored_top_dirs(name)
+                self._mirror_tree(
+                    src_dir,
+                    stored / name,
+                    ignored,
+                    purge_ignored_dst=bool(ignored),
+                    dest_root=target_dir,
+                )
                 ui.ok(f"{name}/")
             else:
                 stale_dir = stored / name
@@ -210,9 +251,14 @@ class ClaudeApp(App):
             local_dir = cdir / name
             if stored_dir.exists():
                 ensure_directory(stored_dir, f"{name}/", root=target_dir)
+                ignored = self._ignored_top_dirs(name)
                 if local_dir.exists():
-                    self._mirror_tree(local_dir, bdir / name, dest_root=backup_dir)
-                self._mirror_tree(stored_dir, local_dir, source_root=target_dir)
+                    self._mirror_tree(
+                        local_dir, bdir / name, ignored, dest_root=backup_dir
+                    )
+                self._mirror_tree(
+                    stored_dir, local_dir, ignored, source_root=target_dir
+                )
                 ui.ok(f"{name}/")
 
     def _diff_global_rules(self, target_dir: Path) -> AppStatus:
@@ -239,7 +285,9 @@ class ClaudeApp(App):
 
         for name in GLOBAL_RULE_DIRECTORIES:
             try:
-                added, removed, modified = self._diff_tree(cdir / name, stored / name)
+                added, removed, modified = self._diff_tree(
+                    cdir / name, stored / name, self._ignored_top_dirs(name)
+                )
             except RuntimeError as exc:
                 return AppStatus(state="unknown", details=str(exc))
             count = len(added) + len(removed) + len(modified)
@@ -456,6 +504,15 @@ class ClaudeApp(App):
             dest,
         )
 
+    def _same_json_doc(self, left: Path, right: Path, normalizer) -> bool:
+        """Unreadable or invalid JSON counts as different (byte comparison)."""
+        try:
+            return normalizer(self._load_json_file(left), left) == normalizer(
+                self._load_json_file(right), right
+            )
+        except (RuntimeError, json.JSONDecodeError):
+            return False
+
     def _validate_sync_from_sources(self) -> dict[str, object]:
         cdir = self._claude_dir()
         required_files = [
@@ -663,12 +720,19 @@ class ClaudeApp(App):
         label: str,
         source: Path,
         dest: Path,
+        ignored_top_dirs: tuple[str, ...] = (),
         *,
+        purge_ignored_dst: bool = False,
         source_root: Path | None = None,
         dest_root: Path | None = None,
     ) -> Change:
         change = plan_tree_mirror(
-            label, source, dest, source_root=source_root, dest_root=dest_root
+            label,
+            source,
+            dest,
+            ignored_top_dirs,
+            source_root=source_root,
+            dest_root=dest_root,
         )
         if source.exists() and not dest.exists() and change.kind == "unchanged":
             return Change(
@@ -678,7 +742,21 @@ class ClaudeApp(App):
                 change.dest,
                 "create directory",
             )
-        return change
+        purged = [
+            name
+            for name in ignored_top_dirs
+            if purge_ignored_dst
+            and ((dest / name).exists() or (dest / name).is_symlink())
+        ]
+        if not purged:
+            return change
+        details = [change.details] if change.details else []
+        details.append(f"purge ignored {', '.join(purged)}")
+        return replace(
+            change,
+            kind="update" if change.kind == "unchanged" else change.kind,
+            details=", ".join(details),
+        )
 
     def _installed_plugin_config_changes_from(self, stored: Path) -> list[Change]:
         changes: list[Change] = []
@@ -789,11 +867,14 @@ class ClaudeApp(App):
                     )
                 )
             elif local_dir.exists():
+                ignored = self._ignored_top_dirs(name)
                 changes.append(
                     self._plan_tree_mirror(
                         f"{name}/",
                         local_dir,
                         stored / name,
+                        ignored,
+                        purge_ignored_dst=bool(ignored),
                         dest_root=target_dir,
                     )
                 )
@@ -853,6 +934,7 @@ class ClaudeApp(App):
                         f"{name}/",
                         stored_dir,
                         cdir / name,
+                        self._ignored_top_dirs(name),
                         source_root=target_dir,
                     )
                 )
@@ -1131,22 +1213,36 @@ class ClaudeApp(App):
         except RuntimeError as exc:
             return AppStatus(state="unknown", details=str(exc))
         cdir = self._claude_dir()
-        pairs = [
-            (cdir / "settings.json", stored / "settings.json"),
+        settings_pair = (cdir / "settings.json", stored / "settings.json")
+        plugin_pairs = [
             (
                 cdir / "plugins" / "installed_plugins.json",
                 stored / "plugins" / "installed_plugins.json",
+                self._normalized_installed_plugins,
             ),
             (
                 cdir / "plugins" / "known_marketplaces.json",
                 stored / "plugins" / "known_marketplaces.json",
+                self._normalized_known_marketplaces,
             ),
         ]
-        base = diff_files(pairs)
+        base = diff_files(
+            [settings_pair] + [(local, saved) for local, saved, _ in plugin_pairs]
+        )
         if base.state == "missing":
             return base
         if base.state == "unknown":
             return base
+        # Plugin files also carry runtime metadata Claude Code rewrites on its
+        # own; compare them the way backup/apply plans do.
+        base = diff_files(
+            [settings_pair]
+            + [
+                (local, saved)
+                for local, saved, normalizer in plugin_pairs
+                if not self._same_json_doc(local, saved, normalizer)
+            ]
+        )
         local_cj = self._claude_json()
         stored_mcp = stored / "mcp-servers.json"
         if not local_cj.exists() or not stored_mcp.exists():

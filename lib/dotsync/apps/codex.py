@@ -1,10 +1,11 @@
-"""Codex CLI sync — user-authored settings, instructions, rules, and skills."""
+"""Codex CLI sync — user-authored settings, instructions, rules, skills, and the
+plugins the user installed (recorded in plugins.json, reinstalled on apply)."""
 
 from __future__ import annotations
 import json
 import shutil
-import tomllib
 from pathlib import Path
+from typing import Callable
 from dotsync import ui
 from dotsync.apps.base import (
     App,
@@ -14,9 +15,19 @@ from dotsync.apps.base import (
     ensure_directory,
     ensure_not_symlink,
     ensure_path_within_root,
+    read_skills_ignore,
+    write_text_safely,
 )
-from dotsync.apps.mcp_sanitizer import sanitize_codex_config, sanitize_codex_config_text
-from dotsync.diffinfo import summarize_pair
+from dotsync.apps.codex_plugins import (
+    build_manifest,
+    manifest_text,
+    merge_plugin_tables,
+    parse_manifest,
+    plugin_id,
+    split_plugin_tables,
+)
+from dotsync.apps.mcp_sanitizer import sanitize_codex_config_text
+from dotsync.diffinfo import summarize_texts
 from dotsync.plan import (
     AppPlan,
     Change,
@@ -33,10 +44,11 @@ OPTIONAL_FILES = (
     "AGENTS.override.md",
     "hooks.json",
     "requirements.toml",
-    "plugins.toml",
 )
 OPTIONAL_DIRECTORIES = ("rules", "skills")
 SKILL_IGNORED_TOP_DIRS = (".system",)
+MANIFEST = "plugins.json"
+_EMPTY_MANIFEST = {"marketplaces": [], "plugins": []}
 
 
 class CodexApp(App):
@@ -44,6 +56,14 @@ class CodexApp(App):
     description = (
         "Codex CLI settings (config + global instructions + user rules/skills)"
     )
+
+    def __init__(self, skills_ignore: tuple[str, ...] = ()) -> None:
+        super().__init__()
+        self.skills_ignore = tuple(skills_ignore)
+
+    @classmethod
+    def from_config(cls, cfg) -> "CodexApp":
+        return cls(skills_ignore=read_skills_ignore(cfg, cls.name))
 
     @classmethod
     def is_present_locally(cls) -> bool:
@@ -57,12 +77,22 @@ class CodexApp(App):
     def _config_path(cls) -> Path:
         return cls._codex_dir() / "config.toml"
 
+    @classmethod
+    def _codex_roots(cls) -> tuple[Path, ...]:
+        """Directories Codex keeps its own bundled marketplaces under."""
+        return (cls._codex_dir(), Path.home() / ".cache" / "codex-runtimes")
+
     def _stored(self, target_dir: Path) -> Path:
         return target_dir / self.name
 
-    @staticmethod
-    def _ignored_top_dirs(name: str) -> tuple[str, ...]:
-        return SKILL_IGNORED_TOP_DIRS if name == "skills" else ()
+    def _warn(self, message: str) -> None:
+        self.warnings.append(message)
+        ui.warn(message)
+
+    def _ignored_top_dirs(self, name: str) -> tuple[str, ...]:
+        if name != "skills":
+            return ()
+        return SKILL_IGNORED_TOP_DIRS + self.skills_ignore
 
     @staticmethod
     def _is_ignored_rel(rel: Path, ignored_top_dirs: tuple[str, ...]) -> bool:
@@ -247,30 +277,24 @@ class CodexApp(App):
             details=", ".join(details),
         )
 
-    def _read_sanitized_config(self, path: Path) -> str:
+    def _read_portable_config(self, path: Path) -> str:
+        """config.toml as stored: no dynamic Serena URL and no marketplace or
+        plugin tables, which Codex rewrites itself (see codex_plugins)."""
         ensure_not_symlink(path, "config.toml")
-        return sanitize_codex_config_text(path.read_text())
+        settings, _ = split_plugin_tables(sanitize_codex_config_text(path.read_text()))
+        return settings
 
-    def _write_sanitized_config(
+    def _applied_config(self, stored_config: Path) -> str:
+        """Stored settings plus the marketplace/plugin tables Codex wrote locally."""
+        local = self._config_path()
+        local_text = local.read_text() if local.exists() else ""
+        return merge_plugin_tables(self._read_portable_config(stored_config), local_text)
+
+    def _plan_config(
         self,
         source: Path,
         dest: Path,
-        *,
-        source_root: Path | None = None,
-        dest_root: Path | None = None,
-    ) -> None:
-        if source_root is not None:
-            ensure_path_within_root(source, source_root, "config.toml")
-        if dest_root is not None:
-            ensure_path_within_root(dest, dest_root, "config.toml")
-        ensure_not_symlink(dest, "config.toml")
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(self._read_sanitized_config(source))
-
-    def _plan_sanitized_config_copy(
-        self,
-        source: Path,
-        dest: Path,
+        planned: Callable[[], str],
         *,
         source_root: Path | None = None,
         dest_root: Path | None = None,
@@ -286,25 +310,19 @@ class CodexApp(App):
             return safety
         if not source.exists():
             return Change("config.toml", "missing-source", source, dest)
-        planned = self._read_sanitized_config(source)
+        text = planned()
         if not dest.exists():
-            return Change("config.toml", "create", source, dest)
-        current = sanitize_codex_config(dest.read_text())
-        if current.changed:
-            return Change(
-                "config.toml",
-                "update",
-                source,
-                dest,
-                "remove dynamic Serena MCP URL",
-            )
-        kind = "unchanged" if planned == current.text else "update"
+            return Change("config.toml", "create", source, dest, diffable=False)
+        current = dest.read_text()
+        if text == current:
+            return Change("config.toml", "unchanged", source, dest)
         return Change(
             "config.toml",
-            kind,
+            "update",
             source,
             dest,
-            summarize_pair(source, dest) if kind == "update" else "",
+            summarize_texts(current, text, ".toml"),
+            diffable=False,
         )
 
     def _config_status(self, target_dir: Path) -> AppStatus:
@@ -318,7 +336,7 @@ class CodexApp(App):
         if not local.exists() or not dest.exists():
             return AppStatus(state="missing", details="config.toml")
         try:
-            if self._read_sanitized_config(local) != self._read_sanitized_config(dest):
+            if self._read_portable_config(local) != self._read_portable_config(dest):
                 return AppStatus(state="dirty", details="config.toml")
         except RuntimeError as exc:
             return AppStatus(state="unknown", details=str(exc))
@@ -375,263 +393,221 @@ class CodexApp(App):
             return AppStatus(state="dirty", details=", ".join(optional_file_changes))
         return None
 
-    def _plan_plugin_restore(self, stored: Path) -> Change | None:
-        manifest = stored / "plugins.toml"
-        if not manifest.exists() and not manifest.is_symlink():
-            return None
-        try:
-            ensure_path_within_root(manifest, stored.parent, "plugins.toml")
-            ensure_not_symlink(manifest, "plugins.toml")
-        except RuntimeError as exc:
-            return Change("plugins restore", "unknown", manifest, None, str(exc))
-        try:
-            plugins, marketplaces = self._read_plugin_manifest(manifest)
-        except ValueError as exc:
-            return Change("plugins restore", "unknown", manifest, None, str(exc))
-        details = ", ".join(
-            [str(plugin) for plugin in plugins]
-            + [f"marketplace {mp['name']}" for mp in marketplaces]
-        )
-        return Change("plugins restore", "unknown", manifest, None, details)
-
-    def _read_plugin_manifest(
-        self, manifest: Path
-    ) -> tuple[list[str], list[dict[str, object]]]:
-        try:
-            data = tomllib.loads(manifest.read_text())
-        except tomllib.TOMLDecodeError as exc:
-            raise ValueError(f"invalid plugins.toml: {exc}") from exc
-
-        allowed_top_keys = {"plugins", "marketplaces"}
-        unknown_top_keys = set(data) - allowed_top_keys
-        if unknown_top_keys:
-            keys = ", ".join(sorted(unknown_top_keys))
-            raise ValueError(f"invalid plugins.toml: unknown top-level key {keys}")
-        if "marketplaces" in data and "plugins" not in data:
-            raise ValueError("invalid plugins.toml: expected top-level plugins list")
-        if "plugins" not in data:
-            raise ValueError("invalid plugins.toml: expected top-level plugins list")
-        plugins = data["plugins"] if "plugins" in data else []
-        if not isinstance(plugins, list) or not all(
-            isinstance(p, str) for p in plugins
-        ):
-            raise ValueError(
-                "invalid plugins.toml: expected top-level plugins list of strings"
-            )
-        for plugin in plugins:
-            if plugin.count("@") != 1 or any(ch.isspace() for ch in plugin):
-                raise ValueError(
-                    "invalid plugins.toml: expected plugin selectors as plugin@marketplace"
-                )
-            plugin_name, marketplace_name = plugin.split("@", 1)
-            if not plugin_name or not marketplace_name:
-                raise ValueError(
-                    "invalid plugins.toml: expected plugin selectors as plugin@marketplace"
-                )
-        marketplaces = data["marketplaces"] if "marketplaces" in data else []
-        if not isinstance(marketplaces, list) or not all(
-            isinstance(mp, dict) for mp in marketplaces
-        ):
-            raise ValueError("invalid plugins.toml: expected marketplaces array")
-        for marketplace in marketplaces:
-            allowed_marketplace_keys = {"name", "source", "ref", "sparse"}
-            unknown_marketplace_keys = set(marketplace) - allowed_marketplace_keys
-            if unknown_marketplace_keys:
-                keys = ", ".join(sorted(unknown_marketplace_keys))
-                raise ValueError(
-                    f"invalid plugins.toml: unknown marketplace key {keys}"
-                )
-            name = marketplace.get("name")
-            source = marketplace.get("source")
-            ref = marketplace.get("ref")
-            sparse = marketplace["sparse"] if "sparse" in marketplace else []
-            if (
-                not isinstance(name, str)
-                or not name.strip()
-                or not isinstance(source, str)
-                or not source.strip()
-            ):
-                raise ValueError(
-                    "invalid plugins.toml: marketplace requires name and source strings"
-                )
-            if ref is not None and not isinstance(ref, str):
-                raise ValueError(
-                    "invalid plugins.toml: marketplace ref must be a string"
-                )
-            if not isinstance(sparse, list) or not all(
-                isinstance(p, str) and p.strip() for p in sparse
-            ):
-                raise ValueError(
-                    "invalid plugins.toml: marketplace sparse must be a list of non-empty strings"
-                )
-        return plugins, marketplaces
-
     def _run_codex_cli(self, args: list[str], desc: str, *, quiet: bool = False):
         try:
             result = self._run_external(["codex", *args], desc=desc, fail_mode="warn")
         except FileNotFoundError:
-            self.warnings.append(f"{desc} skipped: `codex` CLI not installed")
-            ui.warn(f"{desc} skipped: `codex` CLI not installed")
+            self._warn(f"{desc} skipped: `codex` CLI not installed")
             return None
         if result.returncode == 0 and not quiet:
             ui.ok(desc)
-        else:
-            stderr = (result.stderr or "").strip()
-            if result.returncode != 0:
-                ui.warn(f"{desc} failed: {stderr or 'unknown'}")
+        elif result.returncode != 0:
+            ui.warn(f"{desc} failed: {(result.stderr or '').strip() or 'unknown'}")
         return result
 
-    def _restore_marketplace(self, marketplace: dict[str, object]) -> str | None:
-        name = str(marketplace["name"])
-        cmd = ["plugin", "marketplace", "add", str(marketplace["source"])]
-        ref = marketplace.get("ref")
-        if ref:
-            cmd.extend(["--ref", str(ref)])
-        for sparse in marketplace.get("sparse") or []:
-            cmd.extend(["--sparse", str(sparse)])
-        cmd.append("--json")
-        add_result = self._run_codex_cli(cmd, desc=f"marketplace add {name}")
-        if add_result is None or add_result.returncode != 0:
-            return None
-
-        result = self._run_codex_cli(
-            ["plugin", "marketplace", "list", "--json"],
-            desc="marketplace list",
-            quiet=True,
-        )
+    def _codex_json(self, args: list[str], desc: str) -> dict | None:
+        result = self._run_codex_cli(args, desc, quiet=True)
         if result is None or result.returncode != 0:
             return None
         try:
             payload = json.loads(result.stdout or "{}")
         except json.JSONDecodeError:
-            self.warnings.append("marketplace list failed: invalid JSON output")
-            ui.warn("marketplace list failed: invalid JSON output")
-            return None
+            payload = None
         if not isinstance(payload, dict):
-            self.warnings.append("marketplace list failed: unexpected JSON output")
-            ui.warn("marketplace list failed: unexpected JSON output")
+            self._warn(f"{desc} failed: unexpected JSON output")
             return None
-        marketplaces = payload.get("marketplaces", [])
-        if not isinstance(marketplaces, list) or not all(
-            isinstance(item, dict) for item in marketplaces
-        ):
-            self.warnings.append("marketplace list failed: unexpected JSON output")
-            ui.warn("marketplace list failed: unexpected JSON output")
-            return None
-        if not any(
-            isinstance(item, dict) and item.get("name") == name for item in marketplaces
-        ):
-            self.warnings.append(f"marketplace {name} not found after add")
-            ui.warn(f"marketplace {name} not found after add")
-            return None
-        upgrade_result = self._run_codex_cli(
-            ["plugin", "marketplace", "upgrade", name],
-            desc=f"marketplace upgrade {name}",
-        )
-        if upgrade_result is None or upgrade_result.returncode != 0:
-            return None
-        return name
+        return payload
 
-    @staticmethod
-    def _plugin_marketplace(plugin: str) -> str | None:
-        if "@" not in plugin:
+    def _installed_entries(self) -> list[dict] | None:
+        payload = self._codex_json(["plugin", "list", "--json"], "plugin list")
+        if payload is None:
             return None
-        return plugin.rsplit("@", 1)[1]
-
-    def _installed_plugins(self) -> set[str] | None:
-        result = self._run_codex_cli(
-            ["plugin", "list", "--json"],
-            desc="plugin list",
-            quiet=True,
-        )
-        if result is None or result.returncode != 0:
-            return None
-        try:
-            payload = json.loads(result.stdout or "{}")
-        except json.JSONDecodeError:
-            self.warnings.append("plugin list failed: invalid JSON output")
-            ui.warn("plugin list failed: invalid JSON output")
-            return None
-        if not isinstance(payload, dict):
-            self.warnings.append("plugin list failed: unexpected JSON output")
-            ui.warn("plugin list failed: unexpected JSON output")
-            return None
-        if "installed" not in payload:
-            self.warnings.append("plugin list failed: unexpected JSON output")
-            ui.warn("plugin list failed: unexpected JSON output")
-            return None
-        installed = payload["installed"]
+        installed = payload.get("installed")
         if not isinstance(installed, list) or not all(
             isinstance(item, dict) for item in installed
         ):
-            self.warnings.append("plugin list failed: unexpected JSON output")
-            ui.warn("plugin list failed: unexpected JSON output")
+            self._warn("plugin list failed: unexpected JSON output")
             return None
-        plugins: set[str] = set()
-        for item in installed:
-            plugin_id = item.get("pluginId")
-            if "pluginId" in item:
-                if not isinstance(plugin_id, str):
-                    self.warnings.append("plugin list failed: unexpected JSON output")
-                    ui.warn("plugin list failed: unexpected JSON output")
-                    return None
-                plugins.add(plugin_id)
-                continue
-            name = item.get("name")
-            marketplace = item.get("marketplaceName")
-            if not isinstance(name, str) or not isinstance(marketplace, str):
-                self.warnings.append("plugin list failed: unexpected JSON output")
-                ui.warn("plugin list failed: unexpected JSON output")
-                return None
-            plugins.add(f"{name}@{marketplace}")
-        return plugins
+        return installed
+
+    def _marketplace_names(self) -> set[str] | None:
+        payload = self._codex_json(
+            ["plugin", "marketplace", "list", "--json"], "marketplace list"
+        )
+        if payload is None:
+            return None
+        listed = payload.get("marketplaces")
+        if not isinstance(listed, list):
+            self._warn("marketplace list failed: unexpected JSON output")
+            return None
+        return {item.get("name") for item in listed if isinstance(item, dict)}
+
+    def _local_manifest(self) -> dict | None:
+        """What plugins.json should say for this machine, or None (warned)."""
+        installed = self._installed_entries()
+        if installed is None:
+            return None
+        try:
+            return build_manifest(
+                installed, self._config_path().read_text(), self._codex_roots()
+            )
+        except ValueError as exc:
+            self._warn(str(exc))
+            return None
+
+    def _read_stored_manifest(self, path: Path) -> dict:
+        ensure_not_symlink(path, MANIFEST)
+        return parse_manifest(path.read_text())
+
+    def _missing_from(self, manifest: dict) -> tuple[list[dict], list[str]] | None:
+        """(marketplaces, plugins) in the manifest that this machine lacks."""
+        names = self._marketplace_names()
+        installed = self._installed_entries()
+        if names is None or installed is None:
+            return None
+        try:
+            present = {plugin_id(item) for item in installed}
+        except ValueError as exc:
+            self._warn(str(exc))
+            return None
+        return (
+            [mp for mp in manifest["marketplaces"] if mp["name"] not in names],
+            [plugin for plugin in manifest["plugins"] if plugin not in present],
+        )
+
+    @staticmethod
+    def _manifest_diff(old: dict, new: dict) -> str:
+        def labels(manifest: dict) -> set[str]:
+            return {f"marketplace {mp['name']}" for mp in manifest["marketplaces"]} | set(
+                manifest["plugins"]
+            )
+
+        before, after = labels(old), labels(new)
+        changes = [f"+{label}" for label in sorted(after - before)]
+        changes += [f"-{label}" for label in sorted(before - after)]
+        return ", ".join(changes) or "marketplace details changed"
+
+    def _plan_manifest_from(self, stored: Path, target_dir: Path) -> Change:
+        dest = stored / MANIFEST
+        manifest = self._local_manifest()
+        if manifest is None:
+            return Change(
+                MANIFEST, "unknown", None, dest,
+                "could not read installed Codex plugins", diffable=False,
+            )
+        if not dest.exists() and not dest.is_symlink():
+            return Change(
+                MANIFEST, "create", None, dest,
+                self._manifest_diff(_EMPTY_MANIFEST, manifest), diffable=False,
+            )
+        try:
+            ensure_path_within_root(dest, target_dir, MANIFEST)
+            stored_manifest = self._read_stored_manifest(dest)
+        except (RuntimeError, ValueError):
+            stored_manifest = None
+        if stored_manifest == manifest:
+            return Change(MANIFEST, "unchanged", None, dest, diffable=False)
+        return Change(
+            MANIFEST, "update", None, dest,
+            self._manifest_diff(stored_manifest or _EMPTY_MANIFEST, manifest),
+            diffable=False,
+        )
+
+    def _plan_plugin_restore(self, stored: Path) -> Change | None:
+        path = stored / MANIFEST
+        if not path.exists() and not path.is_symlink():
+            return None
+        try:
+            manifest = self._read_stored_manifest(path)
+        except (RuntimeError, ValueError) as exc:
+            return Change(MANIFEST, "unknown", path, None, str(exc), diffable=False)
+        missing = self._missing_from(manifest)
+        if missing is None:
+            return Change(
+                MANIFEST, "unknown", path, None,
+                "could not read installed Codex plugins", diffable=False,
+            )
+        marketplaces, plugins = missing
+        items = [f"marketplace {mp['name']}" for mp in marketplaces] + plugins
+        if not items:
+            return Change(MANIFEST, "unchanged", path, None, diffable=False)
+        return Change(
+            MANIFEST, "update", path, None, "install " + ", ".join(items), diffable=False
+        )
+
+    def _manifest_status(self, stored: Path) -> AppStatus:
+        manifest = self._local_manifest()
+        if manifest is None:
+            return AppStatus(
+                state="unknown", details="plugins.json: could not read installed Codex plugins"
+            )
+        path = stored / MANIFEST
+        if not path.exists() and not path.is_symlink():
+            stored_manifest = _EMPTY_MANIFEST
+        else:
+            try:
+                stored_manifest = self._read_stored_manifest(path)
+            except (RuntimeError, ValueError):
+                stored_manifest = None
+        if stored_manifest == manifest:
+            return AppStatus(state="clean")
+        return AppStatus(state="dirty", details=MANIFEST)
+
+    def _add_marketplace(self, marketplace: dict) -> bool:
+        name = marketplace["name"]
+        cmd = ["plugin", "marketplace", "add", marketplace["source"]]
+        if marketplace.get("ref"):
+            cmd += ["--ref", marketplace["ref"]]
+        for sparse in marketplace.get("sparse", []):
+            cmd += ["--sparse", sparse]
+        result = self._run_codex_cli(cmd + ["--json"], desc=f"marketplace add {name}")
+        if result is None or result.returncode != 0:
+            return False
+        names = self._marketplace_names()
+        if names is None or name not in names:
+            self._warn(f"marketplace {name} not found after add")
+            return False
+        return True
 
     def _restore_plugins(self, stored: Path) -> None:
-        manifest = stored / "plugins.toml"
-        if not manifest.exists():
+        """Add recorded marketplaces and install recorded plugins this machine
+        lacks; what is already there is left alone, so apply is repeatable."""
+        path = stored / MANIFEST
+        if not path.exists() and not path.is_symlink():
             return
         try:
-            plugins, marketplaces = self._read_plugin_manifest(manifest)
-        except ValueError as exc:
-            self.warnings.append(str(exc))
-            ui.warn(str(exc))
+            manifest = self._read_stored_manifest(path)
+        except (RuntimeError, ValueError) as exc:
+            self._warn(f"plugins restore skipped: {exc}")
             return
-        declared_marketplaces = {str(mp["name"]) for mp in marketplaces}
-        validated_marketplaces = set()
-        for marketplace in marketplaces:
-            validated = self._restore_marketplace(marketplace)
-            if validated is not None:
-                validated_marketplaces.add(validated)
-        installed_plugins = self._installed_plugins() if plugins else set()
-        if installed_plugins is None:
-            warning = "plugin install skipped: installed plugin state unavailable"
-            self.warnings.append(warning)
-            ui.warn(warning)
+        if manifest == _EMPTY_MANIFEST:
             return
-        for plugin in plugins:
-            marketplace = self._plugin_marketplace(plugin)
-            if (
-                marketplace in declared_marketplaces
-                and marketplace not in validated_marketplaces
-            ):
-                warning = f"plugin add {plugin} skipped: marketplace {marketplace} unavailable"
-                self.warnings.append(warning)
-                ui.warn(warning)
-                continue
-            if plugin in installed_plugins:
+        missing = self._missing_from(manifest)
+        if missing is None:
+            self._warn("plugins restore skipped: could not read installed Codex plugins")
+            return
+        marketplaces, plugins = missing
+        failed = {mp["name"] for mp in marketplaces if not self._add_marketplace(mp)}
+        for plugin in manifest["plugins"]:
+            if plugin not in plugins:
                 ui.sub(f"plugin add {plugin} (already installed)")
+        for plugin in plugins:
+            marketplace = plugin.split("@", 1)[1]
+            if marketplace in failed:
+                self._warn(
+                    f"plugin add {plugin} skipped: marketplace {marketplace} unavailable"
+                )
                 continue
-            self._run_codex_cli(
-                ["plugin", "add", plugin, "--json"],
-                desc=f"plugin add {plugin}",
-            )
+            self._run_codex_cli(["plugin", "add", plugin, "--json"], desc=f"plugin add {plugin}")
 
     def plan_from(self, target_dir: Path) -> AppPlan:
         stored = self._stored(target_dir)
+        local_config = self._config_path()
         changes = [
-            self._plan_sanitized_config_copy(
-                self._config_path(),
+            self._plan_config(
+                local_config,
                 stored / "config.toml",
+                lambda: self._read_portable_config(local_config),
                 dest_root=target_dir,
             )
         ]
@@ -677,15 +653,19 @@ class CodexApp(App):
                         "local directory missing",
                     )
                 )
+        if local_config.exists():
+            changes.append(self._plan_manifest_from(stored, target_dir))
         return AppPlan(self.name, "from", changes, self.description)
 
     def plan_to(self, target_dir: Path) -> AppPlan:
         stored = self._stored(target_dir)
         local_dir = self._codex_dir()
+        stored_config = stored / "config.toml"
         changes = [
-            self._plan_sanitized_config_copy(
-                stored / "config.toml",
+            self._plan_config(
+                stored_config,
                 self._config_path(),
+                lambda: self._applied_config(stored_config),
                 source_root=target_dir,
             )
         ]
@@ -722,10 +702,22 @@ class CodexApp(App):
 
         ensure_directory(stored, "codex/", root=target_dir)
         stored.mkdir(parents=True, exist_ok=True)
-        self._write_sanitized_config(
-            local_config, stored / "config.toml", dest_root=target_dir
+        write_text_safely(
+            stored / "config.toml",
+            self._read_portable_config(local_config),
+            "config.toml",
+            dest_root=target_dir,
         )
         ui.sub("config.toml")
+
+        manifest = self._local_manifest()
+        if manifest is None:
+            self._warn(f"{MANIFEST} not updated: could not read installed Codex plugins")
+        else:
+            write_text_safely(
+                stored / MANIFEST, manifest_text(manifest), MANIFEST, dest_root=target_dir
+            )
+            ui.sub(MANIFEST)
 
         for name in OPTIONAL_FILES:
             local_file = self._codex_dir() / name
@@ -765,10 +757,9 @@ class CodexApp(App):
         local_dir.mkdir(parents=True, exist_ok=True)
 
         local_config = self._config_path()
+        applied = self._applied_config(stored_config)
         self._backup_file(local_config, backup_dir, "config.toml")
-        self._write_sanitized_config(
-            stored_config, local_config, source_root=target_dir
-        )
+        write_text_safely(local_config, applied, "config.toml")
         ui.sub("config.toml")
 
         for name in OPTIONAL_FILES:
@@ -839,4 +830,8 @@ class CodexApp(App):
             )
             statuses.append(AppStatus(state="dirty", details=details))
 
+        manifest = self._manifest_status(stored)
+        if manifest.state == "unknown":
+            return manifest
+        statuses.append(manifest)
         return self._merge_statuses(statuses)

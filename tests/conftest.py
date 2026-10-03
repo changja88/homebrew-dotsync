@@ -39,3 +39,71 @@ def subprocess_blocked(monkeypatch, request):
         )
 
     monkeypatch.setattr(subprocess, "run", _block)
+
+
+class FakeCodexCli:
+    """Stands in for the `codex` binary at the subprocess boundary.
+
+    Answers the plugin commands dotsync runs from in-memory state and records
+    every call. Tests tune `installed`, `marketplaces`, `marketplace_sources`
+    (source -> name a successful `marketplace add` registers), `failing`
+    (command prefixes that exit 1), `stdout` (command prefix -> raw output
+    printed instead) and `missing` (binary not installed).
+    """
+
+    def __init__(self) -> None:
+        self.installed: list[dict] = []
+        self.marketplaces: list[dict] = []
+        self.marketplace_sources: dict[str, str] = {}
+        self.failing: set[str] = set()
+        self.missing = False
+        self.stdout: dict[str, str] = {}
+        self.calls: list[list[str]] = []
+
+    def __call__(self, cmd, *args, **kwargs):
+        import json
+        import subprocess
+
+        cmd = list(cmd)
+        if cmd[0] != "codex":
+            raise AssertionError(f"unexpected command: {cmd!r}")
+        if self.missing:
+            raise FileNotFoundError("codex")
+        self.calls.append(cmd)
+        words = cmd[1:]
+        if any(" ".join(words).startswith(prefix) for prefix in self.failing):
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+        for prefix, raw in self.stdout.items():
+            if " ".join(words).startswith(prefix):
+                return subprocess.CompletedProcess(cmd, 0, stdout=raw, stderr="")
+        if words[:3] == ["plugin", "list", "--json"]:
+            payload = {"installed": self.installed, "available": []}
+        elif words[:4] == ["plugin", "marketplace", "list", "--json"]:
+            payload = {"marketplaces": self.marketplaces}
+        elif words[:3] == ["plugin", "marketplace", "add"]:
+            name = self.marketplace_sources.get(words[3])
+            if name is None:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no such source")
+            self.marketplaces.append({"name": name})
+            payload = {"name": name}
+        elif words[:2] == ["plugin", "add"]:
+            self.installed.append(
+                {"pluginId": words[2], "enabled": True, "installPolicy": "AVAILABLE"}
+            )
+            payload = {"pluginId": words[2]}
+        else:
+            raise AssertionError(f"unexpected codex command: {cmd!r}")
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload), stderr="")
+
+    def commands(self, *prefix: str) -> list[list[str]]:
+        """Calls whose arguments after `codex` start with `prefix`."""
+        return [c[1:] for c in self.calls if c[1 : 1 + len(prefix)] == list(prefix)]
+
+
+@pytest.fixture
+def fake_codex_cli(monkeypatch):
+    import subprocess
+
+    cli = FakeCodexCli()
+    monkeypatch.setattr(subprocess, "run", cli)
+    return cli

@@ -257,3 +257,22 @@ def test_plan_tree_mirror_lists_file_changes(tmp_path):
 
     assert change.kind == "update"
     assert change.file_changes == ("+ new.md", "~ changed.md", "− gone.md")
+
+
+def test_diff_trees_ignores_finder_metadata_and_bak_files(tmp_path):
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    (src / "sub").mkdir(parents=True)
+    (dst / "sub").mkdir(parents=True)
+    (src / "keep.md").write_text("same")
+    (dst / "keep.md").write_text("same")
+    (src / ".DS_Store").write_text("finder")
+    (src / "sub" / "SKILL.md.bak").write_text("old skill")
+    (dst / "sub" / ".DS_Store").write_text("finder")
+    (dst / "notes.bak").write_text("old notes")
+
+    diff = diff_trees(src, dst)
+
+    assert diff.creates == frozenset()
+    assert diff.updates == frozenset()
+    assert diff.removes == frozenset()

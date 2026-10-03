@@ -9,9 +9,26 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Literal, Tuple
 
+from dotsync.config import ConfigError
 from dotsync.plan import AppPlan, plan_file_copy
 
 StatusState = Literal["clean", "dirty", "missing", "unknown"]
+
+
+def read_skills_ignore(cfg, app_name: str) -> tuple[str, ...]:
+    """Read `[options.<app>] skills_ignore`: top-level skill directory names
+    another tool installs and updates itself, so dotsync leaves them alone."""
+    opts = cfg.app_options.get(app_name, {}) if hasattr(cfg, "app_options") else {}
+    names = opts.get("skills_ignore", [])
+    if not isinstance(names, list) or not all(
+        isinstance(name, str) and name and "/" not in name and name not in {".", ".."}
+        for name in names
+    ):
+        raise ConfigError(
+            f"[options.{app_name}] skills_ignore must be a list of skill "
+            f"directory names, got {names!r}"
+        )
+    return tuple(names)
 
 
 @dataclass

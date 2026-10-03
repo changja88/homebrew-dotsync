@@ -19,6 +19,15 @@ ChangeKind = Literal[
 ]
 Direction = Literal["from", "to"]
 
+# Leftovers from Finder and from tools that keep a copy before rewriting a
+# file (e.g. graphify's SKILL.md.bak). Never synced, never removed.
+_IGNORED_FILE_NAMES = frozenset({".DS_Store"})
+_IGNORED_FILE_SUFFIXES = (".bak",)
+
+
+def _is_ignored_file_name(name: str) -> bool:
+    return name in _IGNORED_FILE_NAMES or name.endswith(_IGNORED_FILE_SUFFIXES)
+
 
 @dataclass(frozen=True)
 class Change:
@@ -159,7 +168,7 @@ def scan_tree(root: Path, ignored_top_dirs: Iterable[str] = ()) -> TreeScan:
             continue
         if entry.is_symlink():
             symlinks.add(rel)
-        elif entry.is_file():
+        elif entry.is_file() and not _is_ignored_file_name(entry.name):
             files.add(rel)
     return TreeScan(frozenset(files), frozenset(symlinks))
 

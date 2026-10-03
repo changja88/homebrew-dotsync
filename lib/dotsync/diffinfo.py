@@ -60,9 +60,14 @@ def summarize_pair(source: Path, dest: Path) -> str:
         old_size = dest.stat().st_size
         new_size = source.stat().st_size
         return f"binary · {_human_size(old_size)} → {_human_size(new_size)}"
+    return summarize_texts(old_text, new_text, source.suffix)
+
+
+def summarize_texts(old_text: str, new_text: str, suffix: str) -> str:
+    """Same summary as summarize_pair, for contents computed in memory."""
     added, removed = _line_counts(old_text, new_text)
     summary = f"+{added} −{removed}"
-    keys = _key_summary(source.suffix, old_text, new_text)
+    keys = _key_summary(suffix, old_text, new_text)
     if keys:
         summary += f" · {keys}"
     return summary

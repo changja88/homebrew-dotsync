@@ -124,10 +124,11 @@ def test_zsh_to_then_from_does_not_change_stored(fake_home, tmp_path):
     assert (target / "zsh" / ".zshrc").read_text() == "alias ll='ls -la'\n"
 
 
-def test_codex_from_then_to_does_not_change_local(fake_home, tmp_path):
+def test_codex_from_then_to_does_not_change_local(fake_home, tmp_path, fake_codex_cli):
     cdir = _codex_dir(fake_home)
     cdir.mkdir()
-    (cdir / "config.toml").write_text('model = "gpt-5.2"\n')
+    config = 'model = "gpt-5.2"\n\n[plugins."mine@my-market"]\nenabled = true\n'
+    (cdir / "config.toml").write_text(config)
     (cdir / "AGENTS.md").write_text("# instructions\n")
     (cdir / "rules").mkdir()
     (cdir / "rules" / "default.rules").write_text("allow\n")
@@ -143,7 +144,8 @@ def test_codex_from_then_to_does_not_change_local(fake_home, tmp_path):
     CodexApp().sync_from(target)
     CodexApp().sync_to(target, backup)
 
-    assert (cdir / "config.toml").read_text() == 'model = "gpt-5.2"\n'
+    assert (cdir / "config.toml").read_text() == config
+    assert (target / "codex" / "config.toml").read_text() == 'model = "gpt-5.2"\n'
     assert (cdir / "AGENTS.md").read_text() == "# instructions\n"
     assert (cdir / "rules" / "default.rules").read_text() == "allow\n"
     assert (cdir / "skills" / "mine" / "SKILL.md").read_text() == "# mine\n"
@@ -153,7 +155,7 @@ def test_codex_from_then_to_does_not_change_local(fake_home, tmp_path):
     assert not (target / "codex" / "skills" / ".system").exists()
 
 
-def test_codex_to_then_from_does_not_change_stored(fake_home, tmp_path):
+def test_codex_to_then_from_does_not_change_stored(fake_home, tmp_path, fake_codex_cli):
     target = tmp_path / "sync"
     target.mkdir()
     stored_dir = target / "codex"

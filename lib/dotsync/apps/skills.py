@@ -16,7 +16,6 @@ from dotsync import ui
 from dotsync.apps.base import (
     App,
     AppStatus,
-    copy_file_safely,
     ensure_directory,
     ensure_not_symlink,
     ensure_path_within_root,
@@ -301,13 +300,8 @@ class SkillsApp(App):
         manifest = self._read_stored_manifest(target_dir)
         managed = self._managed_agent_dirs()
 
-        lock = self._lock_path()
-        if lock.exists() or lock.is_symlink():
-            bdir = backup_dir / self.name
-            ensure_directory(bdir, "skills backup", root=backup_dir)
-            bdir.mkdir(parents=True, exist_ok=True)
-            copy_file_safely(lock, bdir / LOCK, LOCK, dest_root=backup_dir)
-            ui.dim(f"backup → {bdir}")
+        # No apply backup of the lock: it can hold a GitHub token, so it never
+        # enters the sync folder, and dotsync never writes it (npx does).
 
         npx_missing = False
         for name, entry in sorted(manifest.items()):

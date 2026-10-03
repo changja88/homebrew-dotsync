@@ -58,7 +58,7 @@ def sanitize_codex_config(text: str) -> SanitizedText:
         current_table = None
 
     for line in lines:
-        table = _table_name(line)
+        table = toml_table_name(line)
         if table is not None:
             flush()
             current_table = table
@@ -110,7 +110,8 @@ _LOCAL_URL_RE = re.compile(
 )
 
 
-def _table_name(line: str) -> str | None:
+def toml_table_name(line: str) -> str | None:
+    """Return the dotted name of a `[table]` header line, unquoted, else None."""
     match = _TABLE_HEADER_RE.match(line)
     if not match:
         return None

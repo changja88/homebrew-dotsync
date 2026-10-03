@@ -1944,3 +1944,285 @@ def test_plan_from_ignores_claude_plugin_runtime_metadata(fake_home, tmp_path):
     assert changes["plugins/installed_plugins.json"].kind == "unchanged"
     assert changes["plugins/known_marketplaces.json"].kind == "unchanged"
     assert plan.has_changes is False
+
+
+def _make_claude_managed_skill_dirs(cdir: Path) -> None:
+    (cdir / "skills" / "synced" / "acct_org" / "docx").mkdir(parents=True)
+    (cdir / "skills" / "synced" / "acct_org" / "docx" / "SKILL.md").write_text(
+        "# synced\n"
+    )
+    (cdir / "skills" / ".trash" / "1790-1-abc" / "old").mkdir(parents=True)
+    (cdir / "skills" / ".trash" / "1790-1-abc" / "old" / "SKILL.md").write_text(
+        "# trashed\n"
+    )
+
+
+def test_sync_from_excludes_claude_managed_skill_dirs(fake_home, tmp_path):
+    _make_local(fake_home)
+    cdir = fake_home / ".claude"
+    (cdir / "skills" / "mine").mkdir(parents=True)
+    (cdir / "skills" / "mine" / "SKILL.md").write_text("# mine\n")
+    _make_claude_managed_skill_dirs(cdir)
+    target = tmp_path / "configs"
+    target.mkdir()
+
+    ClaudeApp().sync_from(target)
+
+    stored_skills = target / "claude" / "skills"
+    assert (stored_skills / "mine" / "SKILL.md").read_text() == "# mine\n"
+    assert not (stored_skills / "synced").exists()
+    assert not (stored_skills / ".trash").exists()
+
+
+def test_sync_to_preserves_local_claude_managed_skill_dirs(fake_home, tmp_path):
+    _make_local(fake_home)
+    cdir = fake_home / ".claude"
+    _make_claude_managed_skill_dirs(cdir)
+    target = tmp_path / "configs"
+    stored = _make_minimal_stored(target)
+    (stored / "skills" / "mine").mkdir(parents=True)
+    (stored / "skills" / "mine" / "SKILL.md").write_text("# mine\n")
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    with patch("dotsync.apps.claude.subprocess.run") as run:
+        run.return_value.returncode = 0
+        run.return_value.stdout = ""
+        run.return_value.stderr = ""
+        ClaudeApp().sync_to(target, backup)
+
+    skills = cdir / "skills"
+    assert (skills / "mine" / "SKILL.md").read_text() == "# mine\n"
+    assert (skills / "synced" / "acct_org" / "docx" / "SKILL.md").read_text() == (
+        "# synced\n"
+    )
+    assert (skills / ".trash" / "1790-1-abc" / "old" / "SKILL.md").read_text() == (
+        "# trashed\n"
+    )
+
+
+def test_status_ignores_claude_managed_skill_dirs(fake_home, tmp_path):
+    _make_local(fake_home, settings={"theme": "x"})
+    _make_claude_managed_skill_dirs(fake_home / ".claude")
+    target = tmp_path / "configs"
+    stored = _make_minimal_stored(target)
+    (stored / "skills").mkdir()
+
+    assert ClaudeApp().status(target).state == "clean"
+
+
+def test_plan_to_does_not_plan_removing_claude_managed_skill_dirs(
+    fake_home, tmp_path
+):
+    cdir = fake_home / ".claude"
+    cdir.mkdir()
+    _make_claude_managed_skill_dirs(cdir)
+    target = tmp_path / "sync"
+    stored = _make_minimal_stored(target)
+    (stored / "skills").mkdir()
+
+    plan = ClaudeApp().plan_to(target)
+
+    skills = [c for c in plan.changes if c.label == "skills/"][0]
+    assert skills.kind == "unchanged"
+    assert "remove" not in skills.details
+
+
+def test_sync_to_keeps_local_skill_bak_file(fake_home, tmp_path):
+    _make_local(fake_home)
+    local_skill = fake_home / ".claude" / "skills" / "graphify"
+    local_skill.mkdir(parents=True)
+    (local_skill / "SKILL.md").write_text("# old\n")
+    (local_skill / "SKILL.md.bak").write_text("# older\n")
+    target = tmp_path / "configs"
+    stored = _make_minimal_stored(target)
+    (stored / "skills" / "graphify").mkdir(parents=True)
+    (stored / "skills" / "graphify" / "SKILL.md").write_text("# new\n")
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    with patch("dotsync.apps.claude.subprocess.run") as run:
+        run.return_value.returncode = 0
+        run.return_value.stdout = ""
+        run.return_value.stderr = ""
+        ClaudeApp().sync_to(target, backup)
+
+    assert (local_skill / "SKILL.md").read_text() == "# new\n"
+    assert (local_skill / "SKILL.md.bak").read_text() == "# older\n"
+
+
+def test_status_clean_when_installed_plugins_differ_only_in_runtime_metadata(
+    fake_home, tmp_path
+):
+    _make_local(
+        fake_home,
+        settings={"theme": "x"},
+        plugins={
+            "version": 2,
+            "plugins": {"hud@market": [_plugin_entry("/local/cache/hud", "0.8.0")]},
+        },
+    )
+    target = tmp_path / "configs"
+    stored = _make_minimal_stored(target)
+    (stored / "plugins" / "installed_plugins.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {
+                    "hud@market": [_plugin_entry("/stored/cache/hud", "0.7.0")]
+                },
+            }
+        )
+    )
+
+    assert ClaudeApp().status(target).state == "clean"
+
+
+def test_status_clean_when_known_marketplaces_differ_only_in_runtime_metadata(
+    fake_home, tmp_path
+):
+    source = {"source": "github", "repo": "owner/market"}
+    _make_local(
+        fake_home,
+        settings={"theme": "x"},
+        marketplaces={
+            "market": {
+                "source": source,
+                "installLocation": "/local/marketplaces/market",
+                "lastUpdated": "2026-10-01T00:00:00Z",
+            }
+        },
+    )
+    target = tmp_path / "configs"
+    stored = _make_minimal_stored(target)
+    (stored / "plugins" / "known_marketplaces.json").write_text(
+        json.dumps(
+            {
+                "market": {
+                    "source": source,
+                    "installLocation": "/stored/marketplaces/market",
+                    "lastUpdated": "2026-09-01T00:00:00Z",
+                }
+            }
+        )
+    )
+
+    assert ClaudeApp().status(target).state == "clean"
+
+
+def test_status_dirty_when_installed_plugin_set_differs(fake_home, tmp_path):
+    _make_local(
+        fake_home,
+        settings={"theme": "x"},
+        plugins={
+            "version": 2,
+            "plugins": {"hud@market": [_plugin_entry("/local/cache/hud")]},
+        },
+    )
+    target = tmp_path / "configs"
+    _make_minimal_stored(target)
+
+    status = ClaudeApp().status(target)
+
+    assert status.state == "dirty"
+    assert "installed_plugins.json" in status.details
+
+
+def _claude_app_ignoring(tmp_path: Path, *names: str) -> ClaudeApp:
+    from dotsync.config import Config
+
+    cfg = Config(
+        dir=tmp_path,
+        apps=["claude"],
+        app_options={"claude": {"skills_ignore": list(names)}},
+    )
+    return ClaudeApp.from_config(cfg)
+
+
+def test_sync_to_leaves_configured_ignored_skill_alone(fake_home, tmp_path):
+    _make_local(fake_home)
+    local_skills = fake_home / ".claude" / "skills"
+    (local_skills / "graphify").mkdir(parents=True)
+    (local_skills / "graphify" / "SKILL.md").write_text("# v2\n")
+    target = tmp_path / "configs"
+    stored = _make_minimal_stored(target)
+    (stored / "skills" / "graphify").mkdir(parents=True)
+    (stored / "skills" / "graphify" / "SKILL.md").write_text("# v1\n")
+    (stored / "skills" / "mine").mkdir(parents=True)
+    (stored / "skills" / "mine" / "SKILL.md").write_text("# mine\n")
+    backup = tmp_path / "backup"
+    backup.mkdir()
+
+    with patch("dotsync.apps.claude.subprocess.run") as run:
+        run.return_value.returncode = 0
+        run.return_value.stdout = ""
+        run.return_value.stderr = ""
+        _claude_app_ignoring(tmp_path, "graphify").sync_to(target, backup)
+
+    assert (local_skills / "graphify" / "SKILL.md").read_text() == "# v2\n"
+    assert (local_skills / "mine" / "SKILL.md").read_text() == "# mine\n"
+
+
+def test_sync_from_purges_configured_ignored_skill_from_folder(fake_home, tmp_path):
+    _make_local(fake_home)
+    local_skills = fake_home / ".claude" / "skills"
+    (local_skills / "graphify").mkdir(parents=True)
+    (local_skills / "graphify" / "SKILL.md").write_text("# v2\n")
+    (local_skills / "mine").mkdir(parents=True)
+    (local_skills / "mine" / "SKILL.md").write_text("# mine\n")
+    target = tmp_path / "configs"
+    stored = _make_minimal_stored(target)
+    (stored / "skills" / "graphify").mkdir(parents=True)
+    (stored / "skills" / "graphify" / "SKILL.md").write_text("# v1\n")
+
+    _claude_app_ignoring(tmp_path, "graphify").sync_from(target)
+
+    assert (stored / "skills" / "mine" / "SKILL.md").read_text() == "# mine\n"
+    assert not (stored / "skills" / "graphify").exists()
+    assert (local_skills / "graphify" / "SKILL.md").read_text() == "# v2\n"
+
+
+def test_plan_from_reports_configured_ignored_skill_purge(fake_home, tmp_path):
+    _make_local(fake_home)
+    local_skills = fake_home / ".claude" / "skills"
+    (local_skills / "graphify").mkdir(parents=True)
+    (local_skills / "graphify" / "SKILL.md").write_text("# v2\n")
+    target = tmp_path / "configs"
+    stored = _make_minimal_stored(target)
+    (stored / "skills" / "graphify").mkdir(parents=True)
+    (stored / "skills" / "graphify" / "SKILL.md").write_text("# v1\n")
+
+    plan = _claude_app_ignoring(tmp_path, "graphify").plan_from(target)
+
+    skills = [c for c in plan.changes if c.label == "skills/"][0]
+    assert skills.kind == "update"
+    assert "purge ignored graphify" in skills.details
+
+
+def test_status_ignores_configured_ignored_skill(fake_home, tmp_path):
+    _make_local(fake_home, settings={"theme": "x"})
+    local_skills = fake_home / ".claude" / "skills"
+    (local_skills / "graphify").mkdir(parents=True)
+    (local_skills / "graphify" / "SKILL.md").write_text("# v2\n")
+    target = tmp_path / "configs"
+    stored = _make_minimal_stored(target)
+    (stored / "skills" / "graphify").mkdir(parents=True)
+    (stored / "skills" / "graphify" / "SKILL.md").write_text("# v1\n")
+
+    status = _claude_app_ignoring(tmp_path, "graphify").status(target)
+
+    assert status.state == "clean"
+
+
+@pytest.mark.parametrize("value", ["graphify", ["a/b"], [""], [3]])
+def test_from_config_rejects_invalid_skills_ignore(tmp_path, value):
+    from dotsync.config import Config, ConfigError
+
+    cfg = Config(
+        dir=tmp_path,
+        apps=["claude"],
+        app_options={"claude": {"skills_ignore": value}},
+    )
+
+    with pytest.raises(ConfigError, match="skills_ignore"):
+        ClaudeApp.from_config(cfg)
