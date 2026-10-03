@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from dotsync.apps.base import write_text_safely
@@ -127,6 +128,28 @@ def active_account() -> str | None:
     return None
 
 
+def account_info(name: str) -> dict:
+    """What the dotsync app shows for one saved account."""
+    logged_in = is_logged_in(name)
+    return {
+        "name": name,
+        "label": name,
+        "email": account_email(name) if logged_in else None,
+        "logged_in": logged_in,
+    }
+
+
+def snapshot() -> dict:
+    """Saved accounts, the one in use, and the login Claude uses now."""
+    email = seat_email()
+    active = active_account()
+    return {
+        "active": active,
+        "seat": None if email is None else {"email": email, "saved": active is not None},
+        "accounts": [account_info(name) for name in saved_accounts()],
+    }
+
+
 def login(name: str) -> str:
     """Run `claude auth login` for `name`'s own folder — the browser decides
     which claude.ai account it saves. Returns that account's email."""
@@ -140,7 +163,10 @@ def login(name: str) -> str:
     created = not folder.exists()
     folder.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
-        [claude, "auth", "login"], env={**os.environ, "CLAUDE_CONFIG_DIR": str(folder)}
+        [claude, "auth", "login"],
+        env={**os.environ, "CLAUDE_CONFIG_DIR": str(folder)},
+        # stdout is reserved for dotsync's own answer (`--json`).
+        stdout=sys.stderr,
     )
     email = account_email(name)
     if result.returncode != 0 or email is None or not _has_secret(service_for(folder)):

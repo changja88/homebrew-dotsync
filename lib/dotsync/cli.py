@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -94,9 +95,13 @@ def _build_parser() -> argparse.ArgumentParser:
     account_use.add_argument(
         "--yes", action="store_true", help="drop an unsaved login in use without asking"
     )
-    account_sub.add_parser("list", help="show saved accounts and the one in use")
+    account_list = account_sub.add_parser("list", help="show saved accounts and the one in use")
     account_remove = account_sub.add_parser("remove", help="log out a saved account and delete it")
     account_remove.add_argument("name")
+    for account_cmd in (account_login, account_use, account_list, account_remove):
+        account_cmd.add_argument(
+            "--json", action="store_true", help="print one JSON object (for the dotsync app)"
+        )
 
     return p
 
@@ -705,6 +710,43 @@ def cmd_to(args) -> int:
 
 
 def cmd_account(args) -> int:
+    if args.json:
+        return _account_json(args)
+    return _account_text(args)
+
+
+def _account_json(args) -> int:
+    try:
+        result = _account_result(args)
+    except accounts.AccountError as e:
+        error = {"code": e.code, "message": str(e)}
+        if isinstance(e, accounts.UnsavedLoginError):
+            error["email"] = e.email
+        print(json.dumps({"error": error}, ensure_ascii=False))
+        return 1
+    except Exception as e:  # the dotsync app reads every answer as JSON
+        print(json.dumps({"error": {"code": "failed", "message": str(e)}}, ensure_ascii=False))
+        return 1
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
+def _account_result(args) -> dict:
+    if args.account_cmd == "login":
+        accounts.login(args.name)
+        return accounts.account_info(args.name)
+    if args.account_cmd == "use":
+        accounts.use(args.name, allow_unsaved_overwrite=args.yes)
+        return accounts.account_info(args.name)
+    if args.account_cmd == "list":
+        return accounts.snapshot()
+    if args.account_cmd == "remove":
+        accounts.remove(args.name)
+        return {"removed": args.name}
+    raise AssertionError(f"unknown account command {args.account_cmd}")
+
+
+def _account_text(args) -> int:
     if args.account_cmd == "login":
         ui.step(f"logging in {args.name} — approve in the browser with the claude.ai account to save")
         email = accounts.login(args.name)
@@ -741,16 +783,14 @@ def cmd_account(args) -> int:
 
 
 def _print_accounts() -> None:
-    names = accounts.saved_accounts()
-    active = accounts.active_account()
-    seat_email = accounts.seat_email()
-    if active is None and seat_email:
-        print(f"  ● {'(not saved)':<16} {seat_email}")
-    for name in names:
-        mark = "●" if name == active else " "
-        email = accounts.account_email(name) if accounts.is_logged_in(name) else None
-        print(f"  {mark} {name:<16} {email or '(not logged in)'}")
-    if not names:
+    snap = accounts.snapshot()
+    seat = snap["seat"]
+    if seat is not None and not seat["saved"]:
+        print(f"  ● {'(not saved)':<16} {seat['email']}")
+    for info in snap["accounts"]:
+        mark = "●" if info["name"] == snap["active"] else " "
+        print(f"  {mark} {info['name']:<16} {info['email'] or '(not logged in)'}")
+    if not snap["accounts"]:
         ui.dim("no saved accounts — add one with: dotsync account login <name>")
 
 

@@ -143,7 +143,7 @@ class FakeAccountsCli:
         if cmd[0] == "security":
             return self._security(cmd, input)
         if Path(cmd[0]).name == "claude":
-            return self._claude(cmd, env or {})
+            return self._claude(cmd, env or {}, kwargs)
         raise AssertionError(f"unexpected command: {cmd!r}")
 
     def _security(self, cmd, stdin):
@@ -174,14 +174,18 @@ class FakeAccountsCli:
             return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
         raise AssertionError(f"unexpected security command: {cmd!r}")
 
-    def _claude(self, cmd, env):
+    def _claude(self, cmd, env, kwargs):
         import json
         import subprocess
+        import sys
 
         folder = Path(env["CLAUDE_CONFIG_DIR"])
         doc_path = folder / ".claude.json"
         doc = json.loads(doc_path.read_text()) if doc_path.exists() else {}
         if cmd[1:] == ["auth", "login"]:
+            # The real command prints its progress; it must not reach
+            # dotsync's stdout, which carries the --json answer.
+            (kwargs.get("stdout") or sys.stdout).write("Opening browser to sign in…\n")
             if self.login_fails or self.browser is None:
                 return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
             folder.mkdir(parents=True, exist_ok=True)
