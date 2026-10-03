@@ -375,3 +375,44 @@ def test_other_account_commands_keep_the_default_sigterm(fake_home, fake_account
     monkeypatch.setattr(signal, "signal", lambda sig, handler: installed.__setitem__(sig, handler))
     main(["account", "list", "--json"])
     assert installed == {}
+
+
+FIVE = (31, "2026-10-04T15:39:00+00:00")
+WEEK = (15, "2026-10-09T05:59:00+00:00")
+
+
+def test_account_usage_json(fake_home, fake_accounts_cli, capsys):
+    cli = fake_accounts_cli
+    _saved(fake_home, cli, "alice", ALICE, "a1")
+    _seat(fake_home, cli, ALICE, "a2")
+    cli.reply_usage("seat", FIVE, WEEK)
+
+    assert main(["account", "usage", "--json"]) == 0
+
+    out = _json_out(capsys)
+    assert out["active"] == "alice"
+    assert out["accounts"][0]["five_hour"] == {"percent": 31, "resets_at": "2026-10-04T15:39:00Z"}
+
+
+def test_account_usage_text(fake_home, fake_accounts_cli, capsys):
+    cli = fake_accounts_cli
+    _saved(fake_home, cli, "alice", ALICE, "a1")
+    (fake_home / ".claude-accounts" / "bob").mkdir(parents=True)
+    _seat(fake_home, cli, ALICE, "a2")
+    cli.reply_usage("seat", FIVE, (15, None))
+
+    assert main(["account", "usage"]) == 0
+
+    out = capsys.readouterr().out
+    assert "● alice" in out
+    assert "31% (resets" in out
+    assert " 15%" in out
+    assert "dotsync account login bob" in out
+
+
+def test_account_usage_json_without_claude(fake_home, fake_accounts_cli, monkeypatch, capsys):
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    assert main(["account", "usage", "--json"]) == 1
+    assert _json_out(capsys)["error"]["code"] == "claude_missing"

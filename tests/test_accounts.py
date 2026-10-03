@@ -1,5 +1,7 @@
 import json
+import re
 import stat
+import threading
 from pathlib import Path
 
 import pytest
@@ -435,3 +437,120 @@ def test_cancelled_login_again_keeps_the_saved_login(fake_home, fake_accounts_cl
 
     assert folder.is_dir()
     assert cli.keychain[cli.service_for(folder)] == "b1"
+
+
+FIVE = (31, "2026-10-04T15:39:00+00:00")
+WEEK = (15, "2026-10-09T05:59:00+00:00")
+
+
+def test_usage_probes_the_account_in_use_through_the_seat(fake_home, fake_accounts_cli):
+    cli = fake_accounts_cli
+    _saved(fake_home, cli, "alice", ALICE, "a1")
+    _saved(fake_home, cli, "bob", BOB, "b1")
+    _seat(fake_home, cli, ALICE, "a2")
+    cli.reply_usage("seat", FIVE, WEEK)
+    cli.reply_usage("bob", (12, "2026-10-04T13:00:00+00:00"), (64, "2026-10-05T20:00:00+00:00"))
+
+    report = accounts.usage()
+
+    assert sorted(cli.probes) == ["bob", "seat"]
+    assert report["active"] == "alice"
+    assert report["unsaved_seat"] is None
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", report["fetched_at"])
+    alice, bob = report["accounts"]
+    assert alice == {
+        "name": "alice", "label": "alice", "email": "alice@example.com", "status": "ok",
+        "five_hour": {"percent": 31, "resets_at": "2026-10-04T15:39:00Z"},
+        "seven_day": {"percent": 15, "resets_at": "2026-10-09T05:59:00Z"},
+    }
+    assert bob["seven_day"]["percent"] == 64
+
+
+def test_usage_does_not_probe_a_logged_out_account(fake_home, fake_accounts_cli):
+    cli = fake_accounts_cli
+    _saved(fake_home, cli, "alice", ALICE, "a1")
+    (fake_home / ".claude-accounts" / "bob").mkdir(parents=True)
+    _seat(fake_home, cli, ALICE, "a2")
+    cli.reply_usage("seat", FIVE, WEEK)
+
+    report = accounts.usage()
+
+    assert cli.probes == ["seat"]
+    assert report["accounts"][1] == {
+        "name": "bob", "label": "bob", "email": None, "status": "login_required",
+        "five_hour": None, "seven_day": None,
+    }
+
+
+def test_usage_reports_an_unsaved_login_in_use(fake_home, fake_accounts_cli):
+    cli = fake_accounts_cli
+    _saved(fake_home, cli, "bob", BOB, "b1")
+    _seat(fake_home, cli, UNSAVED, "u1")
+    cli.reply_usage("seat", FIVE, WEEK)
+    cli.reply_usage("bob", FIVE, WEEK)
+
+    report = accounts.usage()
+
+    assert report["active"] is None
+    assert report["unsaved_seat"]["email"] == "unsaved@example.com"
+    assert report["unsaved_seat"]["status"] == "ok"
+    assert report["unsaved_seat"]["five_hour"]["percent"] == 31
+
+
+def test_usage_keeps_going_when_one_probe_fails(fake_home, fake_accounts_cli):
+    cli = fake_accounts_cli
+    _saved(fake_home, cli, "alice", ALICE, "a1")
+    _saved(fake_home, cli, "bob", BOB, "b1")
+    _saved(fake_home, cli, "carol", {"accountUuid": "uuid-c", "emailAddress": "c@example.com"}, "c1")
+    _seat(fake_home, cli, ALICE, "a2")
+    cli.reply_usage("seat", FIVE, WEEK)
+    cli.reply_timeout("bob")
+    cli.reply_raw("carol", 'noise\n' + cli.usage_answer(FIVE, WEEK))
+
+    report = accounts.usage()
+
+    statuses = {a["name"]: a["status"] for a in report["accounts"]}
+    assert statuses == {"alice": "ok", "bob": "error", "carol": "ok"}
+    assert report["accounts"][1]["error"] == "timeout"
+
+
+def test_usage_with_a_corrupt_claude_json_still_answers(fake_home, fake_accounts_cli):
+    cli = fake_accounts_cli
+    folder = _saved(fake_home, cli, "bob", BOB, "b1")
+    (folder / ".claude.json").write_text("{")
+    cli.reply_not_logged_in("bob")
+
+    report = accounts.usage()
+
+    assert report["accounts"] == [{
+        "name": "bob", "label": "bob", "email": None, "status": "login_required",
+        "five_hour": None, "seven_day": None,
+    }]
+
+
+def test_usage_without_accounts_or_login_is_empty(fake_home, fake_accounts_cli):
+    report = accounts.usage()
+    assert (report["active"], report["unsaved_seat"], report["accounts"]) == (None, None, [])
+    assert fake_accounts_cli.probes == []
+
+
+def test_usage_runs_the_probes_at_the_same_time(fake_home, fake_accounts_cli):
+    cli = fake_accounts_cli
+    _saved(fake_home, cli, "alice", ALICE, "a1")
+    _saved(fake_home, cli, "bob", BOB, "b1")
+    _seat(fake_home, cli, ALICE, "a2")
+    cli.reply_usage("seat", FIVE, WEEK)
+    cli.reply_usage("bob", FIVE, WEEK)
+    both_running = threading.Barrier(2)
+    cli.probe_hook = lambda key: both_running.wait(timeout=2)
+
+    report = accounts.usage()  # one-at-a-time probes would break the barrier
+
+    assert [a["status"] for a in report["accounts"]] == ["ok", "ok"]
+
+
+def test_usage_needs_claude(fake_home, fake_accounts_cli, monkeypatch):
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    assert _code(accounts.usage) == "claude_missing"

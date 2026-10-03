@@ -7,6 +7,7 @@ import json
 import signal
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 from dotsync import __version__, accounts, ui, diffinfo
@@ -103,7 +104,12 @@ def _build_parser() -> argparse.ArgumentParser:
     account_rename = account_sub.add_parser("rename", help="change the name shown for an account")
     account_rename.add_argument("name")
     account_rename.add_argument("label")
-    for account_cmd in (account_login, account_use, account_list, account_remove, account_rename):
+    account_usage = account_sub.add_parser(
+        "usage", help="show each account's 5-hour and weekly usage (no tokens spent)"
+    )
+    for account_cmd in (
+        account_login, account_use, account_list, account_remove, account_rename, account_usage
+    ):
         account_cmd.add_argument(
             "--json", action="store_true", help="print one JSON object (for the dotsync app)"
         )
@@ -767,6 +773,8 @@ def _account_result(args) -> dict:
     if args.account_cmd == "rename":
         accounts.rename(args.name, args.label)
         return accounts.account_info(args.name)
+    if args.account_cmd == "usage":
+        return accounts.usage()
     raise AssertionError(f"unknown account command {args.account_cmd}")
 
 
@@ -810,6 +818,9 @@ def _account_text(args) -> int:
         accounts.rename(args.name, args.label)
         ui.ok(f"{args.name} is now shown as {accounts.label(args.name)}")
         return 0
+    if args.account_cmd == "usage":
+        _print_usage(accounts.usage())
+        return 0
     return 2
 
 
@@ -824,6 +835,34 @@ def _print_accounts() -> None:
         print(f"  {mark} {shown:<16} {info['email'] or '(not logged in)'}")
     if not snap["accounts"]:
         ui.dim("no saved accounts — add one with: dotsync account login <name>")
+
+
+def _print_usage(report: dict) -> None:
+    seat = report["unsaved_seat"]
+    if seat is not None:
+        print(f"  ● {'(not saved)':<16} {_usage_line(seat, None)}")
+    for entry in report["accounts"]:
+        mark = "●" if entry["name"] == report["active"] else " "
+        print(f"  {mark} {entry['label']:<16} {_usage_line(entry, entry['name'])}")
+    if not report["accounts"] and seat is None:
+        ui.dim("no saved accounts — add one with: dotsync account login <name>")
+
+
+def _usage_line(entry: dict, name: str | None) -> str:
+    if entry["status"] == "login_required":
+        return f"(not logged in — dotsync account login {name})" if name else "(not logged in)"
+    if entry["status"] == "error":
+        return f"(could not read usage: {entry['error']})"
+    return f"5h {_window_text(entry['five_hour'])}   week {_window_text(entry['seven_day'])}"
+
+
+def _window_text(window: dict | None) -> str:
+    if window is None:
+        return "—"
+    if window["resets_at"] is None:
+        return f"{window['percent']:>3}%"
+    reset = datetime.fromisoformat(window["resets_at"].replace("Z", "+00:00")).astimezone()
+    return f"{window['percent']:>3}% (resets {reset:%m-%d %H:%M})"
 
 
 def main(argv: Sequence[str] | None = None) -> int:

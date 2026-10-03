@@ -26,10 +26,13 @@ import shutil
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
+from dotsync import claude_usage
 from dotsync.apps.base import write_text_safely
 
 DEFAULT_SERVICE = "Claude Code-credentials"
@@ -205,6 +208,42 @@ def snapshot() -> dict:
         "seat": None if email is None else {"email": email, "saved": active is not None},
         "accounts": [account_info(name) for name in saved_accounts()],
     }
+
+
+def usage() -> dict:
+    """Every saved account's usage, probed at the same time. The account in
+    use is probed through Claude's default folder: its own folder holds an
+    older copy of the login until the next switch hands the latest one back."""
+    claude = _claude_binary()
+    names = saved_accounts()
+    active = active_account()
+    unsaved_email = seat_email() if active is None else None
+    with ThreadPoolExecutor(max_workers=len(names) + 1) as pool:
+        jobs = {
+            name: pool.submit(claude_usage.probe, claude, None if name == active else account_dir(name))
+            for name in names
+            if name == active or is_logged_in(name)
+        }
+        seat_job = pool.submit(claude_usage.probe, claude, None) if unsaved_email else None
+    logged_out = {"status": "login_required", "five_hour": None, "seven_day": None}
+    return {
+        "fetched_at": _utc_now(),
+        "active": active,
+        "unsaved_seat": None if seat_job is None else {"email": unsaved_email, **seat_job.result()},
+        "accounts": [
+            {
+                "name": name,
+                "label": label(name),
+                "email": account_email(name),
+                **(jobs[name].result() if name in jobs else logged_out),
+            }
+            for name in names
+        ],
+    }
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def login(name: str) -> str:
