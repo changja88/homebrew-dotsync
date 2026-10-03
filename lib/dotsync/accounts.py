@@ -35,7 +35,12 @@ _ITEM_NOT_FOUND = 44
 
 
 class AccountError(RuntimeError):
-    """A `dotsync account` command can't go ahead; the message says why."""
+    """A `dotsync account` command can't go ahead. The message says why;
+    `code` names the reason for `--json` callers such as the dotsync app."""
+
+    def __init__(self, message: str, code: str = "failed") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class UnsavedLoginError(AccountError):
@@ -45,7 +50,8 @@ class UnsavedLoginError(AccountError):
         self.email = email
         super().__init__(
             f"the login Claude uses now ({email or 'unknown account'}) is not "
-            "saved in dotsync — switching would drop it"
+            "saved in dotsync — switching would drop it",
+            "unsaved_login",
         )
 
 
@@ -53,7 +59,8 @@ def validate_name(name: str) -> str:
     if not _NAME.fullmatch(name) or name in _RESERVED_NAMES:
         raise AccountError(
             f"invalid account name {name!r}: use letters, digits, '.', '_' or '-' "
-            "(not starting with '.', and not 'default')"
+            "(not starting with '.', and not 'default')",
+            "invalid_name",
         )
     return name
 
@@ -64,6 +71,16 @@ def accounts_root() -> Path:
 
 def account_dir(name: str) -> Path:
     return accounts_root() / validate_name(name)
+
+
+def _existing_dir(name: str) -> Path:
+    folder = account_dir(name)
+    if not folder.is_dir() or folder.is_symlink():
+        raise AccountError(
+            f"no saved account named {name} — add it with: dotsync account login {name}",
+            "not_found",
+        )
+    return folder
 
 
 def service_for(folder: Path) -> str:
@@ -135,12 +152,13 @@ def login(name: str) -> str:
 
 def use(name: str, *, allow_unsaved_overwrite: bool = False) -> bool:
     """Make Claude use `name`'s login. Returns False when it already does."""
-    folder = account_dir(name)
-    secret = _read_secret(service_for(folder)) if folder.is_dir() else None
+    folder = _existing_dir(name)
+    secret = _read_secret(service_for(folder))
     account = _oauth_account(folder / ".claude.json")
     if secret is None or account is None:
         raise AccountError(
-            f"{name} is not logged in — run `dotsync account login {name}` first"
+            f"{name} is not logged in — run `dotsync account login {name}` first",
+            "login_required",
         )
     current = active_account()
     if current == name:
@@ -162,11 +180,12 @@ def use(name: str, *, allow_unsaved_overwrite: bool = False) -> bool:
 
 def remove(name: str) -> None:
     """Log `name` out and delete its folder."""
-    folder = account_dir(name)
-    if not folder.is_dir() or folder.is_symlink():
-        raise AccountError(f"no saved account named {name}")
+    folder = _existing_dir(name)
     if name == active_account():
-        raise AccountError(f"{name} is the account in use — switch to another account first")
+        raise AccountError(
+            f"{name} is the account in use — switch to another account first",
+            "active_account",
+        )
     result = subprocess.run(
         [_claude_binary(), "auth", "logout"],
         env={**os.environ, "CLAUDE_CONFIG_DIR": str(folder)},
@@ -185,7 +204,7 @@ def _seat_config() -> Path:
 def _claude_binary() -> str:
     claude = shutil.which("claude")
     if claude is None:
-        raise AccountError("claude is not installed (not found on PATH)")
+        raise AccountError("claude is not installed (not found on PATH)", "claude_missing")
     return claude
 
 

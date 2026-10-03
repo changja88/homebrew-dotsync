@@ -275,3 +275,48 @@ def test_account_email_reads_the_saved_account(fake_home, fake_accounts_cli):
     assert accounts.seat_email() == "alice@example.com"
     assert accounts.is_logged_in("bob") is True
     assert accounts.account_email("ghost") is None
+
+
+def _code(call) -> str:
+    with pytest.raises(AccountError) as e:
+        call()
+    return e.value.code
+
+
+def test_account_errors_default_to_failed():
+    assert AccountError("x").code == "failed"
+
+
+def test_invalid_name_has_its_code():
+    assert _code(lambda: accounts.validate_name("a/b")) == "invalid_name"
+
+
+def test_missing_claude_has_its_code(fake_home, fake_accounts_cli, monkeypatch):
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    assert _code(lambda: accounts.login("bob")) == "claude_missing"
+
+
+def test_use_of_an_unknown_account_is_not_found(fake_home, fake_accounts_cli):
+    assert _code(lambda: accounts.use("ghost")) == "not_found"
+
+
+def test_use_of_a_logged_out_account_needs_login(fake_home, fake_accounts_cli):
+    (fake_home / ".claude-accounts" / "bob").mkdir(parents=True)
+    assert _code(lambda: accounts.use("bob")) == "login_required"
+
+
+def test_unsaved_login_has_its_code(fake_home, fake_accounts_cli):
+    cli = fake_accounts_cli
+    _saved(fake_home, cli, "bob", BOB, "b1")
+    _seat(fake_home, cli, UNSAVED, "u1")
+    assert _code(lambda: accounts.use("bob")) == "unsaved_login"
+
+
+def test_remove_errors_have_codes(fake_home, fake_accounts_cli):
+    cli = fake_accounts_cli
+    _saved(fake_home, cli, "alice", ALICE, "a1")
+    _seat(fake_home, cli, ALICE, "a2")
+    assert _code(lambda: accounts.remove("ghost")) == "not_found"
+    assert _code(lambda: accounts.remove("alice")) == "active_account"
