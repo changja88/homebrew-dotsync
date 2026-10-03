@@ -116,9 +116,10 @@ class FakeAccountsCli:
     `keychain` maps a Keychain service name to its stored secret. `browser`
     is the claude.ai account the browser approves at `claude auth login`:
     {"oauthAccount": {...}, "secret": "..."}. `login_fails` makes the login
-    exit 1 and `ignore_writes` drops every Keychain write. The service name
-    for a config folder is computed here independently of dotsync, so tests
-    pin Claude Code's naming rule.
+    exit 1, `login_interrupted` makes it raise KeyboardInterrupt (as Ctrl-C
+    or SIGTERM would), and `ignore_writes` drops every Keychain write. The
+    service name for a config folder is computed here independently of
+    dotsync, so tests pin Claude Code's naming rule.
     """
 
     USER = "tester"
@@ -127,6 +128,7 @@ class FakeAccountsCli:
         self.keychain: dict[str, str] = {}
         self.browser: dict | None = None
         self.login_fails = False
+        self.login_interrupted = False
         self.ignore_writes = False
         self.calls: list[list[str]] = []
         self.stdin: list[str] = []
@@ -186,6 +188,8 @@ class FakeAccountsCli:
             # The real command prints its progress; it must not reach
             # dotsync's stdout, which carries the --json answer.
             (kwargs.get("stdout") or sys.stdout).write("Opening browser to sign in…\n")
+            if self.login_interrupted:
+                raise KeyboardInterrupt
             if self.login_fails or self.browser is None:
                 return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
             folder.mkdir(parents=True, exist_ok=True)

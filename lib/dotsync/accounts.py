@@ -216,12 +216,19 @@ def login(name: str) -> str:
     in_use = name == active_account()
     created = not folder.exists()
     folder.mkdir(parents=True, exist_ok=True)
-    result = subprocess.run(
-        [claude, "auth", "login"],
-        env={**os.environ, "CLAUDE_CONFIG_DIR": str(folder)},
-        # stdout is reserved for dotsync's own answer (`--json`).
-        stdout=sys.stderr,
-    )
+    try:
+        result = subprocess.run(
+            [claude, "auth", "login"],
+            env={**os.environ, "CLAUDE_CONFIG_DIR": str(folder)},
+            # stdout is reserved for dotsync's own answer (`--json`).
+            stdout=sys.stderr,
+        )
+    except KeyboardInterrupt:
+        # Ctrl-C, or SIGTERM from the dotsync app's cancel button (see
+        # cli.cmd_account). subprocess.run has already stopped the login.
+        if created:
+            shutil.rmtree(folder, ignore_errors=True)
+        raise AccountError(f"login for {name} was cancelled", "cancelled") from None
     email = account_email(name)
     if result.returncode != 0 or email is None or not _has_secret(service_for(folder)):
         if created:

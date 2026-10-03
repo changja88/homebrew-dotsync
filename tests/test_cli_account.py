@@ -352,3 +352,26 @@ def test_account_login_again_for_the_account_in_use_says_claude_keeps_going(fake
     out = capsys.readouterr().out
     assert "already uses" in out
     assert "dotsync account use" not in out
+
+
+def test_account_login_turns_sigterm_into_a_cancel(fake_home, fake_accounts_cli, monkeypatch, capsys):
+    import signal
+
+    installed = {}
+    monkeypatch.setattr(signal, "signal", lambda sig, handler: installed.__setitem__(sig, handler))
+    fake_accounts_cli.login_interrupted = True
+
+    assert main(["account", "login", "bob", "--json"]) == 1
+
+    assert installed[signal.SIGTERM] is signal.default_int_handler
+    assert _json_out(capsys)["error"]["code"] == "cancelled"
+    assert not (fake_home / ".claude-accounts" / "bob").exists()
+
+
+def test_other_account_commands_keep_the_default_sigterm(fake_home, fake_accounts_cli, monkeypatch):
+    import signal
+
+    installed = {}
+    monkeypatch.setattr(signal, "signal", lambda sig, handler: installed.__setitem__(sig, handler))
+    main(["account", "list", "--json"])
+    assert installed == {}

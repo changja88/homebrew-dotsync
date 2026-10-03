@@ -418,3 +418,20 @@ def test_label_ignores_a_corrupt_label_file(fake_home, fake_accounts_cli):
     folder = _saved(fake_home, fake_accounts_cli, "bob", BOB, "b1")
     (folder / ".dotsync-account.json").write_text("{")
     assert accounts.label("bob") == "bob"
+
+
+def test_cancelled_login_removes_the_new_folder(fake_home, fake_accounts_cli):
+    fake_accounts_cli.login_interrupted = True
+    assert _code(lambda: accounts.login("bob")) == "cancelled"
+    assert not (fake_home / ".claude-accounts" / "bob").exists()
+
+
+def test_cancelled_login_again_keeps_the_saved_login(fake_home, fake_accounts_cli):
+    cli = fake_accounts_cli
+    folder = _saved(fake_home, cli, "bob", BOB, "b1")
+    cli.login_interrupted = True
+
+    assert _code(lambda: accounts.login("bob")) == "cancelled"
+
+    assert folder.is_dir()
+    assert cli.keychain[cli.service_for(folder)] == "b1"

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import signal
 import sys
 import time
 from pathlib import Path
@@ -724,6 +725,10 @@ def _account_lock(args):
 
 
 def cmd_account(args) -> int:
+    if args.account_cmd == "login":
+        # The dotsync app cancels a login with SIGTERM; handle it like
+        # Ctrl-C so the login stops and cleans up instead of dying mid-way.
+        signal.signal(signal.SIGTERM, signal.default_int_handler)
     if args.json:
         return _account_json(args)
     with _account_lock(args):
