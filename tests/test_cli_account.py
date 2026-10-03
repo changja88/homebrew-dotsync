@@ -339,3 +339,16 @@ def test_account_list_text_shows_a_label_and_its_name(fake_home, fake_accounts_c
 
     out = capsys.readouterr().out
     assert "밥" in out and "(bob)" in out
+
+
+def test_account_login_again_for_the_account_in_use_says_claude_keeps_going(fake_home, fake_accounts_cli, capsys):
+    cli = fake_accounts_cli
+    _saved(fake_home, cli, "alice", ALICE, "a1")
+    _seat(fake_home, cli, ALICE, "a2")
+    cli.browser = {"oauthAccount": ALICE, "secret": "a3"}
+
+    assert main(["account", "login", "alice"]) == 0
+
+    out = capsys.readouterr().out
+    assert "already uses" in out
+    assert "dotsync account use" not in out

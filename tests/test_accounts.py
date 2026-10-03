@@ -87,14 +87,48 @@ def test_login_raises_when_claude_login_fails(fake_home, fake_accounts_cli):
         accounts.login("bob")
 
 
-def test_login_refuses_the_account_in_use(fake_home, fake_accounts_cli):
+def test_login_again_for_the_account_in_use_also_puts_it_in_the_seat(fake_home, fake_accounts_cli):
     cli = fake_accounts_cli
+    folder = _saved(fake_home, cli, "alice", ALICE, "a1")
     _seat(fake_home, cli, ALICE, "a2")
-    _saved(fake_home, cli, "alice", ALICE, "a1")
     cli.browser = {"oauthAccount": ALICE, "secret": "a3"}
-    with pytest.raises(AccountError, match="in use"):
+
+    accounts.login("alice")
+
+    assert cli.keychain[cli.service_for(folder)] == "a3"
+    assert cli.keychain[SEAT] == "a3"
+    seat_doc = _doc(fake_home / ".claude.json")
+    assert seat_doc["oauthAccount"] == ALICE
+    assert seat_doc["numStartups"] == 3
+    assert accounts.active_account() == "alice"
+    assert "a3" not in cli.argv_text()
+
+
+def test_login_again_for_another_account_leaves_the_seat_alone(fake_home, fake_accounts_cli):
+    cli = fake_accounts_cli
+    _saved(fake_home, cli, "alice", ALICE, "a1")
+    bob = _saved(fake_home, cli, "bob", BOB, "b1")
+    _seat(fake_home, cli, ALICE, "a2")
+    cli.browser = {"oauthAccount": BOB, "secret": "b2"}
+
+    accounts.login("bob")
+
+    assert cli.keychain[cli.service_for(bob)] == "b2"
+    assert cli.keychain[SEAT] == "a2"
+
+
+def test_failed_login_again_for_the_account_in_use_keeps_everything(fake_home, fake_accounts_cli):
+    cli = fake_accounts_cli
+    folder = _saved(fake_home, cli, "alice", ALICE, "a1")
+    _seat(fake_home, cli, ALICE, "a2")
+    cli.login_fails = True
+
+    with pytest.raises(AccountError):
         accounts.login("alice")
-    assert not any(Path(c[0]).name == "claude" for c in cli.calls)
+
+    assert folder.is_dir()
+    assert cli.keychain[cli.service_for(folder)] == "a1"
+    assert cli.keychain[SEAT] == "a2"
 
 
 def test_login_raises_when_claude_is_not_installed(fake_home, fake_accounts_cli, monkeypatch):

@@ -209,14 +209,11 @@ def snapshot() -> dict:
 
 def login(name: str) -> str:
     """Run `claude auth login` for `name`'s own folder — the browser decides
-    which claude.ai account it saves. Returns that account's email."""
+    which claude.ai account it saves. Returns that account's email. Logging
+    in again to the account in use also gives Claude the new login."""
     folder = account_dir(name)
-    if name == active_account():
-        raise AccountError(
-            f"{name} is the account in use — switch to another account before "
-            "logging it in again"
-        )
     claude = _claude_binary()
+    in_use = name == active_account()
     created = not folder.exists()
     folder.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
@@ -230,6 +227,8 @@ def login(name: str) -> str:
         if created:
             shutil.rmtree(folder, ignore_errors=True)
         raise AccountError(f"`claude auth login` did not finish for {name}")
+    if in_use:
+        _put_in_seat(_read_secret(service_for(folder)), _oauth_account(folder / ".claude.json"))
     return email
 
 
@@ -256,9 +255,14 @@ def use(name: str, *, allow_unsaved_overwrite: bool = False) -> bool:
         _set_oauth_account(current_folder / ".claude.json", _oauth_account(_seat_config()))
     elif seat_secret is not None and not allow_unsaved_overwrite:
         raise UnsavedLoginError(seat_email())
+    _put_in_seat(secret, account)
+    return True
+
+
+def _put_in_seat(secret: str, account: dict) -> None:
+    """Give Claude's default folder this login, as `/login` would."""
     _write_secret(DEFAULT_SERVICE, secret)
     _set_oauth_account(_seat_config(), account)
-    return True
 
 
 def remove(name: str) -> None:

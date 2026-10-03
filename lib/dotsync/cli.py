@@ -770,7 +770,10 @@ def _account_text(args) -> int:
         ui.step(f"logging in {args.name} — approve in the browser with the claude.ai account to save")
         email = accounts.login(args.name)
         ui.ok(f"saved {args.name} → {email}")
-        ui.dim(f"switch Claude to it with: dotsync account use {args.name}")
+        if accounts.active_account() == args.name:
+            ui.dim("Claude already uses this account — running sessions keep going with the new login")
+        else:
+            ui.dim(f"switch Claude to it with: dotsync account use {args.name}")
         return 0
     if args.account_cmd == "use":
         try:
