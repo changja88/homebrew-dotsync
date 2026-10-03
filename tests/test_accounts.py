@@ -554,3 +554,78 @@ def test_usage_needs_claude(fake_home, fake_accounts_cli, monkeypatch):
 
     monkeypatch.setattr(shutil, "which", lambda name: None)
     assert _code(accounts.usage) == "claude_missing"
+
+
+def test_usage_keeps_going_when_claude_cannot_start_for_one_account(fake_home, fake_accounts_cli):
+    cli = fake_accounts_cli
+    _saved(fake_home, cli, "alice", ALICE, "a1")
+    _saved(fake_home, cli, "bob", BOB, "b1")
+    _seat(fake_home, cli, ALICE, "a2")
+    cli.reply_usage("seat", FIVE, WEEK)
+    cli.reply_raise("bob", OSError(35, "Resource temporarily unavailable"))
+
+    report = accounts.usage()
+
+    assert [a["status"] for a in report["accounts"]] == ["ok", "error"]
+
+
+def test_usage_probes_run_outside_the_callers_project(fake_home, fake_accounts_cli, monkeypatch):
+    cli = fake_accounts_cli
+    project = fake_home / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    _saved(fake_home, cli, "alice", ALICE, "a1")
+    _saved(fake_home, cli, "bob", BOB, "b1")
+    _seat(fake_home, cli, ALICE, "a2")
+    cli.reply_usage("seat", FIVE, WEEK)
+    cli.reply_usage("bob", FIVE, WEEK)
+
+    accounts.usage()
+
+    root = fake_home / ".claude-accounts"
+    assert cli.probe_cwds == {"seat": root, "bob": root}
+
+
+def test_login_again_with_another_browser_account_keeps_the_account_in_use(fake_home, fake_accounts_cli):
+    cli = fake_accounts_cli
+    folder = _saved(fake_home, cli, "alice", ALICE, "a1")
+    _seat(fake_home, cli, ALICE, "a2")
+    cli.browser = {"oauthAccount": BOB, "secret": "b9"}
+
+    with pytest.raises(AccountError, match="bob@example.com.*alice@example.com") as e:
+        accounts.login("alice")
+
+    assert e.value.code == "wrong_account"
+    assert cli.keychain[SEAT] == "a2"
+    assert _doc(fake_home / ".claude.json")["oauthAccount"] == ALICE
+    assert cli.keychain[cli.service_for(folder)] == "a2"
+    assert _doc(folder / ".claude.json")["oauthAccount"] == ALICE
+    assert accounts.active_account() == "alice"
+
+
+def test_login_again_with_another_browser_account_keeps_a_saved_login(fake_home, fake_accounts_cli):
+    cli = fake_accounts_cli
+    folder = _saved(fake_home, cli, "bob", BOB, "b1")
+    _seat(fake_home, cli, ALICE, "a2")
+    cli.browser = {"oauthAccount": UNSAVED, "secret": "u9"}
+
+    assert _code(lambda: accounts.login("bob")) == "wrong_account"
+
+    assert cli.keychain[cli.service_for(folder)] == "b1"
+    assert _doc(folder / ".claude.json")["oauthAccount"] == BOB
+    assert cli.keychain[SEAT] == "a2"
+
+
+def test_login_again_with_another_browser_account_for_a_lost_login_saves_nothing(fake_home, fake_accounts_cli):
+    cli = fake_accounts_cli
+    folder = fake_home / ".claude-accounts" / "bob"
+    folder.mkdir(parents=True)
+    (folder / ".claude.json").write_text(json.dumps({"oauthAccount": BOB}))
+    cli.browser = {"oauthAccount": UNSAVED, "secret": "u9"}
+
+    assert _code(lambda: accounts.login("bob")) == "wrong_account"
+
+    assert cli.service_for(folder) not in cli.keychain
+    assert _doc(folder / ".claude.json")["oauthAccount"] == BOB
+    assert not accounts.is_logged_in("bob")
+    assert "u9" not in cli.argv_text()

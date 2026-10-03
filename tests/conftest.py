@@ -141,6 +141,7 @@ class FakeAccountsCli:
         self.usage: dict = {}
         self.probes: list[str] = []
         self.probe_hook = None
+        self.probe_cwds: dict = {}
         self.ignore_writes = False
         self.calls: list[list[str]] = []
         self.stdin: list[str] = []
@@ -176,6 +177,10 @@ class FakeAccountsCli:
                 if not self.ignore_writes:
                     self.keychain[service] = bytes.fromhex(words[words.index("-X") + 1]).decode()
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[1] == "delete-generic-password":
+            assert cmd[cmd.index("-a") + 1] == self.USER
+            found = self.keychain.pop(cmd[cmd.index("-s") + 1], None) is not None
+            return subprocess.CompletedProcess(cmd, 0 if found else 44, stdout="", stderr="")
         if cmd[1] == "find-generic-password":
             assert cmd[cmd.index("-a") + 1] == self.USER
             service = cmd[cmd.index("-s") + 1]
@@ -252,6 +257,13 @@ class FakeAccountsCli:
     def reply_timeout(self, key):
         self.usage[key] = "timeout"
 
+    def reply_bytes(self, key, raw: bytes, returncode=0):
+        """Raw output, decoded the way subprocess.run(text=True) would."""
+        self.usage[key] = ("bytes", returncode, raw)
+
+    def reply_raise(self, key, error: BaseException):
+        self.usage[key] = ("raise", error)
+
     def _probe(self, cmd, env, kwargs):
         import json
         import subprocess
@@ -262,6 +274,7 @@ class FakeAccountsCli:
         assert kwargs.get("timeout") == 30
         key = Path(env["CLAUDE_CONFIG_DIR"]).name if "CLAUDE_CONFIG_DIR" in env else "seat"
         self.probes.append(key)
+        self.probe_cwds[key] = kwargs.get("cwd")
         if self.probe_hook is not None:
             self.probe_hook(key)
         if key not in self.usage:
@@ -269,6 +282,12 @@ class FakeAccountsCli:
         reply = self.usage[key]
         if reply == "timeout":
             raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+        if reply[0] == "raise":
+            raise reply[1]
+        if reply[0] == "bytes":
+            _, returncode, raw = reply
+            stdout = raw.decode("utf-8", kwargs.get("errors") or "strict")
+            return subprocess.CompletedProcess(cmd, returncode, stdout=stdout, stderr="")
         returncode, stdout = reply
         return subprocess.CompletedProcess(cmd, returncode, stdout=stdout, stderr="")
 

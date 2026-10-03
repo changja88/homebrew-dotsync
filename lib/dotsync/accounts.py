@@ -218,13 +218,20 @@ def usage() -> dict:
     names = saved_accounts()
     active = active_account()
     unsaved_email = seat_email() if active is None else None
+    # A neutral folder: probes must not pick up the caller's project settings.
+    neutral = accounts_root()
+    neutral.mkdir(parents=True, exist_ok=True)
+
+    def probe(config_dir: Path | None):
+        return pool.submit(claude_usage.probe, claude, config_dir, cwd=neutral)
+
     with ThreadPoolExecutor(max_workers=len(names) + 1) as pool:
         jobs = {
-            name: pool.submit(claude_usage.probe, claude, None if name == active else account_dir(name))
+            name: probe(None if name == active else account_dir(name))
             for name in names
             if name == active or is_logged_in(name)
         }
-        seat_job = pool.submit(claude_usage.probe, claude, None) if unsaved_email else None
+        seat_job = probe(None) if unsaved_email else None
     logged_out = {"status": "login_required", "five_hour": None, "seven_day": None}
     return {
         "fetched_at": _utc_now(),
@@ -249,11 +256,14 @@ def _utc_now() -> str:
 def login(name: str) -> str:
     """Run `claude auth login` for `name`'s own folder — the browser decides
     which claude.ai account it saves. Returns that account's email. Logging
-    in again to the account in use also gives Claude the new login."""
+    in again to the account in use also gives Claude the new login. Logging
+    in again with a different claude.ai account in the browser fails and
+    leaves `name` as it was."""
     folder = account_dir(name)
     claude = _claude_binary()
     in_use = name == active_account()
     created = not folder.exists()
+    before = None if created else _login_before(folder, in_use)
     folder.mkdir(parents=True, exist_ok=True)
     try:
         result = subprocess.run(
@@ -273,6 +283,14 @@ def login(name: str) -> str:
         if created:
             shutil.rmtree(folder, ignore_errors=True)
         raise AccountError(f"`claude auth login` did not finish for {name}")
+    if before is not None and _uuid(_oauth_account(folder / ".claude.json")) != _uuid(before[1]):
+        _restore_login(folder, *before)
+        expected = _email(before[1])
+        raise AccountError(
+            f"the browser approved {email}, not {expected} — {name} keeps its login; "
+            f"sign the browser in to {expected} and try again",
+            "wrong_account",
+        )
     if in_use:
         _put_in_seat(_read_secret(service_for(folder)), _oauth_account(folder / ".claude.json"))
     return email
@@ -303,6 +321,25 @@ def use(name: str, *, allow_unsaved_overwrite: bool = False) -> bool:
         raise UnsavedLoginError(seat_email())
     _put_in_seat(secret, account)
     return True
+
+
+def _login_before(folder: Path, in_use: bool) -> tuple[str | None, dict] | None:
+    """The login `folder` holds before it logs in again, or None when it
+    holds no account. For the account in use that is the seat's copy, the
+    newest one."""
+    account = _oauth_account(_seat_config() if in_use else folder / ".claude.json")
+    if _uuid(account) is None:
+        return None
+    return _read_secret(DEFAULT_SERVICE if in_use else service_for(folder)), account
+
+
+def _restore_login(folder: Path, secret: str | None, account: dict) -> None:
+    service = service_for(folder)
+    if secret is None:
+        _delete_secret(service)
+    else:
+        _write_secret(service, secret)
+    _set_oauth_account(folder / ".claude.json", account)
 
 
 def _put_in_seat(secret: str, account: dict) -> None:
@@ -339,6 +376,11 @@ def _claude_binary() -> str:
     if claude is None:
         raise AccountError("claude is not installed (not found on PATH)", "claude_missing")
     return claude
+
+
+def _uuid(account: dict | None) -> str | None:
+    uuid = account.get("accountUuid") if account else None
+    return uuid if isinstance(uuid, str) and uuid else None
 
 
 def _email(account: dict | None) -> str | None:
@@ -392,6 +434,14 @@ def _read_secret(service: str) -> str | None:
         raise AccountError(f"could not read the Keychain entry {service!r}: {result.stderr.strip()}")
     out = result.stdout
     return out[:-1] if out.endswith("\n") else out
+
+
+def _delete_secret(service: str) -> None:
+    result = _security("delete-generic-password", "-s", service, "-a", getpass.getuser())
+    if result.returncode not in (0, _ITEM_NOT_FOUND):
+        raise AccountError(
+            f"could not remove the Keychain entry {service!r}: {result.stderr.strip()}"
+        )
 
 
 def _write_secret(service: str, secret: str) -> None:

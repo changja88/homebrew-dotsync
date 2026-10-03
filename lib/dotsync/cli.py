@@ -751,6 +751,9 @@ def _account_json(args) -> int:
             error["email"] = e.email
         print(json.dumps({"error": error}, ensure_ascii=False))
         return 1
+    except KeyboardInterrupt:  # Ctrl-C, or SIGTERM during `login`
+        print(json.dumps({"error": {"code": "cancelled", "message": "the command was cancelled"}}))
+        return 1
     except Exception as e:  # the dotsync app reads every answer as JSON
         print(json.dumps({"error": {"code": "failed", "message": str(e)}}, ensure_ascii=False))
         return 1

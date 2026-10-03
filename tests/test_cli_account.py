@@ -416,3 +416,19 @@ def test_account_usage_json_without_claude(fake_home, fake_accounts_cli, monkeyp
     monkeypatch.setattr(shutil, "which", lambda name: None)
     assert main(["account", "usage", "--json"]) == 1
     assert _json_out(capsys)["error"]["code"] == "claude_missing"
+
+
+def test_account_json_reports_an_interrupted_command_as_cancelled(fake_home, fake_accounts_cli, monkeypatch, capsys):
+    import signal
+
+    from dotsync import accounts
+
+    monkeypatch.setattr(signal, "signal", lambda sig, handler: None)
+
+    def interrupted(name):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(accounts, "login", interrupted)
+
+    assert main(["account", "login", "bob", "--json"]) == 1
+    assert _json_out(capsys)["error"]["code"] == "cancelled"

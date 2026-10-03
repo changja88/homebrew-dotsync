@@ -20,8 +20,10 @@ _REQUEST = json.dumps(
 ) + "\n"
 
 
-def probe(claude: str, config_dir: Path | None) -> dict:
-    """Usage of the login in `config_dir`, or in Claude's default folder when None."""
+def probe(claude: str, config_dir: Path | None, *, cwd: Path) -> dict:
+    """Usage of the login in `config_dir`, or in Claude's default folder when
+    None. Claude runs in `cwd`, so the caller's project settings and hooks
+    stay out of the probe."""
     env = dict(os.environ)
     env.pop("CLAUDE_CONFIG_DIR", None)
     if config_dir is not None:
@@ -32,10 +34,19 @@ def probe(claude: str, config_dir: Path | None) -> dict:
     ]
     try:
         result = subprocess.run(
-            cmd, input=_REQUEST, capture_output=True, text=True, env=env, timeout=TIMEOUT_SECONDS
+            cmd,
+            input=_REQUEST,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            env=env,
+            cwd=cwd,
+            timeout=TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
         return _error("timeout")
+    except OSError as e:
+        return _error(f"could not run claude: {e}")
     answer = parse(result.stdout)
     if answer is not None:
         return answer

@@ -71,7 +71,7 @@ def test_probe_of_a_folder_sets_claude_config_dir(fake_home, fake_accounts_cli):
     folder.mkdir(parents=True)
     fake_accounts_cli.reply_usage("bob", FIVE, WEEK)
 
-    assert claude_usage.probe("/fake/bin/claude", folder)["status"] == "ok"
+    assert claude_usage.probe("/fake/bin/claude", folder, cwd=fake_home)["status"] == "ok"
 
     assert fake_accounts_cli.probes == ["bob"]
     assert fake_accounts_cli.calls[-1][1:] == PROBE_ARGS
@@ -81,19 +81,42 @@ def test_probe_of_the_seat_drops_an_inherited_claude_config_dir(fake_home, fake_
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/somewhere/else")
     fake_accounts_cli.reply_usage("seat", FIVE, WEEK)
 
-    assert claude_usage.probe("/fake/bin/claude", None)["status"] == "ok"
+    assert claude_usage.probe("/fake/bin/claude", None, cwd=fake_home)["status"] == "ok"
     assert fake_accounts_cli.probes == ["seat"]
 
 
 def test_probe_that_times_out_is_an_error(fake_home, fake_accounts_cli):
     fake_accounts_cli.reply_timeout("seat")
-    assert claude_usage.probe("/fake/bin/claude", None) == {
+    assert claude_usage.probe("/fake/bin/claude", None, cwd=fake_home) == {
         "status": "error", "error": "timeout", "five_hour": None, "seven_day": None,
     }
 
 
 def test_probe_that_crashes_without_an_answer_is_an_error(fake_home, fake_accounts_cli):
     fake_accounts_cli.reply_raw("seat", "Segmentation fault\n", returncode=139)
-    out = claude_usage.probe("/fake/bin/claude", None)
+    out = claude_usage.probe("/fake/bin/claude", None, cwd=fake_home)
     assert out["status"] == "error"
     assert out["error"] == "claude exited with 139"
+
+
+def test_probe_runs_in_the_folder_it_is_given(fake_home, fake_accounts_cli):
+    neutral = fake_home / "neutral"
+    neutral.mkdir()
+    fake_accounts_cli.reply_usage("seat", FIVE, WEEK)
+
+    claude_usage.probe("/fake/bin/claude", None, cwd=neutral)
+
+    assert fake_accounts_cli.probe_cwds["seat"] == neutral
+
+
+def test_probe_reads_an_answer_next_to_bytes_that_are_not_utf8(fake_home, fake_accounts_cli):
+    raw = b"\xff\xfe noise\n" + fake_accounts_cli.usage_answer(FIVE, WEEK).encode()
+    fake_accounts_cli.reply_bytes("seat", raw)
+    assert claude_usage.probe("/fake/bin/claude", None, cwd=fake_home)["status"] == "ok"
+
+
+def test_probe_that_cannot_start_claude_is_an_error(fake_home, fake_accounts_cli):
+    fake_accounts_cli.reply_raise("seat", FileNotFoundError(2, "No such file or directory"))
+    out = claude_usage.probe("/fake/bin/claude", None, cwd=fake_home)
+    assert out["status"] == "error"
+    assert "No such file" in out["error"]
