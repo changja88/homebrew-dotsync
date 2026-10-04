@@ -234,24 +234,25 @@ struct AccountBox: View {
     }
 }
 
-/// A row's metric: bar and percent, then the time left on its own line with
-/// the column's full width — about 85 pt, and "6일 23시간" needs about 50.
+/// A row's metric: bar over the time left, and the percent beside both,
+/// centered on them. The column is about 84 pt: "100%" takes 30, leaving
+/// 49 for "6일 23시간", which needs 48.
 struct RowMetric: View {
     let window: UsageWindow?
     let now: Date
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 5) {
+        HStack(alignment: .center, spacing: 5) {
+            VStack(alignment: .leading, spacing: 3) {
                 UsageBar(percent: window?.percent ?? 0, height: 4)
-                Text(window.map { "\($0.percent)%" } ?? "—")
-                    .font(.system(size: 12.5, weight: (window?.percent ?? 0) >= 85 ? .heavy : .bold, design: .rounded))
-                    .monospacedDigit().fixedSize()
-                    .opacity(UsageText.isReset(window, now: now) ? 0.4 : 1)
+                CountdownText(reset: window?.resetsAt, now: now)
+                    .font(.system(size: 9.5)).foregroundStyle(.secondary)
+                    .lineLimit(1).minimumScaleFactor(0.85)
             }
-            CountdownText(reset: window?.resetsAt, now: now)
-                .font(.system(size: 9.5)).foregroundStyle(.secondary)
-                .lineLimit(1).minimumScaleFactor(0.85)
+            Text(window.map { "\($0.percent)%" } ?? "—")
+                .font(.system(size: 12.5, weight: (window?.percent ?? 0) >= 85 ? .heavy : .bold, design: .rounded))
+                .monospacedDigit().fixedSize()
+                .opacity(UsageText.isReset(window, now: now) ? 0.4 : 1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
