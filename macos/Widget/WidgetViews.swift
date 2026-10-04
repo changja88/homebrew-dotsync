@@ -49,6 +49,10 @@ struct AccountsWidgetView: View {
             Spacer(minLength: 0)
         }
         .padding(14)
+        // Live times are formatted in the environment's language, which is
+        // English in the widget whatever the bundle declares; a style's own
+        // locale is overridden by it.
+        .environment(\.locale, Locale(identifier: "ko_KR"))
         .containerBackground(for: .widget) { WidgetBackdrop() }
         .widgetURL(AppLink.open.url)
     }
@@ -80,13 +84,8 @@ struct UpdateStatusText: View {
 /// view, so it can sit inside another text.
 func agoText(_ date: Date) -> Text {
     Text(.currentDate, format: SystemFormatStyle.DateReference(
-        to: date, allowedFields: [.day, .hour, .minute], maxFieldCount: 2, thresholdField: .day)
-        .locale(korean))
+        to: date, allowedFields: [.day, .hour, .minute], maxFieldCount: 2, thresholdField: .day))
 }
-
-/// Live times are formatted by whatever process draws the widget, in its
-/// language — English on this Mac — unless the style names one.
-let korean = Locale(identifier: "ko_KR")
 
 /// "3시간 44분", "6일 20시간" until a reset, counting down by itself;
 /// "초기화됨" from the timeline entry at the reset on.
@@ -102,8 +101,7 @@ struct CountdownText: View {
         case .passed: Text("초기화됨")
         case .until(let date):
             let left = Text(.currentDate, format: SystemFormatStyle.DateOffset(
-                to: date, allowedFields: [.day, .hour, .minute], maxFieldCount: 2, sign: .never)
-                .locale(korean))
+                to: date, allowedFields: [.day, .hour, .minute], maxFieldCount: 2, sign: .never))
             if after { Text("\(left) 후") } else { left }
         }
     }

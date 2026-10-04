@@ -114,3 +114,31 @@ struct ActiveBackdrop: NSViewRepresentable {
 
     func updateNSView(_ view: NSVisualEffectView, context: Context) {}
 }
+
+/// The see-through ground with the mockup's pastel light over it: blue top
+/// left, pink top right, peach bottom right, lilac bottom left. Without it the
+/// glass turns grey over a white window behind.
+struct WindowBackdrop: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let dark = colorScheme == .dark
+        let blobs: [(Color, UnitPoint)] = dark
+            ? [(Color(red: 0.11, green: 0.30, blue: 0.62), UnitPoint(x: 0.12, y: 0.18)),
+               (Color(red: 0.40, green: 0.16, blue: 0.42), UnitPoint(x: 0.88, y: 0.22)),
+               (Color(red: 0.48, green: 0.26, blue: 0.09), UnitPoint(x: 0.72, y: 0.92)),
+               (Color(red: 0.23, green: 0.16, blue: 0.53), UnitPoint(x: 0.18, y: 0.88))]
+            : [(Color(red: 0.58, green: 0.77, blue: 1.0), UnitPoint(x: 0.12, y: 0.18)),
+               (Color(red: 0.96, green: 0.71, blue: 0.83), UnitPoint(x: 0.88, y: 0.22)),
+               (Color(red: 1.0, green: 0.83, blue: 0.61), UnitPoint(x: 0.72, y: 0.92)),
+               (Color(red: 0.73, green: 0.66, blue: 1.0), UnitPoint(x: 0.18, y: 0.88))]
+        ZStack {
+            ActiveBackdrop()
+            (dark ? Color.black.opacity(0.25) : Color.white.opacity(0.3))
+            ForEach(blobs.indices, id: \.self) { index in
+                EllipticalGradient(colors: [blobs[index].0.opacity(dark ? 0.45 : 0.4), .clear],
+                                   center: blobs[index].1, startRadiusFraction: 0, endRadiusFraction: 0.62)
+            }
+        }
+    }
+}

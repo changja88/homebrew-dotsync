@@ -58,7 +58,8 @@ struct AccountsWindow: View {
                     Text("Claude 계정").font(.system(size: 15, weight: .bold)).padding(.leading, 8)
                 }
                 .sharedBackgroundVisibility(.hidden)
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarSpacer(.flexible)
+                ToolbarItem {
                     HStack(spacing: 12) {
                         HStack(spacing: 8) {
                             Text(model.running ?? "\(UsageText.ago(model.file.fetchedAt, now: context.date)) 갱신")
@@ -77,6 +78,7 @@ struct AccountsWindow: View {
                         .buttonStyle(PillButtonStyle(prominent: true, height: 34))
                         .disabled(model.isBusy)
                     }
+                    .fixedSize()
                     .padding(.trailing, 2)
                 }
                 .sharedBackgroundVisibility(.hidden)
@@ -87,7 +89,7 @@ struct AccountsWindow: View {
         // window's state in a window that isn't in front.
         .environment(\.appearsActive, true)
         // The desktop shows through, behind the glass panels.
-        .containerBackground(for: .window) { ActiveBackdrop() }
+        .containerBackground(for: .window) { WindowBackdrop() }
         .sheet(item: $model.sheet) { sheet in
             AccountSheet(sheet: sheet, model: model)
         }
