@@ -67,6 +67,10 @@ public struct DotsyncCLI: Sendable {
         if let envelope = try? UsageJSON.decoder().decode(CLIErrorEnvelope.self, from: output.stdout) {
             throw envelope.error
         }
+        if Task.isCancelled {
+            // Stopped before it answered; there is no exit status to report.
+            throw CLIError(code: "cancelled", message: "dotsync was stopped")
+        }
         let lastLine = String(decoding: output.stderr, as: UTF8.self)
             .split(separator: "\n").last.map(String.init)
         throw CLIError(code: "failed", message: lastLine ?? "dotsync exited with \(output.status)")

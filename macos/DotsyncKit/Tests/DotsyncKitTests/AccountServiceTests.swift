@@ -39,6 +39,29 @@ func makeService(usage: String = sampleReport, use: String? = nil, useStatus: In
     #expect(file.lastError == "dotsync의 답을 읽을 수 없어요")
 }
 
+@Test func aCancelledRefreshLeavesTheFileAlone() async throws {
+    // Closing the window cancels its refresh. dotsync is stopped before it
+    // answers; that is not a failure for the widget to show.
+    let fake = try FakeDotsync(script: """
+    sleep 30 >/dev/null 2>&1 &
+    child=$!
+    trap 'kill $child; exit 143' TERM
+    wait $child
+    """)
+    let service = AccountService(cli: fake.cli, store: UsageStore(directory: try temporaryDirectory()))
+    var previous = UsageFile.empty
+    previous.active = "kept"
+    try service.store.save(previous)
+
+    let refresh = Task { await service.refresh() }
+    while fake.calls().isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+    refresh.cancel()
+    let file = await refresh.value
+
+    #expect(file == previous)
+    #expect(service.store.load() == previous)
+}
+
 @Test func useSwitchesThenRefreshes() async throws {
     let (service, fake) = try makeService()
     guard case .switched(let file) = await service.use("onelife") else {

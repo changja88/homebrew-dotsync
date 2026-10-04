@@ -35,7 +35,10 @@ public struct AccountService: Sendable {
         do {
             file = UsageMerge.merge(previous: previous, report: try await cli.usage())
         } catch {
-            file = UsageMerge.failed(previous: previous, message: Self.cliError(error).message)
+            let failure = Self.cliError(error)
+            // A refresh stopped on purpose (its task was cancelled) failed nothing.
+            if failure.code == "cancelled" { return previous ?? .empty }
+            file = UsageMerge.failed(previous: previous, message: failure.message)
         }
         try? store.save(file)
         return file
