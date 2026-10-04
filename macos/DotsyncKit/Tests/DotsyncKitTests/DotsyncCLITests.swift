@@ -82,6 +82,22 @@ import Testing
     }
 }
 
+@Test func cancellingAUseLetsDotsyncFinish() async throws {
+    // `use` writes the Keychain, then Claude's files; stopped between the two,
+    // the next switch would hand one account's login to another. A cancelled
+    // caller (a widget button the system gave up on) waits for the answer.
+    let fake = try FakeDotsync(script: """
+    trap 'echo stopped >&2; exit 1' TERM
+    sleep 0.5
+    echo '{"name": "work", "label": "work", "email": null, "logged_in": true}'
+    """)
+    let use = Task { try await fake.cli.use("work", overwriteUnsaved: false) }
+    while fake.calls().isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+    use.cancel()
+    let info = try await use.value
+    #expect(info.name == "work")
+}
+
 @Test func locatePrefersTheDevelopmentPath() throws {
     let fake = try FakeDotsync(script: "")
     let defaults = UserDefaults(suiteName: "dotsynckit-\(UUID().uuidString)")!

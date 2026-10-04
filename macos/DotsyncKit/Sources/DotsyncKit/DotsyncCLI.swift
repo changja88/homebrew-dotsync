@@ -30,7 +30,7 @@ public struct DotsyncCLI: Sendable {
     }
 
     public func usage() async throws -> UsageReport {
-        try decode(UsageReport.self, try await run("usage"))
+        try decode(UsageReport.self, try await run("usage", stopsOnCancel: true))
     }
 
     public func use(_ name: String, overwriteUnsaved: Bool) async throws -> AccountInfo {
@@ -40,7 +40,7 @@ public struct DotsyncCLI: Sendable {
     /// Waits for the browser. Cancelling the calling task sends SIGTERM, which
     /// dotsync turns into a clean cancel.
     public func login(_ name: String) async throws -> AccountInfo {
-        try decode(AccountInfo.self, try await run("login", positionals: [name]))
+        try decode(AccountInfo.self, try await run("login", positionals: [name], stopsOnCancel: true))
     }
 
     public func rename(_ name: String, to label: String) async throws -> AccountInfo {
@@ -53,11 +53,16 @@ public struct DotsyncCLI: Sendable {
 
     /// `dotsync account <command> --json [options] -- <positionals>`. The `--`
     /// keeps a name or label that starts with "-" from reading as an option.
-    func run(_ command: String, options: [String] = [], positionals: [String] = []) async throws -> Data {
+    /// Only a command that `stopsOnCancel` is stopped (SIGTERM) when the
+    /// calling task is cancelled: `usage` only reads, and dotsync turns a
+    /// stopped `login` into a clean cancel. The others write the Keychain and
+    /// Claude's files one after another; they run to the end.
+    func run(_ command: String, options: [String] = [], positionals: [String] = [],
+             stopsOnCancel: Bool = false) async throws -> Data {
         let arguments = ["account", command, "--json"] + options + (positionals.isEmpty ? [] : ["--"] + positionals)
         let output: Output
         do {
-            output = try await execute(arguments)
+            output = try await execute(arguments, stopsOnCancel: stopsOnCancel)
         } catch {
             throw CLIError(code: "failed", message: "dotsync를 실행할 수 없어요: \(error.localizedDescription)")
         }
@@ -67,7 +72,7 @@ public struct DotsyncCLI: Sendable {
         if let envelope = try? UsageJSON.decoder().decode(CLIErrorEnvelope.self, from: output.stdout) {
             throw envelope.error
         }
-        if Task.isCancelled {
+        if stopsOnCancel && Task.isCancelled {
             // Stopped before it answered; there is no exit status to report.
             throw CLIError(code: "cancelled", message: "dotsync was stopped")
         }
@@ -90,7 +95,7 @@ public struct DotsyncCLI: Sendable {
         var stderr: Data
     }
 
-    func execute(_ arguments: [String]) async throws -> Output {
+    func execute(_ arguments: [String], stopsOnCancel: Bool) async throws -> Output {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
@@ -109,12 +114,17 @@ public struct DotsyncCLI: Sendable {
         // Drain both pipes while dotsync runs so neither fills up and stalls it.
         let out = Task.detached { stdout.fileHandleForReading.readDataToEndOfFile() }
         let err = Task.detached { stderr.fileHandleForReading.readDataToEndOfFile() }
-        let status = await withTaskCancellationHandler {
+        // Its own task: in a cancelled one the loop would end at once, before
+        // dotsync does.
+        let waiting = Task {
             var status: Int32 = -1
             for await value in exits { status = value }
             return status
+        }
+        let status = await withTaskCancellationHandler {
+            await waiting.value
         } onCancel: {
-            process.terminate()
+            if stopsOnCancel { process.terminate() }
         }
         return Output(status: status, stdout: await out.value, stderr: await err.value)
     }
