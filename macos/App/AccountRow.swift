@@ -30,7 +30,7 @@ struct ActiveAccountCard: View {
                     .font(.system(size: 13, weight: .semibold)).foregroundStyle(.orange)
                     .frame(maxWidth: .infinity, alignment: .leading)
             case .fullWeek(let reset):
-                Text("주간 한도 다 씀 · \(Text(UsageText.resetDate(reset)).bold()) 초기화")
+                Text("\(Text(UsageText.resetDate(reset)).bold()) 초기화")
                     .font(.system(size: 13)).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             case .metrics:
@@ -42,7 +42,7 @@ struct ActiveAccountCard: View {
         }
         .fixedSize(horizontal: false, vertical: true)
         .padding(.horizontal, 20).padding(.vertical, 18)
-        .background(GlassPanel(cornerRadius: 20, tint: .blue))
+        .background(GlassPanel(cornerRadius: 20, tint: account.isWeekUsedUp(now: now) ? .red : .blue))
     }
 }
 
@@ -67,7 +67,7 @@ struct AccountRow: View {
                     .font(.system(size: 13, weight: .semibold)).foregroundStyle(.orange)
                     .frame(maxWidth: .infinity, alignment: .leading)
             case .fullWeek(let reset):
-                Text("주간 한도 다 씀 · \(Text(UsageText.resetDate(reset)).bold()) 초기화")
+                Text("\(Text(UsageText.resetDate(reset)).bold()) 초기화")
                     .font(.system(size: 13)).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             case .metrics:
@@ -78,6 +78,12 @@ struct AccountRow: View {
                 .frame(width: AccountColumns.actions, alignment: .trailing)
         }
         .padding(.horizontal, 16).padding(.vertical, 9)
+        .background {
+            if account.isWeekUsedUp(now: now) {
+                RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.red.opacity(0.08))
+                    .padding(.horizontal, 6)
+            }
+        }
     }
 }
 

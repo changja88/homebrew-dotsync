@@ -20,9 +20,10 @@ public enum UsageText {
         return span(until: reset, now: now) ?? "초기화됨"
     }
 
-    /// "주간 한도 다 씀 · 10/7(수) 09:00 초기화"
+    /// "10/7(수) 09:00 초기화" — a used-up week shows only when it resets; its
+    /// row is tinted red to say it's used up.
     public static func fullWeek(reset: Date, timeZone: TimeZone = .current) -> String {
-        "주간 한도 다 씀 · \(resetDate(reset, timeZone: timeZone)) 초기화"
+        "\(resetDate(reset, timeZone: timeZone)) 초기화"
     }
 
     /// "10/7(수) 09:00". Rounds to the nearest minute: Claude reports resets

@@ -5,7 +5,7 @@ import Foundation
 public struct WidgetLayout: Equatable, Sendable {
     public enum RowKind: Equatable, Sendable {
         case metrics
-        /// Weekly use 98 %+: only "주간 한도 다 씀 · <date> 초기화".
+        /// Weekly use 98 %+: only "<date> 초기화", on a red-tinted row.
         case fullWeek(Date)
         case loginLost
     }

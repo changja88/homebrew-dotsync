@@ -210,7 +210,7 @@ struct AccountBox: View {
                 .redacted(reason: loading ? .placeholder : [])
                 useButton
             case .fullWeek(let reset):
-                Text("주간 한도 다 씀 · \(Text(UsageText.resetDate(reset)).bold()) 초기화")
+                Text("\(Text(UsageText.resetDate(reset)).bold()) 초기화")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .lineLimit(1).minimumScaleFactor(0.8)
                     .redacted(reason: loading ? .placeholder : [])
@@ -224,7 +224,8 @@ struct AccountBox: View {
         }
         .padding(.leading, 10).padding(.trailing, 8)
         .frame(height: 38)
-        .background(GlassCard(cornerRadius: 12))
+        // A used-up week: the row is tinted red.
+        .background(GlassCard(cornerRadius: 12, tint: account.isWeekUsedUp(now: now) ? .red.opacity(0.6) : nil))
     }
 
     @ViewBuilder private var useButton: some View {
