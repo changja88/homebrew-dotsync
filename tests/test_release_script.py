@@ -5,9 +5,14 @@ the placeholder sha256 on origin/main — brew reads the tap's main directly,
 so a placeholder there breaks `brew install` for everyone (this is exactly
 what happened to v0.1.19 when `gh release create` died mid-script).
 
+The same release ships dotsync.app: the Cask downloads its zip from the
+GitHub release, so that release is required and has to exist before main
+moves to the new Cask.
+
 These tests run the real script in a throwaway clone wired to a local bare
-"origin", with `gh` / `curl` replaced by PATH stubs, and assert on the state
-of origin after the run.
+"origin", with `gh` / `curl` / the Xcode tools replaced by PATH stubs and
+`scripts/build-app.sh` by a stub that writes a fixed zip, and assert on the
+state of origin after the run.
 """
 
 import hashlib
@@ -28,6 +33,10 @@ FAKE_TARBALL_SHA = hashlib.sha256(FAKE_TARBALL).hexdigest()
 PLACEHOLDER = "0" * 64
 OLD_SHA = "a" * 64
 
+FAKE_APP_ZIP = b"fake dotsync.app zip"
+FAKE_APP_ZIP_SHA = hashlib.sha256(FAKE_APP_ZIP).hexdigest()
+IDENTITY = "Developer ID Application: Numchida (GR53VV7ZD2)"
+
 PYPROJECT = 'version = "0.1.19"\n'
 INIT_PY = '__version__ = "0.1.19"\n'
 FORMULA = (
@@ -38,6 +47,19 @@ FORMULA = (
     '    assert_match "dotsync 0.1.19", shell_output("#{bin}/dotsync --version")\n'
     "  end\n"
     "end\n"
+)
+CASK = (
+    'cask "dotsync-app" do\n'
+    '  version "0.1.19"\n'
+    f'  sha256 "{PLACEHOLDER}"\n'
+    "end\n"
+)
+PROJECT_YML = 'settings:\n  base:\n    MARKETING_VERSION: "0.1.19"\n'
+BUILD_APP = (
+    "#!/usr/bin/env bash\n"
+    'cd "$(dirname "$0")/.."\n'
+    "mkdir -p dist\n"
+    f'printf "%s" "{FAKE_APP_ZIP.decode()}" > "dist/dotsync-app-$1.zip"\n'
 )
 
 
@@ -96,6 +118,11 @@ def sandbox(tmp_path):
         (REPO_ROOT / "scripts" / "release.sh").read_bytes()
     )
     (work / "scripts" / "release.sh").chmod(0o755)
+    (work / "scripts" / "build-app.sh").write_text(BUILD_APP)
+    (work / "Casks").mkdir()
+    (work / "Casks" / "dotsync-app.rb").write_text(CASK)
+    (work / "macos").mkdir()
+    (work / "macos" / "project.yml").write_text(PROJECT_YML)
     _git(work, "add", "-A", env=env)
     _git(work, "commit", "-m", "v0.1.19 state", env=env)
     _git(work, "push", "origin", "main", env=env)
@@ -103,12 +130,29 @@ def sandbox(tmp_path):
     bin_dir = tmp_path / "stub-bin"
     bin_dir.mkdir()
     _write_stub(bin_dir, "fakepython", "exit 0")  # stands in for `pytest` run
+    gh_log = tmp_path / "gh.log"
+    _write_stub(bin_dir, "gh", _gh(gh_log))
+    for tool in ("xcodegen", "xcodebuild", "swift"):
+        _write_stub(bin_dir, tool, "exit 0")
+    _write_stub(bin_dir, "security", f'echo "  1) ABC \\"{IDENTITY}\\""')
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["PYTHON"] = str(bin_dir / "fakepython")
     # Keep download retries fast in tests; the script defaults are larger.
     env["RELEASE_CURL_RETRIES"] = "2"
     env["RELEASE_CURL_DELAY"] = "0"
-    return {"work": work, "origin": origin, "bin": bin_dir, "env": env}
+    return {"work": work, "origin": origin, "bin": bin_dir, "env": env, "gh_log": gh_log}
+
+
+def _gh(log: Path, *, auth=0, release=0) -> str:
+    """A gh stub: `auth status` and `release create` exit as given; release
+    calls are recorded in `log`."""
+    return (
+        f'case "$1 $2" in\n'
+        f'  "auth status") exit {auth} ;;\n'
+        f'  "release create") echo "$@" >> "{log}"; exit {release} ;;\n'
+        "esac\n"
+        "exit 1"
+    )
 
 
 def _run_release(sandbox, *, choice="1\n"):
@@ -122,15 +166,19 @@ def _run_release(sandbox, *, choice="1\n"):
     )
 
 
-def _origin_formula(sandbox) -> str:
+def _origin_file(sandbox, path: str) -> str:
     r = subprocess.run(
-        ["git", "--git-dir", str(sandbox["origin"]), "show", "main:Formula/dotsync.rb"],
+        ["git", "--git-dir", str(sandbox["origin"]), "show", f"main:{path}"],
         capture_output=True,
         text=True,
         check=True,
         env=sandbox["env"],
     )
     return r.stdout
+
+
+def _origin_formula(sandbox) -> str:
+    return _origin_file(sandbox, "Formula/dotsync.rb")
 
 
 def _origin_has_tag(sandbox, tag: str) -> bool:
@@ -145,24 +193,59 @@ def _origin_has_tag(sandbox, tag: str) -> bool:
 
 
 @pytest.mark.no_subprocess_block
-def test_release_completes_and_never_publishes_placeholder_when_gh_fails(sandbox):
-    """gh being broken (not installed properly / not authenticated) must not
-    leave the tap broken: the release should still complete with the real
-    tarball sha on origin/main, and the placeholder must never be what
-    origin/main serves. This is the v0.1.19 incident as a regression test."""
-    _write_stub(sandbox["bin"], "gh", "exit 1")  # unauthenticated gh
+def test_release_ships_formula_and_cask_and_never_publishes_placeholder(sandbox):
+    """One tag ships both: origin/main gets the Formula with the real tarball
+    sha and the Cask with the app zip's sha, the zip is attached to the
+    GitHub release, and the placeholder is never what origin/main serves
+    (the v0.1.19 incident)."""
     _write_stub(sandbox["bin"], "curl", f'printf "%s" "{FAKE_TARBALL.decode()}"')
 
     result = _run_release(sandbox)
 
-    formula = _origin_formula(sandbox)
-    assert PLACEHOLDER not in formula, (
-        f"placeholder sha published to origin/main:\n{result.stdout}\n{result.stderr}"
-    )
     assert result.returncode == 0, result.stdout + result.stderr
+    formula = _origin_formula(sandbox)
+    assert PLACEHOLDER not in formula
     assert FAKE_TARBALL_SHA in formula
     assert "v0.1.20" in formula  # url bumped
+    cask = _origin_file(sandbox, "Casks/dotsync-app.rb")
+    assert 'version "0.1.20"' in cask
+    assert f'sha256 "{FAKE_APP_ZIP_SHA}"' in cask
+    assert 'MARKETING_VERSION: "0.1.20"' in _origin_file(sandbox, "macos/project.yml")
+    assert "release create v0.1.20 dist/dotsync-app-0.1.20.zip" in sandbox["gh_log"].read_text()
     assert _origin_has_tag(sandbox, "v0.1.20")
+
+
+@pytest.mark.no_subprocess_block
+def test_release_keeps_main_on_the_old_release_when_the_github_release_fails(sandbox):
+    """The Cask downloads the zip from the GitHub release. If creating it
+    fails, main must not move: a Cask pointing at a missing zip breaks
+    `brew install --cask` the way a placeholder sha breaks the Formula."""
+    _write_stub(sandbox["bin"], "gh", _gh(sandbox["gh_log"], release=1))
+    _write_stub(sandbox["bin"], "curl", f'printf "%s" "{FAKE_TARBALL.decode()}"')
+
+    result = _run_release(sandbox)
+
+    assert result.returncode != 0
+    assert "origin/main was NOT pushed" in result.stderr
+    formula = _origin_formula(sandbox)
+    assert OLD_SHA in formula, "origin/main must still serve the previous release"
+    assert "v0.1.19" in formula
+    assert 'version "0.1.19"' in _origin_file(sandbox, "Casks/dotsync-app.rb")
+
+
+@pytest.mark.no_subprocess_block
+def test_release_stops_before_changing_anything_when_gh_is_not_authenticated(sandbox):
+    """Without gh the app zip can't be published, so the release must not
+    start: no version change, no tag."""
+    _write_stub(sandbox["bin"], "gh", _gh(sandbox["gh_log"], auth=1))
+
+    result = _run_release(sandbox)
+
+    assert result.returncode != 0
+    assert "gh not authenticated" in result.stderr
+    assert (sandbox["work"] / "pyproject.toml").read_text() == PYPROJECT
+    assert (sandbox["work"] / "Casks" / "dotsync-app.rb").read_text() == CASK
+    assert not _origin_has_tag(sandbox, "v0.1.20")
 
 
 @pytest.mark.no_subprocess_block
@@ -170,7 +253,6 @@ def test_release_leaves_tap_intact_when_tarball_download_fails(sandbox):
     """If the tarball can't be fetched (network down, codeload hiccup), the
     script must abort WITHOUT having touched origin/main — the tap keeps
     serving the previous release."""
-    _write_stub(sandbox["bin"], "gh", "exit 1")
     _write_stub(sandbox["bin"], "curl", "exit 22")  # curl -f style failure
 
     result = _run_release(sandbox)
@@ -187,7 +269,6 @@ def test_release_preflights_pytest_before_version_mutation(sandbox):
     """A missing pytest runner should abort before version files and Formula
     are rewritten, otherwise a developer is left with a dirty placeholder SHA."""
     _write_stub(sandbox["bin"], "fakepython", "exit 1")
-    _write_stub(sandbox["bin"], "gh", "exit 1")
 
     result = _run_release(sandbox)
 
@@ -222,7 +303,6 @@ def test_release_falls_back_to_uv_pytest_when_default_venv_lacks_pytest(sandbox)
             "exit 2"
         ),
     )
-    _write_stub(sandbox["bin"], "gh", "exit 1")
     _write_stub(sandbox["bin"], "curl", f'printf "%s" "{FAKE_TARBALL.decode()}"')
 
     result = _run_release(sandbox)
