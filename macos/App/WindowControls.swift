@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-// The window's controls and ground. The glass itself is in Shared/Glass.swift.
+// The window's buttons, badge and ground. The glass itself is in Shared/Glass.swift.
 
 /// "사용", "계정 추가" (blue) and "새로고침", "다시 로그인" (white glass).
 struct PillButtonStyle: ButtonStyle {
