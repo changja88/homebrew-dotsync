@@ -38,7 +38,7 @@ struct DotsyncWidget: Widget {
         }
         .configurationDisplayName("Claude 계정")
         .description("Claude Code 계정별 사용량을 보고 계정을 바꿔요.")
-        .supportedFamilies([.systemLarge])
+        .supportedFamilies([.systemLarge, .systemExtraLarge])
         .contentMarginsDisabled()
     }
 }
