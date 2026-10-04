@@ -49,6 +49,18 @@ between local app locations and one user-chosen sync folder.
   and its error codes are the contract the dotsync app depends on — change
   them together with the app. Accounts are separate from syncing: no sync
   folder, no push/pull.
+- `macos/` is dotsync.app (SwiftUI) and its widget. `macos/DotsyncKit` holds
+  everything testable (`swift test --package-path macos/DotsyncKit`): models
+  of the `--json` output, usage.json in the app group `GR53VV7ZD2.dotsync`,
+  the merge rule, texts, the dotsync runner. The app runs
+  `dotsync account … --json -- <args>`; the widget only reads usage.json and
+  its buttons are `AudioPlaybackIntent`s so they run in the app process.
+  `macos/project.yml` is XcodeGen (the `.xcodeproj` is generated, not
+  committed). `make app` builds, signs (Developer ID, hardened runtime, no
+  notarization) and zips; `make release` ships the Formula and the Cask
+  `Casks/dotsync-app.rb` from one tag. For a local build, point the app at
+  this checkout with `defaults write com.changja88.dotsync cliPath
+  "$PWD/macos/dev/dotsync-dev"`.
 - `lib/dotsync/ui.py` and `lib/dotsync/ui_picker.py` own terminal output,
   colors, prompts, summaries, and picker behavior.
 - `lib/dotsync/apps/base.py` defines the app plugin contract:

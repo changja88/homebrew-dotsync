@@ -268,6 +268,18 @@ dotsync account remove work     # log it out and delete it
 - `usage` asks Claude Code itself (`claude -p` with its `get_usage` request), so it spends no tokens. The account in use is read through Claude's default folder, the others through their own folders, all at once; one slow account (30 s limit) doesn't hold up the rest.
 - Every `account` command takes `--json` and then prints exactly one JSON object — the dotsync app reads these. Errors come back as `{"error": {"code": …, "message": …}}` with exit status 1. Commands that change accounts or run Claude wait for each other (`~/.claude-accounts/.lock`).
 
+#### 6. The dotsync app (macOS)
+
+A window and a desktop widget for the same accounts: each account's 5-hour and weekly usage with reset times, and one click to switch.
+
+```bash
+brew install --cask changja88/dotsync/dotsync-app   # installs the dotsync CLI too
+```
+
+- The app is signed but not notarized: the first time, and after each update, open it once via System Settings → Privacy & Security → "Open Anyway".
+- Add the "Claude 계정" widget (large) from Edit Widgets. ↻ refreshes (about 10 s, no tokens); "사용" switches Claude like `dotsync account use`. The app runs only while you use it — nothing stays in the background.
+- The window adds accounts, logs one in again, renames and removes them.
+
 #### Change the folder or app list later
 
 `dotsync apps` opens the same picker as init's Step 2. Toggling BTT on re-runs preset discovery and writes the result back to config — no separate command needed.
@@ -558,6 +570,18 @@ dotsync account remove work     # 로그아웃하고 삭제
 - 계정은 동기화와 별개다. sync 폴더가 필요 없고 `push`/`pull` 은 계정을 건드리지 않는다.
 - `usage` 는 Claude Code 에 직접 묻는다(`claude -p` 의 `get_usage` 요청). 토큰을 쓰지 않는다. 지금 쓰는 계정은 Claude 기본 폴더로, 나머지는 각자 폴더로 동시에 조회하고, 한 계정이 느려도(30초 제한) 나머지는 기다리지 않는다.
 - 모든 `account` 명령은 `--json` 을 받으면 JSON 객체 하나만 출력한다. dotsync 앱이 이걸 읽는다. 오류는 `{"error": {"code": …, "message": …}}` 와 종료 코드 1. 계정을 바꾸거나 Claude 를 실행하는 명령은 서로 기다린다(`~/.claude-accounts/.lock`).
+
+#### 6. dotsync 앱 (macOS)
+
+같은 계정들을 창과 바탕화면 위젯으로 본다. 계정별 5시간·주간 사용량과 초기화 시각, 클릭 한 번으로 교체.
+
+```bash
+brew install --cask changja88/dotsync/dotsync-app   # dotsync 명령어도 함께 설치
+```
+
+- 앱은 서명했지만 공증은 안 했다. 처음과 업데이트할 때마다 시스템 설정 → 개인정보 보호 및 보안 → "그래도 열기"로 한 번 연다.
+- 위젯 편집에서 "Claude 계정"(큰 크기)을 추가한다. ↻ 는 새로고침(약 10초, 토큰 안 씀), "사용"은 `dotsync account use`처럼 계정을 바꾼다. 앱은 쓸 때만 실행되고 뒤에 남지 않는다.
+- 창에서 계정 추가, 다시 로그인, 이름 바꾸기, 삭제를 한다.
 
 #### 폴더/앱 목록을 나중에 바꾸고 싶으면
 
