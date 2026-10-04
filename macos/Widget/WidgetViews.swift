@@ -33,12 +33,15 @@ struct AccountsWidgetView: View {
             }
             .frame(height: 22)
             InUseCard(layout: layout, now: entry.date, loading: loading)
-            VStack(spacing: 5) {
+            // Rows grow into the room left, up to 50 pt each: three rows get
+            // 50, the four that fit with "외 n개" about 40.
+            VStack(spacing: 6) {
                 ForEach(layout.rows) { account in
                     AccountBox(account: account, now: entry.date, confirmFirst: layout.switchNeedsConfirmation,
                                loading: loading)
                 }
             }
+            .frame(maxHeight: .infinity, alignment: .top)
             if layout.hidden > 0 {
                 Link(destination: AppLink.open.url) {
                     HStack(spacing: 3) {
@@ -49,7 +52,6 @@ struct AccountsWidgetView: View {
                     .padding(.leading, 4)
                 }
             }
-            Spacer(minLength: 0)
         }
         .padding(14)
         // Live times are formatted in the environment's language, which is
@@ -183,7 +185,7 @@ struct RingMetric: View {
     }
 }
 
-/// One other account: a 38 pt glass row — name, two metrics, "사용".
+/// One other account: a glass row, 38 to 50 pt — name, two metrics, "사용".
 struct AccountBox: View {
     let account: AccountUsage
     let now: Date
@@ -223,7 +225,7 @@ struct AccountBox: View {
             }
         }
         .padding(.leading, 10).padding(.trailing, 8)
-        .frame(height: 38)
+        .frame(minHeight: 38, maxHeight: 50)
         // A used-up week: the row is tinted red.
         .background(GlassPanel(cornerRadius: 12, tint: account.isWeekUsedUp(now: now) ? .red : nil, tintStrength: 0.1,
                                milk: 0.62, shadowRadius: 2))
