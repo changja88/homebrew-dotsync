@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// One refresh at a time: a caller that arrives while one runs waits for it
 /// and gets the same file. People press the widget's ↻ again while it works,
@@ -8,15 +9,23 @@ public actor RefreshGate {
     public static let shared = RefreshGate()
 
     private var running: Task<UsageFile, Never>?
+    /// `running != nil`, readable without awaiting the actor.
+    private nonisolated let busy = OSAllocatedUnfairLock(initialState: false)
 
     public init() {}
+
+    /// A refresh is under way. The app asks this from
+    /// `applicationShouldTerminate`, which can't await.
+    public nonisolated var isRunning: Bool { busy.withLock { $0 } }
 
     public func refresh(_ service: AccountService) async -> UsageFile {
         if let running { return await running.value }
         let task = Task { await service.refresh() }
         running = task
+        busy.withLock { $0 = true }
         let file = await task.value
         running = nil
+        busy.withLock { $0 = false }
         return file
     }
 

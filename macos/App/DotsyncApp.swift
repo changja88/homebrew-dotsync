@@ -34,14 +34,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Closing the window quits the app, often while the refresh it started
-    /// on opening still runs. The window is already gone: finish that refresh
-    /// unseen (30 s at most) so the widget gets the result instead of being
-    /// left on 조회 중…, then quit.
+    /// on opening still runs. Quitting then would leave the widget on 조회 중…
+    /// and drop the result, so: stay, unseen, until it is done (30 s at most),
+    /// then quit again. Not `.terminateLater` — AppKit stops serving the main
+    /// queue until the reply, which hung the app and every widget button.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard RefreshGate.shared.isRunning else { return .terminateNow }
+        for window in sender.windows { window.orderOut(nil) }
         Task {
             await RefreshGate.shared.settle(within: .seconds(30))
-            NSApp.reply(toApplicationShouldTerminate: true)
+            NSApp.terminate(nil)
         }
-        return .terminateLater
+        return .terminateCancel
     }
 }
