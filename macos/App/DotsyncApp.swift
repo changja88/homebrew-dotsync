@@ -1,4 +1,5 @@
 import AppKit
+import DotsyncKit
 import SwiftUI
 
 @main
@@ -30,5 +31,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+
+    /// Closing the window quits the app, often while the refresh it started
+    /// on opening still runs. The window is already gone: finish that refresh
+    /// unseen (30 s at most) so the widget gets the result instead of being
+    /// left on 조회 중…, then quit.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        Task {
+            await RefreshGate.shared.settle(within: .seconds(30))
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 }

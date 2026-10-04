@@ -19,4 +19,17 @@ public actor RefreshGate {
         running = nil
         return file
     }
+
+    /// Before the app quits: lets a running refresh finish and save, so the
+    /// widget isn't left on 조회 중… without the result. Past `limit` it is
+    /// cancelled instead, which puts usage.json back as it was.
+    public func settle(within limit: Duration) async {
+        guard let running else { return }
+        let deadline = Task {
+            try await Task.sleep(for: limit)
+            running.cancel()
+        }
+        _ = await running.value
+        deadline.cancel()
+    }
 }
