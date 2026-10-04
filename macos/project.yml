@@ -1,6 +1,9 @@
 name: dotsync
 options:
   bundleIdPrefix: com.changja88
+  # Every text is Korean. Without this the app and the widget run in English,
+  # and system-formatted times ("3 hours, 44 minutes") follow it.
+  developmentLanguage: ko
   deploymentTarget:
     macOS: "27.0"
 packages:
@@ -29,6 +32,7 @@ targets:
       path: App/Info.plist
       properties:
         CFBundleDisplayName: dotsync
+        CFBundleLocalizations: [ko]
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSApplicationCategoryType: public.app-category.developer-tools
@@ -48,6 +52,7 @@ targets:
       path: Widget/Info.plist
       properties:
         CFBundleDisplayName: dotsync
+        CFBundleLocalizations: [ko]
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
