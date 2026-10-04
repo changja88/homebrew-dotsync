@@ -46,7 +46,7 @@ struct AccountsWidgetContent: View {
                 VStack(alignment: .leading, spacing: 7) {
                     WidgetHeader(file: entry.file, now: entry.date, loading: loading)
                     InUseCard(layout: layout, now: entry.date, loading: loading, stacked: false)
-                    AccountRows(layout: layout, now: entry.date, loading: loading, nameWidth: 64)
+                    AccountRows(layout: layout, now: entry.date, loading: loading, nameWidth: 60)
                     MoreLink(hidden: layout.hidden)
                 }
             }
@@ -263,7 +263,7 @@ struct AccountBox: View {
     let nameWidth: CGFloat
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 7) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(account.label).font(.system(size: 13, weight: .semibold))
                     .lineLimit(1).minimumScaleFactor(0.75)
@@ -294,7 +294,7 @@ struct AccountBox: View {
                 Link(destination: AppLink.relogin(account.name).url) { PillLabel(text: "앱 열기", prominent: false) }
             }
         }
-        .padding(.leading, 12).padding(.trailing, 9)
+        .padding(.leading, 10).padding(.trailing, 8)
         .frame(minHeight: 38, maxHeight: 50)
         // A used-up week: the row is tinted red.
         .background(GlassPanel(cornerRadius: 12, tint: account.isWeekUsedUp(now: now) ? .red : nil, tintStrength: 0.1,
@@ -312,22 +312,22 @@ struct AccountBox: View {
 }
 
 /// A row's metric: bar over the time left, and the percent beside both,
-/// centered on them. On the large widget the column is about 81 pt: "100%"
-/// takes 32, leaving 43 for "6일 23시간", which shrinks a little to fit.
+/// centered on them. On the large widget the column is about 90 pt: "94%"
+/// takes 29 and the gap 6, leaving 55 for "6일 23시간" (about 50 at 10 pt).
 struct RowMetric: View {
     let window: UsageWindow?
     let now: Date
 
     var body: some View {
         HStack(alignment: .center, spacing: 6) {
-            VStack(alignment: .leading, spacing: 6) {
-                UsageBar(percent: window?.percent ?? 0, height: 5)
+            VStack(alignment: .leading, spacing: 8) {
+                UsageBar(percent: window?.percent ?? 0, height: 6)
                 CountdownText(reset: window?.resetsAt, now: now)
-                    .font(.system(size: 9.5)).foregroundStyle(.secondary)
-                    .lineLimit(1).minimumScaleFactor(0.85)
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                    .lineLimit(1).minimumScaleFactor(0.8)
             }
             Text(window.map { "\($0.percent)%" } ?? "—")
-                .font(.system(size: 13.5, weight: (window?.percent ?? 0) >= 85 ? .heavy : .bold, design: .rounded))
+                .font(.system(size: 14, weight: (window?.percent ?? 0) >= 85 ? .heavy : .bold, design: .rounded))
                 .monospacedDigit().fixedSize()
                 .opacity(UsageText.isReset(window, now: now) ? 0.4 : 1)
         }
@@ -347,7 +347,7 @@ struct PillLabel: View {
         let blue = prominent && renderingMode == .fullColor
         Text(text).font(.system(size: 11, weight: .semibold))
             .foregroundStyle(blue ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
-            .padding(.horizontal, 10).frame(height: 22)
+            .padding(.horizontal, 8).frame(height: 24)
             .background {
                 if blue {
                     BlueFill()
