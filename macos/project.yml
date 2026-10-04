@@ -28,6 +28,9 @@ targets:
       base:
         PRODUCT_NAME: dotsync
         PRODUCT_BUNDLE_IDENTIFIER: com.changja88.dotsync
+        # App/AppIcon.icon, made in Icon Composer's format: Xcode builds the
+        # dark, clear and tinted looks from it.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     info:
       path: App/Info.plist
       properties:

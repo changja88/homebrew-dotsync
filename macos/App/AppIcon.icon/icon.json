@@ -1,0 +1,34 @@
+{
+  "fill" : {
+    "solid" : "srgb:0.99608,0.97255,0.93725,1.00000"
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "glass" : true,
+          "image-name" : "stamp.png",
+          "name" : "stamp",
+          "position" : {
+            "scale" : 0.81659,
+            "translation-in-points" : [ 0, 0 ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "specular" : true,
+      "translucency" : {
+        "enabled" : false,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : [
+      "macOS"
+    ]
+  }
+}
