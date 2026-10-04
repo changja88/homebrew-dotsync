@@ -10,10 +10,11 @@ struct DotsyncApp: App {
     var body: some Scene {
         // A single Window: the app quits when it closes (Apple's Window docs),
         // and a dotsync:// link opens it again (scene routing for external events).
-        Window("dotsync", id: "main") {
+        Window("Claude 계정", id: "main") {
             AccountsWindow(model: model)
                 .onOpenURL { model.handle($0) }
         }
+        .defaultSize(width: 920, height: 600)
         .windowResizability(.contentMinSize)
     }
 }

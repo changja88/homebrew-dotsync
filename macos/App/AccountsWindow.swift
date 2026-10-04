@@ -1,7 +1,8 @@
-import AppKit
 import DotsyncKit
 import SwiftUI
 
+/// The window, as the approved mockup "앱 A": the account in use on top in a
+/// tinted glass card, the others in one glass list under column titles.
 struct AccountsWindow: View {
     @Bindable var model: AccountsModel
 
@@ -16,62 +17,76 @@ struct AccountsWindow: View {
                             .buttonStyle(.borderless)
                     }
                     .padding(.horizontal, 14).padding(.vertical, 8)
-                    .glassEffect(.regular.tint(.orange.opacity(0.3)), in: .rect(cornerRadius: 12))
-                    .padding(.horizontal, 12).padding(.top, 8)
+                    .background(GlassPanel(cornerRadius: 12, tint: .orange, shadow: false))
+                    .padding(.horizontal, 18).padding(.top, 8)
                 }
                 ScrollView {
-                    GlassEffectContainer(spacing: 12) {
-                        VStack(alignment: .leading, spacing: 12) {
-                            if let active = model.file.activeAccount {
-                                ActiveAccountCard(account: active, now: context.date, model: model)
-                            } else if let seat = model.file.unsavedSeat {
-                                UnsavedSeatCard(seat: seat, now: context.date, model: model)
-                            }
-                            let others = model.accounts.filter { $0.name != model.file.active }
-                            if !others.isEmpty {
-                                let hasCard = model.file.activeAccount != nil || model.file.unsavedSeat != nil
-                                ColumnHeader(title: "\(hasCard ? "다른 계정" : "계정") \(others.count)")
-                                VStack(spacing: 0) {
-                                    ForEach(Array(others.enumerated()), id: \.element.id) { index, account in
-                                        if index > 0 { Divider().padding(.horizontal, 16) }
-                                        AccountRow(account: account, now: context.date, model: model)
+                    VStack(alignment: .leading, spacing: 12) {
+                        if let active = model.file.activeAccount {
+                            ActiveAccountCard(account: active, now: context.date, model: model)
+                        } else if let seat = model.file.unsavedSeat {
+                            UnsavedSeatCard(seat: seat, now: context.date, model: model)
+                        }
+                        let others = model.accounts.filter { $0.name != model.file.active }
+                        if !others.isEmpty {
+                            let hasCard = model.file.activeAccount != nil || model.file.unsavedSeat != nil
+                            ColumnHeader(title: "\(hasCard ? "다른 계정" : "계정") \(others.count)")
+                            VStack(spacing: 0) {
+                                ForEach(Array(others.enumerated()), id: \.element.id) { index, account in
+                                    if index > 0 {
+                                        Rectangle().fill(.primary.opacity(0.08)).frame(height: 1)
+                                            .padding(.horizontal, 16)
                                     }
+                                    AccountRow(account: account, now: context.date, model: model)
                                 }
-                                .padding(.vertical, 4)
-                                .glassEffect(.regular, in: .rect(cornerRadius: 18))
                             }
-                            if model.file.accounts.isEmpty && model.file.unsavedSeat == nil {
-                                Text("저장된 계정이 없어요 — ‘계정 추가’로 시작하세요")
-                                    .foregroundStyle(.secondary).padding(40)
-                                    .frame(maxWidth: .infinity)
-                            }
+                            .padding(.vertical, 4)
+                            .background(GlassPanel(cornerRadius: 18))
+                        }
+                        if model.file.accounts.isEmpty && model.file.unsavedSeat == nil {
+                            Text("저장된 계정이 없어요 — ‘계정 추가’로 시작하세요")
+                                .foregroundStyle(.secondary).padding(40)
+                                .frame(maxWidth: .infinity)
                         }
                     }
                     .padding(.horizontal, 18).padding(.top, 8).padding(.bottom, 18)
                 }
             }
+            .toolbar(removing: .title)
             .toolbar {
-                ToolbarItem {
-                    Text(model.running ?? "\(UsageText.ago(model.file.fetchedAt, now: context.date)) 갱신")
-                        .font(.callout).foregroundStyle(.secondary)
+                ToolbarItem(placement: .navigation) {
+                    Text("Claude 계정").font(.system(size: 15, weight: .bold)).padding(.leading, 8)
                 }
-                ToolbarItem {
-                    Button("새로고침", systemImage: "arrow.clockwise") { Task { await model.refresh() } }
-                        .labelStyle(.titleAndIcon)
-                        .disabled(model.isBusy)
-                }
+                .sharedBackgroundVisibility(.hidden)
                 ToolbarItem(placement: .primaryAction) {
-                    Button("계정 추가", systemImage: "plus") { model.sheet = .add(thenUse: nil) }
-                        .labelStyle(.titleAndIcon)
+                    HStack(spacing: 12) {
+                        HStack(spacing: 8) {
+                            Text(model.running ?? "\(UsageText.ago(model.file.fetchedAt, now: context.date)) 갱신")
+                                .font(.system(size: 12)).foregroundStyle(.secondary)
+                            Button { Task { await model.refresh() } } label: {
+                                Label("새로고침", systemImage: "arrow.clockwise")
+                            }
+                            .buttonStyle(PillButtonStyle())
+                            .disabled(model.isBusy)
+                        }
+                        .padding(.leading, 12).padding(3)
+                        .background(GlassPanel(cornerRadius: 17))
+                        Button { model.sheet = .add(thenUse: nil) } label: {
+                            Label("계정 추가", systemImage: "plus")
+                        }
+                        .buttonStyle(PillButtonStyle(prominent: true, height: 34))
                         .disabled(model.isBusy)
+                    }
+                    .padding(.trailing, 2)
                 }
+                .sharedBackgroundVisibility(.hidden)
             }
         }
         .frame(minWidth: 760, minHeight: 420)
-        // Looks the same focused or not: macOS would grey the blue buttons and
-        // turn the see-through ground flat in a window that isn't in front.
+        // Looks the same focused or not: macOS would dim what follows the
+        // window's state in a window that isn't in front.
         .environment(\.appearsActive, true)
-        // The desktop shows through, so the glass rows have something to refract.
+        // The desktop shows through, behind the glass panels.
         .containerBackground(for: .window) { ActiveBackdrop() }
         .sheet(item: $model.sheet) { sheet in
             AccountSheet(sheet: sheet, model: model)
@@ -102,7 +117,7 @@ struct ColumnHeader: View {
             Text("주간").frame(maxWidth: .infinity, alignment: .leading)
             Color.clear.frame(width: AccountColumns.actions, height: 1)
         }
-        .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+        .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary)
         .padding(.horizontal, 16)
     }
 }
@@ -117,34 +132,18 @@ struct UnsavedSeatCard: View {
     var body: some View {
         HStack(spacing: 24) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("사용 중 · 저장 안 됨")
-                    .font(.caption2.weight(.bold)).foregroundStyle(.white)
-                    .padding(.horizontal, 9).padding(.vertical, 3)
-                    .glassEffect(.regular.tint(.orange), in: .capsule)
-                Text(seat.email ?? "알 수 없는 계정").font(.title3.weight(.bold)).lineLimit(1).padding(.top, 4)
+                BlueBadge(text: "사용 중 · 저장 안 됨", color: .orange)
+                Text(seat.email ?? "알 수 없는 계정").font(.system(size: 18, weight: .bold))
+                    .lineLimit(1).padding(.top, 4)
             }
             .frame(width: 190, alignment: .leading)
             RingMetricView(title: "5시간", window: seat.fiveHour, now: now)
             RingMetricView(title: "주간", window: seat.sevenDay, now: now)
             Button("저장하기…") { model.sheet = .add(thenUse: nil) }
-                .buttonStyle(.glassProminent)
+                .buttonStyle(PillButtonStyle(prominent: true))
                 .disabled(model.isBusy)
         }
-        .padding(18)
-        .glassEffect(.regular.tint(.blue.opacity(0.25)), in: .rect(cornerRadius: 20))
+        .padding(.horizontal, 20).padding(.vertical, 18)
+        .background(GlassPanel(cornerRadius: 20, tint: .blue))
     }
-}
-
-/// The window's see-through ground, kept in its active look when the window
-/// is not in front (a SwiftUI material follows the window's state).
-struct ActiveBackdrop: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .underWindowBackground
-        view.blendingMode = .behindWindow
-        view.state = .active
-        return view
-    }
-
-    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
 }
