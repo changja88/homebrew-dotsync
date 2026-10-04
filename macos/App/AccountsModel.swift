@@ -3,8 +3,8 @@ import Foundation
 import Observation
 import WidgetKit
 
-/// The window's state. dotsync runs one command at a time from here; the
-/// CLI's lock covers commands started elsewhere.
+/// The window's state. dotsync runs one command at a time from here, in
+/// `queue`; the CLI's lock covers commands started elsewhere.
 @MainActor
 @Observable
 final class AccountsModel {
@@ -25,11 +25,12 @@ final class AccountsModel {
     }
 
     private(set) var file: UsageFile
-    private(set) var running: String?
+    let queue = CommandQueue()
     var message: String?
     var sheet: Sheet?
     var pendingRemoval: AccountUsage?
     let service: AccountService?
+    private var loginTask: Task<Result<AccountInfo, CLIError>, Never>?
 
     init(service: AccountService? = AccountService.standard(didSave: { WidgetCenter.shared.reloadAllTimelines() })) {
         self.service = service
@@ -43,6 +44,9 @@ final class AccountsModel {
             MainActor.assumeIsolated { self?.reload() }
         }
     }
+
+    /// What runs now, or nil.
+    var running: String? { queue.running }
 
     var isBusy: Bool { running != nil || service == nil }
 
@@ -73,14 +77,16 @@ final class AccountsModel {
         }
     }
 
-    /// Waits for the browser; cancel by cancelling the calling task.
+    /// Waits for the browser; cancel by cancelling the calling task, or with
+    /// `cancelLogin()`.
     func login(_ name: String) async -> Result<AccountInfo, CLIError> {
-        guard let service, running == nil else {
-            return .failure(CLIError(code: "busy", message: "busy"))
+        var outcome: Result<AccountInfo, CLIError> = .failure(CLIError(code: "busy", message: "busy"))
+        await perform("로그인 기다리는 중") { service in
+            let task = Task { await service.login(name) }
+            self.loginTask = task
+            outcome = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+            self.loginTask = nil
         }
-        running = "로그인 기다리는 중"
-        let outcome = await service.login(name)
-        running = nil
         if case .success = outcome {
             Task { await refresh() }
         }
@@ -113,6 +119,12 @@ final class AccountsModel {
         if removed { await refresh() }
     }
 
+    /// Quitting: a login still waiting for the browser would hold dotsync's
+    /// lock after the app is gone. dotsync cleans a stopped login up.
+    func cancelLogin() {
+        loginTask?.cancel()
+    }
+
     func handle(_ url: URL) {
         switch AppLink(url: url) {
         case .use(let name)?:
@@ -127,10 +139,8 @@ final class AccountsModel {
     }
 
     private func perform(_ label: String, _ work: (AccountService) async -> Void) async {
-        guard let service, running == nil else { return }
-        running = label
-        await work(service)
-        running = nil
+        guard let service else { return }
+        await queue.run(label) { await work(service) }
         WidgetCenter.shared.reloadAllTimelines()
     }
 
