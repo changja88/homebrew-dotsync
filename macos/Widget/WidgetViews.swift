@@ -80,8 +80,13 @@ struct UpdateStatusText: View {
 /// view, so it can sit inside another text.
 func agoText(_ date: Date) -> Text {
     Text(.currentDate, format: SystemFormatStyle.DateReference(
-        to: date, allowedFields: [.day, .hour, .minute], maxFieldCount: 2, thresholdField: .day))
+        to: date, allowedFields: [.day, .hour, .minute], maxFieldCount: 2, thresholdField: .day)
+        .locale(korean))
 }
+
+/// Live times are formatted by whatever process draws the widget, in its
+/// language — English on this Mac — unless the style names one.
+let korean = Locale(identifier: "ko_KR")
 
 /// "3시간 44분", "6일 20시간" until a reset, counting down by itself;
 /// "초기화됨" from the timeline entry at the reset on.
@@ -97,7 +102,8 @@ struct CountdownText: View {
         case .passed: Text("초기화됨")
         case .until(let date):
             let left = Text(.currentDate, format: SystemFormatStyle.DateOffset(
-                to: date, allowedFields: [.day, .hour, .minute], maxFieldCount: 2, sign: .never))
+                to: date, allowedFields: [.day, .hour, .minute], maxFieldCount: 2, sign: .never)
+                .locale(korean))
             if after { Text("\(left) 후") } else { left }
         }
     }
