@@ -1,3 +1,4 @@
+import AppKit
 import DotsyncKit
 import SwiftUI
 
@@ -67,8 +68,11 @@ struct AccountsWindow: View {
             }
         }
         .frame(minWidth: 760, minHeight: 420)
+        // Looks the same focused or not: macOS would grey the blue buttons and
+        // turn the see-through ground flat in a window that isn't in front.
+        .environment(\.appearsActive, true)
         // The desktop shows through, so the glass rows have something to refract.
-        .containerBackground(.thinMaterial, for: .window)
+        .containerBackground(for: .window) { ActiveBackdrop() }
         .sheet(item: $model.sheet) { sheet in
             AccountSheet(sheet: sheet, model: model)
         }
@@ -129,4 +133,18 @@ struct UnsavedSeatCard: View {
         .padding(18)
         .glassEffect(.regular.tint(.blue.opacity(0.25)), in: .rect(cornerRadius: 20))
     }
+}
+
+/// The window's see-through ground, kept in its active look when the window
+/// is not in front (a SwiftUI material follows the window's state).
+struct ActiveBackdrop: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .underWindowBackground
+        view.blendingMode = .behindWindow
+        view.state = .active
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
 }
