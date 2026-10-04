@@ -19,13 +19,14 @@ struct AccountsWidgetView: View {
                 Spacer(minLength: 8)
                 UpdateStatusText(status: UsageText.updateStatus(entry.file, now: entry.date))
                     .font(.system(size: 11)).foregroundStyle(.secondary)
-                Button(intent: RefreshIntent()) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 10, weight: .bold))
-                        .frame(width: 24, height: 24)
-                        .background(GlassCard(cornerRadius: 12))
+                if loading {
+                    // 조회 중 already: another press would only wait on this
+                    // one, so there is nothing to press.
+                    refreshIcon.opacity(0.4)
+                } else {
+                    Button(intent: RefreshIntent()) { refreshIcon }
+                        .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
             .frame(height: 22)
             InUseCard(layout: layout, now: entry.date, loading: loading)
@@ -50,6 +51,13 @@ struct AccountsWidgetView: View {
         .padding(14)
         .containerBackground(for: .widget) { WidgetBackdrop() }
         .widgetURL(AppLink.open.url)
+    }
+
+    private var refreshIcon: some View {
+        Image(systemName: "arrow.clockwise")
+            .font(.system(size: 10, weight: .bold))
+            .frame(width: 24, height: 24)
+            .background(GlassCard(cornerRadius: 12))
     }
 }
 
