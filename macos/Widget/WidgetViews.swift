@@ -16,9 +16,12 @@ struct AccountsWidgetView: View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
                 Text("Claude 사용량").font(.system(size: 13, weight: .bold))
-                Spacer(minLength: 8)
+                // A live time takes all the width it might need, so it is
+                // right-aligned in it to sit next to ↻.
                 UpdateStatusText(status: UsageText.updateStatus(entry.file, now: entry.date))
                     .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
                 if loading {
                     // 조회 중 already: another press would only wait on this
                     // one, so there is nothing to press.
