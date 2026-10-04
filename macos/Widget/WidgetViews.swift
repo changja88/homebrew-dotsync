@@ -13,12 +13,69 @@ struct AccountsWidgetView: View {
 
     var body: some View {
         AccountsWidgetContent(entry: entry, wide: family == .systemExtraLarge)
+            .modifier(WidgetChrome())
+    }
+}
+
+struct InUseWidgetView: View {
+    let entry: UsageEntry
+
+    var body: some View {
+        InUseWidgetContent(entry: entry).modifier(WidgetChrome())
+    }
+}
+
+struct AccountListWidgetView: View {
+    let entry: UsageEntry
+
+    var body: some View {
+        AccountListWidgetContent(entry: entry).modifier(WidgetChrome())
+    }
+}
+
+/// What every dotsync widget wears: Korean, the pastel ground, a tap opens
+/// the app.
+struct WidgetChrome: ViewModifier {
+    func body(content: Content) -> some View {
+        content
             // Live times are formatted in the environment's language, which is
             // English in the widget whatever the bundle declares; a style's
             // own locale is overridden by it.
             .environment(\.locale, Locale(identifier: "ko_KR"))
             .containerBackground(for: .widget) { WidgetBackdrop() }
             .widgetURL(AppLink.open.url)
+    }
+}
+
+/// "지금 사용 중" alone (medium): the header and the card, which takes the
+/// height left.
+struct InUseWidgetContent: View {
+    let entry: UsageEntry
+
+    var body: some View {
+        let layout = WidgetLayout(file: entry.file, now: entry.date)
+        let loading = entry.file.isRefreshing(at: entry.date)
+        VStack(alignment: .leading, spacing: 7) {
+            WidgetHeader(file: entry.file, now: entry.date, loading: loading)
+            InUseCard(layout: layout, now: entry.date, loading: loading, stacked: false, fills: true)
+        }
+        .padding(14)
+    }
+}
+
+/// "Claude 계정 목록" (large): the other accounts, up to six.
+struct AccountListWidgetContent: View {
+    let entry: UsageEntry
+
+    var body: some View {
+        let layout = WidgetLayout(file: entry.file, now: entry.date, maxRows: WidgetLayout.extraLargeRows)
+        let loading = entry.file.isRefreshing(at: entry.date)
+        VStack(alignment: .leading, spacing: 7) {
+            WidgetHeader(title: "다른 계정", file: entry.file, now: entry.date, loading: loading)
+            AccountRows(layout: layout, now: entry.date, loading: loading, nameWidth: 60)
+            MoreLink(hidden: layout.hidden)
+        }
+        .padding(14)
     }
 }
 
@@ -36,7 +93,7 @@ struct AccountsWidgetContent: View {
                 HStack(alignment: .top, spacing: 14) {
                     VStack(alignment: .leading, spacing: 8) {
                         WidgetHeader(file: entry.file, now: entry.date, loading: loading)
-                        InUseCard(layout: layout, now: entry.date, loading: loading, stacked: true)
+                        InUseCard(layout: layout, now: entry.date, loading: loading, stacked: true, fills: true)
                         MoreLink(hidden: layout.hidden)
                     }
                     .frame(width: 236)
@@ -45,7 +102,7 @@ struct AccountsWidgetContent: View {
             } else {
                 VStack(alignment: .leading, spacing: 7) {
                     WidgetHeader(file: entry.file, now: entry.date, loading: loading)
-                    InUseCard(layout: layout, now: entry.date, loading: loading, stacked: false)
+                    InUseCard(layout: layout, now: entry.date, loading: loading, stacked: false, fills: false)
                     AccountRows(layout: layout, now: entry.date, loading: loading, nameWidth: 60)
                     MoreLink(hidden: layout.hidden)
                 }
@@ -57,13 +114,14 @@ struct AccountsWidgetContent: View {
 
 /// "Claude 사용량", when the values were read, ↻.
 struct WidgetHeader: View {
+    var title = "Claude 사용량"
     let file: UsageFile
     let now: Date
     let loading: Bool
 
     var body: some View {
         HStack(spacing: 8) {
-            Text("Claude 사용량").font(.system(size: 13, weight: .bold))
+            Text(title).font(.system(size: 13, weight: .bold))
             // A live time takes all the width it might need, so it is
             // right-aligned in it to sit next to ↻.
             UpdateStatusText(status: UsageText.updateStatus(file, now: now))
@@ -172,9 +230,10 @@ struct InUseCard: View {
     let layout: WidgetLayout
     let now: Date
     let loading: Bool
-    /// Extra large: the two rings one above the other, the card as tall as
-    /// its column.
+    /// Extra large: the two rings one above the other.
     let stacked: Bool
+    /// The card takes the height left, its rings centered in it.
+    let fills: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -203,17 +262,18 @@ struct InUseCard: View {
                     RingMetric(title: "5시간", window: five, now: now, ringSize: 72)
                     RingMetric(title: "주간", window: week, now: now, ringSize: 72)
                 }
-                .frame(maxHeight: .infinity)
+                .frame(maxHeight: fills ? .infinity : nil)
                 .redacted(reason: loading ? .placeholder : [])
             } else {
                 HStack(spacing: 12) {
                     RingMetric(title: "5시간", window: five, now: now)
                     RingMetric(title: "주간", window: week, now: now)
                 }
+                .frame(maxHeight: fills ? .infinity : nil)
                 .redacted(reason: loading ? .placeholder : [])
             }
         }
-        .frame(maxHeight: stacked ? .infinity : nil, alignment: .top)
+        .frame(maxHeight: fills ? .infinity : nil, alignment: .top)
         .padding(.horizontal, 12).padding(.vertical, 10)
         .background(GlassPanel(cornerRadius: 16, tint: .blue, tintStrength: 0.16, shadowRadius: 2))
     }

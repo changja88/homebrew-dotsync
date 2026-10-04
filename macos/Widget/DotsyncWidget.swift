@@ -31,7 +31,16 @@ struct UsageProvider: TimelineProvider {
 }
 
 @main
-struct DotsyncWidget: Widget {
+struct DotsyncWidgets: WidgetBundle {
+    var body: some Widget {
+        AccountsWidget()
+        InUseWidget()
+        AccountListWidget()
+    }
+}
+
+/// The in-use card and the list together.
+struct AccountsWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: "dotsync.accounts", provider: UsageProvider()) { entry in
             AccountsWidgetView(entry: entry)
@@ -39,6 +48,33 @@ struct DotsyncWidget: Widget {
         .configurationDisplayName("Claude 계정")
         .description("Claude Code 계정별 사용량을 보고 계정을 바꿔요.")
         .supportedFamilies([.systemLarge, .systemExtraLarge])
+        .contentMarginsDisabled()
+    }
+}
+
+/// The in-use card alone — over "Claude 계정 목록" in Notification Center,
+/// the two read as one tall widget.
+struct InUseWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "dotsync.inuse", provider: UsageProvider()) { entry in
+            InUseWidgetView(entry: entry)
+        }
+        .configurationDisplayName("지금 사용 중")
+        .description("Claude Code가 지금 쓰는 계정의 사용량을 보여줘요.")
+        .supportedFamilies([.systemMedium])
+        .contentMarginsDisabled()
+    }
+}
+
+/// The other accounts alone, up to six.
+struct AccountListWidget: Widget {
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: "dotsync.list", provider: UsageProvider()) { entry in
+            AccountListWidgetView(entry: entry)
+        }
+        .configurationDisplayName("Claude 계정 목록")
+        .description("다른 계정들의 사용량을 보고 계정을 바꿔요.")
+        .supportedFamilies([.systemLarge])
         .contentMarginsDisabled()
     }
 }

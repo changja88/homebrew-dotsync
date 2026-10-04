@@ -13,8 +13,8 @@ public struct WidgetLayout: Equatable, Sendable {
     /// Rows that fit roomily under the in-use card on the large widget; the
     /// rest is "외 n개".
     public static let maxRows = 3
-    /// Rows beside the in-use card on the extra large widget: the other six of
-    /// seven accounts.
+    /// Rows beside the in-use card on the extra large widget, and on the
+    /// list-only widget: the other six of seven accounts.
     public static let extraLargeRows = 6
 
     public var current: AccountUsage?
