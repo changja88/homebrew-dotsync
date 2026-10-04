@@ -35,7 +35,15 @@ public enum UsageMerge {
     public static func failed(previous: UsageFile?, message: String) -> UsageFile {
         var file = previous ?? .empty
         file.lastError = message
+        file.refreshingSince = nil
         return file
+    }
+
+    /// A refresh started; what was shown stays until it ends.
+    public static func refreshing(_ file: UsageFile?, since start: Date) -> UsageFile {
+        var copy = file ?? .empty
+        copy.refreshingSince = start
+        return copy
     }
 
     /// Claude now uses `name`; its usage comes with the next refresh.

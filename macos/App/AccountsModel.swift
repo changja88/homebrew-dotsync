@@ -31,7 +31,7 @@ final class AccountsModel {
     var pendingRemoval: AccountUsage?
     let service: AccountService?
 
-    init(service: AccountService? = AccountService.standard()) {
+    init(service: AccountService? = AccountService.standard(didSave: { WidgetCenter.shared.reloadAllTimelines() })) {
         self.service = service
         file = service?.current() ?? .empty
         if service == nil {

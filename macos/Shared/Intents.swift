@@ -11,12 +11,11 @@ import WidgetKit
 struct RefreshIntent: AudioPlaybackIntent {
     static let title: LocalizedStringResource = "사용량 새로고침"
 
+    // macOS redraws the widget only once perform() returns, so it marks the
+    // file and returns; the app finishes the refresh while the widget shows
+    // 조회 중….
     func perform() async throws -> some IntentResult {
-        await IntentWork.begin()
-        if let service = await IntentWork.service() {
-            _ = await RefreshGate.shared.refresh(service)
-        }
-        await IntentWork.finish()
+        await IntentWork.startRefresh()
         return .result()
     }
 }
@@ -61,9 +60,25 @@ enum IntentWork {
         running += 1
     }
 
+    /// Marks usage.json before returning, then refreshes in the background.
+    static func startRefresh() {
+        begin()
+        guard let service = service() else {
+            finish()
+            return
+        }
+        service.markRefreshing()
+        Task {
+            _ = await RefreshGate.shared.refresh(service)
+            finish()
+        }
+    }
+
     /// The service, or nil after noting in usage.json why there is none.
     static func service() -> AccountService? {
-        if let service = AccountService.standard() { return service }
+        if let service = AccountService.standard(didSave: { WidgetCenter.shared.reloadAllTimelines() }) {
+            return service
+        }
         if let store = UsageStore.shared() {
             try? store.save(UsageMerge.failed(previous: store.load(), message: "dotsync를 찾을 수 없어요"))
         }

@@ -12,35 +12,52 @@ public enum UseOutcome: Equatable, Sendable {
 public struct AccountService: Sendable {
     public let cli: DotsyncCLI
     public let store: UsageStore
+    /// Called after every write to usage.json — the app redraws the widget.
+    let didSave: @Sendable () -> Void
 
-    public init(cli: DotsyncCLI, store: UsageStore) {
+    public init(cli: DotsyncCLI, store: UsageStore, didSave: @escaping @Sendable () -> Void = {}) {
         self.cli = cli
         self.store = store
+        self.didSave = didSave
     }
 
     /// Homebrew's dotsync and the app group's usage.json; nil when either is missing.
-    public static func standard() -> AccountService? {
+    public static func standard(didSave: @escaping @Sendable () -> Void = {}) -> AccountService? {
         guard let executable = DotsyncCLI.locate(), let store = UsageStore.shared() else { return nil }
-        return AccountService(cli: DotsyncCLI(executable: executable), store: store)
+        return AccountService(cli: DotsyncCLI(executable: executable), store: store, didSave: didSave)
     }
 
     public func current() -> UsageFile {
         store.load() ?? .empty
     }
 
+    /// Notes that a refresh is starting, so the widget says 조회 중….
+    public func markRefreshing() {
+        save(UsageMerge.refreshing(store.load(), since: Date()))
+    }
+
     @discardableResult
     public func refresh() async -> UsageFile {
         let previous = store.load()
+        if previous?.isRefreshing(at: Date()) != true {
+            markRefreshing()
+        }
         let file: UsageFile
         do {
             file = UsageMerge.merge(previous: previous, report: try await cli.usage())
         } catch {
             let failure = Self.cliError(error)
-            // A refresh stopped on purpose (its task was cancelled) failed nothing.
-            if failure.code == "cancelled" { return previous ?? .empty }
+            if failure.code == "cancelled" {
+                // A refresh stopped on purpose (its task was cancelled) failed
+                // nothing: put back what was there.
+                var unchanged = previous ?? .empty
+                unchanged.refreshingSince = nil
+                save(unchanged)
+                return unchanged
+            }
             file = UsageMerge.failed(previous: previous, message: failure.message)
         }
-        try? store.save(file)
+        save(file)
         return file
     }
 
@@ -54,7 +71,7 @@ public struct AccountService: Sendable {
             }
             return .failed(failure)
         }
-        try? store.save(UsageMerge.switched(current(), to: name))
+        save(UsageMerge.switched(current(), to: name))
         return .switched(await refresh())
     }
 
@@ -69,7 +86,7 @@ public struct AccountService: Sendable {
     public func rename(_ name: String, to label: String) async -> Result<UsageFile, CLIError> {
         do {
             let file = UsageMerge.renamed(current(), try await cli.rename(name, to: label))
-            try? store.save(file)
+            save(file)
             return .success(file)
         } catch {
             return .failure(Self.cliError(error))
@@ -80,7 +97,7 @@ public struct AccountService: Sendable {
         do {
             try await cli.remove(name)
             let file = UsageMerge.removed(current(), name)
-            try? store.save(file)
+            save(file)
             return .success(file)
         } catch {
             return .failure(Self.cliError(error))
@@ -89,7 +106,12 @@ public struct AccountService: Sendable {
 
     /// Something went wrong outside a refresh; show it where the widget looks.
     public func report(failure message: String) {
-        try? store.save(UsageMerge.failed(previous: store.load(), message: message))
+        save(UsageMerge.failed(previous: store.load(), message: message))
+    }
+
+    private func save(_ file: UsageFile) {
+        try? store.save(file)
+        didSave()
     }
 
     static func cliError(_ error: Error) -> CLIError {

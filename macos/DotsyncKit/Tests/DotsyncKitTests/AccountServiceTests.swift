@@ -39,6 +39,71 @@ func makeService(usage: String = sampleReport, use: String? = nil, useStatus: In
     #expect(file.lastError == "dotsync의 답을 읽을 수 없어요")
 }
 
+@Test func refreshMarksTheFileWhileDotsyncRunsAndTellsTheWidget() async throws {
+    // The widget says 조회 중… from the press until the answer is saved.
+    let paths = try FakeDotsync(script: "")
+    let answer = try paths.file("usage.json", sampleReport)
+    let fake = try FakeDotsync(script: "sleep 0.5; cat '\(answer)'")
+    let saves = Counter()
+    let service = AccountService(cli: fake.cli, store: UsageStore(directory: try temporaryDirectory()),
+                                 didSave: { saves.add() })
+
+    let refresh = Task { await service.refresh() }
+    while fake.calls().isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+    #expect(service.store.load()?.refreshingSince != nil)
+    let file = await refresh.value
+
+    #expect(file.refreshingSince == nil)
+    #expect(service.store.load() == file)
+    #expect(saves.count == 2)
+}
+
+@Test func aRefreshAfterTheWidgetMarkedItDoesNotMarkAgain() async throws {
+    // ↻ marks the file before its intent returns (the widget redraws only
+    // then); the refresh that follows must not spend another widget reload.
+    let paths = try FakeDotsync(script: "")
+    let answer = try paths.file("usage.json", sampleReport)
+    let fake = try FakeDotsync(script: "cat '\(answer)'")
+    let saves = Counter()
+    let service = AccountService(cli: fake.cli, store: UsageStore(directory: try temporaryDirectory()),
+                                 didSave: { saves.add() })
+
+    service.markRefreshing()
+    #expect(service.store.load()?.refreshingSince != nil)
+    let file = await service.refresh()
+
+    #expect(file.refreshingSince == nil)
+    #expect(saves.count == 2)
+}
+
+@Test func aCancelledRefreshClearsTheMark() async throws {
+    let fake = try FakeDotsync(script: """
+    sleep 30 >/dev/null 2>&1 &
+    child=$!
+    trap 'kill $child; exit 143' TERM
+    wait $child
+    """)
+    let service = AccountService(cli: fake.cli, store: UsageStore(directory: try temporaryDirectory()))
+    var previous = UsageFile.empty
+    previous.active = "kept"
+    try service.store.save(previous)
+    service.markRefreshing()
+
+    let refresh = Task { await service.refresh() }
+    while fake.calls().isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+    refresh.cancel()
+    _ = await refresh.value
+
+    #expect(service.store.load() == previous)
+}
+
+final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    var count: Int { lock.withLock { value } }
+    func add() { lock.withLock { value += 1 } }
+}
+
 @Test func aCancelledRefreshLeavesTheFileAlone() async throws {
     // Closing the window cancels its refresh. dotsync is stopped before it
     // answers; that is not a failure for the widget to show.

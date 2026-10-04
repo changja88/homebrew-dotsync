@@ -106,3 +106,13 @@ func report(_ accounts: [AccountUsage], active: String? = nil, at: Date = now) -
     #expect(renamed.accounts.map(\.label) == ["a", "밥"])
     #expect(UsageMerge.removed(file, "a").accounts.map(\.name) == ["b"])
 }
+
+@Test func refreshingMarksTheFileUntilTheRefreshEnds() {
+    var file = UsageFile.empty
+    file.active = "a"
+    let marked = UsageMerge.refreshing(file, since: now)
+    #expect(marked.refreshingSince == now)
+    #expect(marked.active == "a")
+    #expect(UsageMerge.merge(previous: marked, report: report([account("a")], active: "a")).refreshingSince == nil)
+    #expect(UsageMerge.failed(previous: marked, message: "x").refreshingSince == nil)
+}

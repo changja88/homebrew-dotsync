@@ -55,6 +55,21 @@ func after(days: Int = 0, hours: Int = 0, minutes: Int = 0, seconds: Int = 0) ->
     #expect(UsageText.ago(after(hours: -26), now: now) == "1일 전")
 }
 
+@Test func theWidgetHeaderSaysRefreshingFailedOrHowLongAgo() {
+    var file = UsageFile.empty
+    file.fetchedAt = after(minutes: -6)
+    #expect(UsageText.updated(file, now: now) == "6분 전")
+    file.refreshingSince = after(seconds: -5)
+    #expect(UsageText.updated(file, now: now) == "조회 중…")
+    // A mark left by an app that quit mid-refresh stops counting after two minutes.
+    file.refreshingSince = after(minutes: -3)
+    #expect(UsageText.updated(file, now: now) == "6분 전")
+    file.lastError = "dotsync를 찾을 수 없어요"
+    #expect(UsageText.updated(file, now: now) == "갱신 실패")
+    file.refreshingSince = after(seconds: -5)
+    #expect(UsageText.updated(file, now: now) == "조회 중…")
+}
+
 @Test func fullOnlyFromNinetyEightPercentUntilTheReset() {
     #expect(UsageText.isFull(UsageWindow(percent: 98, resetsAt: after(days: 2)), now: now))
     #expect(!UsageText.isFull(UsageWindow(percent: 97, resetsAt: after(days: 2)), now: now))

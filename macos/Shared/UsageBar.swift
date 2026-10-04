@@ -1,10 +1,14 @@
 import DotsyncKit
 import SwiftUI
 
-/// A usage bar: green below 60 %, yellow below 85 %, red from 85 %.
+/// A usage bar: green below 60 %, yellow below 85 %, red from 85 %. In a
+/// skeleton (redacted as placeholder) only the empty track shows.
 struct UsageBar: View {
     let percent: Int
     var height: CGFloat = 6
+    @Environment(\.redactionReasons) private var redactionReasons
+
+    private var shown: Int { redactionReasons.contains(.placeholder) ? 0 : min(max(percent, 0), 100) }
 
     var body: some View {
         GeometryReader { geometry in
@@ -12,7 +16,7 @@ struct UsageBar: View {
                 Capsule().fill(.quaternary)
                 Capsule()
                     .fill(Self.color(percent))
-                    .frame(width: geometry.size.width * CGFloat(min(max(percent, 0), 100)) / 100)
+                    .frame(width: geometry.size.width * CGFloat(shown) / 100)
             }
         }
         .frame(height: height)

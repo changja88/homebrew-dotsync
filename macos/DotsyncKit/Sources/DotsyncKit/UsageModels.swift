@@ -57,6 +57,8 @@ public struct UsageFile: Codable, Equatable, Sendable {
     public var active: String?
     public var unsavedSeat: UnsavedSeat?
     public var accounts: [AccountUsage]
+    /// Set while a refresh runs, so the widget can say 조회 중….
+    public var refreshingSince: Date? = nil
 
     public static let empty = UsageFile(
         version: 1, fetchedAt: nil, lastError: nil, active: nil, unsavedSeat: nil, accounts: [])
@@ -65,6 +67,16 @@ public struct UsageFile: Codable, Equatable, Sendable {
     public var activeAccount: AccountUsage? {
         accounts.first { $0.name == active }
     }
+
+    /// A refresh is under way. A mark older than `refreshLimit` is one an app
+    /// left behind when it quit mid-refresh.
+    public func isRefreshing(at now: Date) -> Bool {
+        guard let start = refreshingSince else { return false }
+        return now.timeIntervalSince(start) < Self.refreshLimit
+    }
+
+    /// Longer than any refresh: 60 s waiting for the lock plus 30 s per probe.
+    static let refreshLimit: TimeInterval = 120
 }
 
 /// `login`, `use` and `rename` answer with one of these.

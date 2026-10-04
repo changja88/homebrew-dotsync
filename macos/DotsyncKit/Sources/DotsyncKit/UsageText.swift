@@ -46,6 +46,14 @@ public enum UsageText {
         return "\(Int(seconds / 86_400))일 전"
     }
 
+    /// The widget header: "조회 중…" while a refresh runs, "갱신 실패" after a
+    /// failed one, otherwise `ago`.
+    public static func updated(_ file: UsageFile, now: Date) -> String {
+        if file.isRefreshing(at: now) { return "조회 중…" }
+        if file.lastError != nil { return "갱신 실패" }
+        return ago(file.fetchedAt, now: now)
+    }
+
     /// Weekly use at 98 % or more, until its reset passes: the row shows only
     /// when it resets.
     public static func isFull(_ week: UsageWindow?, now: Date) -> Bool {
