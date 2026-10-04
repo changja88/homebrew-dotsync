@@ -54,7 +54,7 @@ final class AccountsModel {
 
     func refresh() async {
         await perform("조회 중") { service in
-            self.file = await service.refresh()
+            self.file = await RefreshGate.shared.refresh(service)
             self.message = self.file.lastError
         }
     }

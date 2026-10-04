@@ -21,11 +21,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppHooks.open = { url in _ = NSWorkspace.shared.open(url) }
         // A widget button may launch the app with no window (spike Q1). Once
-        // its work is done, don't stay behind.
+        // every button's work is done, don't stay behind.
         AppHooks.afterIntent = {
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(2))
-                if !NSApp.windows.contains(where: \.isVisible) {
+                if IntentWork.running == 0 && !NSApp.windows.contains(where: \.isVisible) {
                     NSApp.terminate(nil)
                 }
             }
