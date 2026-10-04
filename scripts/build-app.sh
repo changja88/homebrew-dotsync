@@ -9,12 +9,15 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VERSION=${1:?usage: scripts/build-app.sh VERSION}
+# A new build number on every build: macOS re-reads the widget list and
+# restarts the widget only when CFBundleVersion changes.
+BUILD=$(date +%Y%m%d.%H%M%S)
 IDENTITY="${DOTSYNC_SIGN_IDENTITY:-Developer ID Application: Numchida (GR53VV7ZD2)}"
 APP=build/app/Build/Products/Release/dotsync.app
 
 (cd macos && xcodegen generate --quiet)
 xcodebuild -project macos/dotsync.xcodeproj -scheme dotsync -configuration Release \
-  -derivedDataPath build/app CODE_SIGNING_ALLOWED=NO MARKETING_VERSION="$VERSION" \
+  -derivedDataPath build/app CODE_SIGNING_ALLOWED=NO MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" \
   build -quiet
 codesign --force --options runtime --timestamp \
   --entitlements macos/Widget/Widget.entitlements -s "$IDENTITY" "$APP/Contents/PlugIns/dotsyncWidget.appex"
