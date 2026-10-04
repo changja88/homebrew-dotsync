@@ -19,6 +19,10 @@ APP=build/app/Build/Products/Release/dotsync.app
 xcodebuild -project macos/dotsync.xcodeproj -scheme dotsync -configuration Release \
   -derivedDataPath build/app CODE_SIGNING_ALLOWED=NO MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD" \
   build -quiet
+# xcodebuild never re-dates the bundle folder, and the Dock keeps showing an
+# app's old icon while that date stays the same — on this Mac and after brew
+# installs the zip, which carries the date.
+touch "$APP"
 codesign --force --options runtime --timestamp \
   --entitlements macos/Widget/Widget.entitlements -s "$IDENTITY" "$APP/Contents/PlugIns/dotsyncWidget.appex"
 codesign --force --options runtime --timestamp \
