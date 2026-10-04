@@ -270,15 +270,20 @@ dotsync account remove work     # log it out and delete it
 
 #### 6. The dotsync app (macOS)
 
-A window and a desktop widget for the same accounts: each account's 5-hour and weekly usage with reset times, and one click to switch.
+A window and widgets for the same accounts: each account's 5-hour and weekly usage with reset times, and one click to switch.
 
 ```bash
 brew install --cask changja88/dotsync/dotsync-app   # installs the dotsync CLI too
 ```
 
 - The app is signed but not notarized: the first time, and after each update, open it once via System Settings → Privacy & Security → "Open Anyway".
-- Add the "Claude 계정" widget (large) from Edit Widgets. ↻ refreshes (about 10 s, no tokens); "사용" switches Claude like `dotsync account use`. The app runs only while you use it — nothing stays in the background.
+- Add a widget from Edit Widgets, on the desktop or in Notification Center:
+  - "Claude 계정" (large or extra large): the account in use and the other accounts together.
+  - "지금 사용 중" (medium): the account in use alone.
+  - "Claude 계정 목록" (large): the other accounts, up to six. Under "지금 사용 중" in Notification Center, the two read as one tall widget.
+- On a widget, ↻ refreshes (about 10 s, no tokens) and "사용" switches Claude like `dotsync account use`. The app runs only while you use it — nothing stays in the background.
 - The window adds accounts, logs one in again, renames and removes them.
+- An install or update stops the widget that was running, so the new one takes over. If a widget still stays blank, open the app once: it reloads the widgets.
 
 #### Change the folder or app list later
 
@@ -573,15 +578,20 @@ dotsync account remove work     # 로그아웃하고 삭제
 
 #### 6. dotsync 앱 (macOS)
 
-같은 계정들을 창과 바탕화면 위젯으로 본다. 계정별 5시간·주간 사용량과 초기화 시각, 클릭 한 번으로 교체.
+같은 계정들을 창과 위젯으로 본다. 계정별 5시간·주간 사용량과 초기화 시각, 클릭 한 번으로 교체.
 
 ```bash
 brew install --cask changja88/dotsync/dotsync-app   # dotsync 명령어도 함께 설치
 ```
 
 - 앱은 서명했지만 공증은 안 했다. 처음과 업데이트할 때마다 시스템 설정 → 개인정보 보호 및 보안 → "그래도 열기"로 한 번 연다.
-- 위젯 편집에서 "Claude 계정"(큰 크기)을 추가한다. ↻ 는 새로고침(약 10초, 토큰 안 씀), "사용"은 `dotsync account use`처럼 계정을 바꾼다. 앱은 쓸 때만 실행되고 뒤에 남지 않는다.
+- 위젯 편집에서 위젯을 추가한다. 바탕화면과 알림 센터 어디에나 놓을 수 있다.
+  - "Claude 계정"(큰 크기, 아주 큰 크기): 지금 쓰는 계정과 나머지 계정을 함께 본다.
+  - "지금 사용 중"(중간 크기): 지금 쓰는 계정만 본다.
+  - "Claude 계정 목록"(큰 크기): 나머지 계정을 여섯 개까지 본다. 알림 센터에서 "지금 사용 중" 아래에 두면 둘이 긴 위젯 하나처럼 보인다.
+- 위젯에서 ↻ 는 새로고침(약 10초, 토큰 안 씀), "사용"은 `dotsync account use`처럼 계정을 바꾼다. 앱은 쓸 때만 실행되고 뒤에 남지 않는다.
 - 창에서 계정 추가, 다시 로그인, 이름 바꾸기, 삭제를 한다.
+- 설치하거나 업데이트하면 실행 중이던 위젯을 끄고 새 위젯이 대신 뜬다. 그래도 위젯이 비어 있으면 앱을 한 번 연다. 앱이 위젯을 다시 그린다.
 
 #### 폴더/앱 목록을 나중에 바꾸고 싶으면
 

@@ -49,7 +49,8 @@ between local app locations and one user-chosen sync folder.
   and its error codes are the contract the dotsync app depends on — change
   them together with the app. Accounts are separate from syncing: no sync
   folder, no push/pull.
-- `macos/` is dotsync.app (SwiftUI) and its widget. `macos/DotsyncKit` holds
+- `macos/` is dotsync.app (SwiftUI) and its three widgets ("Claude 계정",
+  "지금 사용 중", "Claude 계정 목록"). `macos/DotsyncKit` holds
   everything testable (`swift test --package-path macos/DotsyncKit`): models
   of the `--json` output, usage.json in the app group `GR53VV7ZD2.dotsync`,
   the merge rule, texts, the dotsync runner. The app runs
@@ -60,7 +61,10 @@ between local app locations and one user-chosen sync folder.
   notarization) and zips; `make release` ships the Formula and the Cask
   `Casks/dotsync-app.rb` from one tag. For a local build, point the app at
   this checkout with `defaults write com.changja88.dotsync cliPath
-  "$PWD/macos/dev/dotsync-dev"`.
+  "$PWD/macos/dev/dotsync-dev"`. Replacing the app leaves the old widget
+  process running, and macOS then refuses what it draws (blank widgets): the
+  Cask stops it after each install (`terminate_process "dotsyncWidget"`);
+  after a local install run `killall dotsyncWidget` yourself.
 - `lib/dotsync/ui.py` and `lib/dotsync/ui_picker.py` own terminal output,
   colors, prompts, summaries, and picker behavior.
 - `lib/dotsync/apps/base.py` defines the app plugin contract:
@@ -169,23 +173,29 @@ only one language.
 
 ## Release Notes
 
-Release flow:
+`make release` (`scripts/release.sh`) runs the whole release, in this order:
 
-- bump version strings
-- run tests
-- commit and push
-- tag and create a GitHub release
-- compute the real tarball sha256
-- patch `Formula/dotsync.rb`
+- bump version strings (`pyproject.toml`, `lib/dotsync/__init__.py`,
+  `Formula/dotsync.rb`, `macos/project.yml`, `Casks/dotsync-app.rb`)
+- run the Python and Swift tests
+- build, sign and zip dotsync.app; put the zip's sha256 into the Cask
+- commit and tag locally, then push the tag only
+- compute the real sha256 of the tag's tarball, patch `Formula/dotsync.rb`,
+  commit
+- create the GitHub release with the app zip (the Cask downloads it)
+- push main last
 
-Never guess the formula `sha256`. It must be computed from the actual GitHub
-release tarball after the release exists.
+brew reads the tap's main directly, so main must never hold a placeholder
+`sha256` or a Cask whose zip isn't uploaded yet — that is why main is pushed
+last. Never guess the formula `sha256`. It must be computed from the actual
+GitHub tarball of the pushed tag.
 
 Before Homebrew-facing changes, validate locally when possible:
 
 ```bash
 brew install --build-from-source ./Formula/dotsync.rb
 brew test dotsync
+brew style Casks/dotsync-app.rb
 ```
 
 ## Local Style
