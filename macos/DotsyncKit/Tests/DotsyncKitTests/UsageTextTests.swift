@@ -55,19 +55,27 @@ func after(days: Int = 0, hours: Int = 0, minutes: Int = 0, seconds: Int = 0) ->
     #expect(UsageText.ago(after(hours: -26), now: now) == "1일 전")
 }
 
-@Test func theWidgetHeaderSaysRefreshingFailedOrHowLongAgo() {
+@Test func theWidgetHeaderSaysRefreshingFailedOrWhenItFetched() {
     var file = UsageFile.empty
+    #expect(UsageText.updateStatus(file, now: now) == .never)
     file.fetchedAt = after(minutes: -6)
-    #expect(UsageText.updated(file, now: now) == "6분 전")
+    #expect(UsageText.updateStatus(file, now: now) == .fetched(after(minutes: -6)))
     file.refreshingSince = after(seconds: -5)
-    #expect(UsageText.updated(file, now: now) == "조회 중…")
+    #expect(UsageText.updateStatus(file, now: now) == .refreshing)
     // A mark left by an app that quit mid-refresh stops counting after two minutes.
     file.refreshingSince = after(minutes: -3)
-    #expect(UsageText.updated(file, now: now) == "6분 전")
+    #expect(UsageText.updateStatus(file, now: now) == .fetched(after(minutes: -6)))
     file.lastError = "dotsync를 찾을 수 없어요"
-    #expect(UsageText.updated(file, now: now) == "갱신 실패")
+    #expect(UsageText.updateStatus(file, now: now) == .failed)
     file.refreshingSince = after(seconds: -5)
-    #expect(UsageText.updated(file, now: now) == "조회 중…")
+    #expect(UsageText.updateStatus(file, now: now) == .refreshing)
+}
+
+@Test func theCountdownRunsUntilTheResetThenSaysItPassed() {
+    #expect(UsageText.countdown(to: after(hours: 3), now: now) == .until(after(hours: 3)))
+    #expect(UsageText.countdown(to: now, now: now) == .passed)
+    #expect(UsageText.countdown(to: after(minutes: -1), now: now) == .passed)
+    #expect(UsageText.countdown(to: nil, now: now) == .unknown)
 }
 
 @Test func fullOnlyFromNinetyEightPercentUntilTheReset() {

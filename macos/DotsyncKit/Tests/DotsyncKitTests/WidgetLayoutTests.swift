@@ -54,9 +54,30 @@ func file(_ accounts: [AccountUsage], active: String?) -> UsageFile {
     #expect(WidgetLayout.kind(of: full, now: now) == .metrics)
 }
 
-@Test func theScheduleTicksEveryMinuteForAnHour() {
-    let schedule = WidgetLayout.minuteSchedule(from: now)
-    #expect(schedule.count == 60)
-    #expect(schedule.first == now)
-    #expect(schedule.last == after(minutes: 59))
+@Test func theTimelineHasAnEntryOnlyWhereTheWidgetChanges() {
+    var accounts = [account("a", week: after(days: 2)), account("b", week: after(hours: 30))]
+    accounts[1].fiveHour = UsageWindow(percent: 50, resetsAt: after(hours: 4))
+    let dates = WidgetLayout.timelineDates(for: file(accounts, active: "a"), now: now)
+    // Both five-hour resets; the weekly ones are more than a day away.
+    #expect(dates == [now, after(hours: 2), after(hours: 4)])
+}
+
+@Test func passedAndSharedResetsAddNoEntries() {
+    var accounts = [account("a", week: after(days: -1)), account("b", week: after(hours: 2))]
+    accounts[0].fiveHour = UsageWindow(percent: 50, resetsAt: after(minutes: -5))
+    let dates = WidgetLayout.timelineDates(for: file(accounts, active: nil), now: now)
+    #expect(dates == [now, after(hours: 2)])
+}
+
+@Test func theUnsavedLoginsResetsCount() {
+    var unsaved = UsageFile.empty
+    unsaved.unsavedSeat = UnsavedSeat(email: "u@x", status: .ok,
+                                      fiveHour: UsageWindow(percent: 5, resetsAt: after(hours: 3)))
+    #expect(WidgetLayout.timelineDates(for: unsaved, now: now) == [now, after(hours: 3)])
+}
+
+@Test func 조회중EndsWithItsOwnEntryWhenTheAppLeftItBehind() {
+    var refreshing = UsageFile.empty
+    refreshing.refreshingSince = after(seconds: -30)
+    #expect(WidgetLayout.timelineDates(for: refreshing, now: now) == [now, after(seconds: 90)])
 }

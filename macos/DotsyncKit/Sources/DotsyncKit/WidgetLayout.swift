@@ -38,9 +38,22 @@ public struct WidgetLayout: Equatable, Sendable {
         return .metrics
     }
 
-    /// One timeline entry a minute for an hour, so "n분 후 초기화" counts down
-    /// without running dotsync.
-    public static func minuteSchedule(from start: Date, count: Int = 60) -> [Date] {
-        (0..<count).map { start.addingTimeInterval(TimeInterval($0 * 60)) }
+    /// A timeline covers a day; WidgetKit asks for the next one after it.
+    public static let timelineSpan: TimeInterval = 86_400
+
+    /// When the widget looks different without new data: now, each reset in
+    /// the coming day (its countdown turns into 초기화됨) and the end of a 조회 중
+    /// mark an app left behind. Remaining times count down by themselves, so a
+    /// handful of entries replaces one a minute — WidgetKit renders every
+    /// entry on each reload, and sixty of them took seconds and got too big.
+    public static func timelineDates(for file: UsageFile, now: Date) -> [Date] {
+        let windows = file.accounts.flatMap { [$0.fiveHour, $0.sevenDay] }
+            + [file.unsavedSeat?.fiveHour, file.unsavedSeat?.sevenDay]
+        var changes = windows.compactMap { $0?.resetsAt }
+        if file.isRefreshing(at: now), let start = file.refreshingSince {
+            changes.append(start.addingTimeInterval(UsageFile.refreshLimit))
+        }
+        let end = now.addingTimeInterval(timelineSpan)
+        return [now] + Set(changes.filter { $0 > now && $0 < end }).sorted()
     }
 }
