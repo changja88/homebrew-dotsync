@@ -46,7 +46,7 @@ final class AccountsModel {
 
     var isBusy: Bool { running != nil || service == nil }
 
-    var accounts: [AccountUsage] { UsageOrder.sorted(file.accounts) }
+    var accounts: [AccountUsage] { UsageOrder.sorted(file.accounts, now: Date()) }
 
     func reload() {
         if let service { file = service.current() }

@@ -14,20 +14,49 @@ func report(_ accounts: [AccountUsage], active: String? = nil, at: Date = now) -
     UsageReport(fetchedAt: at, active: active, unsavedSeat: nil, accounts: accounts)
 }
 
-@Test func sortsByWeeklyResetSoonestFirst() {
-    let sorted = UsageOrder.sorted([
-        account("c", week: after(days: 3)),
-        account("lost", .loginRequired),
-        account("a", week: after(days: 1)),
-        account("unread", week: nil),
-        account("b", week: after(days: 2)),
-    ])
-    #expect(sorted.map(\.name) == ["a", "b", "c", "lost", "unread"])
+func account(_ name: String, weekUsed percent: Int, resets: Date?) -> AccountUsage {
+    var account = account(name, week: resets)
+    account.sevenDay?.percent = percent
+    return account
 }
 
-@Test func sortsEqualResetsByLabel() {
-    let sorted = UsageOrder.sorted([account("y", week: after(days: 1)), account("x", week: after(days: 1))])
-    #expect(sorted.map(\.name) == ["x", "y"])
+@Test func mostOfTheWeekLeftComesFirst() {
+    let sorted = UsageOrder.sorted([
+        account("a", weekUsed: 60, resets: after(days: 1)),
+        account("b", weekUsed: 10, resets: after(days: 3)),
+        account("c", weekUsed: 35, resets: after(days: 2)),
+    ], now: now)
+    #expect(sorted.map(\.name) == ["b", "c", "a"])
+}
+
+@Test func usedUpWeeksFollowSoonestResetFirstThenTheUnreadable() {
+    var unread = account("unread")
+    unread.sevenDay = nil
+    let sorted = UsageOrder.sorted([
+        account("lost", .loginRequired),
+        account("full-late", weekUsed: 100, resets: after(days: 4)),
+        unread,
+        account("full-soon", weekUsed: 99, resets: after(days: 1)),
+        account("busy", weekUsed: 90, resets: after(days: 5)),
+    ], now: now)
+    #expect(sorted.map(\.name) == ["busy", "full-soon", "full-late", "lost", "unread"])
+}
+
+@Test func aWeekWhoseResetPassedCountsAsUnused() {
+    let sorted = UsageOrder.sorted([
+        account("fresh", weekUsed: 5, resets: after(days: 2)),
+        account("stale", weekUsed: 100, resets: after(minutes: -5)),
+    ], now: now)
+    #expect(sorted.map(\.name) == ["stale", "fresh"])
+}
+
+@Test func equalWeeksGoBySoonerResetThenLabel() {
+    let sorted = UsageOrder.sorted([
+        account("x", weekUsed: 20, resets: after(days: 2)),
+        account("z", weekUsed: 20, resets: after(days: 1)),
+        account("y", weekUsed: 20, resets: after(days: 1)),
+    ], now: now)
+    #expect(sorted.map(\.name) == ["y", "z", "x"])
 }
 
 @Test func mergeTakesFreshValuesAndStampsThem() {

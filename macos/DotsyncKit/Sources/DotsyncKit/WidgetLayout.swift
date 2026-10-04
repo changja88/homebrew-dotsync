@@ -24,7 +24,7 @@ public struct WidgetLayout: Equatable, Sendable {
     public init(file: UsageFile, now: Date, maxRows: Int = WidgetLayout.maxRows) {
         current = file.activeAccount
         unsavedSeat = current == nil ? file.unsavedSeat : nil
-        let others = UsageOrder.sorted(file.accounts.filter { $0.name != file.active })
+        let others = UsageOrder.sorted(file.accounts.filter { $0.name != file.active }, now: now)
         rows = Array(others.prefix(maxRows))
         hidden = max(0, others.count - maxRows)
         switchNeedsConfirmation = unsavedSeat != nil
