@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from local_dev.serena_mcp_management import graphify_probe as probe
+from local_dev.serena_mcp_management import user_scope_guidance as guidance
 
 GRAPHIFY = shutil.which("graphify")
 
@@ -55,6 +56,11 @@ def test_claude_install_and_uninstall_are_recognised(project):
 
     result = _graphify(root, home, "claude", "install")
     assert result.returncode == 0, result.stdout + result.stderr
+    assert probe.integration_status(root, "claude") == "installed"
+
+    # The launcher must accept the real install after retiring its guard hooks.
+    guidance.install_project_graphify_guidance(root)
+    assert probe.graphify_hook_entries(root / ".claude/settings.json") == []
     assert probe.integration_status(root, "claude") == "installed"
 
     result = _graphify(root, home, "claude", "uninstall")

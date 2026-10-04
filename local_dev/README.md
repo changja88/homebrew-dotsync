@@ -70,10 +70,10 @@ user-level skill lives at `~/.codex/skills/graphify` (claude:
 (cli / global skill / graph / integration / hook) are computed by the launcher,
 not the zsh shim, and only from the markers Graphify itself uses to find its
 own files: the `## graphify` section header in `CLAUDE.md`/`AGENTS.md`, a
-`hooks.PreToolUse` entry mentioning `graphify` in `.claude/settings.json` /
-`.codex/hooks.json`, and the `# graphify-hook-start` /
-`# graphify-checkout-hook-start` blocks in the git hooks. The *wording* of
-Graphify's hook commands is deliberately never inspected — it changed from
+`hooks.PreToolUse` entry mentioning `graphify` in `.codex/hooks.json` for Codex,
+and the `# graphify-hook-start` / `# graphify-checkout-hook-start` blocks in the
+git hooks. Claude integration requires its Markdown section, not the retired
+PreToolUse guards. The probe does not inspect hook command wording — it changed from
 inline shell to `graphify hook-guard …` without a release note, and every
 shim-side grep of it produced a false "missing" that re-asked "set it up?" on
 each launch. Two runnability checks remain: an absolute executable pinned into
@@ -350,16 +350,31 @@ requires a git repo. When the project isn't one yet, the launcher swaps the
 Yes); accepting it runs `git init` and then installs the hooks, while declining
 skips the hook step with a "needs a git repo — run `git init` first" note.
 
-The primary checkout owns the canonical Graphify graph. A new linked worktree
-may receive a copied `graphify-out/` snapshot for queries, but Graphify's
-official hooks must skip automatic rebuilds there. The launcher therefore
-treats marker-only legacy hooks as outdated unless both post-commit and
-post-checkout contain the current git-dir/common-dir worktree guard. If a
-linked worktree has no copied graph yet, the launcher refuses to initialize an
-independent graph and asks the user to initialize Graphify from the primary
-checkout. Automatic code updates then happen only through the primary
-checkout's hooks; document, paper, and image changes still require an explicit
-agent-side `/graphify --update`.
+The primary checkout (the original clone, not a branch name) owns the canonical
+Graphify graph. Keep that checkout on main when main should be the baseline.
+For opted-in projects the launcher sets the official `GRAPHIFY_OUT` variable
+to the primary graph's absolute directory for both Claude and Codex, including
+Serena-free launches. A variable inherited from another project is cleared
+before resolving the current project's marker. Linked worktrees query the
+shared baseline; they do not rebuild it or contribute unmerged changes.
+Use the current worktree's source and Serena for branch-local definitions.
+
+Graphify's official hooks skip linked worktrees. The launcher treats legacy
+hooks as outdated unless both hooks contain the git-dir/common-dir guard.
+After an authorized pull/merge in the primary checkout, run `graphify update .`;
+commit/branch-switch updates use the official hooks. Semantic updates still
+require an explicit `/graphify --update`. Explicit Graphify integration setup
+aligns its generic query rule with user-scope tool routing and limits updates to
+primary checkouts. Known symbols go directly to Serena; exact text uses built-in
+tools. Graph queries can use indexed documents and fall back to current files
+when unsuccessful. Explicit integration setup also removes only direct Claude
+`graphify hook-guard search/read` commands: their blanket query requirement and
+stale-file update advice conflict with this routing and the linked-worktree
+policy. Personal sibling hooks and official Git update hooks are preserved.
+Query commands may write their internal cache; agent-driven `save-result` and
+`reflect` are not automatic query steps and require an explicit request in the
+primary checkout. Ordinary launches only set the graph environment; they never
+rewrite project instruction files.
 
 Only after that project-level Graphify opt-in, preflight runs
 `graphify --version`. Versions below `0.9.14` are warned because `0.9.14` is
@@ -390,9 +405,10 @@ symlink hook fail closed.
 On a future `git worktree add`, that block copies `.env.local` with its file
 mode (never a symlink and never over an existing target), copies Serena's
 `project.yml`/`project.local.yml`, and links `.serena/memories` back to the
-primary checkout. Graphify remains query-only: it copies only `graph.json`,
-`GRAPH_REPORT.md`, `.graphify_python`, optional `reflections/LESSONS.md`, and
-existing `.codex/hooks.json`/`.claude/settings.json`. It does **not** copy
+primary checkout. Graphify remains query-only: it links `graph.json`,
+`GRAPH_REPORT.md`, `.graphify_python`, and optional `reflections/LESSONS.md` to
+the primary checkout, and copies existing `.codex/hooks.json`/`.claude/settings.json`.
+Atomic primary graph replacements are immediately visible through the links. It does **not** copy
 `.graphify_root`, cache, dated history, manifests, cost data, or query-memory
 files, and it never runs `graphify update` in the linked worktree. Canonical
 automatic graph updates continue through the primary checkout's official
@@ -488,8 +504,9 @@ exec zsh   # reload claude/codex shell functions
 updates the launcher-owned Serena/Graphify guidance in both the dotsync folder
 and the live Codex/Claude user scope, and rewrites the managed block in
 `~/.zshrc` in one step. The guidance updater owns only the section between its
-Markdown markers and the two matching Claude hook commands; unrelated personal
-instructions and settings are preserved. It derives the dotsync folder from
+Markdown markers and its matching Claude hook commands. It removes the obsolete
+Serena Grep reminder and keeps a compact SessionStart checkout/opt-in notice;
+unrelated personal instructions, permissions, and settings are preserved. It derives the dotsync folder from
 `$STABLE_DIR/..`; use `DOTSYNC_CONFIG_DIR=/path` or `LIVE_HOME=/path` for an
 isolated install. If the dotsync user-scope files are all absent, that guidance
 step is skipped so a launcher-only test install remains valid; a partial set is

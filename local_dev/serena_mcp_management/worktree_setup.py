@@ -52,6 +52,32 @@ def _git_directories(project_root: Path) -> tuple[Path, Path] | None:
         return None
 
 
+def shared_graph_directory(project_root: Path) -> Path | None:
+    """Resolve an opted-in checkout's canonical graph without creating anything."""
+    root = project_root.resolve()
+    if not (root / "graphify-out" / "graph.json").is_file():
+        return None
+    directories = _git_directories(root)
+    primary = root
+    if directories is not None and directories[0] != directories[1]:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(root), "worktree", "list", "--porcelain", "-z"],
+                capture_output=True, text=True, check=False,
+            )
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return None
+        first = result.stdout.split("\0", 1)[0]
+        if result.returncode != 0 or not first.startswith("worktree "):
+            return None
+        primary = Path(first.removeprefix("worktree ")).resolve()
+    elif directories is None and (root / ".git").is_file():
+        # Never mistake an unresolved linked checkout for the graph owner.
+        return None
+    output = primary / "graphify-out"
+    return output.resolve() if (output / "graph.json").is_file() else None
+
+
 def _post_checkout_hook(project_root: Path) -> Path | None:
     return _run_git_path(project_root, "--git-path", "hooks/post-checkout")
 
@@ -95,6 +121,13 @@ def render_worktree_setup_block() -> str:
             return 0
           fi
           cp -c -p "$1" "$2" 2>/dev/null || cp -p "$1" "$2"
+        }}
+
+        _dotsync_wt_link_file() {{
+          if [ ! -f "$1" ] || [ -e "$2" ] || [ -L "$2" ]; then
+            return 0
+          fi
+          ln -s "$1" "$2"
         }}
 
         _dotsync_wt_prepare_dir() {{
@@ -141,19 +174,19 @@ def render_worktree_setup_block() -> str:
 
                   if [ -f "$_DOTSYNC_WT_PRIMARY/graphify-out/graph.json" ] && \
                      _dotsync_wt_prepare_dir "$_DOTSYNC_WT_TARGET/graphify-out"; then
-                    _dotsync_wt_copy_file \
+                    _dotsync_wt_link_file \
                       "$_DOTSYNC_WT_PRIMARY/graphify-out/graph.json" \
                       "$_DOTSYNC_WT_TARGET/graphify-out/graph.json"
-                    _dotsync_wt_copy_file \
+                    _dotsync_wt_link_file \
                       "$_DOTSYNC_WT_PRIMARY/graphify-out/GRAPH_REPORT.md" \
                       "$_DOTSYNC_WT_TARGET/graphify-out/GRAPH_REPORT.md"
-                    _dotsync_wt_copy_file \
+                    _dotsync_wt_link_file \
                       "$_DOTSYNC_WT_PRIMARY/graphify-out/.graphify_python" \
                       "$_DOTSYNC_WT_TARGET/graphify-out/.graphify_python"
                     if [ -f "$_DOTSYNC_WT_PRIMARY/graphify-out/reflections/LESSONS.md" ] && \
                        _dotsync_wt_prepare_dir \
                       "$_DOTSYNC_WT_TARGET/graphify-out/reflections"; then
-                      _dotsync_wt_copy_file \
+                      _dotsync_wt_link_file \
                         "$_DOTSYNC_WT_PRIMARY/graphify-out/reflections/LESSONS.md" \
                         "$_DOTSYNC_WT_TARGET/graphify-out/reflections/LESSONS.md"
                     fi

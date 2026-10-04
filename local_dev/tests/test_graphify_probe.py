@@ -98,8 +98,8 @@ def test_integration_missing_without_section_header(tmp_path):
     assert probe.integration_status(project, "claude") == "missing"
 
 
-def test_integration_missing_when_graphify_only_appears_outside_pretooluse(tmp_path):
-    """permissions에 graphify가 있어도 PreToolUse hook이 없으면 통합이 아니다."""
+def test_claude_integration_does_not_require_retired_pretooluse_guard(tmp_path):
+    """Removing the conflicting guard must not trigger repeated installation prompts."""
     project = tmp_path / "project"
     project.mkdir()
     (project / "CLAUDE.md").write_text("## graphify\n")
@@ -112,7 +112,12 @@ def test_integration_missing_when_graphify_only_appears_outside_pretooluse(tmp_p
         ]},
     }))
 
-    assert probe.integration_status(project, "claude") == "missing"
+    assert probe.integration_status(project, "claude") == "installed"
+
+
+def test_claude_integration_accepts_guidance_without_settings_file(tmp_path):
+    (tmp_path / "CLAUDE.md").write_text("## graphify\n")
+    assert probe.integration_status(tmp_path, "claude") == "installed"
 
 
 def test_integration_missing_when_hook_executable_dangles(tmp_path):
@@ -122,19 +127,22 @@ def test_integration_missing_when_hook_executable_dangles(tmp_path):
     _write_claude_integration(
         project, command=f"{tmp_path}/gone/graphify hook-guard search"
     )
+    (project / "CLAUDE.md").rename(project / "AGENTS.md")
+    (project / ".codex").mkdir()
+    (project / ".claude/settings.json").rename(project / ".codex/hooks.json")
 
-    assert probe.integration_status(project, "claude") == "missing"
+    assert probe.integration_status(project, "codex") == "missing"
 
 
 def test_integration_missing_when_settings_json_is_invalid(tmp_path):
     project = tmp_path / "project"
     project.mkdir()
-    (project / "CLAUDE.md").write_text("## graphify\n")
-    settings = project / ".claude" / "settings.json"
+    (project / "AGENTS.md").write_text("## graphify\n")
+    settings = project / ".codex" / "hooks.json"
     settings.parent.mkdir(parents=True)
     settings.write_text("{not json")
 
-    assert probe.integration_status(project, "claude") == "missing"
+    assert probe.integration_status(project, "codex") == "missing"
 
 
 def test_integration_codex_uses_agents_md_and_codex_hooks(tmp_path):

@@ -13,8 +13,8 @@ This module relies only on the markers Graphify itself uses to find and
 replace its own files (``graphify/install.py`` and ``graphify/hooks.py``):
 
 - the ``## graphify`` section header in ``CLAUDE.md`` / ``AGENTS.md``
-- a ``hooks.PreToolUse`` entry mentioning ``graphify`` in
-  ``.claude/settings.json`` / ``.codex/hooks.json``
+- for Codex, a ``hooks.PreToolUse`` entry mentioning ``graphify`` in
+  ``.codex/hooks.json``; Claude uses its Markdown guidance without guard hooks
 - ``# graphify-hook-start`` / ``# graphify-checkout-hook-start`` blocks in the
   git ``post-commit`` / ``post-checkout`` hooks
 
@@ -186,6 +186,10 @@ def integration_status(project_root: Path, client: str) -> str:
     md_path, cfg_path = integration_files(project_root, client)
     if not section_registered(md_path):
         return STATUS_MISSING
+    if client == "claude":
+        # Explicit setup removes Graphify's blanket query/update nudges.
+        # Their absence must not cause an endless reinstall prompt.
+        return STATUS_INSTALLED
     entries = graphify_hook_entries(cfg_path)
     if not entries:
         return STATUS_MISSING

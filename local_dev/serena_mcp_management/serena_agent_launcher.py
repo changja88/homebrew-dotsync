@@ -45,6 +45,9 @@ from local_dev.serena_mcp_management.memory_management import (
     scan_memory_inventory,
 )
 from local_dev.serena_mcp_management import graphify_probe, graphify_setup_guard
+from local_dev.serena_mcp_management.user_scope_guidance import (
+    GuidanceUpdateError, install_project_graphify_guidance,
+)
 from local_dev.serena_mcp_management.graphify_version import (
     MINIMUM_VERSION as GRAPHIFY_MINIMUM_VERSION,
     installed_version as inspect_graphify_version,
@@ -103,6 +106,7 @@ from local_dev.serena_mcp_management.ui import (
 from local_dev.serena_mcp_management.worktree_setup import (
     WorktreeSetupError,
     install_worktree_setup_hook,
+    shared_graph_directory,
     worktree_setup_available,
     worktree_setup_installed,
 )
@@ -514,6 +518,7 @@ def _main_v2(args: list[str]) -> int:
     root_hint = _project_root_from_environment()
     project_root = root_hint if root_hint == discovered_root else discovered_root
     os.environ["SERENA_AGENT_PROJECT_ROOT"] = str(project_root)
+    _configure_graphify_project(project_root)
 
     real_binary = find_real_binary(client_type)
     if interactive:
@@ -536,6 +541,7 @@ def _main_v2(args: list[str]) -> int:
         if rc != 0:
             return rc
         _run_worktree_setup_v2(project_root)
+        _configure_graphify_project(project_root)
 
     session_choice = _run_session_choice_v2()
 
@@ -1459,7 +1465,23 @@ def _graphify_integration_install(project_root: Path, client: str) -> int:
         cwd=str(project_root),
         check=False,
     )
+    if proc.returncode == 0:
+        try:
+            install_project_graphify_guidance(project_root)
+        except (OSError, GuidanceUpdateError) as exc:
+            sys.stdout.write(f"  ! graphify    project guidance update failed: {exc}\n")
+            sys.stdout.flush()
+            return 1
     return proc.returncode
+
+
+def _configure_graphify_project(project_root: Path) -> None:
+    """Bind both agent clients and their CLI hooks to this project's shared graph."""
+    os.environ.pop("GRAPHIFY_OUT", None)
+    output = shared_graph_directory(project_root)
+    if output is None:
+        return
+    os.environ["GRAPHIFY_OUT"] = str(output)
 
 
 def _populate_graphify_preflight_environ(project_root: Path, client: str) -> None:
@@ -2044,7 +2066,7 @@ def _run_worktree_setup_v2(
     if (project_root / ".serena" / "project.yml").is_file():
         scopes.append("Serena config + shared memories")
     if (project_root / "graphify-out" / "graph.json").is_file():
-        scopes.append("Graphify query snapshot")
+        scopes.append("shared Graphify queries")
 
     out = stream if stream is not None else sys.stdout
     out.write(render_inline_row(

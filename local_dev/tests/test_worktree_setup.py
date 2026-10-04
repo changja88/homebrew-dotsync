@@ -108,6 +108,14 @@ def test_initial_linked_worktree_receives_only_approved_local_assets(tmp_path):
     assert (linked / ".codex" / "hooks.json").is_file()
     assert (linked / ".claude" / "settings.json").is_file()
 
+    # Atomic primary rebuilds must be visible without reseeding the worktree.
+    replacement = primary / "graphify-out" / "next.json"
+    replacement.write_text('{"generation": 2}\n')
+    replacement.replace(primary / "graphify-out" / "graph.json")
+    (primary / "graphify-out" / "GRAPH_REPORT.md").write_text("# Updated\n")
+    assert (linked / "graphify-out" / "graph.json").read_text() == '{"generation": 2}\n'
+    assert (linked / "graphify-out" / "GRAPH_REPORT.md").read_text() == "# Updated\n"
+
     for excluded in (
         "graphify-out/.graphify_root",
         "graphify-out/manifest.json",
@@ -328,3 +336,63 @@ def test_availability_fails_closed_when_git_probe_cannot_return_a_path(
         )
 
     assert worktree_setup_available(tmp_path) is False
+
+
+@pytest.mark.parametrize("client", ["claude", "codex"])
+def test_launcher_child_queries_primary_even_from_a_stale_worktree_copy(tmp_path, monkeypatch, client):
+    """A missing launch environment binding makes the child read the stale local graph."""
+    import json
+    import sys
+    from local_dev.serena_mcp_management import serena_agent_launcher as launcher
+
+    primary = tmp_path / "primary with spaces"
+    linked = tmp_path / "linked"
+    _init_repository(primary)
+    (primary / "graphify-out").mkdir()
+    (primary / "graphify-out" / "graph.json").write_text('{"generation": 2}')
+    _add_worktree(primary, linked)
+    (linked / "graphify-out").mkdir()
+    (linked / "graphify-out" / "graph.json").write_text('{"generation": 1}')
+    instructions = (
+        "# Existing instructions\n\n## graphify\n\n"
+        "- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).\n"
+    )
+    for name in ("AGENTS.md", "CLAUDE.md"):
+        (linked / name).write_text(instructions)
+    before = {name: ((linked / name).read_bytes(), (linked / name).stat().st_mtime_ns)
+              for name in ("AGENTS.md", "CLAUDE.md")}
+    output = tmp_path / "observed.json"
+    monkeypatch.chdir(linked)
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "0")
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", client)
+    monkeypatch.setenv("SERENA_AGENT_CLEAR_BEFORE_CHILD", "0")
+    monkeypatch.setenv("GRAPHIFY_OUT", str(tmp_path / "wrong-project"))
+    monkeypatch.setattr(launcher, "find_real_binary", lambda _: sys.executable)
+    code = (
+        "import os, pathlib, sys; "
+        "p = pathlib.Path(os.environ.get('GRAPHIFY_OUT', 'graphify-out')) / 'graph.json'; "
+        "pathlib.Path(sys.argv[1]).write_text(p.read_text())"
+    )
+    assert launcher._main_v2(["-c", code, str(output)]) == 0
+    assert json.loads(output.read_text()) == {"generation": 2}
+    assert (linked / "graphify-out" / "graph.json").read_text() == '{"generation": 1}'
+    assert {name: ((linked / name).read_bytes(), (linked / name).stat().st_mtime_ns)
+            for name in before} == before
+
+
+def test_launcher_does_not_inherit_another_projects_graph_when_not_opted_in(tmp_path, monkeypatch):
+    """Leaking GRAPHIFY_OUT across project launches opts an unmarked checkout in."""
+    import sys
+    from local_dev.serena_mcp_management import serena_agent_launcher as launcher
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SERENA_AGENT_INTERACTIVE", "0")
+    monkeypatch.setenv("SERENA_AGENT_CLIENT", "codex")
+    monkeypatch.setenv("SERENA_AGENT_CLEAR_BEFORE_CHILD", "0")
+    monkeypatch.setenv("GRAPHIFY_OUT", "/another-project/graphify-out")
+    monkeypatch.setattr(launcher, "find_real_binary", lambda _: sys.executable)
+    output = tmp_path / "observed.txt"
+    code = "import os,pathlib,sys; pathlib.Path(sys.argv[1]).write_text(os.environ.get('GRAPHIFY_OUT', 'disabled'))"
+    assert launcher._main_v2(["-c", code, str(output)]) == 0
+    assert output.read_text() == "disabled"
+    assert not (tmp_path / "graphify-out").exists()
