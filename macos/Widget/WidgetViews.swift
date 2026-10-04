@@ -63,19 +63,16 @@ struct UpdateStatusText: View {
         case .refreshing: Text("조회 중…")
         case .failed: Text("갱신 실패")
         case .never: Text("갱신 전")
-        case .fetched(let at): AgoText(date: at)
+        case .fetched(let at): agoText(at)
         }
     }
 }
 
-/// "지금", "3분 전", "2시간 전", "어제" — counts up by itself.
-struct AgoText: View {
-    let date: Date
-
-    var body: some View {
-        Text(.currentDate, format: SystemFormatStyle.DateReference(
-            to: date, allowedFields: [.day, .hour, .minute], maxFieldCount: 2, thresholdField: .day))
-    }
+/// "지금", "3분 전", "2시간 전", "어제" — counts up by itself. A `Text`, not a
+/// view, so it can sit inside another text.
+func agoText(_ date: Date) -> Text {
+    Text(.currentDate, format: SystemFormatStyle.DateReference(
+        to: date, allowedFields: [.day, .hour, .minute], maxFieldCount: 2, thresholdField: .day))
 }
 
 /// "3시간 44분", "6일 20시간" until a reset, counting down by itself;
@@ -184,7 +181,7 @@ struct AccountBox: View {
                 Text(account.label).font(.system(size: 12, weight: .semibold))
                     .lineLimit(1).minimumScaleFactor(0.75)
                 if account.status == .error, let at = account.fetchedAt {
-                    Text("\(AgoText(date: at)) 값").font(.system(size: 8.5)).foregroundStyle(.secondary)
+                    Text("\(agoText(at)) 값").font(.system(size: 8.5)).foregroundStyle(.secondary)
                         .lineLimit(1).minimumScaleFactor(0.8)
                 }
             }
