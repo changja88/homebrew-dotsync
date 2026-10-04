@@ -14,21 +14,24 @@ struct AccountsWindow: View {
                         Button { model.message = nil } label: { Image(systemName: "xmark") }
                             .buttonStyle(.borderless)
                     }
-                    .padding(.horizontal, 16).padding(.vertical, 8)
-                    .background(.orange.opacity(0.15))
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .glassEffect(.regular.tint(.orange.opacity(0.3)), in: .rect(cornerRadius: 12))
+                    .padding(.horizontal, 12).padding(.top, 8)
                 }
                 ScrollView {
-                    VStack(spacing: 4) {
-                        if model.file.active == nil, let seat = model.file.unsavedSeat {
-                            UnsavedSeatRow(seat: seat, now: context.date, model: model)
-                        }
-                        ForEach(model.accounts) { account in
-                            AccountRow(account: account, isActive: account.name == model.file.active,
-                                       now: context.date, model: model)
-                        }
-                        if model.file.accounts.isEmpty && model.file.unsavedSeat == nil {
-                            Text("저장된 계정이 없어요 — ‘계정 추가’로 시작하세요")
-                                .foregroundStyle(.secondary).padding(40)
+                    GlassEffectContainer(spacing: 4) {
+                        VStack(spacing: 8) {
+                            if model.file.active == nil, let seat = model.file.unsavedSeat {
+                                UnsavedSeatRow(seat: seat, now: context.date, model: model)
+                            }
+                            ForEach(model.accounts) { account in
+                                AccountRow(account: account, isActive: account.name == model.file.active,
+                                           now: context.date, model: model)
+                            }
+                            if model.file.accounts.isEmpty && model.file.unsavedSeat == nil {
+                                Text("저장된 계정이 없어요 — ‘계정 추가’로 시작하세요")
+                                    .foregroundStyle(.secondary).padding(40)
+                            }
                         }
                     }
                     .padding(12)
@@ -52,6 +55,8 @@ struct AccountsWindow: View {
             }
         }
         .frame(minWidth: 760, minHeight: 420)
+        // The desktop shows through, so the glass rows have something to refract.
+        .containerBackground(.thinMaterial, for: .window)
         .sheet(item: $model.sheet) { sheet in
             AccountSheet(sheet: sheet, model: model)
         }
@@ -86,10 +91,11 @@ struct UnsavedSeatRow: View {
             MetricView(title: "5시간", window: seat.fiveHour, now: now)
             MetricView(title: "주간", window: seat.sevenDay, now: now)
             Button("저장하기…") { model.sheet = .add(thenUse: nil) }
+                .buttonStyle(.glass)
                 .disabled(model.isBusy)
                 .frame(width: 150, alignment: .trailing)
         }
-        .padding(10)
-        .background(Color.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .padding(12)
+        .glassEffect(.regular.tint(.blue.opacity(0.25)), in: .rect(cornerRadius: 14))
     }
 }

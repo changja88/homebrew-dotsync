@@ -15,8 +15,8 @@ struct AccountRow: View {
                     if isActive {
                         Text("사용 중")
                             .font(.caption2.weight(.semibold)).foregroundStyle(.white)
-                            .padding(.horizontal, 6).padding(.vertical, 1)
-                            .background(Capsule().fill(.blue))
+                            .padding(.horizontal, 7).padding(.vertical, 2)
+                            .glassEffect(.regular.tint(.blue), in: .capsule)
                     }
                 }
                 Text(account.email ?? account.name).font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -29,8 +29,8 @@ struct AccountRow: View {
             usage
             actions.frame(width: 150, alignment: .trailing)
         }
-        .padding(10)
-        .background(isActive ? Color.blue.opacity(0.08) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+        .padding(12)
+        .glassEffect(isActive ? .regular.tint(.blue.opacity(0.25)) : .regular, in: .rect(cornerRadius: 14))
     }
 
     @ViewBuilder private var usage: some View {
@@ -52,9 +52,10 @@ struct AccountRow: View {
             switch WidgetLayout.kind(of: account, now: now) {
             case .loginLost:
                 Button("다시 로그인") { model.sheet = .relogin(account) }
+                    .buttonStyle(.glass)
             case .metrics where !isActive:
                 Button("사용") { Task { await model.use(account.name) } }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.glassProminent)
             default:
                 EmptyView()
             }
