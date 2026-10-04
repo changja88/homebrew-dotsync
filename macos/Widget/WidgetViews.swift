@@ -64,7 +64,7 @@ struct AccountsWidgetView: View {
         Image(systemName: "arrow.clockwise")
             .font(.system(size: 10, weight: .bold))
             .frame(width: 24, height: 24)
-            .background(GlassCard(cornerRadius: 12))
+            .background(GlassPanel(cornerRadius: 12, milk: 0.7, shadowRadius: 0))
     }
 }
 
@@ -146,7 +146,7 @@ struct InUseCard: View {
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
-        .background(GlassCard(cornerRadius: 16, tint: .blue))
+        .background(GlassPanel(cornerRadius: 16, tint: .blue, tintStrength: 0.16, shadowRadius: 2))
     }
 
     private var title: String {
@@ -225,7 +225,8 @@ struct AccountBox: View {
         .padding(.leading, 10).padding(.trailing, 8)
         .frame(height: 38)
         // A used-up week: the row is tinted red.
-        .background(GlassCard(cornerRadius: 12, tint: account.isWeekUsedUp(now: now) ? .red.opacity(0.6) : nil))
+        .background(GlassPanel(cornerRadius: 12, tint: account.isWeekUsedUp(now: now) ? .red : nil, tintStrength: 0.1,
+                               milk: 0.62, shadowRadius: 2))
     }
 
     @ViewBuilder private var useButton: some View {
@@ -269,7 +270,6 @@ struct PillLabel: View {
     let text: String
     let prominent: Bool
     @Environment(\.widgetRenderingMode) private var renderingMode
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         let blue = prominent && renderingMode == .fullColor
@@ -278,54 +278,24 @@ struct PillLabel: View {
             .padding(.horizontal, 10).frame(height: 22)
             .background {
                 if blue {
-                    Capsule().fill(LinearGradient(colors: [Color(red: 0.29, green: 0.65, blue: 1.0),
-                                                           Color(red: 0.04, green: 0.45, blue: 0.95)],
-                                                  startPoint: .top, endPoint: .bottom))
-                        .overlay(Capsule().strokeBorder(.white.opacity(0.35), lineWidth: 0.5))
+                    BlueFill()
                 } else {
-                    GlassCard(cornerRadius: 11)
+                    GlassPanel(cornerRadius: 11, milk: 0.7, shadowRadius: 0)
                 }
             }
             .fixedSize()
     }
 }
 
-/// Reads as glass without live refraction, which widgets can't do on the
-/// Mac: a light gradient, a bright top edge and a soft shadow.
-struct GlassCard: View {
-    let cornerRadius: CGFloat
-    var tint: Color? = nil
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        let dark = colorScheme == .dark
-        shape
-            .fill(LinearGradient(colors: fill(dark: dark), startPoint: .top, endPoint: .bottom))
-            .overlay(shape.strokeBorder(
-                LinearGradient(colors: [.white.opacity(dark ? 0.28 : 0.95), .white.opacity(dark ? 0.04 : 0.3)],
-                               startPoint: .top, endPoint: .bottom),
-                lineWidth: 1))
-            .shadow(color: .black.opacity(dark ? 0.3 : 0.08), radius: 2, y: 1)
-    }
-
-    private func fill(dark: Bool) -> [Color] {
-        if let tint { return [tint.opacity(dark ? 0.36 : 0.3), tint.opacity(dark ? 0.16 : 0.12)] }
-        return dark ? [.white.opacity(0.13), .white.opacity(0.05)] : [.white.opacity(0.72), .white.opacity(0.4)]
-    }
-}
-
-/// A soft tinted ground, so the glass cards have something to sit on. The
-/// dimmed desktop replaces it with the system's own.
+/// The mockup's pastel light on a pale ground, so the glass cards have
+/// something to sit on. The dimmed desktop replaces it with the system's own.
 struct WidgetBackdrop: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        let colors = colorScheme == .dark
-            ? [Color(red: 0.11, green: 0.14, blue: 0.24), Color(red: 0.14, green: 0.11, blue: 0.20),
-               Color(red: 0.16, green: 0.12, blue: 0.12)]
-            : [Color(red: 0.88, green: 0.92, blue: 0.99), Color(red: 0.92, green: 0.90, blue: 0.97),
-               Color(red: 0.97, green: 0.92, blue: 0.90)]
-        LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+        ZStack {
+            colorScheme == .dark ? Color(red: 0.10, green: 0.11, blue: 0.16) : Color(red: 0.93, green: 0.94, blue: 0.97)
+            PastelLight()
+        }
     }
 }

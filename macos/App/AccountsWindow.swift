@@ -17,7 +17,7 @@ struct AccountsWindow: View {
                             .buttonStyle(.borderless)
                     }
                     .padding(.horizontal, 14).padding(.vertical, 8)
-                    .background(GlassPanel(cornerRadius: 12, tint: .orange, shadow: false))
+                    .background(GlassPanel(cornerRadius: 12, tint: .orange, shadowRadius: 0))
                     .padding(.horizontal, 18).padding(.top, 8)
                 }
                 ScrollView {

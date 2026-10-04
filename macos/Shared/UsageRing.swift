@@ -11,7 +11,7 @@ struct UsageRing: View {
 
     var body: some View {
         ZStack {
-            Circle().stroke(.quaternary, lineWidth: lineWidth)
+            Circle().stroke(.primary.opacity(0.1), lineWidth: lineWidth)
             Circle()
                 .trim(from: 0, to: CGFloat(shown) / 100)
                 .stroke(UsageBar.color(percent), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))

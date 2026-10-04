@@ -13,7 +13,7 @@ struct UsageBar: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .leading) {
-                Capsule().fill(.quaternary)
+                Capsule().fill(.primary.opacity(0.1))
                 Capsule()
                     .fill(Self.color(percent))
                     .frame(width: geometry.size.width * CGFloat(shown) / 100)
