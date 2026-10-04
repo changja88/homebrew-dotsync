@@ -19,22 +19,34 @@ struct AccountsWindow: View {
                     .padding(.horizontal, 12).padding(.top, 8)
                 }
                 ScrollView {
-                    GlassEffectContainer(spacing: 4) {
-                        VStack(spacing: 8) {
-                            if model.file.active == nil, let seat = model.file.unsavedSeat {
-                                UnsavedSeatRow(seat: seat, now: context.date, model: model)
+                    GlassEffectContainer(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            if let active = model.file.activeAccount {
+                                ActiveAccountCard(account: active, now: context.date, model: model)
+                            } else if let seat = model.file.unsavedSeat {
+                                UnsavedSeatCard(seat: seat, now: context.date, model: model)
                             }
-                            ForEach(model.accounts) { account in
-                                AccountRow(account: account, isActive: account.name == model.file.active,
-                                           now: context.date, model: model)
+                            let others = model.accounts.filter { $0.name != model.file.active }
+                            if !others.isEmpty {
+                                let hasCard = model.file.activeAccount != nil || model.file.unsavedSeat != nil
+                                ColumnHeader(title: "\(hasCard ? "다른 계정" : "계정") \(others.count)")
+                                VStack(spacing: 0) {
+                                    ForEach(Array(others.enumerated()), id: \.element.id) { index, account in
+                                        if index > 0 { Divider().padding(.horizontal, 16) }
+                                        AccountRow(account: account, now: context.date, model: model)
+                                    }
+                                }
+                                .padding(.vertical, 4)
+                                .glassEffect(.regular, in: .rect(cornerRadius: 18))
                             }
                             if model.file.accounts.isEmpty && model.file.unsavedSeat == nil {
                                 Text("저장된 계정이 없어요 — ‘계정 추가’로 시작하세요")
                                     .foregroundStyle(.secondary).padding(40)
+                                    .frame(maxWidth: .infinity)
                             }
                         }
                     }
-                    .padding(12)
+                    .padding(.horizontal, 18).padding(.top, 8).padding(.bottom, 18)
                 }
             }
             .toolbar {
@@ -75,27 +87,46 @@ struct AccountsWindow: View {
     }
 }
 
-/// Claude is on a login no saved account holds.
-struct UnsavedSeatRow: View {
+/// "다른 계정 6 · 5시간 · 주간" over the list, on the rows' columns.
+struct ColumnHeader: View {
+    let title: String
+
+    var body: some View {
+        HStack(spacing: AccountColumns.spacing) {
+            Text(title).frame(width: AccountColumns.name, alignment: .leading)
+            Text("5시간").frame(maxWidth: .infinity, alignment: .leading)
+            Text("주간").frame(maxWidth: .infinity, alignment: .leading)
+            Color.clear.frame(width: AccountColumns.actions, height: 1)
+        }
+        .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+        .padding(.horizontal, 16)
+    }
+}
+
+/// Claude is on a login no saved account holds: the card says so and offers
+/// to save it.
+struct UnsavedSeatCard: View {
     let seat: UnsavedSeat
     let now: Date
     let model: AccountsModel
 
     var body: some View {
-        HStack(spacing: 16) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(seat.email ?? "알 수 없는 계정").font(.body.weight(.semibold)).lineLimit(1)
-                Text("사용 중 · 저장 안 됨").font(.caption).foregroundStyle(.orange)
+        HStack(spacing: 24) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("사용 중 · 저장 안 됨")
+                    .font(.caption2.weight(.bold)).foregroundStyle(.white)
+                    .padding(.horizontal, 9).padding(.vertical, 3)
+                    .glassEffect(.regular.tint(.orange), in: .capsule)
+                Text(seat.email ?? "알 수 없는 계정").font(.title3.weight(.bold)).lineLimit(1).padding(.top, 4)
             }
-            .frame(width: 180, alignment: .leading)
-            MetricView(title: "5시간", window: seat.fiveHour, now: now)
-            MetricView(title: "주간", window: seat.sevenDay, now: now)
+            .frame(width: 190, alignment: .leading)
+            RingMetricView(title: "5시간", window: seat.fiveHour, now: now)
+            RingMetricView(title: "주간", window: seat.sevenDay, now: now)
             Button("저장하기…") { model.sheet = .add(thenUse: nil) }
-                .buttonStyle(.glass)
+                .buttonStyle(.glassProminent)
                 .disabled(model.isBusy)
-                .frame(width: 150, alignment: .trailing)
         }
-        .padding(12)
-        .glassEffect(.regular.tint(.blue.opacity(0.25)), in: .rect(cornerRadius: 14))
+        .padding(18)
+        .glassEffect(.regular.tint(.blue.opacity(0.25)), in: .rect(cornerRadius: 20))
     }
 }
