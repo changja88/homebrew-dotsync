@@ -12,7 +12,7 @@ packages:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.5.0"
+    MARKETING_VERSION: "0.5.1"
     CURRENT_PROJECT_VERSION: "1"
     DEVELOPMENT_TEAM: GR53VV7ZD2
 targets:
