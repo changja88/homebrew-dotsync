@@ -25,6 +25,30 @@ func file(_ accounts: [AccountUsage], active: String?) -> UsageFile {
     #expect(layout.hidden == 1)
 }
 
+@Test func theLongWidgetsShowSevenOtherAccounts() {
+    let accounts = (1...9).map { account("x\($0)", week: after(days: $0)) }
+    let layout = WidgetLayout(file: file(accounts, active: "x1"), now: now, maxRows: WidgetLayout.extraLargeRows)
+    #expect(layout.rows.map(\.name) == ["x2", "x3", "x4", "x5", "x6", "x7", "x8"])
+    #expect(layout.hidden == 1)
+}
+
+/// The list-only widget: "외 n개" sits under the rows, so it costs one.
+@Test func sevenOthersAllShowWhereTheMoreLineSharesTheRows() {
+    let accounts = (1...8).map { account("x\($0)", week: after(days: $0)) }
+    let layout = WidgetLayout(file: file(accounts, active: "x1"), now: now,
+                              maxRows: WidgetLayout.extraLargeRows, moreTakesARow: true)
+    #expect(layout.rows.map(\.name) == ["x2", "x3", "x4", "x5", "x6", "x7", "x8"])
+    #expect(layout.hidden == 0)
+}
+
+@Test func theMoreLineTakesTheLastRowsPlace() {
+    let accounts = (1...9).map { account("x\($0)", week: after(days: $0)) }
+    let layout = WidgetLayout(file: file(accounts, active: "x1"), now: now,
+                              maxRows: WidgetLayout.extraLargeRows, moreTakesARow: true)
+    #expect(layout.rows.map(\.name) == ["x2", "x3", "x4", "x5", "x6", "x7"])
+    #expect(layout.hidden == 2)
+}
+
 @Test func anUnsavedLoginInUseAsksBeforeSwitching() {
     var unsaved = file([account("a", week: after(days: 1))], active: nil)
     unsaved.unsavedSeat = UnsavedSeat(email: "u@x", status: .ok)

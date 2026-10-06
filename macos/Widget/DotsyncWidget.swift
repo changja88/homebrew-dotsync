@@ -66,7 +66,7 @@ struct InUseWidget: Widget {
     }
 }
 
-/// The other accounts alone, up to six.
+/// The other accounts alone, up to seven.
 struct AccountListWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: "dotsync.list", provider: UsageProvider()) { entry in

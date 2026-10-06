@@ -14,8 +14,8 @@ public struct WidgetLayout: Equatable, Sendable {
     /// rest is "외 n개".
     public static let maxRows = 3
     /// Rows beside the in-use card on the extra large widget, and on the
-    /// list-only widget: the other six of seven accounts.
-    public static let extraLargeRows = 6
+    /// list-only widget: the other seven of eight accounts.
+    public static let extraLargeRows = 7
 
     public var current: AccountUsage?
     public var unsavedSeat: UnsavedSeat?
@@ -25,12 +25,16 @@ public struct WidgetLayout: Equatable, Sendable {
     /// widget would drop it, so "사용" opens the app's confirm sheet instead.
     public var switchNeedsConfirmation: Bool
 
-    public init(file: UsageFile, now: Date, maxRows: Int = WidgetLayout.maxRows) {
+    /// `moreTakesARow`: "외 n개" sits under the rows and has no room of its
+    /// own (the list-only widget), so when accounts are left over it takes
+    /// the last row's place.
+    public init(file: UsageFile, now: Date, maxRows: Int = WidgetLayout.maxRows, moreTakesARow: Bool = false) {
         current = file.activeAccount
         unsavedSeat = current == nil ? file.unsavedSeat : nil
         let others = UsageOrder.sorted(file.accounts.filter { $0.name != file.active }, now: now)
-        rows = Array(others.prefix(maxRows))
-        hidden = max(0, others.count - maxRows)
+        let shown = moreTakesARow && others.count > maxRows ? maxRows - 1 : maxRows
+        rows = Array(others.prefix(shown))
+        hidden = others.count - rows.count
         switchNeedsConfirmation = unsavedSeat != nil
     }
 

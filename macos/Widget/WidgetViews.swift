@@ -63,16 +63,19 @@ struct InUseWidgetContent: View {
     }
 }
 
-/// "Claude 계정 목록" (large): the other accounts, up to six.
+/// "Claude 계정 목록" (large): the other accounts, up to seven. Seven rows
+/// 5 pt apart are about 36.7 pt each in the 287 pt under the header; "외 n개"
+/// would not fit under them, so it takes the seventh's place.
 struct AccountListWidgetContent: View {
     let entry: UsageEntry
 
     var body: some View {
-        let layout = WidgetLayout(file: entry.file, now: entry.date, maxRows: WidgetLayout.extraLargeRows)
+        let layout = WidgetLayout(file: entry.file, now: entry.date, maxRows: WidgetLayout.extraLargeRows,
+                                  moreTakesARow: true)
         let loading = entry.file.isRefreshing(at: entry.date)
         VStack(alignment: .leading, spacing: 7) {
             WidgetHeader(title: "다른 계정", file: entry.file, now: entry.date, loading: loading)
-            AccountRows(layout: layout, now: entry.date, loading: loading, nameWidth: 60)
+            AccountRows(layout: layout, now: entry.date, loading: loading, nameWidth: 60, spacing: 5)
             MoreLink(hidden: layout.hidden)
         }
         .padding(14)
@@ -154,9 +157,10 @@ struct AccountRows: View {
     let now: Date
     let loading: Bool
     let nameWidth: CGFloat
+    var spacing: CGFloat = 6
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: spacing) {
             ForEach(layout.rows) { account in
                 AccountBox(account: account, now: now, confirmFirst: layout.switchNeedsConfirmation,
                            loading: loading, nameWidth: nameWidth)
@@ -314,7 +318,7 @@ struct RingMetric: View {
     }
 }
 
-/// One other account: a glass row, 38 to 50 pt — name, two metrics, "사용".
+/// One other account: a glass row, 36 to 50 pt — name, two metrics, "사용".
 struct AccountBox: View {
     let account: AccountUsage
     let now: Date
@@ -355,7 +359,7 @@ struct AccountBox: View {
             }
         }
         .padding(.leading, 10).padding(.trailing, 8)
-        .frame(minHeight: 38, maxHeight: 50)
+        .frame(minHeight: 36, maxHeight: 50)
         // A used-up week: the row is tinted red.
         .background(GlassPanel(cornerRadius: 12, tint: account.isWeekUsedUp(now: now) ? .red : nil, tintStrength: 0.1,
                                milk: 0.62, shadowRadius: 2))
