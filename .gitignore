@@ -87,10 +87,8 @@ docs/superpowers/
 .worktrees/
 
 # --- Local agent/tool state ---------------------------------------------
-.serena/
 .codex/
 .superpowers/
-graphify-out/
 
 # --- dotsync's own dogfooding (keep developer's local sync state out of git)
 dotsync.toml
