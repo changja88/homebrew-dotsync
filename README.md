@@ -180,19 +180,17 @@ differs.
 
 **Claude restoration goes beyond file copy.** dotsync replays the recorded marketplaces (`claude plugin marketplace add`) and runs `claude plugin install --scope user` for every plugin in `installed_plugins.json`, then re-applies the `enabledPlugins` map so disabled plugins stay disabled. If the `claude` CLI isn't installed, plugin replay is skipped (logged as a warning) and the file copy still succeeds. dotsync also mirrors your user-level global rules — `~/.claude/CLAUDE.md` and the `commands/`, `agents/`, `skills/`, `output-styles/` directories — so personal slash commands, subagents, and skills follow you across machines. `skills/synced/` (skills Claude Code syncs from your claude.ai account) and `skills/.trash/` (old versions Claude Code moved aside) are managed by Claude Code itself, so they are never stored (`push` removes any copy already in the sync folder), and `pull` leaves the local copies in place.
 
-**Skills another tool installs can be left to that tool.** Some tools install their own skill and rewrite it on upgrade (graphify does this for both Claude and Codex). Syncing such a skill fights the tool, so list it in `dotsync.toml`:
+**Skills another tool installs can be left to that tool.** Some tools install their own skill and rewrite it on upgrade. Syncing such a skill fights the tool, so list it in `dotsync.toml`:
 
 ```toml
 [options.claude]
-skills_ignore = ["graphify"]
+skills_ignore = ["my-tool"]
 
 [options.codex]
-skills_ignore = ["graphify"]
+skills_ignore = ["my-tool"]
 ```
 
-Listed skill directories are treated like `skills/synced/` above: `push` removes the stored copy, `pull` never touches the local one, and `status` ignores them. Reinstall them on a new machine with the tool itself (for example `graphify install --platform claude`). Each entry must be a top-level directory name under `skills/`; anything else is rejected as a config error.
-
-dotsync also excludes dynamic local Serena MCP entries from Claude's `mcpServers` sync. Other MCP servers are still synced normally.
+Listed skill directories are treated like `skills/synced/` above: `push` removes the stored copy, `pull` never touches the local one, and `status` ignores them. Reinstall them on a new machine with the tool itself. Each entry must be a top-level directory name under `skills/`; anything else is rejected as a config error.
 
 **Codex sync mirrors user-authored global settings.** dotsync copies `~/.codex/config.toml`, optional instruction/config files (`AGENTS.md`, `AGENTS.override.md`, `hooks.json`, `requirements.toml`), and the user-managed `rules/` and `skills/` directories. `dotsync push codex` converges the sync folder to the current local managed set: if one of those optional files or managed directories is absent locally, the stored copy is removed from the sync folder. It skips generated or sensitive state such as `auth.json`, history, sessions, logs, sqlite state, caches, system skills, plugin caches, memories, and vendor imports; `skills/.system` is intentionally not synced.
 
@@ -211,8 +209,6 @@ dotsync also excludes dynamic local Serena MCP entries from Claude's `mcpServers
 - Left to Codex: plugins it installs by default (`INSTALLED_BY_DEFAULT`), plugins from marketplaces it keeps under its own directories (`~/.codex`, `~/.cache/codex-runtimes`, such as `openai-bundled`), and those marketplaces. Disabled plugins are not recorded.
 
 `pull` keeps the local marketplace/plugin tables and replaces the rest of `config.toml` with the stored settings. It then adds each recorded marketplace that is missing (`codex plugin marketplace add <source>`, with `--ref` / repeated `--sparse`) and installs each recorded plugin that is missing (`codex plugin add <plugin@marketplace> --json`). Whatever is already present is left alone, so running `pull` again installs nothing. If a marketplace cannot be added, its plugins are skipped with a warning; on a fresh machine, start Codex once so its own marketplaces exist, then pull again. If the `codex` CLI is missing or prints something unexpected, files still sync, `push` keeps the existing `plugins.json`, and plugin restore is skipped with a warning. `status` and the previews compare `config.toml` without those tables and compare `plugins.json` with what is installed.
-
-dotsync intentionally excludes dynamic local Serena MCP URLs from Codex config sync. Serena ports are per-project runtime state, so a copied `127.0.0.1:<port>` URL is treated as machine-local state rather than user-authored config.
 
 **Herdr sync tracks only `~/.config/herdr/config.toml`.** Session and runtime state such as `session*.json`, plugin registry state, logs, sockets, and lock files are intentionally excluded. Existing dotsync users can enable Herdr with `dotsync apps` (or include `herdr` when replacing the list with `dotsync config apps ...`); existing tracked-app selections are never changed automatically.
 
@@ -297,7 +293,7 @@ dotsync config apps claude,zsh            # replace the tracked-apps list (for a
 dotsync config btt-presets MyPreset,Other # replace BTT preset list (comma-separated)
 ```
 
-`dotsync config show` includes app-specific options such as BTT presets. `dotsync.toml` holds only `apps` and `[options.<app>]` tables; any other key under `[options]` is rejected as a config error. Top-level managed files and directories that are symlinks are rejected instead of followed. Inside mirrored directories such as Claude `skills/` or Codex `rules/`, symlinked entries (for example the links `npx skills add` creates) are skipped with a warning and never read or written through, and `pull` leaves them in place. When the `skills` app is tracked, the links `npx skills add` made are skipped without a warning, since that app records them. `.DS_Store` files and `*.bak` files (copies tools such as graphify keep before rewriting a file) inside mirrored directories are ignored the same way: never stored, never removed.
+`dotsync config show` includes app-specific options such as BTT presets. `dotsync.toml` holds only `apps` and `[options.<app>]` tables; any other key under `[options]` is rejected as a config error. Top-level managed files and directories that are symlinks are rejected instead of followed. Inside mirrored directories such as Claude `skills/` or Codex `rules/`, symlinked entries (for example the links `npx skills add` creates) are skipped with a warning and never read or written through, and `pull` leaves them in place. When the `skills` app is tracked, the links `npx skills add` made are skipped without a warning, since that app records them. `.DS_Store` files and `*.bak` files (copies some tools keep before rewriting a file) inside mirrored directories are ignored the same way: never stored, never removed.
 
 Picker keys:
 
@@ -488,19 +484,17 @@ dotsync pull --all --yes          # automation (no prompt)
 
 **Claude 복원은 파일 복사 이상이다.** dotsync 가 기록된 marketplace 들을 다시 등록하고 (`claude plugin marketplace add`), `installed_plugins.json` 에 적힌 모든 plugin 을 `claude plugin install --scope user` 로 재설치한 뒤, `enabledPlugins` 맵에 따라 비활성 상태였던 plugin 은 다시 disable 한다. `claude` CLI 가 설치돼 있지 않으면 plugin 복원만 skip되고 (warning 으로 노출) 파일 복사는 정상 진행된다. 사용자 레벨 글로벌 룰 — `~/.claude/CLAUDE.md` 와 `commands/`, `agents/`, `skills/`, `output-styles/` 디렉토리 — 도 mirror 되므로, 개인 슬래시 커맨드·서브에이전트·스킬이 머신 간에 따라온다. `skills/synced/`(Claude Code 가 claude.ai 계정에서 동기화한 스킬)와 `skills/.trash/`(Claude Code 가 치워 둔 옛 버전)는 Claude Code 가 직접 관리하므로 저장하지 않고(`push` 가 sync 폴더에 이미 있는 사본을 지운다), `pull` 때도 로컬 사본을 그대로 둔다.
 
-**다른 도구가 설치하는 스킬은 그 도구에 맡길 수 있다.** 어떤 도구는 자기 스킬을 직접 설치하고 업그레이드할 때 고쳐 쓴다 (graphify 가 Claude 와 Codex 양쪽에서 그렇다). 이런 스킬을 동기화하면 도구와 충돌하므로 `dotsync.toml` 에 적어 둔다:
+**다른 도구가 설치하는 스킬은 그 도구에 맡길 수 있다.** 어떤 도구는 자기 스킬을 직접 설치하고 업그레이드할 때 고쳐 쓴다. 이런 스킬을 동기화하면 도구와 충돌하므로 `dotsync.toml` 에 적어 둔다:
 
 ```toml
 [options.claude]
-skills_ignore = ["graphify"]
+skills_ignore = ["my-tool"]
 
 [options.codex]
-skills_ignore = ["graphify"]
+skills_ignore = ["my-tool"]
 ```
 
-적어 둔 스킬 디렉터리는 위의 `skills/synced/` 와 같게 다룬다. `push` 는 저장본을 지우고, `pull` 은 로컬 사본을 건드리지 않으며, `status` 는 무시한다. 새 머신에서는 그 도구로 다시 설치한다 (예: `graphify install --platform claude`). 각 항목은 `skills/` 바로 아래 디렉터리 이름이어야 하고, 그 밖의 값은 설정 오류로 거부한다.
-
-dotsync 는 Claude 의 `mcpServers` sync 에서도 동적 로컬 Serena MCP 항목을 제외한다. 다른 MCP 서버 설정은 계속 정상적으로 sync 된다.
+적어 둔 스킬 디렉터리는 위의 `skills/synced/` 와 같게 다룬다. `push` 는 저장본을 지우고, `pull` 은 로컬 사본을 건드리지 않으며, `status` 는 무시한다. 새 머신에서는 그 도구로 다시 설치한다. 각 항목은 `skills/` 바로 아래 디렉터리 이름이어야 하고, 그 밖의 값은 설정 오류로 거부한다.
 
 **Codex sync 는 사용자가 작성한 글로벌 설정을 mirror 한다.** dotsync 는 `~/.codex/config.toml`, 선택적 instruction/config 파일(`AGENTS.md`, `AGENTS.override.md`, `hooks.json`, `requirements.toml`), 그리고 사용자가 관리하는 `rules/`, `skills/` 디렉토리를 복사한다. `dotsync push codex` 는 sync 폴더를 현재 로컬의 관리 대상 상태로 수렴시킨다. 즉, 위 선택 파일이나 관리 디렉토리가 로컬에 없으면 sync 폴더의 저장본도 삭제된다. `auth.json`, history, sessions, logs, sqlite state, caches, system skills, plugin cache, memories, vendor imports 같은 생성/민감 상태는 복사하지 않고, `skills/.system` 은 의도적으로 동기화하지 않는다.
 
@@ -519,8 +513,6 @@ dotsync 는 Claude 의 `mcpServers` sync 에서도 동적 로컬 Serena MCP 항�
 - Codex 에 맡기는 것: Codex 가 기본 설치하는 plugin (`INSTALLED_BY_DEFAULT`), Codex 가 자기 디렉터리(`~/.codex`, `~/.cache/codex-runtimes`)에 두는 marketplace(예: `openai-bundled`)와 그 plugin. 꺼 둔 plugin 은 기록하지 않는다.
 
 `pull` 은 로컬의 marketplace/plugin table 은 그대로 두고 `config.toml` 의 나머지만 저장본으로 바꾼다. 이어서 기록된 marketplace 중 없는 것만 추가하고 (`codex plugin marketplace add <source>`, `--ref` / 반복 `--sparse` 포함), 기록된 plugin 중 없는 것만 설치한다 (`codex plugin add <plugin@marketplace> --json`). 이미 있는 것은 건드리지 않으므로 `pull` 을 다시 실행해도 새로 설치하지 않는다. marketplace 를 추가하지 못하면 그 plugin 들은 warning 과 함께 건너뛴다. 새 머신에서는 Codex 를 한 번 실행해 Codex 자체 marketplace 가 생긴 뒤 다시 pull 하면 된다. `codex` CLI 가 없거나 출력이 예상과 다르면 파일 동기화는 그대로 진행하고, `push` 는 기존 `plugins.json` 을 유지하며, plugin 복원은 warning 과 함께 건너뛴다. `status` 와 미리보기는 그 table 들을 뺀 `config.toml` 을 비교하고, `plugins.json` 을 실제 설치 상태와 비교한다.
-
-dotsync 는 Codex 설정을 sync 할 때 동적 로컬 Serena MCP URL 을 의도적으로 제외한다. Serena 포트는 프로젝트별 runtime state 이므로, 복사된 `127.0.0.1:<port>` URL 은 사용자가 작성한 설정이 아니라 머신 로컬 상태로 취급한다.
 
 **Herdr sync는 `~/.config/herdr/config.toml`만 추적한다.** `session*.json`, plugin registry state, log, socket, lock 파일 같은 session/runtime 상태는 의도적으로 제외한다. 기존 dotsync 사용자는 `dotsync apps`에서 Herdr를 켜거나 `dotsync config apps ...`로 목록을 교체할 때 `herdr`를 포함하면 된다. 기존 추적 앱 선택은 자동으로 바꾸지 않는다.
 
@@ -605,7 +597,7 @@ dotsync config apps claude,zsh            # 추적 앱 일괄 교체 (자동화�
 dotsync config btt-presets MyPreset,Other # BTT preset 목록 일괄 교체 (콤마 구분)
 ```
 
-`dotsync config show` 는 BTT preset 같은 앱별 옵션도 함께 보여준다. `dotsync.toml` 에는 `apps` 와 `[options.<app>]` table 만 둔다. `[options]` 아래의 다른 key 는 설정 오류로 거부한다. 최상위 관리 파일·디렉터리가 symlink 이면 따라가지 않고 거부한다. Claude `skills/` 나 Codex `rules/` 처럼 미러링하는 디렉터리 안의 symlink 항목(예: `npx skills add` 가 만든 링크)은 warning 과 함께 건너뛰며, 읽거나 쓰지 않고 `pull` 때도 그대로 둔다. `skills` 앱을 추적 중이면 `npx skills add` 가 만든 링크는 그 앱이 기록하므로 warning 없이 건너뛴다. 미러링하는 디렉터리 안의 `.DS_Store` 와 `*.bak` 파일(graphify 처럼 파일을 고쳐 쓰기 전에 사본을 남기는 도구가 만든 것)도 같은 방식으로 무시한다. 저장하지도, 지우지도 않는다.
+`dotsync config show` 는 BTT preset 같은 앱별 옵션도 함께 보여준다. `dotsync.toml` 에는 `apps` 와 `[options.<app>]` table 만 둔다. `[options]` 아래의 다른 key 는 설정 오류로 거부한다. 최상위 관리 파일·디렉터리가 symlink 이면 따라가지 않고 거부한다. Claude `skills/` 나 Codex `rules/` 처럼 미러링하는 디렉터리 안의 symlink 항목(예: `npx skills add` 가 만든 링크)은 warning 과 함께 건너뛰며, 읽거나 쓰지 않고 `pull` 때도 그대로 둔다. `skills` 앱을 추적 중이면 `npx skills add` 가 만든 링크는 그 앱이 기록하므로 warning 없이 건너뛴다. 미러링하는 디렉터리 안의 `.DS_Store` 와 `*.bak` 파일(파일을 고쳐 쓰기 전에 사본을 남기는 도구가 만든 것)도 같은 방식으로 무시한다. 저장하지도, 지우지도 않는다.
 
 picker 키 안내:
 

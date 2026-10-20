@@ -30,9 +30,7 @@ DIM_ANSI = "\033[2m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
 
-# --- gradient palette (shared visual identity with the launcher TUI) -------
-# The launcher's serena_mcp_management.ui pins the same hex values; keep these
-# in sync when the brand palette evolves.
+# --- gradient palette -------------------------------------------------------
 PINK_RGB = (247, 128, 226)  # #F780E2 huh fuchsia
 MID_RGB = (192, 105, 240)  # #C069F0 perceptual midpoint
 PURPLE_RGB = (117, 113, 249)  # #7571F9 huh indigo

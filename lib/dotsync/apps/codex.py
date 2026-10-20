@@ -27,7 +27,6 @@ from dotsync.apps.codex_plugins import (
     plugin_id,
     split_plugin_tables,
 )
-from dotsync.apps.mcp_sanitizer import sanitize_codex_config, sanitize_codex_config_text
 from dotsync.diffinfo import summarize_texts
 from dotsync.plan import (
     AppPlan,
@@ -274,26 +273,21 @@ class CodexApp(App):
         )
 
     def _read_portable_config(self, path: Path) -> str:
-        """config.toml as stored: no dynamic Serena URL and no marketplace or
-        plugin tables, which Codex rewrites itself (see codex_plugins)."""
+        """config.toml as stored: no marketplace or plugin tables, which Codex
+        rewrites itself (see codex_plugins)."""
         ensure_not_symlink(path, "config.toml")
-        settings, _ = split_plugin_tables(sanitize_codex_config_text(path.read_text()))
+        settings, _ = split_plugin_tables(path.read_text())
         return settings
 
     def _applied_config(self, stored_config: Path) -> str:
         """Stored settings plus the marketplace/plugin tables Codex wrote locally.
 
-        When the settings already match and there is no stale Serena URL to
-        drop, the local file is kept byte for byte, so a pull does not reorder
-        tables Codex placed mid-file."""
+        When the settings already match, the local file is kept byte for
+        byte, so a pull does not reorder tables Codex placed mid-file."""
         local = self._config_path()
         local_text = local.read_text() if local.exists() else ""
         stored_settings = self._read_portable_config(stored_config)
-        if (
-            local.exists()
-            and not sanitize_codex_config(local_text).changed
-            and split_plugin_tables(local_text)[0] == stored_settings
-        ):
+        if local.exists() and split_plugin_tables(local_text)[0] == stored_settings:
             return local_text
         return merge_plugin_tables(stored_settings, local_text)
 

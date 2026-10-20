@@ -20,7 +20,7 @@ ChangeKind = Literal[
 Direction = Literal["from", "to"]
 
 # Leftovers from Finder and from tools that keep a copy before rewriting a
-# file (e.g. graphify's SKILL.md.bak). Never synced, never removed.
+# file (e.g. a skill's SKILL.md.bak). Never synced, never removed.
 _IGNORED_FILE_NAMES = frozenset({".DS_Store"})
 _IGNORED_FILE_SUFFIXES = (".bak",)
 

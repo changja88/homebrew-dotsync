@@ -622,98 +622,16 @@ def test_codex_mirror_tree_replaces_directory_with_file(tmp_path):
     assert (dst / "conflict.rules").read_text() == "file\n"
 
 
-def test_sync_from_excludes_dynamic_serena_mcp_from_config(fake_home, tmp_path):
-    cdir = _codex_dir(fake_home)
-    cdir.mkdir()
-    (cdir / "config.toml").write_text(
-        'model = "gpt-5.2"\n\n'
-        "[mcp_servers.serena]\n"
-        'url = "http://127.0.0.1:9123/mcp"\n\n'
-        "[mcp_servers.playwright]\n"
-        'command = "npx"\n'
-    )
-    target = tmp_path / "configs"
-    target.mkdir()
-
-    _codex_app().sync_from(target)
-
-    stored = (target / "codex" / "config.toml").read_text()
-    assert "mcp_servers.serena" not in stored
-    assert "mcp_servers.playwright" in stored
-
-
-def test_sync_to_excludes_dynamic_serena_mcp_from_local_config(fake_home, tmp_path):
-    cdir = _codex_dir(fake_home)
-    cdir.mkdir()
-    (cdir / "config.toml").write_text('model = "old"\n')
-    target = tmp_path / "configs"
-    stored = target / "codex"
-    stored.mkdir(parents=True)
-    (stored / "config.toml").write_text(
-        'model = "gpt-5.2"\n\n[mcp_servers.serena]\nurl = "http://127.0.0.1:9123/mcp"\n'
-    )
-
-    _codex_app().sync_to(target)
-
-    assert "mcp_servers.serena" not in (cdir / "config.toml").read_text()
-
-
-def test_codex_status_ignores_dynamic_serena_mcp_difference(fake_home, tmp_path):
-    cdir = _codex_dir(fake_home)
-    cdir.mkdir()
-    (cdir / "config.toml").write_text(
-        'model = "gpt-5.2"\n\n[mcp_servers.serena]\nurl = "http://127.0.0.1:9123/mcp"\n'
-    )
-    target = tmp_path / "configs"
-    stored = target / "codex"
-    stored.mkdir(parents=True)
-    (stored / "config.toml").write_text('model = "gpt-5.2"\n')
-
-    assert _codex_app().status(target).state == "clean"
-
-
-def test_plan_from_marks_update_when_stored_has_only_stale_serena_url(
-    fake_home, tmp_path
-):
-    cdir = _codex_dir(fake_home)
-    cdir.mkdir()
-    (cdir / "config.toml").write_text('model = "gpt-5.2"\n')
-    stored = tmp_path / "configs" / "codex"
-    stored.mkdir(parents=True)
-    (stored / "config.toml").write_text(
-        'model = "gpt-5.2"\n\n[mcp_servers.serena]\nurl = "http://127.0.0.1:9123/mcp"\n'
-    )
-
-    plan = _codex_app().plan_from(tmp_path / "configs")
-
-    assert {c.label: c.kind for c in plan.changes}["config.toml"] == "update"
-
-
-def test_plan_to_marks_update_when_local_has_only_stale_serena_url(fake_home, tmp_path):
-    cdir = _codex_dir(fake_home)
-    cdir.mkdir()
-    (cdir / "config.toml").write_text(
-        'model = "gpt-5.2"\n\n[mcp_servers.serena]\nurl = "http://127.0.0.1:9123/mcp"\n'
-    )
-    stored = tmp_path / "configs" / "codex"
-    stored.mkdir(parents=True)
-    (stored / "config.toml").write_text('model = "gpt-5.2"\n')
-
-    plan = _codex_app().plan_to(tmp_path / "configs")
-
-    assert {c.label: c.kind for c in plan.changes}["config.toml"] == "update"
-
-
 def test_status_ignores_skill_bak_file(fake_home, tmp_path):
     cdir = _codex_dir(fake_home)
-    (cdir / "skills" / "graphify").mkdir(parents=True)
+    (cdir / "skills" / "tool-managed").mkdir(parents=True)
     (cdir / "config.toml").write_text('model = \"x\"\n')
-    (cdir / "skills" / "graphify" / "SKILL.md").write_text("# skill\n")
-    (cdir / "skills" / "graphify" / "SKILL.md.bak").write_text("# older\n")
+    (cdir / "skills" / "tool-managed" / "SKILL.md").write_text("# skill\n")
+    (cdir / "skills" / "tool-managed" / "SKILL.md.bak").write_text("# older\n")
     target = tmp_path / "configs"
-    (target / "codex" / "skills" / "graphify").mkdir(parents=True)
+    (target / "codex" / "skills" / "tool-managed").mkdir(parents=True)
     (target / "codex" / "config.toml").write_text('model = \"x\"\n')
-    (target / "codex" / "skills" / "graphify" / "SKILL.md").write_text("# skill\n")
+    (target / "codex" / "skills" / "tool-managed" / "SKILL.md").write_text("# skill\n")
 
     assert _codex_app().status(target).state == "clean"
 
@@ -732,44 +650,44 @@ def _codex_app_ignoring(tmp_path: Path, *names: str):
 
 def test_sync_to_leaves_configured_ignored_skill_alone(fake_home, tmp_path):
     cdir = _codex_dir(fake_home)
-    (cdir / "skills" / "graphify").mkdir(parents=True)
+    (cdir / "skills" / "tool-managed").mkdir(parents=True)
     (cdir / "config.toml").write_text("OLD\n")
-    (cdir / "skills" / "graphify" / "SKILL.md").write_text("# v2\n")
+    (cdir / "skills" / "tool-managed" / "SKILL.md").write_text("# v2\n")
     target = tmp_path / "configs"
-    (target / "codex" / "skills" / "graphify").mkdir(parents=True)
+    (target / "codex" / "skills" / "tool-managed").mkdir(parents=True)
     (target / "codex" / "config.toml").write_text("NEW\n")
-    (target / "codex" / "skills" / "graphify" / "SKILL.md").write_text("# v1\n")
+    (target / "codex" / "skills" / "tool-managed" / "SKILL.md").write_text("# v1\n")
 
-    _codex_app_ignoring(tmp_path, "graphify").sync_to(target)
+    _codex_app_ignoring(tmp_path, "tool-managed").sync_to(target)
 
-    assert (cdir / "skills" / "graphify" / "SKILL.md").read_text() == "# v2\n"
+    assert (cdir / "skills" / "tool-managed" / "SKILL.md").read_text() == "# v2\n"
 
 
 def test_sync_from_purges_configured_ignored_skill_from_folder(fake_home, tmp_path):
     cdir = _codex_dir(fake_home)
-    (cdir / "skills" / "graphify").mkdir(parents=True)
+    (cdir / "skills" / "tool-managed").mkdir(parents=True)
     (cdir / "config.toml").write_text('model = \"x\"\n')
-    (cdir / "skills" / "graphify" / "SKILL.md").write_text("# v2\n")
+    (cdir / "skills" / "tool-managed" / "SKILL.md").write_text("# v2\n")
     target = tmp_path / "configs"
-    (target / "codex" / "skills" / "graphify").mkdir(parents=True)
-    (target / "codex" / "skills" / "graphify" / "SKILL.md").write_text("# v1\n")
+    (target / "codex" / "skills" / "tool-managed").mkdir(parents=True)
+    (target / "codex" / "skills" / "tool-managed" / "SKILL.md").write_text("# v1\n")
 
-    _codex_app_ignoring(tmp_path, "graphify").sync_from(target)
+    _codex_app_ignoring(tmp_path, "tool-managed").sync_from(target)
 
-    assert not (target / "codex" / "skills" / "graphify").exists()
+    assert not (target / "codex" / "skills" / "tool-managed").exists()
 
 
 def test_status_ignores_configured_ignored_skill(fake_home, tmp_path):
     cdir = _codex_dir(fake_home)
-    (cdir / "skills" / "graphify").mkdir(parents=True)
+    (cdir / "skills" / "tool-managed").mkdir(parents=True)
     (cdir / "config.toml").write_text('model = \"x\"\n')
-    (cdir / "skills" / "graphify" / "SKILL.md").write_text("# v2\n")
+    (cdir / "skills" / "tool-managed" / "SKILL.md").write_text("# v2\n")
     target = tmp_path / "configs"
-    (target / "codex" / "skills" / "graphify").mkdir(parents=True)
+    (target / "codex" / "skills" / "tool-managed").mkdir(parents=True)
     (target / "codex" / "config.toml").write_text('model = \"x\"\n')
-    (target / "codex" / "skills" / "graphify" / "SKILL.md").write_text("# v1\n")
+    (target / "codex" / "skills" / "tool-managed" / "SKILL.md").write_text("# v1\n")
 
-    assert _codex_app_ignoring(tmp_path, "graphify").status(target).state == "clean"
+    assert _codex_app_ignoring(tmp_path, "tool-managed").status(target).state == "clean"
 
 
 USER_MARKET = "https://github.com/me/my-market.git"

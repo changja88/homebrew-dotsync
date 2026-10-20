@@ -10,15 +10,15 @@ the Codex CLI and keeps the local tables Codex wrote.
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from dotsync.apps.mcp_sanitizer import toml_table_name
-
 PLUGIN_TABLE_ROOTS = ("marketplaces", "plugins")
 INSTALLED_BY_DEFAULT = "INSTALLED_BY_DEFAULT"
 _MARKETPLACE_KEYS = ("name", "source", "ref", "sparse")
+_TABLE_HEADER_RE = re.compile(r"^\s*\[([^\]]+)\]\s*(?:#.*)?$")
 
 
 def split_plugin_tables(text: str) -> tuple[str, str]:
@@ -27,7 +27,7 @@ def split_plugin_tables(text: str) -> tuple[str, str]:
     tables: list[str] = []
     target = rest
     for line in text.splitlines(keepends=True):
-        table = toml_table_name(line)
+        table = _toml_table_name(line)
         if table is not None:
             target = tables if table.split(".", 1)[0] in PLUGIN_TABLE_ROOTS else rest
         target.append(line)
@@ -153,3 +153,38 @@ def _is_marketplace(value: object) -> bool:
     return isinstance(sparse, list) and all(
         isinstance(p, str) and p.strip() for p in sparse
     )
+
+
+def _toml_table_name(line: str) -> str | None:
+    """Return the dotted name of a `[table]` header line, unquoted, else None."""
+    match = _TABLE_HEADER_RE.match(line)
+    if not match:
+        return None
+    return ".".join(_split_toml_dotted_key(match.group(1).strip()))
+
+
+def _split_toml_dotted_key(value: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    escaped = False
+    for char in value:
+        if quote:
+            if escaped:
+                current.append(char)
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            else:
+                current.append(char)
+        elif char in {"'", '"'}:
+            quote = char
+        elif char == ".":
+            parts.append("".join(current).strip())
+            current = []
+        else:
+            current.append(char)
+    parts.append("".join(current).strip())
+    return parts
