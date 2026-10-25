@@ -269,10 +269,28 @@ def test_pull_json_busy_when_accounts_locked(fake_home, monkeypatch, tmp_path, c
     monkeypatch.setattr(accounts, "LOCK_WAIT_SECONDS", 0.2)
 
     with accounts.locked():
-        rc, payload, _ = _run(capsys, ["pull", "claude", "--dry-run", "--json"])
+        rc, payload, _ = _run(capsys, ["pull", "claude", "--yes", "--json"])
 
     assert rc == 1
     assert payload["error"]["code"] == "busy"
+
+
+def test_pull_dry_run_json_does_not_wait_for_accounts_lock(fake_home, monkeypatch, tmp_path, capsys):
+    # A preview only reads: it must not wait behind `account usage`.
+    from dotsync import accounts
+    from dotsync.apps.claude import ClaudeApp
+    from dotsync.plan import AppPlan
+
+    _folder(monkeypatch, tmp_path, ["claude"])
+    monkeypatch.setattr(accounts, "LOCK_WAIT_SECONDS", 0.2)
+    monkeypatch.setattr(ClaudeApp, "plan_to", lambda self, d: AppPlan(app="claude", direction="to", changes=[]))
+    monkeypatch.setattr(ClaudeApp, "plugin_actions_to", lambda self, d: None)
+
+    with accounts.locked():
+        rc, payload, _ = _run(capsys, ["pull", "claude", "--dry-run", "--json"])
+
+    assert rc == 0
+    assert payload["plans"][0]["app"] == "claude"
 
 
 def test_pull_dry_run_json_carries_claude_plugin_actions(fake_home, monkeypatch, tmp_path, capsys):

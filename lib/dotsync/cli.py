@@ -510,10 +510,11 @@ def cmd_apps(args) -> int:
 
 
 def _sync_locks(apps: list[str], *, writes: bool) -> contextlib.ExitStack:
-    """The locks a sync command over `apps` holds while it runs, shared with
-    the dotsync app and other terminals: accounts.locked() when it may write
-    ~/.claude.json (push or pull of `claude`, like `dotsync account use`),
-    and the Codex lock, shared, whenever it runs the codex CLI."""
+    """The locks a sync command over `apps` holds while it plans (writes=False)
+    or applies (writes=True), shared with the dotsync app and other terminals:
+    accounts.locked() when it may write ~/.claude.json (applying a push or
+    pull of `claude`, like `dotsync account use`), and the Codex lock, shared,
+    whenever it runs the codex CLI."""
     stack = contextlib.ExitStack()
     try:
         if writes and "claude" in apps:
@@ -663,7 +664,8 @@ def _sync_payload(args, direction: str) -> dict:
         )
     cfg = load_config()
     apps = cli_json.sync_apps(cfg, args.app, args.all)
-    with _sync_locks(apps, writes=True):
+    # A preview only reads, like status: it must not wait behind `account usage`.
+    with _sync_locks(apps, writes=not args.dry_run):
         if args.dry_run:
             return cli_json.preview_json(cfg, apps, direction)
         return cli_json.apply_json(cfg, apps, direction)
@@ -676,8 +678,7 @@ def cmd_from(args) -> int:
     apps = _resolve_app_list(args, cfg)
     if not apps:
         return 2
-    with _sync_locks(apps, writes=True):
-        return _push(args, cfg, apps)
+    return _push(args, cfg, apps)
 
 
 def _push(args, cfg: Config, apps: list[str]) -> int:
@@ -688,7 +689,9 @@ def _push(args, cfg: Config, apps: list[str]) -> int:
         f"{len(apps)} app{'s' if len(apps) != 1 else ''}  →  {cfg.dir}",
     )
     print()
-    plans = _build_plans(apps, cfg, "from")
+    # Planning reads, like status; nothing is held while the user answers.
+    with _sync_locks(apps, writes=False):
+        plans = _build_plans(apps, cfg, "from")
     _print_preview(plans, direction="from")
     if not _confirm_or_abort(args, plans, direction="from"):
         return 0
@@ -701,24 +704,25 @@ def _push(args, cfg: Config, apps: list[str]) -> int:
     unchanged: list[str] = []
     failed: list[str] = []
     warnings_by_app: dict[str, list[str]] = {}
-    for i, name in enumerate(apps, 1):
-        app = build_app(name, cfg)
-        ui.section(name, index=i, total=len(apps), sub=app.description)
-        if unchanged_by_plan.get(name, False):
-            app._finish_unchanged()
-            unchanged.append(name)
+    with _sync_locks(apps, writes=True):
+        for i, name in enumerate(apps, 1):
+            app = build_app(name, cfg)
+            ui.section(name, index=i, total=len(apps), sub=app.description)
+            if unchanged_by_plan.get(name, False):
+                app._finish_unchanged()
+                unchanged.append(name)
+                print()
+                continue
+            try:
+                app.sync_from(cfg.dir)
+                app._finish_ok()
+                changed.append(name)
+            except (FileNotFoundError, RuntimeError) as e:
+                ui.error(str(e))
+                failed.append(name)
+            if app.warnings:
+                warnings_by_app[name] = list(app.warnings)
             print()
-            continue
-        try:
-            app.sync_from(cfg.dir)
-            app._finish_ok()
-            changed.append(name)
-        except (FileNotFoundError, RuntimeError) as e:
-            ui.error(str(e))
-            failed.append(name)
-        if app.warnings:
-            warnings_by_app[name] = list(app.warnings)
-        print()
     ui.summary(
         ok=len(changed) + len(unchanged),
         error=len(failed),
@@ -738,8 +742,7 @@ def cmd_to(args) -> int:
     apps = _resolve_app_list(args, cfg)
     if not apps:
         return 2
-    with _sync_locks(apps, writes=True):
-        return _pull(args, cfg, apps)
+    return _pull(args, cfg, apps)
 
 
 def _pull(args, cfg: Config, apps: list[str]) -> int:
@@ -750,7 +753,9 @@ def _pull(args, cfg: Config, apps: list[str]) -> int:
         f"{len(apps)} app{'s' if len(apps) != 1 else ''}  ←  {cfg.dir}",
     )
     print()
-    plans = _build_plans(apps, cfg, "to")
+    # Planning reads, like status; nothing is held while the user answers.
+    with _sync_locks(apps, writes=False):
+        plans = _build_plans(apps, cfg, "to")
     _print_preview(plans, direction="to")
     if not _confirm_or_abort(args, plans, direction="to"):
         return 0
@@ -763,24 +768,25 @@ def _pull(args, cfg: Config, apps: list[str]) -> int:
     unchanged: list[str] = []
     failed: list[str] = []
     warnings_by_app: dict[str, list[str]] = {}
-    for i, name in enumerate(apps, 1):
-        app = build_app(name, cfg)
-        ui.section(name, index=i, total=len(apps), sub=app.description)
-        if unchanged_by_plan.get(name, False):
-            app._finish_unchanged()
-            unchanged.append(name)
+    with _sync_locks(apps, writes=True):
+        for i, name in enumerate(apps, 1):
+            app = build_app(name, cfg)
+            ui.section(name, index=i, total=len(apps), sub=app.description)
+            if unchanged_by_plan.get(name, False):
+                app._finish_unchanged()
+                unchanged.append(name)
+                print()
+                continue
+            try:
+                app.sync_to(cfg.dir)
+                app._finish_ok()
+                changed.append(name)
+            except (FileNotFoundError, RuntimeError) as e:
+                ui.error(str(e))
+                failed.append(name)
+            if app.warnings:
+                warnings_by_app[name] = list(app.warnings)
             print()
-            continue
-        try:
-            app.sync_to(cfg.dir)
-            app._finish_ok()
-            changed.append(name)
-        except (FileNotFoundError, RuntimeError) as e:
-            ui.error(str(e))
-            failed.append(name)
-        if app.warnings:
-            warnings_by_app[name] = list(app.warnings)
-        print()
     ui.summary(
         ok=len(changed) + len(unchanged),
         error=len(failed),

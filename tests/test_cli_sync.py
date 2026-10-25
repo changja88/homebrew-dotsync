@@ -616,3 +616,50 @@ def test_status_codex_holds_shared_codex_lock(fake_home, monkeypatch, tmp_path):
 
     assert main(["status"]) == 0
     assert seen["status"] == ["codex:shared"]
+
+
+def test_text_pull_holds_no_lock_while_it_asks(fake_home, monkeypatch, tmp_path):
+    # Waiting at y/N/d must not block `account usage`, `account use` or a
+    # Codex session delete; the locks are taken once the answer is yes.
+    from dotsync import cli
+
+    _sync_setup(monkeypatch, tmp_path, "claude")
+    held, seen = _lock_recorders(monkeypatch)
+    monkeypatch.setattr(cli, "build_app", lambda name, cfg: _stub_app(name, held, seen))
+
+    def ask(*args, **kwargs):
+        seen["ask"] = list(held)
+        return "y"
+
+    monkeypatch.setattr(cli.ui, "ask", ask)
+
+    assert main(["pull", "claude"]) == 0
+    assert seen["ask"] == []
+    assert seen["sync_to"] == ["accounts"]
+
+
+def test_text_push_codex_plans_under_shared_lock_and_asks_without_it(fake_home, monkeypatch, tmp_path):
+    from dotsync import cli
+
+    _sync_setup(monkeypatch, tmp_path, "codex")
+    held, seen = _lock_recorders(monkeypatch)
+    stub = _stub_app("codex", held, seen)
+    plan_from = stub.plan_from
+
+    def recording_plan_from(target_dir):
+        seen["plan_from"] = list(held)
+        return plan_from(target_dir)
+
+    stub.plan_from = recording_plan_from
+    monkeypatch.setattr(cli, "build_app", lambda name, cfg: stub)
+
+    def ask(*args, **kwargs):
+        seen["ask"] = list(held)
+        return "y"
+
+    monkeypatch.setattr(cli.ui, "ask", ask)
+
+    assert main(["push", "codex"]) == 0
+    assert seen["plan_from"] == ["codex:shared"]
+    assert seen["ask"] == []
+    assert seen["sync_from"] == ["codex:shared"]
