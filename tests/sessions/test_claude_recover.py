@@ -5,7 +5,7 @@ import time
 import pytest
 
 from dotsync import cli
-from dotsync.sessions import claude, roots
+from dotsync.sessions import claude, claude_delete, roots
 from tests.sessions.claude_fixtures import make_session, user
 from tests.sessions.test_claude_delete import (  # noqa: F401  (fixtures)
     CWD, PROJECT, SID, SID2, TITLE, age, agents, home, quarantined, session, snapshot, temp_dir,
@@ -22,7 +22,7 @@ def test_restore_renames_back_and_lists_idle(agents, session):
     [s] = claude.scan()
     assert s.quarantined
 
-    report = claude.restore(SID)
+    report = claude_delete.restore(SID)
 
     assert report == {
         "tool": "claude", "stopped": False, "results": [{"id": SID, "outcome": "restored"}],
@@ -44,7 +44,7 @@ def test_restore_refuses_when_jsonl_exists(agents, session):
     aside = quarantined(session)
     before = snapshot(roots.claude_home())
 
-    [result] = claude.restore(SID)["results"]
+    [result] = claude_delete.restore(SID)["results"]
 
     assert result["id"] == SID and result["outcome"] == "failed"
     assert [f["path"] for f in result["failed"]] == [str(aside)]
@@ -52,7 +52,7 @@ def test_restore_refuses_when_jsonl_exists(agents, session):
 
 
 def test_restore_without_a_quarantined_copy_is_not_found(agents, session):
-    [result] = claude.restore(SID)["results"]
+    [result] = claude_delete.restore(SID)["results"]
     assert result == {"id": SID, "outcome": "skipped", "reason": "not_found"}
     assert session.exists()
 
@@ -65,7 +65,7 @@ def test_restore_brings_back_every_copy_and_reports_each_failure(home, agents, s
         interrupt(t)
     third.write_text("taken\n")
 
-    [result] = claude.restore(SID)["results"]
+    [result] = claude_delete.restore(SID)["results"]
 
     assert result["outcome"] == "failed"
     assert [f["path"] for f in result["failed"]] == [str(quarantined(third))]
@@ -76,7 +76,7 @@ def test_restore_brings_back_every_copy_and_reports_each_failure(home, agents, s
 def test_restore_rejects_a_bad_id_before_touching_anything(tmp_path):
     before = snapshot(tmp_path)
     with pytest.raises(Exception) as e:
-        claude.restore("../x")
+        claude_delete.restore("../x")
     assert getattr(e.value, "code", "") == "invalid_session_id"
     assert snapshot(tmp_path) == before
 
@@ -122,7 +122,7 @@ def test_missing_renamex_np_is_a_per_path_failure(monkeypatch, tmp_path):
     def missing():
         raise AttributeError("renamex_np")
 
-    monkeypatch.setattr(claude, "_renamex_np", missing)
+    monkeypatch.setattr(claude_delete, "_renamex_np", missing)
     with pytest.raises(OSError) as e:
-        claude._rename_no_replace(tmp_path / "a", tmp_path / "b")
+        claude_delete._rename_no_replace(tmp_path / "a", tmp_path / "b")
     assert e.value.errno == errno.ENOTSUP

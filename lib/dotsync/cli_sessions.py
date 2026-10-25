@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 from dotsync import cli_json, ui
 from dotsync.cli_json import JSONCommandError
-from dotsync.sessions import claude, codex, codex_blockers, codex_cleanup
+from dotsync.sessions import claude, claude_delete, codex, codex_blockers, codex_cleanup
 from dotsync.sessions.stop import StopSignal
 
 TOOLS = ("claude", "codex")
@@ -188,13 +188,13 @@ def _cleanup_payload(
 
 def _recover_report(args: argparse.Namespace, on_progress: Callable[[int, int], None]) -> dict:
     if args.restore:
-        return claude.restore(args.id)
+        return claude_delete.restore(args.id)
     with StopSignal() as stop:
-        return claude.delete([args.id], stop=stop, progress=on_progress, log_command="recover")
+        return claude_delete.delete([args.id], stop=stop, progress=on_progress, log_command="recover")
 
 
 def _delete_report(tool: str, ids: list[str], on_progress: Callable[[int, int], None]) -> dict:
-    sessions = claude if tool == "claude" else codex
+    sessions = claude_delete if tool == "claude" else codex
     with StopSignal() as stop:
         return sessions.delete(ids, stop=stop, progress=on_progress)
 

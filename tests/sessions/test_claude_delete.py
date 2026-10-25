@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from dotsync import cli, locks
-from dotsync.sessions import claude, procs, roots
+from dotsync.sessions import claude, claude_delete, procs, roots
 from dotsync.sessions.stop import StopSignal
 from tests.sessions.claude_fixtures import make_session, user, write_jsonl
 
@@ -113,7 +113,7 @@ def quarantined(transcript: Path) -> Path:
 
 
 def run_delete(*ids):
-    return claude.delete(list(ids), stop=StopSignal(), progress=lambda done, total: None)
+    return claude_delete.delete(list(ids), stop=StopSignal(), progress=lambda done, total: None)
 
 
 def test_invalid_id_touches_nothing(tmp_path, agents, session, capsys):
@@ -238,14 +238,14 @@ def test_transcript_created_after_quarantine_is_never_replaced(agents, session, 
 def set_aside_count(monkeypatch) -> list[Path]:
     """Records every rename to a quarantine name; the renames still happen."""
     asides: list[Path] = []
-    real = claude._rename_no_replace
+    real = claude_delete._rename_no_replace
 
     def rename(src, dst):
         if dst.name.endswith(claude.QUARANTINE_SUFFIX):
             asides.append(dst)
         real(src, dst)
 
-    monkeypatch.setattr(claude, "_rename_no_replace", rename)
+    monkeypatch.setattr(claude_delete, "_rename_no_replace", rename)
     return asides
 
 
@@ -271,7 +271,7 @@ def test_repeated_id_is_deleted_once_without_a_second_result(agents, session):
 def test_session_running_at_the_start_is_never_renamed(agents, session, monkeypatch):
     agents.answers = [[{"sessionId": SID, "kind": "interactive", "pid": 4242, "cwd": CWD}]]
     renames = []
-    monkeypatch.setattr(claude, "_rename_no_replace", lambda *a: renames.append(a))
+    monkeypatch.setattr(claude_delete, "_rename_no_replace", lambda *a: renames.append(a))
     before = tree()
 
     [result] = run_delete(SID)["results"]
@@ -359,7 +359,7 @@ def test_tool_result_refs_finds_a_reference_across_a_chunk_boundary(home):
     sub.parent.mkdir(parents=True)
     sub.write_bytes(b"/" + SID.upper().encode() + b"/tool-results/ /not-an-id/tool-results/ " + ref)
 
-    assert claude.tool_result_refs([big, sub]) == {SID: {SID2, SID3}}
+    assert claude_delete.tool_result_refs([big, sub]) == {SID: {SID2, SID3}}
 
 
 @pytest.mark.parametrize("source", ["session", "agent"])
@@ -413,7 +413,7 @@ def test_sigterm_between_ids_skips_the_rest(home, agents, session):
             os.kill(os.getpid(), signal.SIGTERM)
 
     with StopSignal() as stop:
-        report = claude.delete([SID, SID2, SID3], stop=stop, progress=progress)
+        report = claude_delete.delete([SID, SID2, SID3], stop=stop, progress=progress)
 
     assert report["stopped"] is True
     assert [(r["id"], r["outcome"], r.get("reason")) for r in report["results"]] == [
