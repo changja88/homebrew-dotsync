@@ -272,3 +272,11 @@ private let cliPartialReasons = ["failed", "timeout", "no_rollout"]  // codex._j
     #expect(SessionText.freedLine(0) == nil)
     #expect(SessionText.progress(done: 12, total: 240) == "12/240")
 }
+
+@Test func failureLinesClaimNothingAboutWhatWasDeleted() {
+    let check = "지워진 게 있는지 목록에서 확인해 주세요"
+    #expect(SessionText.failureLine(CLIError(code: "cancelled", message: "dotsync was stopped")) == "멈췄어요. \(check)")
+    #expect(SessionText.failureLine(CLIError(code: "timeout", message: "x")) == "시간이 너무 오래 걸려서 멈췄어요. \(check)")
+    #expect(SessionText.failureLine(CLIError(code: "busy", message: "다른 작업 중")) == "다른 작업 중")
+    #expect(SessionText.failureLine(NSError(domain: "x", code: 1)).isEmpty == false)
+}

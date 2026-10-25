@@ -204,6 +204,20 @@ public enum SessionText {
         return clauses.joined(separator: "고 ") + "어요"
     }
 
+    /// What the failure sheet says for a delete or recover that threw. A stop
+    /// or a timeout may have come after some work, so those lines send the
+    /// person to the list instead of saying what was or was not deleted.
+    public static func failureLine(_ error: Error) -> String {
+        let failure = error as? CLIError ?? CLIError(code: "failed", message: error.localizedDescription)
+        let check = "지워진 게 있는지 목록에서 확인해 주세요"
+        switch failure.code {
+        case "cancelled": return "멈췄어요. \(check)"
+        case "timeout": return "시간이 너무 오래 걸려서 멈췄어요. \(check)"
+        case "busy": return "다른 dotsync 작업이 끝나면 다시 해 주세요"
+        default: return failure.message
+        }
+    }
+
     /// "세션 파일 0.4 GB가 비었어요."; nil when nothing was freed.
     public static func freedLine(_ freed: Int64) -> String? {
         freed > 0 ? "세션 파일 \(bytes(freed))가 비었어요." : nil

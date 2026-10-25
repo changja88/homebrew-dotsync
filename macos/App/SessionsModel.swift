@@ -209,14 +209,19 @@ final class SessionsModel {
             let progress: SessionService.Progress = { [weak self] done, total in
                 Task { @MainActor in self?.advance(tool, done: done, total: total) }
             }
+            // 멈추기 pressed while this waited: nothing was attempted, so the
+            // selection stays and no result is shown.
+            if stopRequested.contains(tool) {
+                tools[tool]?.sheet = nil
+                return
+            }
             let task = Task { try await operation(progress) }
             runningTasks[tool] = task
-            if stopRequested.contains(tool) { task.cancel() }
             do {
                 let report = try await task.value
                 tools[tool]?.sheet = .result(previous.map { SessionDeleteRules.merged($0, replacing: report) } ?? report)
             } catch {
-                tools[tool]?.sheet = .failure(SettingsModel.describe(error))
+                tools[tool]?.sheet = .failure(SessionText.failureLine(error))
             }
         }
         // Every way out: the result or the failure is on screen now.
