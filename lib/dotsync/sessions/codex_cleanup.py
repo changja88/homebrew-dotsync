@@ -19,6 +19,7 @@ import re
 import shutil
 import sqlite3
 import stat
+import tomllib
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
@@ -168,6 +169,7 @@ def support_check() -> tuple[Refusal | None, bool]:
 
 def _check_support() -> bool:
     """Whether the history database can be vacuumed, or the first Refusal."""
+    _check_config()
     vacuum_available = False
     for db_name, migrator in MIGRATORS.items():
         with _reading(roots.codex_sqlite_home() / db_name) as con:
@@ -182,6 +184,19 @@ def _check_support() -> bool:
             )
     _check_rollout_migrations()
     return vacuum_available
+
+
+def _check_config() -> None:
+    """A config.toml that is there but cannot be read may move the databases
+    (`sqlite_home`), and roots.codex_sqlite_home() would quietly fall back
+    past it: the cleanup could then check databases Codex does not use."""
+    try:
+        with open(roots.codex_home() / "config.toml", "rb") as f:
+            tomllib.load(f)
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError) as e:  # tomllib.TOMLDecodeError is a ValueError
+        raise Refusal("codex_db_failed", f"cannot read config.toml: {e}") from e
 
 
 @contextlib.contextmanager
@@ -267,11 +282,16 @@ def keep_set(progress: Callable[[int, int], None] | None = None) -> KeepSet:
     """The ids of every thread and spawn edge in the state database, and of
     every rollout file, active or archived, plain or `.zst`: the thread and
     rollout ids in its name, and its SessionMeta's id and
-    `history_base.thread_id`. `progress(done, total)` follows the rollouts.
+    `history_base.thread_id`. A `threads.rollout_path` adds the ids in its
+    name too, whether or not its file is still there. `progress(done, total)`
+    follows the rollouts.
     Raises Refusal when the state database is missing or cannot be read, or
     holds an id that is not canonical."""
-    ids = _state_ids()
-    rollouts, unreadable, staging = _rollout_files()
+    ids, rollout_paths = _read_state()
+    named, unreadable = _named_rollout_ids(rollout_paths)
+    ids |= named
+    rollouts, unwalkable, staging = _rollout_files()
+    unreadable += unwalkable
     zstd_missing = any(p.name.endswith(".zst") for p, _ in rollouts) and zstd_binary() is None
     for done, (path, name_ids) in enumerate(rollouts, start=1):
         ids |= name_ids
@@ -296,17 +316,47 @@ def scan_refusal(keep: KeepSet) -> Refusal | None:
     return None
 
 
-def _state_ids() -> set[str]:
-    """Every `threads.id` and both ids of every spawn edge."""
+def _read_state() -> tuple[set[str], list[object]]:
+    """Every `threads.id` and both ids of every spawn edge, and every
+    `threads.rollout_path`."""
     with _reading(roots.codex_sqlite_home() / codex.STATE_DB) as con:
-        found = [r[0] for r in con.execute("SELECT id FROM threads")]
+        threads = con.execute("SELECT id, rollout_path FROM threads").fetchall()
+        found = [thread_id for thread_id, _path in threads]
         for parent, child in con.execute(
             "SELECT parent_thread_id, child_thread_id FROM thread_spawn_edges"
         ):
             found += [parent, child]
     if not all(safety.is_valid_id(i) for i in found):
         raise Refusal("codex_version", f"{codex.STATE_DB} has a thread id that is not canonical")
-    return set(found)
+    return set(found), [path for _thread_id, path in threads]
+
+
+def _named_rollout_ids(paths: list[object]) -> tuple[set[str], int]:
+    """The thread and rollout ids in the names of the rollout files the state
+    database points at, and how many of its paths cannot be trusted. A file
+    that is gone (a Codex delete that stopped halfway leaves its row) still
+    names a rollout id whose history rows must stay. A path whose real path
+    is outside the rollout trees counts as unreadable: the walk never reads
+    that file, so its `history_base` would be missed. An empty path names no
+    file."""
+    trees = [os.path.realpath(roots.codex_home() / top) for top in codex.ROLLOUT_TREES]
+    ids: set[str] = set()
+    unreadable = 0
+    for path in paths:
+        if path is None or path == "":
+            continue
+        try:
+            real = os.path.realpath(path) if isinstance(path, str) else None
+        except (OSError, ValueError):  # ValueError: a NUL byte
+            real = None
+        name_ids = None
+        if real is not None and any(_is_under(real, tree) for tree in trees):
+            name_ids = _name_ids(os.path.basename(path))
+        if name_ids is None:
+            unreadable += 1
+        else:
+            ids |= name_ids
+    return ids, unreadable
 
 
 def _rollout_files() -> tuple[list[tuple[Path, set[str]]], int, int]:
@@ -414,9 +464,15 @@ def _meta_in(lines: Iterable[bytes]) -> dict:
         if not line.strip():
             continue
         try:
-            record = json.loads(line)
-        except (ValueError, RecursionError):  # UnicodeDecodeError is a ValueError
-            continue
+            text = line.decode("utf-8")
+        except UnicodeDecodeError as e:
+            raise MetaUnreadable("a line that is not UTF-8") from e
+        try:
+            record = json.loads(text)
+        except (ValueError, RecursionError):
+            if b'"session_meta"' in line:  # it may be the SessionMeta: unknown means keep
+                raise MetaUnreadable("a SessionMeta-like line that does not parse") from None
+            continue  # Codex skips a line that does not parse
         if not isinstance(record, dict):
             continue
         kind = record.get("type")

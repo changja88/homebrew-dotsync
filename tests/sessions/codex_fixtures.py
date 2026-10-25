@@ -60,13 +60,24 @@ def add_thread(
     archived: bool = False,
     source: str = "cli",
     updated_at_ms: int = 1_700_000_000_000,
+    rollout_path: str = "",
 ) -> None:
     con = sqlite3.connect(db_dir / "state_5.sqlite")
     con.execute(
         "INSERT INTO threads (id, rollout_path, created_at, updated_at, source, model_provider,"
         " cwd, title, sandbox_policy, approval_mode, archived, name, updated_at_ms)"
-        " VALUES (?, '', 0, ?, ?, 'p', ?, ?, 's', 'a', ?, ?, ?)",
-        (thread_id, updated_at_ms // 1000, source, cwd, title, int(archived), name, updated_at_ms),
+        " VALUES (?, ?, 0, ?, ?, 'p', ?, ?, 's', 'a', ?, ?, ?)",
+        (
+            thread_id,
+            rollout_path,
+            updated_at_ms // 1000,
+            source,
+            cwd,
+            title,
+            int(archived),
+            name,
+            updated_at_ms,
+        ),
     )
     con.commit()
     con.close()

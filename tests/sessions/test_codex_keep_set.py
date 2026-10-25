@@ -547,3 +547,92 @@ def test_rollout_tree_that_cannot_be_checked_is_unreadable(tmp_path, monkeypatch
         codex_home.chmod(0o755)
     assert keep.unreadable == 2  # both trees
     assert codex_cleanup.scan_refusal(keep).code == "incomplete_scan"
+
+
+# Fix round 1: rollout paths named by the state DB, strict lines, config.toml
+
+
+@pytest.mark.parametrize("tree", ["sessions/2026/01/02", "archived_sessions"])
+def test_missing_rollout_named_by_a_thread_keeps_its_ids(home, tree):
+    # A Codex delete that stopped halfway: the row is there, its file is not.
+    add_thread(home, THREAD, rollout_path=str(home / tree / rollout_name(THREAD, ROLLOUT)))
+    keep = codex_cleanup.keep_set()
+    assert keep.ids == {THREAD, ROLLOUT}
+    assert keep.unreadable == 0
+    assert codex_cleanup.scan_refusal(keep) is None
+
+
+def test_rollout_named_by_a_thread_that_the_walk_read_counts_once(home):
+    path = write_rollout(home, THREAD, rollout_id=ROLLOUT, meta={"id": THREAD})
+    add_thread(home, THREAD, rollout_path=str(path))
+    keep = codex_cleanup.keep_set()
+    assert keep.ids == {THREAD, ROLLOUT}
+    assert keep.unreadable == 0
+
+
+def test_rollout_path_outside_the_trees_is_unreadable(home, tmp_path):
+    outside = write_rollout(tmp_path / "moved-codex-home", THREAD, rollout_id=ROLLOUT)
+    add_thread(home, THREAD, rollout_path=str(outside))
+    keep = codex_cleanup.keep_set()
+    assert keep.unreadable == 1
+    assert codex_cleanup.scan_refusal(keep).code == "incomplete_scan"
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["rollout-garbage.jsonl", rollout_name(THREAD.upper()), rollout_name(THREAD, ROLLOUT.upper())],
+    ids=["fails_the_regex", "thread_id_not_canonical", "rollout_id_not_canonical"],
+)
+def test_rollout_path_with_an_unreadable_name_is_unreadable(home, name):
+    add_thread(home, THREAD, rollout_path=str(home / "sessions" / "2026" / "01" / "02" / name))
+    keep = codex_cleanup.keep_set()
+    assert keep.unreadable == 1
+    assert codex_cleanup.scan_refusal(keep).code == "incomplete_scan"
+
+
+def test_meta_line_with_invalid_utf8_is_unreadable(home):
+    path = day_folder(home) / rollout_name(THREAD)
+    first = json.dumps({"type": "session_meta", "payload": {"id": META, "note": "XX"}}).encode()
+    later = json.dumps({"type": "session_meta", "payload": {"id": OTHER}}).encode()
+    path.write_bytes(first.replace(b"XX", b"\xff\xfe") + b"\n" + later + b"\n")
+    with pytest.raises(codex_cleanup.MetaUnreadable):
+        codex_cleanup.first_session_meta(path)
+    assert codex_cleanup.keep_set().unreadable == 1
+
+
+def test_unparseable_line_that_mentions_session_meta_is_unreadable(home):
+    path = write_lines(
+        day_folder(home) / rollout_name(THREAD),
+        [
+            '{"type": "session_meta", "payload": {"id": "' + META + '", "history_base": {"thread_id"',
+            {"type": "session_meta", "payload": {"id": OTHER}},
+        ],
+    )
+    with pytest.raises(codex_cleanup.MetaUnreadable):
+        codex_cleanup.first_session_meta(path)
+    assert codex_cleanup.keep_set().unreadable == 1
+
+
+def test_unreadable_config_toml_refuses_without_falling_back(home):
+    (home / "config.toml").write_text('sqlite_home = "/somewhere\n')  # not TOML
+    refusal, vacuum_available = codex_cleanup.support_check()
+    assert refusal.code == "codex_db_failed"
+    assert "config.toml" in refusal.message
+    assert vacuum_available is False
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+def test_config_toml_that_cannot_be_opened_refuses(home):
+    config = home / "config.toml"
+    config.write_text('model = "x"\n')
+    config.chmod(0)
+    try:
+        refusal, _ = codex_cleanup.support_check()
+    finally:
+        config.chmod(0o644)
+    assert refusal.code == "codex_db_failed"
+
+
+def test_readable_config_toml_is_fine(home):
+    (home / "config.toml").write_text('model = "x"\n')
+    assert codex_cleanup.support_check() == (None, True)
