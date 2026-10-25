@@ -93,8 +93,13 @@ final class SessionsModel {
         tools[tool] = state
     }
 
+    /// Letting go of a pick always works; picking needs an idle session of the
+    /// current list.
     func toggle(_ id: String, in tool: SessionTool) {
-        if tools[tool]?.selection.remove(id) == nil { tools[tool]?.selection.insert(id) }
+        if tools[tool]?.selection.remove(id) != nil { return }
+        guard let list = tools[tool]?.list, let item = SessionRules.item(id, in: list),
+              SessionRules.isSelectable(item) else { return }
+        tools[tool]?.selection.insert(id)
     }
 
     /// `key` is a group's key, or "merged" for the row of the small ones.

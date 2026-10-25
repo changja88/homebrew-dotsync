@@ -169,3 +169,9 @@ func makeList(_ groups: [SessionGroup]) -> SessionList {
     #expect(SessionRules.togglingGroup(["a", "b", "x"], selectable: ids) == ["x"])
     #expect(SessionRules.togglingGroup(["x"], selectable: []) == ["x"])
 }
+
+@Test func itemLookupFindsListedIdsOnly() {
+    let l = makeList([makeGroup("g", gb: 1, items: [makeItem("a")]), makeGroup("h", gb: 1, items: [makeItem("b", state: "running")])])
+    #expect(SessionRules.item("b", in: l)?.state == "running")
+    #expect(SessionRules.item("gone", in: l) == nil)
+}

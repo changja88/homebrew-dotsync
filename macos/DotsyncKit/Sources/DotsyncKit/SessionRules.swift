@@ -47,6 +47,11 @@ public enum SessionRules {
         Set(row.items.filter(isSelectable).map(\.id))
     }
 
+    /// The session with this id, if the list has it.
+    public static func item(_ id: String, in list: SessionList) -> SessionItem? {
+        list.groups.lazy.flatMap(\.items).first { $0.id == id }
+    }
+
     /// The part of `selection` that is still in the list and still idle:
     /// what is left to pick after a refresh.
     public static func pruned(_ selection: Set<String>, in list: SessionList) -> Set<String> {

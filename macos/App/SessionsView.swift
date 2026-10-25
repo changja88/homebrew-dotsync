@@ -113,6 +113,8 @@ private struct SessionsPane: View {
 
     var body: some View {
         let rows = SessionRules.rows(list.groups)
+        // Once per body: rows count from now, with no timer of their own.
+        let now = Date.now
         let totals = SessionRules.selectionTotals(state.selection, in: list)
         VStack(alignment: .leading, spacing: 10) {
             QuickSelectBar(model: model, tool: tool, list: list)
@@ -120,7 +122,7 @@ private struct SessionsPane: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(rows) { row in
-                        SessionGroupRows(model: model, tool: tool, row: row, state: state, now: list.checkedAt)
+                        SessionGroupRows(model: model, tool: tool, row: row, state: state, now: now)
                     }
                 }
                 .padding(.vertical, 3)
@@ -220,8 +222,7 @@ private struct SessionGroupRows: View {
     let tool: SessionTool
     let row: SessionRules.DisplayRow
     let state: ToolSessions
-    /// Last records read against the time of the list, so rows do not change
-    /// between lists.
+    /// The time the last records are counted from.
     let now: Date
 
     var body: some View {
