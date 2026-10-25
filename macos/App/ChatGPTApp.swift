@@ -8,9 +8,15 @@ private let chatGPTBundleID = "com.openai.codex"
 /// is exercised by tests; the real run is the by-hand check with the user.
 @MainActor
 final class ChatGPTApp: ChatGPTControl {
-    /// The instances this adapter asked to quit. One of them that is not yet
-    /// `isTerminated` is a ChatGPT that is still quitting.
-    private var asked: [NSRunningApplication] = []
+    /// The instances this adapter asked to quit, and when. One of them that is
+    /// not yet `isTerminated` is a ChatGPT that is still quitting, until
+    /// `ChatGPTQuitRules` says it declined.
+    private var asked: [(app: NSRunningApplication, sentAt: Date)] = []
+    private let now: () -> Date
+
+    init(now: @escaping () -> Date = Date.init) {
+        self.now = now
+    }
 
     private var live: [NSRunningApplication] {
         NSRunningApplication.runningApplications(withBundleIdentifier: chatGPTBundleID).filter { !$0.isTerminated }
@@ -21,7 +27,8 @@ final class ChatGPTApp: ChatGPTControl {
     func terminate() -> Bool {
         let instances = live
         guard !instances.isEmpty else { return false }
-        asked = instances
+        let sentAt = now()
+        asked = instances.map { ($0, sentAt) }
         // Every instance is asked, even after one refuses.
         let answers = instances.map { $0.terminate() }
         return !answers.contains(false)
@@ -30,7 +37,7 @@ final class ChatGPTApp: ChatGPTControl {
     /// Polls `isTerminated` on the instances `terminate()` asked (or, with
     /// none asked, the ones running now) and gives up at `timeout`.
     func waitUntilTerminated(timeout: Duration) async -> Bool {
-        let waiting = asked.isEmpty ? live : asked
+        let waiting = asked.isEmpty ? live : asked.map(\.app)
         let deadline = ContinuousClock.now + timeout
         while !waiting.allSatisfy(\.isTerminated) {
             if ContinuousClock.now >= deadline || Task.isCancelled { return false }
@@ -40,8 +47,11 @@ final class ChatGPTApp: ChatGPTControl {
     }
 
     func relaunch() async -> Bool {
+        // One that has outlived the quit request declined it: it is open, so
+        // it is no longer "quitting".
+        asked.removeAll { !$0.app.isTerminated && ChatGPTQuitRules.declined(askedAt: $0.sentAt, now: now()) }
         let running = live
-        let quitting = running.filter { app in asked.contains { $0.processIdentifier == app.processIdentifier } }
+        let quitting = running.filter { app in asked.contains { $0.app.processIdentifier == app.processIdentifier } }
         // A ChatGPT that is open and not quitting is the goal already: do not
         // activate it or take the focus.
         if running.count > quitting.count { return true }

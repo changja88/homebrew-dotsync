@@ -21,6 +21,8 @@ struct CleanupState {
     var vacuum = false
     /// The open-session count the sheet last showed: "끄고 정리하기" confirms it.
     var shownOpenThreads = 0
+    /// Opened from a delete's result: the list is read again on close.
+    var reloadsListOnClose = false
 }
 
 extension SessionsModel {
@@ -30,7 +32,9 @@ extension SessionsModel {
     /// reads the blockers (fast), then the dry-run, and shows each as it comes.
     func openCleanup() {
         guard service != nil, tools[.codex]?.work == nil, cleanupTask == nil else { return }
-        cleanup = CleanupState()
+        var opened = CleanupState()
+        if case .result? = tools[.codex]?.sheet { opened.reloadsListOnClose = true }
+        cleanup = opened
         tools[.codex]?.sheet = .cleanup
         readCleanup(everything: true)
     }
@@ -92,11 +96,11 @@ extension SessionsModel {
         guard cleanupTask == nil else { return }
         cleanupReadTask?.cancel()
         cleanupReadTask = nil
-        let finished: Bool
-        if case .finished = cleanup.phase { finished = true } else { finished = false }
+        var reload = cleanup.reloadsListOnClose
+        if case .finished = cleanup.phase { reload = true }
         cleanup = CleanupState()
         tools[.codex]?.sheet = nil
-        if finished { Task { await refresh(.codex) } }
+        if reload { Task { await refresh(.codex) } }
     }
 
     // MARK: The unit

@@ -84,14 +84,15 @@ public enum CleanupRules {
         items.filter { $0.id != "cache_files" }
     }
 
-    /// Each checkbox starts at the item's `checked`.
+    /// Each checkbox starts at the item's `checked`. An item with nothing to
+    /// clean is never picked: it would quit ChatGPT for nothing.
     public static func initialSelection(_ items: [CleanupItem]) -> Set<String> {
-        Set(visibleItems(items).filter(\.checked).map(\.id))
+        Set(visibleItems(items).filter { $0.checked && $0.count > 0 }.map(\.id))
     }
 
     /// What goes to `--items`: the picked ones that are still in the dry-run, in its order.
     public static func selectedIds(_ items: [CleanupItem], selection: Set<String>) -> [String] {
-        visibleItems(items).map(\.id).filter(selection.contains)
+        visibleItems(items).filter { $0.count > 0 }.map(\.id).filter(selection.contains)
     }
 
     /// The right column of an item: "세션 2,304개", "세션 2개 · 37줄", "83개".

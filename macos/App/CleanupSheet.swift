@@ -36,7 +36,7 @@ private struct ChoosingView: View {
         let items = state.preview.map { CleanupRules.visibleItems($0.items) } ?? []
         let selected = state.preview.map { CleanupRules.selectedIds($0.items, selection: state.selection) } ?? []
         let start = state.blockers.map {
-            CleanupRules.startState(blockers: $0, preview: state.preview, selected: selected, vacuum: state.vacuum)
+            CleanupRules.startState(blockers: $0, preview: state.preview, selected: selected, vacuum: state.vacuum && (state.preview?.vacuumAvailable ?? false))
         } ?? (allowed: false, note: nil)
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
@@ -111,6 +111,7 @@ private struct ChoosingView: View {
                 HStack(spacing: 10) {
                     Toggle("", isOn: Binding(get: { state.selection.contains(item.id) }, set: { _ in model.toggleCleanupItem(item.id) }))
                         .toggleStyle(.checkbox).labelsHidden().frame(width: 18)
+                        .disabled(item.count == 0)
                     Text(item.label).frame(maxWidth: .infinity, alignment: .leading)
                     Text(CleanupRules.countText(item)).monospacedDigit().frame(width: 150, alignment: .leading)
                 }

@@ -180,3 +180,16 @@ private func done(_ id: String, count: Int, lines: Int? = nil) -> CleanupItemRes
     #expect(CleanupRules.summary(of: .needsConfirmation(openThreads: 2)) == nil)
     #expect(CleanupRules.summary(of: .blocked([proc("terminal_codex", "codex")])) == nil)
 }
+
+// MARK: Count-0 items
+
+@Test func emptyItemsAreNeverSelected() {
+    let items = [item("history_rows", count: 4), item("queue", count: 0)]
+    #expect(CleanupRules.selectedIds(items, selection: ["history_rows", "queue"]) == ["history_rows"])
+    let onlyEmpty = plan(items: [item("queue", count: 0, checked: true)])
+    let state = CleanupRules.startState(blockers: seen([]), preview: onlyEmpty,
+                                        selected: CleanupRules.selectedIds(onlyEmpty.items, selection: ["queue"]), vacuum: false)
+    #expect(!state.allowed)
+    #expect(state.note == "정리할 것을 골라 주세요")
+    #expect(CleanupRules.initialSelection(onlyEmpty.items).isEmpty)
+}
