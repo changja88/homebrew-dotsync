@@ -484,3 +484,137 @@ def _meta_in(lines: Iterable[bytes]) -> dict:
         if kind in _NOT_BEFORE_META:
             raise MetaUnreadable(f"a {kind} record before the SessionMeta")
     raise MetaUnreadable("no SessionMeta record")
+
+
+# The orphans, and the dry run
+
+HISTORY_JSONL = "history.jsonl"
+SESSION_INDEX_JSONL = "session_index.jsonl"
+_QUEUE_TABLES = ("queued_items", "queued_thread_revisions")
+
+
+@dataclass
+class Orphans:
+    """What the stores hold for ids outside the keep-set. An id that is not
+    canonical is ignored in every store, so it is never counted and never
+    touched."""
+
+    history_ids: set[str]  # the four history tables, keyed by rollout id
+    history_lines: dict[str, int]  # id -> its `history.jsonl` lines
+    index_ids: set[str]  # `session_index.jsonl`
+    queue_rows: int
+    queue_ids: set[str]
+    cache_ids: set[str]  # names in `tui-thread-reference-capabilities/`
+
+
+def orphans(keep: KeepSet) -> Orphans:
+    """Read-only. Raises Refusal(codex_db_failed) when a store cannot be read:
+    that is never a count of 0. A missing `history.jsonl`,
+    `session_index.jsonl` or cache folder holds nothing."""
+
+    def orphan(value: object) -> bool:
+        return safety.is_valid_id(value) and value not in keep.ids
+
+    history_ids: set[str] = set()
+    with _reading(roots.codex_sqlite_home() / codex.HISTORY_DB) as con:
+        for table in codex.HISTORY_TABLES:
+            history_ids |= {i for (i,) in con.execute(f"SELECT DISTINCT thread_id FROM {table}") if orphan(i)}
+    queue_rows = 0
+    queue_ids: set[str] = set()
+    with _reading(roots.codex_sqlite_home() / codex.QUEUE_DB) as con:
+        for table in _QUEUE_TABLES:
+            for thread_id, rows in con.execute(f"SELECT thread_id, COUNT(*) FROM {table} GROUP BY thread_id"):
+                if orphan(thread_id):
+                    queue_ids.add(thread_id)
+                    queue_rows += rows
+    history_lines = dict(Counter(_jsonl_ids(HISTORY_JSONL, "session_id", orphan)))
+    index_ids = set(_jsonl_ids(SESSION_INDEX_JSONL, "id", orphan))
+    cache_ids = {name for name in _cache_names() if orphan(name)}
+    return Orphans(history_ids, history_lines, index_ids, queue_rows, queue_ids, cache_ids)
+
+
+def _jsonl_ids(filename: str, key: str, wanted: Callable[[object], bool]) -> Iterator[str]:
+    """The `key` of each line of a Codex JSONL file that parses to an object
+    whose `key` is a wanted id, exactly. A line that only mentions an id does
+    not count."""
+    path = roots.codex_home() / filename
+    try:
+        # No waiting on a FIFO put in the file's place.
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return
+    except OSError as e:
+        raise Refusal("codex_db_failed", f"cannot read {filename}: {e}") from e
+    try:
+        with os.fdopen(fd, "rb") as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                raise Refusal("codex_db_failed", f"{filename} is not a regular file")
+            for line in f:
+                try:
+                    record = json.loads(line)
+                except (ValueError, RecursionError):
+                    continue
+                if isinstance(record, dict) and wanted(record.get(key)):
+                    yield record[key]
+    except OSError as e:
+        raise Refusal("codex_db_failed", f"cannot read {filename}: {e}") from e
+
+
+def _cache_names() -> Iterator[str]:
+    """Names of the plain files in the reference-cache folder. A symlink, a
+    folder or anything else in it is ignored."""
+    folder = roots.codex_home() / codex.CACHE_DIR
+    try:
+        with os.scandir(folder) as listing:
+            entries = list(listing)
+    except FileNotFoundError:
+        return
+    except OSError as e:
+        raise Refusal("codex_db_failed", f"cannot read {codex.CACHE_DIR}: {e}") from e
+    for entry in entries:
+        try:
+            if entry.is_file(follow_symlinks=False):
+                yield entry.name
+        except OSError:
+            continue
+
+
+def dry_run_payload(progress: Callable[[int, int], None] | None = None) -> dict:
+    """`detect()`'s fields plus the four items in spec order, what the history
+    database weighs, and whether it can be vacuumed. Blockers are reported, not
+    a refusal: nothing is changed. A refusal gives `items: []`, and the
+    keep-set walk is skipped when the support check already refuses."""
+    payload = detect()
+    refusal, vacuum_available = support_check()
+    found: Orphans | None = None
+    if refusal is None:
+        keep = keep_set(progress)
+        refusal = scan_refusal(keep)
+        if refusal is None:
+            try:
+                found = orphans(keep)
+            except Refusal as e:
+                refusal = e
+    payload["items"] = _items(found) if found is not None else []
+    payload["history_db_bytes"] = codex.history_bytes()
+    payload["vacuum_available"] = vacuum_available
+    payload["refusal"] = {"code": refusal.code, "message": refusal.message} if refusal else None
+    return payload
+
+
+def _items(found: Orphans) -> list[dict]:
+    rows = [
+        ("history_rows", "대화 저장소에 남은 내용", len(found.history_ids), {}),
+        (
+            "history_lines",
+            "입력 기록에서 지운 세션의 줄",
+            len(found.history_lines),
+            {"lines": sum(found.history_lines.values())},
+        ),
+        ("session_index", "이름 목록에서 지운 세션", len(found.index_ids), {}),
+        ("queue", "큐 기록", found.queue_rows, {}),
+    ]
+    return [
+        {"id": item_id, "label": label, "count": count, **extra, "checked": count > 0}
+        for item_id, label, count, extra in rows
+    ]

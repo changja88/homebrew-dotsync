@@ -130,6 +130,8 @@ def _cleanup(args: argparse.Namespace) -> int:
     except JSONCommandError as e:
         ui.error(str(e))
         return 1
+    if args.dry_run:
+        return _print_dry_run(payload)
     entries = payload["blockers"]
     for entry in entries:
         print(f"{entry['pid']}  {entry['kind']}  {entry['name']}  {entry['elapsed']}s")
@@ -138,11 +140,24 @@ def _cleanup(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_dry_run(payload: dict) -> int:
+    """Counts only, never an id."""
+    refusal = payload["refusal"]
+    if refusal:
+        ui.error(f"{refusal['code']}: {refusal['message']}")
+        return 1
+    for item in payload["items"]:
+        print(f"{item['label']}  {item['count']}")
+    return 0
+
+
 def _cleanup_payload(args: argparse.Namespace) -> dict:
     if args.blockers:
         return codex_cleanup.detect()
-    # --dry-run and --yes arrive with the cleanup tasks that follow.
-    raise JSONCommandError("unsupported", "only --blockers is available so far")
+    if args.dry_run:
+        return codex_cleanup.dry_run_payload(progress if args.json else None)
+    # --yes arrives with the cleanup task that follows.
+    raise JSONCommandError("unsupported", "only --blockers and --dry-run are available so far")
 
 
 def _recover_report(args: argparse.Namespace, on_progress: Callable[[int, int], None]) -> dict:

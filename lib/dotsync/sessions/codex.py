@@ -184,7 +184,7 @@ def _size_and_mtime(paths: list[Path]) -> tuple[int, float | None]:
     return total, newest
 
 
-def _history_bytes() -> int:
+def history_bytes() -> int:
     base = roots.codex_sqlite_home() / HISTORY_DB
     total = 0
     for p in (base, base.with_name(base.name + "-wal")):
@@ -236,7 +236,7 @@ def list_payload(extra_cwds: Iterable[str] = ()) -> dict:
             "sessions": len(items),
             "bytes": sum(i["bytes"] for i in items),
             "running": sum(i["state"] == "running" for i in items),
-            "history_db_bytes": _history_bytes(),
+            "history_db_bytes": history_bytes(),
         },
         "groups": grouping.groups(items, places),
     }
@@ -263,7 +263,7 @@ def _iso(epoch: float) -> str:
 CODEX_TIMEOUT = 180  # seconds, for `codex delete`
 CACHE_DIR = "tui-thread-reference-capabilities"
 PARTS = ("rollout", "state", "history")  # what a result's `remaining` can name
-_HISTORY_TABLES = (
+HISTORY_TABLES = (
     "thread_items",
     "thread_realtime_items",
     "thread_turns",
@@ -331,7 +331,7 @@ def inspect(ids: list[str], rollout_ids: set[str]) -> Remains:
         rows, edges = _state_rows(ids)
     except (sqlite3.Error, OSError):
         unchecked.add("state")
-    history = (0,) * len(_HISTORY_TABLES)
+    history = (0,) * len(HISTORY_TABLES)
     try:
         history = _history_rows(set(ids) | rollout_ids | {_rollout_id(p) for p in found})
     except (sqlite3.Error, OSError):
@@ -359,14 +359,14 @@ def _history_rows(keys: set[str]) -> tuple[int, ...]:
     """Rows per history table whose `thread_id` (a rollout id) is in `keys`."""
     db = roots.codex_sqlite_home() / HISTORY_DB
     if not keys or not _exists(db):
-        return (0,) * len(_HISTORY_TABLES)
+        return (0,) * len(HISTORY_TABLES)
     ordered = sorted(keys)
     marks = ",".join("?" * len(ordered))
     with contextlib.closing(open_ro(db)) as con:
         return tuple(
             con.execute(f"SELECT COUNT(*) FROM {table} WHERE thread_id IN ({marks})", ordered)
             .fetchone()[0]
-            for table in _HISTORY_TABLES
+            for table in HISTORY_TABLES
         )
 
 

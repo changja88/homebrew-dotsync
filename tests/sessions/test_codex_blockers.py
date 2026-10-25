@@ -221,10 +221,9 @@ def test_cli_blockers_text_when_nothing_runs(monkeypatch, capsys):
     assert "nothing" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("mode", ["--dry-run", "--yes"])
-def test_other_modes_are_unsupported_until_later_tasks(mode, capsys):
-    # Tasks 12-14 replace this on purpose.
-    assert cli.main(["sessions", "cleanup", "codex", mode, "--json"]) == 1
+def test_yes_is_unsupported_until_a_later_task(capsys):
+    # Task 14 replaces this on purpose.
+    assert cli.main(["sessions", "cleanup", "codex", "--yes", "--json"]) == 1
     assert json.loads(capsys.readouterr().out)["error"]["code"] == "unsupported"
 
 
