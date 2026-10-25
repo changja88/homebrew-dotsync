@@ -386,7 +386,8 @@ def test_runtime_error_caught_with_friendly_exit(
     save_config(Config(dir=target, apps=["zsh"]))
     monkeypatch.setenv("DOTSYNC_DIR", str(target))
 
-    with patch("dotsync.apps.base.shutil.copy2", side_effect=RuntimeError("disk full")):
+    # zsh pulls through shellrc's atomic write (it keeps this Mac's DOTSYNC_DIR).
+    with patch("dotsync.apps.zsh._write_atomic", side_effect=RuntimeError("disk full")):
         rc = main(["pull", "zsh", "--yes"])
     assert rc != 0
     err = capsys.readouterr().err

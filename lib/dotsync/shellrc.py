@@ -163,6 +163,53 @@ def update_shell_rc(rc_path: Path, dotsync_dir: Path) -> ShellRcResult:
     return ShellRcResult("added", rc_path, export)
 
 
+def _is_block_start(lines: list[str], i: int) -> bool:
+    return (
+        i + 1 < len(lines)
+        and lines[i].strip() == MARKER
+        and lines[i + 1].strip().startswith(f"export {ENV_VAR}=")
+    )
+
+
+def strip_marked_block(text: str) -> str:
+    """text without dotsync's marked blocks (MARKER + its export line) and the
+    blank line that separates each block from what comes before it."""
+    lines = text.splitlines(keepends=True)
+    kept: list[str] = []
+    i = 0
+    while i < len(lines):
+        if _is_block_start(lines, i):
+            if kept and kept[-1].strip() == "":
+                kept.pop()
+            i += 2
+            continue
+        kept.append(lines[i])
+        i += 1
+    return "".join(kept)
+
+
+def with_local_marked_block(stored_text: str, local_text: str) -> str:
+    """stored_text with its marked block replaced by local_text's (the last
+    one, with its leading blank line), at the line where it sat locally. With
+    no local block, the stored block is simply dropped."""
+    result = strip_marked_block(stored_text).splitlines(keepends=True)
+    local = local_text.splitlines(keepends=True)
+    starts = [i for i in range(len(local)) if _is_block_start(local, i)]
+    if not starts:
+        return "".join(result)
+    start = starts[-1]
+    block = local[start : start + 2]
+    head = local[:start]
+    if head and head[-1].strip() == "":
+        block = [head.pop(), *block]
+    position = min(len(strip_marked_block("".join(head)).splitlines()), len(result))
+    if position == len(result) and result and not result[-1].endswith("\n"):
+        result[-1] += "\n"
+    if not block[-1].endswith("\n"):
+        block[-1] += "\n"
+    return "".join(result[:position] + block + result[position:])
+
+
 def _marked_export_index(lines: list[str]) -> Optional[int]:
     """Index of the export line right after the last MARKER line, or None."""
     found = None
