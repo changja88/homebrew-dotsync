@@ -12,11 +12,13 @@ import contextlib
 import json
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
 from dotsync import diffinfo
 from dotsync.config import Config, ConfigError
 from dotsync.plan import Change
+from dotsync.shellrc import ShellRcResult
 
 
 def emit(work: Callable[[], dict]) -> int:
@@ -141,6 +143,32 @@ def tree_diff_text(change: Change) -> str:
             continue
         blocks.append(f"◦ {rel}\n{block}")
     return "\n\n".join(blocks)
+
+
+def config_json(cfg: Config) -> dict:
+    """`config show --json`."""
+    return {
+        "dir": str(cfg.dir),
+        "dir_source": cfg.dir_source,
+        "apps": list(cfg.apps),
+        "app_options": cfg.app_options,
+    }
+
+
+def config_dir_json(new_dir: Path, rc: ShellRcResult) -> dict:
+    """`config dir --json`. `dir_source` is how the next command will find
+    new_dir, or "" when it will not by itself — $DOTSYNC_DIR or the cwd
+    still names another folder, or no rc file holds the line."""
+    from dotsync.config import locate_sync_folder
+
+    found, source = locate_sync_folder()
+    if found is None or found.resolve() != new_dir:
+        source = ""
+    return {
+        "dir": str(new_dir),
+        "dir_source": source,
+        "rc": {"action": rc.action, "path": str(rc.rc_path) if rc.rc_path else None},
+    }
 
 
 class JSONCommandError(Exception):

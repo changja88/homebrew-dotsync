@@ -24,6 +24,7 @@ from dotsync.shellrc import (
     ShellRcResult,
     detect_rc_path,
     export_line,
+    rc_candidates,
     update_shell_rc,
 )
 
@@ -79,7 +80,11 @@ def _build_parser() -> argparse.ArgumentParser:
     cfg_apps.add_argument("apps", help="comma-separated names")
     for app_cls in APP_CLASSES:
         app_cls.extra_config_subcommands(cfg_sub)
-    cfg_sub.add_parser("show", help="print current config")
+    cfg_show = cfg_sub.add_parser("show", help="print current config")
+    for cfg_cmd in (cfg_dir, cfg_apps, cfg_show):
+        cfg_cmd.add_argument(
+            "--json", action="store_true", help="print one JSON object (for the dotsync app)"
+        )
 
     sub.add_parser("apps", help="pick which apps to track (same UI as init)")
     status = sub.add_parser("status", help="report sync state")
@@ -376,20 +381,23 @@ def _print_init_hints(folder: Path, rc_result: "ShellRcResult | None" = None) ->
 
 def cmd_config(args) -> int:
     if args.cfg_cmd == "show":
+        if args.json:
+            return cli_json.emit(lambda: cli_json.config_json(load_config()))
         cfg = load_config()
         print(f"dir = {cfg.dir}")
         print(f"apps = {cfg.apps}")
         print(f"app_options = {cfg.app_options}")
         return 0
     if args.cfg_cmd == "dir":
-        cfg = load_config()
-        new_dir = Path(args.path).expanduser().resolve()
-        new_dir.mkdir(parents=True, exist_ok=True)
-        cfg.dir = new_dir
-        save_config(cfg)
+        if args.json:
+            return cli_json.emit(lambda: cli_json.config_dir_json(*_set_dir(args.path)))
+        new_dir, rc = _set_dir(args.path)
         ui.done(f"dir = {new_dir}")
+        ui.dim(_rc_action_text(rc))
         return 0
     if args.cfg_cmd == "apps":
+        if args.json:
+            return cli_json.emit(lambda: _apps_payload(args.apps))
         cfg = load_config()
         new_apps = [a.strip() for a in args.apps.split(",") if a.strip()]
         bad = [a for a in new_apps if a not in SUPPORTED_APPS]
@@ -407,6 +415,43 @@ def cmd_config(args) -> int:
         if rc is not None:
             return rc
     return 2
+
+
+def _set_dir(path: str) -> "tuple[Path, ShellRcResult]":
+    """Write the config into the folder at `path` (files are not moved) and
+    point the marked DOTSYNC_DIR line at it, so the next command — from a
+    new shell or the dotsync app — finds it."""
+    cfg = load_config()
+    new_dir = Path(path).expanduser().resolve()
+    new_dir.mkdir(parents=True, exist_ok=True)
+    cfg.dir = new_dir
+    save_config(cfg)
+    return new_dir, _point_rc_at(new_dir)
+
+
+def _point_rc_at(new_dir: Path) -> ShellRcResult:
+    """Update the first existing rc file; never create one."""
+    for rc_path in rc_candidates():
+        if rc_path.exists():
+            return update_shell_rc(rc_path, new_dir)
+    return ShellRcResult("rc_missing", None, export_line(new_dir))
+
+
+def _rc_action_text(rc: ShellRcResult) -> str:
+    if rc.rc_path is None:
+        return f"no shell rc file found — add `{rc.line}` yourself"
+    return f"{rc.rc_path}: DOTSYNC_DIR line {rc.action.replace('_', ' ')}"
+
+
+def _apps_payload(names: str) -> dict:
+    cfg = load_config()
+    new_apps = [a.strip() for a in names.split(",") if a.strip()]
+    bad = [a for a in new_apps if a not in SUPPORTED_APPS]
+    if bad:
+        raise cli_json.JSONCommandError("unknown_apps", f"unknown apps: {bad}")
+    cfg.apps = new_apps
+    save_config(cfg)
+    return {"dir": str(cfg.dir), "dir_source": cfg.dir_source, "apps": new_apps}
 
 
 def cmd_apps(args) -> int:
