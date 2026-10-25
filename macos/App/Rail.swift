@@ -4,6 +4,7 @@ import SwiftUI
 enum RailItem: String, CaseIterable, Identifiable {
     case usage
     case settings
+    case sessions
 
     var id: String { rawValue }
 
@@ -11,6 +12,7 @@ enum RailItem: String, CaseIterable, Identifiable {
         switch self {
         case .usage: "사용량"
         case .settings: "설정"
+        case .sessions: "세션"
         }
     }
 }
@@ -105,6 +107,26 @@ struct RailIcon: Shape {
             }
             path.addEllipse(in: circle(16, 7, 2.4))
             path.addEllipse(in: circle(10, 17, 2.4))
+        case .sessions:
+            // "M5 4.5h14a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5h-7l-4.5 3.5v-3.5H5A1.5 1.5 0 0 1 3.5 15V6A1.5 1.5 0 0 1 5 4.5z"
+            path.move(to: point(5, 4.5))
+            path.addLine(to: point(19, 4.5))
+            path.addArc(tangent1End: point(20.5, 4.5), tangent2End: point(20.5, 6), radius: 1.5 * scale)
+            path.addLine(to: point(20.5, 15))
+            path.addArc(tangent1End: point(20.5, 16.5), tangent2End: point(19, 16.5), radius: 1.5 * scale)
+            path.addLine(to: point(12, 16.5))
+            path.addLine(to: point(7.5, 20))
+            path.addLine(to: point(7.5, 16.5))
+            path.addLine(to: point(5, 16.5))
+            path.addArc(tangent1End: point(3.5, 16.5), tangent2End: point(3.5, 15), radius: 1.5 * scale)
+            path.addLine(to: point(3.5, 6))
+            path.addArc(tangent1End: point(3.5, 4.5), tangent2End: point(5, 4.5), radius: 1.5 * scale)
+            path.closeSubpath()
+            // "M8 9h8M8 12h5"
+            path.move(to: point(8, 9))
+            path.addLine(to: point(16, 9))
+            path.move(to: point(8, 12))
+            path.addLine(to: point(13, 12))
         }
         return path
     }

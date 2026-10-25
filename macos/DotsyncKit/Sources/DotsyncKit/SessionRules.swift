@@ -30,9 +30,43 @@ public enum SessionRules {
         return (picked.count, picked.reduce(0) { $0 + $1.bytes })
     }
 
+    /// What a group shows before "나머지 N개 보기".
+    private static let collapsedCount = 5
+
     /// The first rows of a group, or all of them with `showAll`.
     public static func visibleItems(_ group: SessionGroup, showAll: Bool) -> [SessionItem] {
-        showAll ? group.items : Array(group.items.prefix(5))
+        showAll ? group.items : Array(group.items.prefix(collapsedCount))
+    }
+
+    /// The same for a row, which may be the merged one.
+    public static func visibleItems(_ row: DisplayRow, showAll: Bool) -> [SessionItem] {
+        showAll ? row.items : Array(row.items.prefix(collapsedCount))
+    }
+
+    public static func selectable(in row: DisplayRow) -> Set<String> {
+        Set(row.items.filter(isSelectable).map(\.id))
+    }
+
+    /// The part of `selection` that is still in the list and still idle:
+    /// what is left to pick after a refresh.
+    public static func pruned(_ selection: Set<String>, in list: SessionList) -> Set<String> {
+        selection.intersection(list.groups.flatMap(\.items).filter(isSelectable).map(\.id))
+    }
+
+    public enum CheckState: Equatable { case none, some, all }
+
+    /// A group checkbox over the ids it can pick; with nothing to pick it
+    /// stays unchecked.
+    public static func checkState(_ selection: Set<String>, among ids: Set<String>) -> CheckState {
+        let picked = selection.intersection(ids).count
+        if picked == 0 { return .none }
+        return picked == ids.count ? .all : .some
+    }
+
+    /// A group checkbox: picks every idle session of the group, or, when all
+    /// are picked already, lets them go. Other picks stay.
+    public static func togglingGroup(_ selection: Set<String>, selectable ids: Set<String>) -> Set<String> {
+        checkState(selection, among: ids) == .all ? selection.subtracting(ids) : selection.union(ids)
     }
 
     public enum DisplayRow: Equatable, Identifiable {
@@ -51,6 +85,18 @@ public enum SessionRules {
             switch self {
             case .group(let group): return [group]
             case .merged(_, _, let members): return members
+            }
+        }
+
+        /// A merged row lists its members' sessions, newest first; a plain
+        /// group keeps the CLI's order.
+        public var items: [SessionItem] {
+            switch self {
+            case .group(let group): return group.items
+            case .merged(_, _, let members):
+                return members.flatMap(\.items).enumerated()
+                    .sorted { ($0.element.lastActivity, $1.offset) > ($1.element.lastActivity, $0.offset) }
+                    .map(\.element)
             }
         }
 

@@ -123,3 +123,49 @@ func makeList(_ groups: [SessionGroup]) -> SessionList {
     #expect(mergedID(["a", "b", "c"]) == "merged")
     #expect(mergedID(["a", "b", "c", "d", "e"]) == "merged")
 }
+
+@Test func prunedKeepsOnlyListedSelectableIds() {
+    let l = makeList([
+        makeGroup("g", gb: 1, items: [makeItem("a"), makeItem("b", state: "running"), makeItem("c")]),
+        makeGroup("h", gb: 1, items: [makeItem("d", state: "interrupted"), makeItem("e")]),
+    ])
+    #expect(SessionRules.pruned(["a", "b", "d", "gone", "e"], in: l) == ["a", "e"])
+    #expect(SessionRules.pruned([], in: l).isEmpty)
+}
+
+@Test func mergedRowListsItsMembersItemsNewestFirst() {
+    let a = makeGroup("a", gb: 3, items: [makeItem("a-old", daysAgo: 9), makeItem("a-new", daysAgo: 1)])
+    let b = makeGroup("b", gb: 2, items: [makeItem("b-mid", daysAgo: 4)])
+    let c = makeGroup("c", gb: 1, items: [makeItem("c-run", state: "running", daysAgo: 2)])
+    let rows = SessionRules.rows([a, b, c], limit: 1)
+    #expect(rows.count == 1)
+    #expect(rows[0].items.map(\.id) == ["a-new", "c-run", "b-mid", "a-old"])
+    #expect(SessionRules.selectable(in: rows[0]) == ["a-new", "b-mid", "a-old"])
+    // A plain group keeps the CLI's order.
+    let plain = SessionRules.rows([a])[0]
+    #expect(plain.items.map(\.id) == ["a-old", "a-new"])
+}
+
+@Test func visibleItemsOfARowCapAtFive() {
+    let g = makeGroup("g", gb: 1, items: (1...8).map { makeItem("\($0)") })
+    let row = SessionRules.rows([g])[0]
+    #expect(SessionRules.visibleItems(row, showAll: false).count == 5)
+    #expect(SessionRules.visibleItems(row, showAll: true).count == 8)
+}
+
+@Test func groupCheckboxStateFollowsTheSelection() {
+    let ids: Set<String> = ["a", "b"]
+    #expect(SessionRules.checkState(["x"], among: ids) == .none)
+    #expect(SessionRules.checkState(["a", "x"], among: ids) == .some)
+    #expect(SessionRules.checkState(["a", "b"], among: ids) == .all)
+    // Nothing to pick: never checked.
+    #expect(SessionRules.checkState(["a"], among: []) == .none)
+}
+
+@Test func togglingAGroupSelectsAllOrClearsAll() {
+    let ids: Set<String> = ["a", "b"]
+    #expect(SessionRules.togglingGroup(["x"], selectable: ids) == ["x", "a", "b"])
+    #expect(SessionRules.togglingGroup(["a", "x"], selectable: ids) == ["x", "a", "b"])
+    #expect(SessionRules.togglingGroup(["a", "b", "x"], selectable: ids) == ["x"])
+    #expect(SessionRules.togglingGroup(["x"], selectable: []) == ["x"])
+}

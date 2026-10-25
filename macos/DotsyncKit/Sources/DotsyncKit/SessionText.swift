@@ -4,7 +4,11 @@ import Foundation
 /// lines after a delete. The wording is fixed by the F boards and the spec.
 public enum SessionText {
     public static func bytes(_ count: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: count, countStyle: .file)
+        // "Zero KB" is the default for 0; a column of sizes wants the number.
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        formatter.allowsNonnumericFormatting = false
+        return formatter.string(fromByteCount: count)
     }
 
     /// "244개 · 33.4 GB · 실행 중 11"; "실행 중" is left out when nothing runs.
@@ -12,6 +16,11 @@ public enum SessionText {
         var parts = ["\(grouped(list.totals.sessions))개", bytes(list.totals.bytes)]
         if list.totals.running > 0 { parts.append("실행 중 \(list.totals.running)") }
         return parts.joined(separator: " · ")
+    }
+
+    /// "2개 선택 · 2.6 GB"; with nothing picked, no size.
+    public static func selectionLine(count: Int, bytes size: Int64) -> String {
+        count == 0 ? "0개 선택" : "\(count)개 선택 · \(bytes(size))"
     }
 
     private static func grouped(_ count: Int) -> String {

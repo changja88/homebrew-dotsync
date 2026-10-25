@@ -228,3 +228,12 @@ private let cliPartialReasons = ["failed", "timeout", "no_rollout"]  // codex._j
         "일부만 지웠을 수 있어요. 남은 게 있는지 확인하지 못했어요",
     ])
 }
+
+@Test func selectionLineHasNoSizeWhenNothingIsPicked() {
+    #expect(SessionText.selectionLine(count: 0, bytes: 0) == "0개 선택")
+    #expect(SessionText.selectionLine(count: 2, bytes: 2_600_000_000) == "2개 선택 · \(SessionText.bytes(2_600_000_000))")
+}
+
+@Test func zeroBytesReadAsANumber() {
+    #expect(!SessionText.bytes(0).contains("Zero"))
+}

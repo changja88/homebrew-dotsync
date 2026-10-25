@@ -5,6 +5,7 @@ import SwiftUI
 struct RootView: View {
     let accounts: AccountsModel
     let settings: SettingsModel
+    let sessions: SessionsModel
     /// Remembered across launches.
     @AppStorage("rail") private var selection: RailItem = .usage
 
@@ -15,6 +16,7 @@ struct RootView: View {
                 switch selection {
                 case .usage: AccountsWindow(model: accounts)
                 case .settings: SettingsView(model: settings)
+                case .sessions: SessionsView(model: sessions)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
