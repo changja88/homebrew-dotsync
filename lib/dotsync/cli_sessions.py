@@ -31,6 +31,17 @@ def add_parser(sub) -> None:
     delete_cmd.add_argument(
         "--json", action="store_true", help="print one JSON object; progress goes to stderr"
     )
+    recover_cmd = cmds.add_parser(
+        "recover", help="finish or undo a delete that stopped halfway"
+    )
+    recover_cmd.add_argument("tool", choices=("claude",))
+    recover_cmd.add_argument("id")
+    how = recover_cmd.add_mutually_exclusive_group(required=True)
+    how.add_argument("--restore", action="store_true", help="rename the transcripts back")
+    how.add_argument("--finish", action="store_true", help="delete what is left")
+    recover_cmd.add_argument(
+        "--json", action="store_true", help="print one JSON object; progress goes to stderr"
+    )
 
 
 def run(args: argparse.Namespace) -> int:
@@ -38,6 +49,8 @@ def run(args: argparse.Namespace) -> int:
         return _list(args)
     if args.sessions_cmd == "delete":
         return _delete(args)
+    if args.sessions_cmd == "recover":
+        return _recover(args)
     raise NotImplementedError(args.sessions_cmd)
 
 
@@ -76,6 +89,26 @@ def _delete(args: argparse.Namespace) -> int:
     return 0
 
 
+def _recover(args: argparse.Namespace) -> int:
+    if args.json:
+        return cli_json.emit(lambda: _recover_report(args, progress))
+    try:
+        report = _recover_report(args, lambda done, total: None)
+    except JSONCommandError as e:
+        ui.error(str(e))
+        return 1
+    for result in report["results"]:
+        print(_delete_line(result))
+    return 0
+
+
+def _recover_report(args: argparse.Namespace, on_progress: Callable[[int, int], None]) -> dict:
+    if args.restore:
+        return claude.restore(args.id)
+    with StopSignal() as stop:
+        return claude.delete([args.id], stop=stop, progress=on_progress, log_command="recover")
+
+
 def _delete_report(tool: str, ids: list[str], on_progress: Callable[[int, int], None]) -> dict:
     if tool == "claude":
         with StopSignal() as stop:
@@ -88,7 +121,7 @@ def _delete_line(result: dict) -> str:
     parts = [result["id"], result["outcome"]]
     if "reason" in result:
         parts.append(result["reason"])
-    if result["outcome"] != "skipped":
+    if "freed_bytes" in result and result["outcome"] != "skipped":
         parts.append(f"{_size(result['freed_bytes'])} freed")
     if result.get("kept"):
         parts.append("kept " + ", ".join(result["kept"]))

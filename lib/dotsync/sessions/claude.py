@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import errno
+import functools
 import json
 import os
 import re
@@ -567,11 +568,15 @@ def _gather() -> _Batch:
 
 
 def delete(
-    ids: list[str], *, stop: StopSignal, progress: Callable[[int, int], None]
+    ids: list[str],
+    *,
+    stop: StopSignal,
+    progress: Callable[[int, int], None],
+    log_command: str = "delete",
 ) -> dict:
     """Delete each session that is still idle or interrupted once its
     transcripts are set aside, keeping what other sessions use. The report,
-    plus the paths removed, goes to the result log."""
+    plus the paths removed, goes to the result log under `log_command`."""
     for sid in ids:
         safety.validate_id(sid)  # one bad id and nothing is touched
     # Once per id: a repeat would be judged on the batch-start snapshot again,
@@ -595,8 +600,39 @@ def delete(
                     removed[sid] = [str(p) for p in gone]
                 progress(done, len(ids))
         finally:
-            log.write("delete", "claude", started_at, {**report, "removed": removed})
+            log.write(log_command, "claude", started_at, {**report, "removed": removed})
     return report
+
+
+def restore(sid: str) -> dict:
+    """Undo a delete that stopped halfway: rename every quarantined transcript
+    of `sid` back. A copy whose `<id>.jsonl` exists again stays as it is, with
+    the existing file, and is reported in `failed`. The outcome is `restored`
+    only when every copy came back."""
+    safety.validate_id(sid)
+    started_at = now_iso()
+    with locks.tool_lock("claude-sessions", shared=False):
+        result = _restore_one(sid)
+        report = {"tool": "claude", "results": [result], "stopped": False}
+        log.write("recover", "claude", started_at, report)
+    return report
+
+
+def _restore_one(sid: str) -> dict:
+    entry = _transcripts_by_id().get(sid)
+    asides = entry["quarantined"] if entry else []
+    if not asides:
+        return {"id": sid, "outcome": "skipped", "reason": "not_found"}
+    failed: list[dict] = []
+    for aside in asides:
+        path = aside.with_name(aside.name.removesuffix(QUARANTINE_SUFFIX))
+        try:
+            _rename_no_replace(aside, path)
+        except OSError as e:
+            failed.append(_failure(aside, e))
+    if failed:
+        return {"id": sid, "outcome": "failed", "failed": failed}
+    return {"id": sid, "outcome": "restored"}
 
 
 def _delete_one(sid: str, batch: _Batch) -> tuple[dict, list[Path]]:
@@ -668,12 +704,22 @@ def _restore(moved: list[tuple[Path, Path]]) -> list[dict]:
     return failed
 
 
+@functools.cache
+def _renamex_np():
+    """libc's renamex_np, resolved once. AttributeError when libc lacks it."""
+    rename = ctypes.CDLL(None, use_errno=True).renamex_np
+    rename.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+    return rename
+
+
 def _rename_no_replace(src: Path, dst: Path) -> None:
     """Rename in one step, or raise FileExistsError when `dst` exists.
     os.rename would replace it: an older quarantined copy, or a transcript
     Claude created again after the first rename."""
-    rename = ctypes.CDLL(None, use_errno=True).renamex_np
-    rename.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+    try:
+        rename = _renamex_np()
+    except AttributeError as e:  # not macOS: a failure of this path, not a crash
+        raise OSError(errno.ENOTSUP, f"renamex_np is not available: {e}", str(src), None, str(dst))
     if rename(os.fsencode(src), os.fsencode(dst), _RENAME_EXCL) != 0:
         code = ctypes.get_errno()
         raise OSError(code, os.strerror(code), str(src), None, str(dst))
