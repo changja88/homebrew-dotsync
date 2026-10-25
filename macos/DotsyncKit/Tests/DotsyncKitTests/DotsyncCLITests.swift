@@ -98,6 +98,23 @@ import Testing
     #expect(info.name == "work")
 }
 
+@Test func aCommandThatHangsIsStoppedAtTheTimeout() async throws {
+    let fake = try FakeDotsync(script: "sleep 5")
+    let clock = ContinuousClock()
+    let started = clock.now
+    await #expect(throws: CLIError(code: "timeout", message: "dotsync가 제때 끝나지 않았어요")) {
+        _ = try await fake.cli.runJSON(["status", "--json"], timeout: .milliseconds(300))
+    }
+    #expect(clock.now - started < .seconds(2))
+}
+
+@Test func runJSONPassesArgumentsAsIs() async throws {
+    let fake = try FakeDotsync(script: #"echo '{"dir": "/x"}'"#)
+    let data = try await fake.cli.runJSON(["status", "--json"], timeout: .seconds(10))
+    #expect(String(decoding: data, as: UTF8.self) == "{\"dir\": \"/x\"}\n")
+    #expect(fake.calls() == [["status", "--json"]])
+}
+
 @Test func locatePrefersTheDevelopmentPath() throws {
     let fake = try FakeDotsync(script: "")
     let defaults = UserDefaults(suiteName: "dotsynckit-\(UUID().uuidString)")!

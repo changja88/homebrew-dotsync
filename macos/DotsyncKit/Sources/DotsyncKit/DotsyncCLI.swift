@@ -1,6 +1,6 @@
 import Foundation
 
-/// Runs `dotsync account … --json` and decodes its one JSON answer.
+/// Runs `dotsync … --json` and decodes its one JSON answer.
 public struct DotsyncCLI: Sendable {
     public let executable: URL
     public let environment: [String: String]
@@ -56,13 +56,23 @@ public struct DotsyncCLI: Sendable {
     /// Only a command that `stopsOnCancel` is stopped (SIGTERM) when the
     /// calling task is cancelled: `usage` only reads, and dotsync turns a
     /// stopped `login` into a clean cancel. The others write the Keychain and
-    /// Claude's files one after another; they run to the end.
+    /// Claude's files one after another; they run to the end. The timeout is
+    /// long because `login` waits for a browser.
     func run(_ command: String, options: [String] = [], positionals: [String] = [],
              stopsOnCancel: Bool = false) async throws -> Data {
         let arguments = ["account", command, "--json"] + options + (positionals.isEmpty ? [] : ["--"] + positionals)
+        return try await runJSON(arguments, timeout: .seconds(600), stopsOnCancel: stopsOnCancel)
+    }
+
+    /// Runs `dotsync <arguments>` and returns its JSON answer. One that has
+    /// not exited by `timeout` is stopped (SIGTERM) and reported as
+    /// `timeout`.
+    func runJSON(_ arguments: [String], timeout: Duration, stopsOnCancel: Bool = false) async throws -> Data {
         let output: Output
         do {
-            output = try await execute(arguments, stopsOnCancel: stopsOnCancel)
+            output = try await execute(arguments, stopsOnCancel: stopsOnCancel, timeout: timeout)
+        } catch let error as CLIError {
+            throw error
         } catch {
             throw CLIError(code: "failed", message: "dotsync를 실행할 수 없어요: \(error.localizedDescription)")
         }
@@ -95,7 +105,7 @@ public struct DotsyncCLI: Sendable {
         var stderr: Data
     }
 
-    func execute(_ arguments: [String], stopsOnCancel: Bool) async throws -> Output {
+    func execute(_ arguments: [String], stopsOnCancel: Bool, timeout: Duration) async throws -> Output {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
@@ -121,10 +131,19 @@ public struct DotsyncCLI: Sendable {
             for await value in exits { status = value }
             return status
         }
+        let deadline = Task {
+            try await Task.sleep(for: timeout)
+            process.terminate()
+        }
         let status = await withTaskCancellationHandler {
             await waiting.value
         } onCancel: {
             if stopsOnCancel { process.terminate() }
+        }
+        deadline.cancel()
+        if case .success = await deadline.result {
+            // Not the pipes: a child dotsync started may still hold them open.
+            throw CLIError(code: "timeout", message: "dotsync가 제때 끝나지 않았어요")
         }
         return Output(status: status, stdout: await out.value, stderr: await err.value)
     }
