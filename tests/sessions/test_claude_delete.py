@@ -463,9 +463,3 @@ def test_text_mode_prints_one_line_per_id(agents, session, capsys):
     assert lines[0].startswith(f"{SID}  deleted")
     assert lines[1] == f"{SID2}  skipped  not_found"
     assert TITLE not in out
-
-
-def test_delete_codex_is_unsupported_for_now(capsys):
-    code = cli.main(["sessions", "delete", "codex", SID, "--json"])
-    error = json.loads(capsys.readouterr().out)["error"]
-    assert code == 1 and error["code"] == "unsupported"

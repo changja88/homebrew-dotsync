@@ -119,10 +119,9 @@ def _recover_report(args: argparse.Namespace, on_progress: Callable[[int, int], 
 
 
 def _delete_report(tool: str, ids: list[str], on_progress: Callable[[int, int], None]) -> dict:
-    if tool == "claude":
-        with StopSignal() as stop:
-            return claude.delete(ids, stop=stop, progress=on_progress)
-    raise JSONCommandError("unsupported", f"deleting {tool} sessions is not available yet")
+    sessions = claude if tool == "claude" else codex
+    with StopSignal() as stop:
+        return sessions.delete(ids, stop=stop, progress=on_progress)
 
 
 def _delete_line(result: dict) -> str:
@@ -132,6 +131,8 @@ def _delete_line(result: dict) -> str:
         parts.append(result["reason"])
     if "freed_bytes" in result and result["outcome"] != "skipped":
         parts.append(f"{_size(result['freed_bytes'])} freed")
+    if result.get("remaining"):
+        parts.append("left " + ", ".join(result["remaining"]))
     if result.get("kept"):
         parts.append("kept " + ", ".join(result["kept"]))
     if result.get("failed"):

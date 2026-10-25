@@ -83,6 +83,41 @@ def add_edge(db_dir: Path, parent: str, child: str) -> None:
     con.close()
 
 
+HISTORY_TABLES = (
+    "thread_items",
+    "thread_realtime_items",
+    "thread_turns",
+    "thread_history_projection_state",
+)
+
+
+def add_history(db_dir: Path, key: str) -> None:
+    """One row in each history table, keyed by `key` (a rollout id, which is
+    the thread id unless the rollout was reverted)."""
+    con = sqlite3.connect(db_dir / "thread_history_1.sqlite")
+    con.execute(
+        "INSERT INTO thread_turns (thread_id, turn_id, rollout_ordinal, status) VALUES (?, 't', 0, 'done')",
+        (key,),
+    )
+    con.execute(
+        "INSERT INTO thread_items (thread_id, turn_id, item_id, rollout_ordinal, created_at_ms, item_json)"
+        " VALUES (?, 't', 'i', 0, 0, '{}')",
+        (key,),
+    )
+    con.execute(
+        "INSERT INTO thread_realtime_items (thread_id, item_id, rollout_ordinal, created_at_ms, item_type,"
+        " item_json) VALUES (?, 'r', 0, 0, 'x', '{}')",
+        (key,),
+    )
+    con.execute(
+        "INSERT INTO thread_history_projection_state (thread_id, next_rollout_byte_offset,"
+        " next_rollout_ordinal) VALUES (?, 0, 0)",
+        (key,),
+    )
+    con.commit()
+    con.close()
+
+
 def write_rollout(
     home: Path,
     thread_id: str,
