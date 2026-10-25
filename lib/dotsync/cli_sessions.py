@@ -50,7 +50,17 @@ def add_parser(sub) -> None:
     mode.add_argument("--blockers", action="store_true", help="list what uses ~/.codex")
     mode.add_argument("--dry-run", action="store_true", help="show what would be cleaned")
     mode.add_argument("--yes", action="store_true", help="clean up")
-    cleanup_cmd.add_argument("--json", action="store_true", help="print one JSON object")
+    cleanup_cmd.add_argument(
+        "--items",
+        metavar="a,b",
+        help="with --yes: what to clean, among " + ", ".join(codex_cleanup.ITEMS) + " (default: all)",
+    )
+    cleanup_cmd.add_argument(
+        "--vacuum", action="store_true", help="with --yes: also reclaim the history database's free space"
+    )
+    cleanup_cmd.add_argument(
+        "--json", action="store_true", help="print one JSON object; progress goes to stderr"
+    )
 
 
 def run(args: argparse.Namespace) -> int:
@@ -124,14 +134,16 @@ def _recover(args: argparse.Namespace) -> int:
 
 def _cleanup(args: argparse.Namespace) -> int:
     if args.json:
-        return cli_json.emit(lambda: _cleanup_payload(args))
+        return cli_json.emit(lambda: _cleanup_payload(args, progress))
     try:
-        payload = _cleanup_payload(args)
+        payload = _cleanup_payload(args, None)
     except JSONCommandError as e:
         ui.error(str(e))
         return 1
     if args.dry_run:
         return _print_dry_run(payload)
+    if args.yes:
+        return _print_cleanup(payload)
     entries = payload["blockers"]
     for entry in entries:
         print(f"{entry['pid']}  {entry['kind']}  {entry['name']}  {entry['elapsed']}s")
@@ -151,13 +163,27 @@ def _print_dry_run(payload: dict) -> int:
     return 0
 
 
-def _cleanup_payload(args: argparse.Namespace) -> dict:
+def _print_cleanup(report: dict) -> int:
+    """One line per item: its id, outcome and count, never a session id."""
+    for item in report["items"]:
+        parts = [item["id"], item["outcome"], str(item["count"])]
+        parts += [item[key] for key in ("reason", "message") if key in item]
+        print("  ".join(parts))
+    return 0
+
+
+def _cleanup_payload(
+    args: argparse.Namespace, on_progress: Callable[[int, int], None] | None
+) -> dict:
     if args.blockers:
         return codex_cleanup.detect()
     if args.dry_run:
-        return codex_cleanup.dry_run_payload(progress if args.json else None)
-    # --yes arrives with the cleanup task that follows.
-    raise JSONCommandError("unsupported", "only --blockers and --dry-run are available so far")
+        return codex_cleanup.dry_run_payload(on_progress)
+    items = args.items.split(",") if args.items is not None else list(codex_cleanup.ITEMS)
+    with StopSignal() as stop:
+        return codex_cleanup.run_cleanup(
+            items, args.vacuum, stop=stop, progress=on_progress or (lambda done, total: None)
+        )
 
 
 def _recover_report(args: argparse.Namespace, on_progress: Callable[[int, int], None]) -> dict:

@@ -500,7 +500,7 @@ def _run_codex(
     freed = sum(size for p, size in sizes.items() if _gone(p))
     removed: list[Path] = []
     if not after.rollouts and not after.state:  # Codex no longer has the threads
-        more, removed, failed = _clear_caches(ids)
+        more, removed, failed = clear_caches(ids)
         freed += more
         if failed:
             outcome = "partial"
@@ -577,7 +577,9 @@ def _cache_files(ids: list[str]) -> list[Path]:
     return [p for p in (safety.child(folder, i) for i in ids) if _exists(p)]
 
 
-def _clear_caches(ids: list[str]) -> tuple[int, list[Path], list[dict]]:
+def clear_caches(ids: list[str]) -> tuple[int, list[Path], list[dict]]:
+    """Remove the reference-cache files of `ids`: bytes freed, the paths
+    removed, and the failures (a folder in a file's place is one)."""
     try:
         files = _cache_files(ids)
     except (safety.UnsafePath, OSError) as e:

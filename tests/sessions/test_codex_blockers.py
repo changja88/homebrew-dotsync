@@ -221,10 +221,11 @@ def test_cli_blockers_text_when_nothing_runs(monkeypatch, capsys):
     assert "nothing" in capsys.readouterr().out
 
 
-def test_yes_is_unsupported_until_a_later_task(capsys):
-    # Task 14 replaces this on purpose.
+def test_yes_refuses_while_a_blocker_runs(monkeypatch, capsys):
+    fake(monkeypatch, {500: (1, "/x/codex")}, {500: opened("codex", txt=["/x/codex"])})
     assert cli.main(["sessions", "cleanup", "codex", "--yes", "--json"]) == 1
-    assert json.loads(capsys.readouterr().out)["error"]["code"] == "unsupported"
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert error == {"code": "codex_running", "message": "quit what uses ~/.codex first: codex"}
 
 
 def test_cleanup_requires_exactly_one_mode(capsys):
