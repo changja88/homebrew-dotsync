@@ -10,7 +10,7 @@ struct DotsyncApp: App {
         // A single Window: the app quits when it closes (Apple's Window docs),
         // and a dotsync:// link opens it again (scene routing for external events).
         Window("dotsync", id: "main") {
-            RootView(accounts: delegate.model)
+            RootView(accounts: delegate.model, settings: delegate.settings)
         }
         .windowStyle(.hiddenTitleBar)
         // With no title bar left, the window moves by its background.
@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let queue: CommandQueue
     /// Here, not in the App, so quitting can see what it runs.
     let model: AccountsModel
+    let settings: SettingsModel
     /// Set when quitting starts to wait for work in flight.
     private var quitBy: ContinuousClock.Instant?
 
@@ -39,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let queue = CommandQueue()
         self.queue = queue
         model = AccountsModel(queue: queue)
+        settings = SettingsModel(queue: queue)
         super.init()
     }
 

@@ -5,7 +5,7 @@ import Testing
 private func app(_ name: String = "zsh", tracked: Bool = true, state: String?, direction: String? = "",
                  reason: String? = "") -> AppSyncStatus {
     AppSyncStatus(name: name, description: "", tracked: tracked, state: state, details: "",
-                  direction: direction, reason: reason, changes: [])
+                  direction: direction, reason: reason, changes: [], options: nil)
 }
 
 private func report(_ apps: [AppSyncStatus]) -> StatusReport {
@@ -96,4 +96,46 @@ private func report(_ apps: [AppSyncStatus]) -> StatusReport {
         .map { SettingsText.appLabel(name: $0) }
     #expect(labels == ["Claude Code", "Codex", "BetterTouchTool", "Ghostty", "herdr", "스킬", "zsh"])
     #expect(SettingsText.appLabel(name: "newapp") == "newapp")
+}
+
+private func change(_ label: String, _ details: String = "", kind: String = "update") -> SyncChange {
+    SyncChange(label: label, kind: kind, details: details, fileChanges: [], diffable: true, diff: nil)
+}
+
+@Test func changedFilesPutEachLabelWithItsLineCounts() {
+    let changes = [change("settings.json", "+19 −4 · env, hooks, enabledPlugins"), change("installed_plugins.json")]
+    #expect(SettingsText.changedFiles(changes) == "settings.json +19 −4 · installed_plugins.json")
+    #expect(SettingsText.changedKeys(changes) == "env, hooks, enabledPlugins")
+}
+
+@Test func detailsThatAreNotLineCountsStayWithTheLabel() {
+    let changes = [change("plugins/", "2 create, 1 update"), change("icon.png", "binary · 1 KB → 2 KB")]
+    #expect(SettingsText.changedFiles(changes) == "plugins/ 2 create, 1 update · icon.png binary · 1 KB → 2 KB")
+    #expect(SettingsText.changedKeys(changes) == nil)
+}
+
+@Test func unchangedEntriesAreNotChanges() {
+    #expect(SettingsText.changedFiles([change(".zshrc", kind: "unchanged")]) == nil)
+    #expect(SettingsText.changedFiles([]) == nil)
+}
+
+@Test func bttLineNamesThePresetsAndWhyTheyWereNotCompared() {
+    #expect(SettingsText.bttLine(presets: ["Master_bt"], reason: "btt_not_running") == "프리셋 Master_bt · BTT가 켜져 있어야 비교해요")
+    #expect(SettingsText.bttLine(presets: ["A", "B"], reason: "") == "프리셋 A, B")
+    #expect(SettingsText.bttLine(presets: [], reason: "btt_permission") == "자동화 권한이 필요해요")
+    #expect(SettingsText.bttLine(presets: [], reason: nil) == nil)
+}
+
+@Test func directionNoteWarnsWhenThisMacIsNewer() {
+    let apps = [
+        app("herdr", state: "dirty", direction: "local-newer"),
+        app("claude", state: "dirty", direction: "folder-newer"),
+    ]
+    #expect(SettingsText.directionNote(report(apps)) == "herdr는 이 맥 쪽이 더 최신이에요")
+    #expect(SettingsText.directionNote(report([app(state: "dirty", direction: "diverged")])) == nil)
+    let both = [app("skills", state: "dirty", direction: "local-newer"),
+                app("bettertouchtool", state: "dirty", direction: "local-newer")]
+    #expect(SettingsText.directionNote(report(both)) == "스킬, BetterTouchTool은 이 맥 쪽이 더 최신이에요")
+    #expect(SettingsText.directionNote(report([app("skills", state: "dirty", direction: "local-newer")]))
+        == "스킬은 이 맥 쪽이 더 최신이에요")
 }

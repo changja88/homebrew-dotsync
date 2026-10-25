@@ -72,7 +72,8 @@ def change_json(change: Change, *, with_diff: bool) -> dict:
 
 def status_json(cfg: Config) -> dict:
     """Every supported app in registry order: the tracked ones with their
-    sync state, the others with tracked=false so the app can offer them."""
+    sync state and [options.<app>] table (BTT's preset names), the others
+    with tracked=false so the app can offer them."""
     from dotsync.apps import APP_CLASSES, build_app
 
     apps = []
@@ -80,6 +81,7 @@ def status_json(cfg: Config) -> dict:
         entry = {"name": cls.name, "description": cls.description, "tracked": cls.name in cfg.apps}
         if entry["tracked"]:
             entry.update(_tracked_status(build_app, cls.name, cfg))
+            entry["options"] = cfg.app_options.get(cls.name, {})
         apps.append(entry)
     return {"dir": str(cfg.dir), "dir_source": cfg.dir_source, "checked_at": now_iso(), "apps": apps}
 

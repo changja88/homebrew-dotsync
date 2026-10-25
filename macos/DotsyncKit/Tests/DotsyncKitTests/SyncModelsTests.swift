@@ -10,7 +10,7 @@ let sampleStatus = """
   "changes": [{"label": "settings.json", "kind": "update", "details": "+2 −1", "file_changes": [], "diffable": true}]},
  {"name": "bettertouchtool", "description": "BetterTouchTool presets (.bttpreset, names configurable)", "tracked": true,
   "state": "unknown", "details": "BetterTouchTool needs Automation permission", "direction": "", "reason": "btt_permission",
-  "changes": []},
+  "changes": [], "options": {"presets": ["Master_bt"]}},
  {"name": "herdr", "description": "Herdr terminal workspace config (config.toml)", "tracked": false}
 ]}
 """
@@ -57,6 +57,8 @@ private func decoded<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
     #expect(claude.changes?.first?.label == "settings.json")
     #expect(claude.changes?.first?.diff == nil)
     #expect(report.apps[1].reason == "btt_permission")
+    #expect(report.apps[1].options?.presets == ["Master_bt"])
+    #expect(claude.options == nil)
     let herdr = report.apps[2]
     #expect(!herdr.tracked)
     #expect(herdr.state == nil && herdr.changes == nil)

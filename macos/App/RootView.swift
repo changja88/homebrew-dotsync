@@ -4,18 +4,17 @@ import SwiftUI
 /// bar is hidden so the rail runs the window's full height (mockup `D-usage`).
 struct RootView: View {
     let accounts: AccountsModel
+    let settings: SettingsModel
     /// Remembered across launches.
     @AppStorage("rail") private var selection: RailItem = .usage
 
     var body: some View {
         HStack(spacing: 0) {
-            Rail(selection: $selection)
+            Rail(selection: $selection, badges: [.settings: settings.badge])
             Group {
                 switch selection {
-                case .usage:
-                    AccountsWindow(model: accounts)
-                case .settings:
-                    ContentUnavailableView(RailItem.settings.title, systemImage: RailItem.settings.systemImage)
+                case .usage: AccountsWindow(model: accounts)
+                case .settings: SettingsView(model: settings)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -81,6 +81,28 @@ def test_status_json_reports_btt_reason(fake_home, monkeypatch, tmp_path, capsys
     assert (btt["state"], btt["reason"], btt["details"]) == ("unknown", "btt_permission", "not allowed")
 
 
+def test_status_json_carries_each_tracked_apps_options(fake_home, monkeypatch, tmp_path, capsys):
+    from dotsync.apps.bettertouchtool import BetterTouchToolApp
+
+    target = tmp_path / "configs"
+    save_config(
+        Config(
+            dir=target,
+            apps=["bettertouchtool", "zsh"],
+            app_options={"bettertouchtool": {"presets": ["Master_bt"]}},
+        )
+    )
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+    monkeypatch.setattr(BetterTouchToolApp, "status", lambda self, target_dir: AppStatus("clean"))
+
+    _, payload, _ = _run(capsys, ["status", "--json"])
+
+    # The settings table names BTT's presets.
+    assert _app(payload, "bettertouchtool")["options"] == {"presets": ["Master_bt"]}
+    assert _app(payload, "zsh")["options"] == {}
+    assert "options" not in _app(payload, "ghostty")
+
+
 def test_status_json_keeps_going_when_one_app_raises(fake_home, monkeypatch, tmp_path, capsys):
     from dotsync.apps.ghostty import GhosttyApp
 

@@ -54,6 +54,23 @@ struct BlueBadge: View {
     }
 }
 
+/// A message on orange-tinted glass that the person dismisses.
+struct MessageBar: View {
+    let text: String
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack {
+            Text(text).font(.callout)
+            Spacer()
+            Button(action: dismiss) { Image(systemName: "xmark") }
+                .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .background(GlassPanel(cornerRadius: 12, tint: .orange, shadowRadius: 0))
+    }
+}
+
 /// The window's see-through ground. Apple's "peeking through the back of the
 /// window" material, kept active when the window is not in front (a SwiftUI
 /// material would follow the window's state).

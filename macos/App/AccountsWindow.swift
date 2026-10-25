@@ -31,15 +31,8 @@ struct AccountsWindow: View {
                     .fixedSize()
                 }
                 if let message = model.message {
-                    HStack {
-                        Text(message).font(.callout)
-                        Spacer()
-                        Button { model.message = nil } label: { Image(systemName: "xmark") }
-                            .buttonStyle(.borderless)
-                    }
-                    .padding(.horizontal, 14).padding(.vertical, 8)
-                    .background(GlassPanel(cornerRadius: 12, tint: .orange, shadowRadius: 0))
-                    .padding(.horizontal, 18).padding(.top, 8)
+                    MessageBar(text: message) { model.message = nil }
+                        .padding(.horizontal, 18).padding(.top, 8)
                 }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {

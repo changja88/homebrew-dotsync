@@ -23,8 +23,15 @@ public struct AppSyncStatus: Codable, Equatable, Sendable, Identifiable {
     /// Why an app is unknown, e.g. "btt_permission".
     public var reason: String?
     public var changes: [SyncChange]?
+    /// The app's [options.<app>] table in dotsync.toml.
+    public var options: AppOptions?
 
     public var id: String { name }
+}
+
+public struct AppOptions: Codable, Equatable, Sendable {
+    /// BetterTouchTool's preset names.
+    public var presets: [String]?
 }
 
 public struct SyncChange: Codable, Equatable, Sendable {
