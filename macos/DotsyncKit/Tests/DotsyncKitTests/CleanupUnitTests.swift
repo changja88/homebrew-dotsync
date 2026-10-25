@@ -66,6 +66,9 @@ private final class FakeChatGPT: ChatGPTControl {
     var holdsTheWait = false
     /// The relaunch answers, in order; past the end, true.
     var relaunchAnswers: [Bool] = []
+    /// ChatGPT is launched the moment `launches()` returns, before anyone
+    /// reads the stream.
+    var launchesAtCreation = false
 
     private let flags: FakeFlags
     private(set) var terminateCalls = 0
@@ -118,6 +121,7 @@ private final class FakeChatGPT: ChatGPTControl {
         openStreams.withLock { $0 += 1 }
         continuation.onTermination = { [openStreams] _ in openStreams.withLock { $0 -= 1 } }
         listeners.append(continuation)
+        if launchesAtCreation { continuation.yield(()) }
         return stream
     }
 
@@ -278,6 +282,36 @@ private struct Rig {
 }
 
 @MainActor
+@Test func aChildReparentedAfterChatGPTQuitIsStillWaitedFor() async {
+    // With ChatGPT's main process gone, the CLI no longer sees its app-server
+    // as ChatGPT's: the same pid shows as a terminal Codex.
+    let orphan = blocker("terminal_codex", "codex", pid: appServer.pid)
+    let rig = Rig(blockers: [
+        .success(chatgptOnly), .success(found([orphan])), .success(found([orphan])), .success(nothingRuns),
+    ])
+    #expect(await rig.run() == .finished(cleaned, relaunch: .relaunched))
+    #expect(await rig.runner.blockerCalls == 4)
+    #expect(rig.sleeps.durations == [.seconds(1), .seconds(1)])
+    #expect(await rig.runner.cleanupItems != nil)
+
+    let stays = Rig(blockers: [.success(chatgptOnly), .success(found([orphan]))])
+    #expect(await stays.run() == .chatgptDidNotQuit(["codex"], relaunch: .relaunched))
+    #expect(await stays.runner.cleanupItems == nil)
+
+    // A child ChatGPT started after the recheck is waited for too.
+    let late = blocker("chatgpt_child", "codex", pid: 99)
+    let lateChild = Rig(blockers: [.success(chatgptOnly), .success(found([late])), .success(nothingRuns)])
+    #expect(await lateChild.run() == .finished(cleaned, relaunch: .relaunched))
+    #expect(lateChild.sleeps.durations == [.seconds(1)])
+
+    // A terminal Codex that started meanwhile is not ChatGPT's: the
+    // cleanup's own check refuses it.
+    let newcomer = Rig(blockers: [.success(chatgptOnly), .success(found([terminalCodex]))], cleanup: .fails(codexRunning))
+    #expect(await newcomer.run() == .failed(codexRunning, relaunch: .relaunched))
+    #expect(await newcomer.runner.blockerCalls == 2)
+}
+
+@MainActor
 @Test func aChildLeftAfterFifteenSecondsSkipsCleanupAndRelaunches() async {
     let rig = Rig(blockers: [.success(chatgptOnly), .success(found([appServer, computerUse, appServer]))])
     let outcome = await rig.run()
@@ -362,6 +396,17 @@ private struct Rig {
 }
 
 @MainActor
+@Test(.timeLimit(.minutes(1))) func aLaunchBeforeTheWatcherReadsStillStopsTheCleanup() async {
+    // ChatGPT is launched the moment the unit starts listening, before its
+    // watcher reads the stream or the cleanup begins: the stream keeps it.
+    let rig = Rig(cleanup: .runsUntilStopped(stoppedRun))
+    rig.control.launchesAtCreation = true
+    #expect(await rig.run() == .finished(stoppedRun, relaunch: .relaunched))
+    #expect(await rig.runner.cleanupSawCancel == true)
+    #expect(rig.control.openStreams.withLock { $0 } == 0)
+}
+
+@MainActor
 @Test func aLaunchAfterTheUnitFinishedDoesNothing() async {
     let rig = Rig()
     let outcome = await rig.run()
@@ -438,26 +483,56 @@ private struct Rig {
 }
 
 @MainActor
-@Test func aCleanupFlagLeftFromBeforeIsNotThisRunsToRelaunch() async {
-    // An earlier relaunch failed and ChatGPT stayed off: the next launch's
-    // offer owns that flag, and this run, which quit nothing, leaves it.
+@Test func aFlagLeftFromBeforeIsRelaunchedAfterTheCleanup() async {
+    // An earlier relaunch failed and ChatGPT stayed off. dotsync quit it, so
+    // step 5 opens it again, whatever this run did (spec step 5).
     let rig = Rig(running: false, blockers: [.success(nothingRuns)])
     rig.flags.set(true, forKey: CleanupUnit.flagKey)
-    #expect(await rig.run() == .finished(cleaned, relaunch: .notNeeded))
-    #expect(rig.control.relaunchCalls == 0)
-    #expect(rig.flags.quitChatGPT)
+    #expect(await rig.run() == .finished(cleaned, relaunch: .relaunched))
+    #expect(rig.control.terminateCalls == 0)
+    #expect(rig.control.relaunchCalls == 1)
+    #expect(!rig.flags.quitChatGPT)
+
+    // A stop at the recheck never reaches step 5: the flag waits for the
+    // next launch's offer.
+    let blocked = Rig(running: false, blockers: [.success(found([terminalCodex]))])
+    blocked.flags.set(true, forKey: CleanupUnit.flagKey)
+    #expect(await blocked.run() == .blocked([terminalCodex]))
+    #expect(blocked.control.relaunchCalls == 0)
+    #expect(blocked.flags.quitChatGPT)
 }
 
 @MainActor
 @Test func powerOffRelaunchesNothing() async {
     let rig = Rig()
-    let outcome = await rig.run(isPoweringOff: { true })
+    // The logout begins while the cleanup runs (its progress line says so).
+    let poweringOff = OSAllocatedUnfairLock(initialState: false)
+    let outcome = await rig.run(progress: { _, _ in poweringOff.withLock { $0 = true } },
+                                isPoweringOff: { poweringOff.withLock { $0 } })
 
     #expect(outcome == .finished(cleaned, relaunch: .skippedForPowerOff))
     #expect(rig.control.relaunchCalls == 0)
     #expect(rig.sleeps.durations.isEmpty)
     #expect(rig.flags.quitChatGPT)
     #expect(CleanupUnit.shouldOfferRelaunch(flags: rig.flags, control: rig.control))
+}
+
+@MainActor
+@Test func powerOffWhileChatGPTQuitsStartsNoCleanup() async {
+    let rig = Rig()
+    let control = rig.control
+    // The logout begins while dotsync waits for ChatGPT to quit.
+    let outcome = await rig.run(isPoweringOff: { !control.waitTimeouts.isEmpty })
+
+    #expect(outcome == .failed(stoppedBeforeCleanup, relaunch: .skippedForPowerOff))
+    #expect(await rig.runner.cleanupItems == nil)
+    #expect(rig.control.relaunchCalls == 0)
+    #expect(rig.flags.quitChatGPT)
+
+    // ChatGPT was off: nothing to quit, and still no cleanup.
+    let off = Rig(running: false, blockers: [.success(nothingRuns)])
+    #expect(await off.run(isPoweringOff: { true }) == .failed(stoppedBeforeCleanup, relaunch: .notNeeded))
+    #expect(await off.runner.cleanupItems == nil)
 }
 
 @MainActor

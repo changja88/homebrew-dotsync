@@ -18,7 +18,10 @@ public protocol ChatGPTControl {
     /// Opens ChatGPT; false when it did not open.
     func relaunch() async -> Bool
     /// One value each time ChatGPT is launched. It listens from the moment it
-    /// returns, and stops listening when its consumer is cancelled.
+    /// returns and keeps every launch until it is read, even one that comes
+    /// before anyone iterates it: the unit asks for it before the cleanup
+    /// starts and reads it only after. It stops listening when its consumer is
+    /// cancelled.
     func launches() -> AsyncStream<Void>
 }
 
@@ -42,7 +45,7 @@ extension UserDefaults: FlagStore {}
 
 /// Step 5: what became of ChatGPT after the unit.
 public enum RelaunchResult: Equatable, Sendable {
-    /// dotsync did not quit it.
+    /// The flag was not set: dotsync has not left ChatGPT quit.
     case notNeeded
     /// It is open again, and the flag is cleared.
     case relaunched
@@ -67,8 +70,8 @@ public enum CleanupOutcome: Equatable, Sendable {
     case chatgptDidNotQuit([String], relaunch: RelaunchResult)
     /// The CLI's answer; `stopped` when a ChatGPT launch or a cancel stopped it.
     case finished(CleanupReport, relaunch: RelaunchResult)
-    /// The recheck or the cleanup failed, or the unit was cancelled before the
-    /// cleanup began (`cancelled`).
+    /// The recheck or the cleanup failed, or the unit was cancelled or the Mac
+    /// began to power off before the cleanup started (`cancelled`).
     case failed(CLIError, relaunch: RelaunchResult)
 }
 
@@ -84,8 +87,9 @@ public final class CleanupUnit {
     /// installing.
     static let relaunchAttempts = 13
     static let relaunchInterval: Duration = .seconds(5)
-    /// The answer for a unit cancelled before its cleanup began: the one
-    /// `DotsyncCLI` gives for a command stopped before it answered.
+    /// The answer for a unit cancelled, or powering off, before its cleanup
+    /// began: the one `DotsyncCLI` gives for a command stopped before it
+    /// answered.
     static let stoppedBeforeCleanup = CLIError(code: "cancelled", message: "dotsync was stopped")
 
     private let control: any ChatGPTControl
@@ -102,9 +106,9 @@ public final class CleanupUnit {
     }
 
     /// The spec's steps 1–6. `shownOpenThreads` is the count the sheet warned
-    /// about. `isPoweringOff` is asked before each relaunch try.
-    /// Cancelling the calling task stops the unit like a ChatGPT launch does,
-    /// and still relaunches ChatGPT.
+    /// about. `isPoweringOff` is asked before the cleanup starts and before
+    /// each relaunch try. Cancelling the calling task stops the unit like a
+    /// ChatGPT launch does, and still relaunches ChatGPT.
     public func run(items: [String], vacuum: Bool, shownOpenThreads: Int, progress: SessionService.Progress? = nil,
                     isPoweringOff: @escaping () -> Bool) async -> CleanupOutcome {
         // 1. Recheck. A blocker wins over a grown count: a second press would
@@ -122,16 +126,26 @@ public final class CleanupUnit {
         }
         guard !Task.isCancelled else { return .failed(Self.stoppedBeforeCleanup, relaunch: .notNeeded) }
 
-        // 2. ChatGPT is off: nothing to quit, so nothing to relaunch.
-        guard control.isRunning else {
-            return await clean(items: items, vacuum: vacuum, progress: progress).outcome(relaunch: .notNeeded)
+        // 2. The flag is saved before terminate(): if dotsync dies after it,
+        // the next launch still offers the relaunch.
+        var left: [String]?
+        if control.isRunning {
+            flags.set(true, forKey: Self.flagKey)
+            left = await quit(seen)
         }
-        // The flag is saved before terminate(): if dotsync dies after it, the
-        // next launch still offers the relaunch.
-        flags.set(true, forKey: Self.flagKey)
-        let ending = await quitThenClean(seen, items: items, vacuum: vacuum, progress: progress)
-        // 5., whatever happened.
-        return ending.outcome(relaunch: await relaunch(unlessPoweringOff: isPoweringOff))
+        let ending: Ending
+        if Task.isCancelled || isPoweringOff() {
+            // A cancel or a logout during the quit phase starts no cleanup.
+            // Asked first: a wait cut short is not a ChatGPT that would not quit.
+            ending = .failed(Self.stoppedBeforeCleanup)
+        } else if let left {
+            ending = .didNotQuit(left)  // 3.
+        } else {
+            ending = await clean(items: items, vacuum: vacuum, progress: progress)  // 4.
+        }
+        // 5., whatever happened, and also for a flag an earlier run left.
+        let reopened = flags.bool(forKey: Self.flagKey) ? await relaunch(unlessPoweringOff: isPoweringOff) : .notNeeded
+        return ending.outcome(relaunch: reopened)
     }
 
     /// On launch: dotsync quit ChatGPT and it is still off, so the app asks
@@ -155,19 +169,15 @@ public final class CleanupUnit {
         }
     }
 
-    private func quitThenClean(_ seen: CleanupBlockers, items: [String], vacuum: Bool,
-                               progress: SessionService.Progress?) async -> Ending {
-        let left = await quit(seen)
-        if Task.isCancelled { return .failed(Self.stoppedBeforeCleanup) }
-        // 3.
-        if let left { return .didNotQuit(left) }
-        return await clean(items: items, vacuum: vacuum, progress: progress)
-    }
-
     /// Step 2: nil once ChatGPT and its processes are gone; otherwise the
-    /// names of what is left.
+    /// names of what is left. The processes are the ones that were ChatGPT's
+    /// at the recheck, whatever the CLI calls them now (with ChatGPT gone, a
+    /// child that lingers is reparented and no longer reads as ChatGPT's),
+    /// and any `chatgpt_child` that started since.
     private func quit(_ seen: CleanupBlockers) async -> [String]? {
-        var left = Self.names(seen.blockers.filter(\.isChatGPT))
+        let chatgpt = seen.blockers.filter(\.isChatGPT)
+        let quitting = Set(chatgpt.map(\.pid))
+        var left = Self.names(chatgpt)
         guard control.terminate() else { return left }
         guard await control.waitUntilTerminated(timeout: Self.quitTimeout) else { return left }
         for poll in 1...Self.childPolls {
@@ -176,9 +186,9 @@ public final class CleanupUnit {
             // A recheck that fails counts as a process left: not knowing is
             // never "gone".
             guard let now = try? await runner.blockers() else { return left }
-            let children = now.blockers.filter(\.isChatGPTChild)
-            if children.isEmpty { return nil }
-            left = Self.names(children)
+            let remaining = now.blockers.filter { quitting.contains($0.pid) || $0.isChatGPTChild }
+            if remaining.isEmpty { return nil }
+            left = Self.names(remaining)
         }
         return left
     }
