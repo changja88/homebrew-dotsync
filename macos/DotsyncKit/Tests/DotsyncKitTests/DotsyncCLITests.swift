@@ -129,3 +129,133 @@ import Testing
     #expect(env["PATH"] == "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
     #expect(env["HOME"] == "/Users/x")
 }
+
+// Progress lines and the registry of long runs
+
+@Test func runJSONReportsProgressLines() async throws {
+    let fake = try FakeDotsync(script: """
+    echo 'dotsync-progress 1/3' >&2
+    echo 'dotsync-progress 2/3' >&2
+    echo '{"name": "x", "label": "x", "email": null, "logged_in": true}'
+    """)
+    let log = ProgressLog()
+    let data = try await fake.cli.runJSON(["sessions", "x", "--json"], timeout: .seconds(10),
+                                          progress: { log.add($0, $1) })
+    #expect(log.all == [[1, 3], [2, 3]])
+    #expect(try fake.cli.decode(AccountInfo.self, data).name == "x")
+}
+
+@Test func onlyAWholeProgressLineCallsProgress() throws {
+    func progress(_ line: String) -> [Int]? {
+        StderrLines.progress(in: line).map { [$0.done, $0.total] }
+    }
+    #expect(progress("dotsync-progress 0/0") == [0, 0])
+    #expect(progress("dotsync-progress 12/345") == [12, 345])
+    for other in ["", "dotsync-progress", "dotsync-progress 1/", "dotsync-progress /3", "dotsync-progress 1/3 ",
+                  " dotsync-progress 1/3", "dotsync-progress 1/3/4", "dotsync-progress -1/3",
+                  "dotsync-progress +1/3", "dotsync-progress 1/x", "dotsync-progress 1.5/3",
+                  "dotsync-progress  1/3", "xdotsync-progress 1/3", "dotsync-progress 1/3\r",
+                  "dotsync-progress 99999999999999999999/3", "warning: dotsync-progress 1/3"] {
+        #expect(progress(other) == nil, "\(other.debugDescription)")
+    }
+}
+
+@Test func aProgressLineSplitAcrossChunksIsNotLostOrMisread() {
+    var lines = StderrLines()
+    var seen: [[Int]] = []
+    let chunks = ["dotsync-prog", "ress 2/", "5\nwarn", "ing: 못\n", "dotsync-progress 3/5\ndotsync-progress 4", "/5"]
+    for chunk in chunks {
+        seen += lines.feed(Data(chunk.utf8)).map { [$0.done, $0.total] }
+    }
+    // The last line has no newline yet: not progress until stderr ends.
+    #expect(seen == [[2, 5], [3, 5]])
+    seen += lines.finish().map { [$0.done, $0.total] }
+    #expect(seen == [[2, 5], [3, 5], [4, 5]])
+    #expect(String(decoding: lines.kept, as: UTF8.self) == "warning: 못\n")
+}
+
+@Test func aMultiByteCharacterSplitAcrossChunksIsKept() {
+    var lines = StderrLines()
+    let bytes = Array("조회 실패\n".utf8)
+    _ = lines.feed(Data(bytes[0..<4]))
+    _ = lines.feed(Data(bytes[4...]))
+    #expect(String(decoding: lines.kept, as: UTF8.self) == "조회 실패\n")
+}
+
+@Test func anUnfinishedLastLineIsKeptWhenStderrEnds() {
+    var lines = StderrLines()
+    _ = lines.feed(Data("first\nlast words".utf8))
+    _ = lines.finish()
+    #expect(String(decoding: lines.kept, as: UTF8.self) == "first\nlast words\n")
+}
+
+/// A fake that stops like dotsync does: TERM makes it finish what it is
+/// doing for `finishing` seconds, then answer `{}`.
+private func stubbornFake(finishing seconds: String) throws -> FakeDotsync {
+    try FakeDotsync(script: """
+    sleep 30 >/dev/null 2>&1 &
+    child=$!
+    trap 'kill $child; sleep \(seconds); echo "{}"; exit 0' TERM
+    wait $child
+    """)
+}
+
+private func waitUntilRunning(_ fake: FakeDotsync, _ registry: RunningCommands) async throws {
+    while fake.calls().isEmpty || registry.count == 0 { try await Task.sleep(for: .milliseconds(20)) }
+}
+
+@Test func terminateAllStopsLongRuns() async throws {
+    let registry = RunningCommands()
+    let fake = try stubbornFake(finishing: "0.5")
+    let cli = DotsyncCLI(executable: fake.executable, environment: fake.cli.environment, runningCommands: registry)
+    let run = Task { try await cli.runJSON(["sessions", "delete"], timeout: .seconds(60), longRun: true) }
+    try await waitUntilRunning(fake, registry)
+
+    let clock = ContinuousClock()
+    let started = clock.now
+    let allExited = registry.terminateAll(waitingUpTo: .seconds(5))
+    #expect(allExited)
+    #expect(clock.now - started < .seconds(2))
+    #expect(String(decoding: try await run.value, as: UTF8.self) == "{}\n")
+    #expect(registry.count == 0)
+}
+
+@Test func terminateAllGivesUpAtTheLimit() async throws {
+    let registry = RunningCommands()
+    let fake = try FakeDotsync(script: "trap '' TERM; sleep 1.5; echo '{}'")
+    let cli = DotsyncCLI(executable: fake.executable, environment: fake.cli.environment, runningCommands: registry)
+    let run = Task { try await cli.runJSON(["x"], timeout: .seconds(60), longRun: true) }
+    try await waitUntilRunning(fake, registry)
+
+    let clock = ContinuousClock()
+    let started = clock.now
+    #expect(registry.terminateAll(waitingUpTo: .milliseconds(300)) == false)
+    #expect(clock.now - started < .seconds(1))
+    _ = try await run.value
+}
+
+@Test func terminateAllCountsARunThatEndsOnItsOwn() async throws {
+    let registry = RunningCommands()
+    let fake = try FakeDotsync(script: "trap '' TERM; sleep 0.4; echo '{}'")
+    let cli = DotsyncCLI(executable: fake.executable, environment: fake.cli.environment, runningCommands: registry)
+    let run = Task { try await cli.runJSON(["x"], timeout: .seconds(60), longRun: true) }
+    try await waitUntilRunning(fake, registry)
+
+    #expect(registry.terminateAll(waitingUpTo: .seconds(5)))
+    _ = try await run.value
+    #expect(registry.count == 0)
+}
+
+@Test func terminateAllWithNothingRunningIsImmediate() {
+    #expect(RunningCommands().terminateAll(waitingUpTo: .seconds(5)))
+}
+
+@Test func onlyLongRunsAreRegistered() async throws {
+    let registry = RunningCommands()
+    let fake = try FakeDotsync(script: "sleep 0.3; echo '{}'")
+    let cli = DotsyncCLI(executable: fake.executable, environment: fake.cli.environment, runningCommands: registry)
+    let run = Task { try await cli.runJSON(["x"], timeout: .seconds(60)) }
+    while fake.calls().isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+    #expect(registry.count == 0)
+    _ = try await run.value
+}

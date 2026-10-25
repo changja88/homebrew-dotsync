@@ -4,10 +4,15 @@ import Foundation
 public struct DotsyncCLI: Sendable {
     public let executable: URL
     public let environment: [String: String]
+    /// Where `longRun` commands are registered, so the app can stop them when
+    /// the Mac powers off. Tests give each CLI its own.
+    let runningCommands: RunningCommands
 
-    public init(executable: URL, environment: [String: String] = DotsyncCLI.defaultEnvironment()) {
+    public init(executable: URL, environment: [String: String] = DotsyncCLI.defaultEnvironment(),
+                runningCommands: RunningCommands = .shared) {
         self.executable = executable
         self.environment = environment
+        self.runningCommands = runningCommands
     }
 
     /// dotsync from Homebrew, or the `cliPath` user default (development:
@@ -66,11 +71,16 @@ public struct DotsyncCLI: Sendable {
 
     /// Runs `dotsync <arguments>` and returns its JSON answer. One that has
     /// not exited by `timeout` is stopped (SIGTERM) and reported as
-    /// `timeout`.
-    func runJSON(_ arguments: [String], timeout: Duration, stopsOnCancel: Bool = false) async throws -> Data {
+    /// `timeout`. A `longRun` is registered with `runningCommands` while it
+    /// runs. dotsync's progress lines (`dotsync-progress <done>/<total>` on
+    /// stderr) go to `progress` as they arrive; the other stderr lines are
+    /// kept for the error message.
+    func runJSON(_ arguments: [String], timeout: Duration, stopsOnCancel: Bool = false,
+                 longRun: Bool = false, progress: (@Sendable (Int, Int) -> Void)? = nil) async throws -> Data {
         let output: Output
         do {
-            output = try await execute(arguments, stopsOnCancel: stopsOnCancel, timeout: timeout)
+            output = try await execute(arguments, stopsOnCancel: stopsOnCancel, timeout: timeout,
+                                       registersAsLongRun: longRun, progress: progress)
         } catch let error as CLIError {
             throw error
         } catch {
@@ -105,7 +115,9 @@ public struct DotsyncCLI: Sendable {
         var stderr: Data
     }
 
-    func execute(_ arguments: [String], stopsOnCancel: Bool, timeout: Duration) async throws -> Output {
+    func execute(_ arguments: [String], stopsOnCancel: Bool, timeout: Duration,
+                 registersAsLongRun: Bool = false,
+                 progress: (@Sendable (Int, Int) -> Void)? = nil) async throws -> Output {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
@@ -121,9 +133,11 @@ public struct DotsyncCLI: Sendable {
             exited.finish()
         }
         try process.run()
+        if registersAsLongRun { runningCommands.add(process) }
+        defer { runningCommands.remove(process) }
         // Drain both pipes while dotsync runs so neither fills up and stalls it.
         let out = Task.detached { stdout.fileHandleForReading.readDataToEndOfFile() }
-        let err = Task.detached { stderr.fileHandleForReading.readDataToEndOfFile() }
+        let err = Task.detached { Self.readLines(of: stderr.fileHandleForReading, progress: progress) }
         // Its own task: in a cancelled one the loop would end at once, before
         // dotsync does.
         let waiting = Task {
@@ -146,5 +160,99 @@ public struct DotsyncCLI: Sendable {
             throw CLIError(code: "timeout", message: "dotsync가 제때 끝나지 않았어요")
         }
         return Output(status: status, stdout: await out.value, stderr: await err.value)
+    }
+
+    /// Reads stderr to its end, reporting progress lines as they arrive.
+    /// Returns the other lines.
+    private static func readLines(of handle: FileHandle, progress: (@Sendable (Int, Int) -> Void)?) -> Data {
+        var lines = StderrLines()
+        while case let chunk = handle.availableData, !chunk.isEmpty {
+            for step in lines.feed(chunk) { progress?(step.done, step.total) }
+        }
+        for step in lines.finish() { progress?(step.done, step.total) }
+        return lines.kept
+    }
+}
+
+/// Splits stderr, which arrives in chunks that end anywhere, into lines. A
+/// line that is exactly `dotsync-progress <done>/<total>` is progress; every
+/// other line is kept (with its newline) for the error message.
+struct StderrLines {
+    typealias Progress = (done: Int, total: Int)
+
+    private var pending = Data()
+    private(set) var kept = Data()
+
+    mutating func feed(_ chunk: Data) -> [Progress] {
+        pending.append(chunk)
+        var steps: [Progress] = []
+        while let newline = pending.firstIndex(of: UInt8(ascii: "\n")) {
+            if let step = take(pending[pending.startIndex..<newline]) { steps.append(step) }
+            pending.removeSubrange(pending.startIndex...newline)
+        }
+        return steps
+    }
+
+    /// The end of stderr: a last line without its newline is a whole line too.
+    mutating func finish() -> [Progress] {
+        defer { pending = Data() }
+        return pending.isEmpty ? [] : take(pending).map { [$0] } ?? []
+    }
+
+    private mutating func take(_ line: Data) -> Progress? {
+        if let step = Self.progress(in: String(decoding: line, as: UTF8.self)) { return step }
+        kept.append(line)
+        kept.append(UInt8(ascii: "\n"))
+        return nil
+    }
+
+    static func progress(in line: String) -> Progress? {
+        let prefix = "dotsync-progress "
+        guard line.hasPrefix(prefix) else { return nil }
+        let numbers = line.dropFirst(prefix.count).split(separator: "/", omittingEmptySubsequences: false)
+        guard numbers.count == 2,
+              numbers.allSatisfy({ !$0.isEmpty && $0.utf8.allSatisfy { (48...57).contains($0) } }),
+              let done = Int(numbers[0]), let total = Int(numbers[1]) else { return nil }
+        return (done, total)
+    }
+}
+
+/// The long runs (delete, recover, cleanup) that are going on now, so the app
+/// can stop them when the Mac powers off.
+public final class RunningCommands: @unchecked Sendable {
+    public static let shared = RunningCommands()
+
+    private let lock = NSLock()
+    private var processes: [ObjectIdentifier: Process] = [:]
+
+    public init() {}
+
+    var count: Int {
+        lock.withLock { processes.count }
+    }
+
+    func add(_ process: Process) {
+        lock.withLock { processes[ObjectIdentifier(process)] = process }
+    }
+
+    func remove(_ process: Process) {
+        _ = lock.withLock { processes.removeValue(forKey: ObjectIdentifier(process)) }
+    }
+
+    /// Sends SIGTERM to each and polls every 100 ms until all have exited or
+    /// `limit` has passed. Returns whether all exited. The lock is not held
+    /// while waiting: a run that ends on its own removes itself meanwhile.
+    public func terminateAll(waitingUpTo limit: Duration) -> Bool {
+        let running = lock.withLock { Array(processes.values) }
+        for process in running where process.isRunning {
+            process.terminate()
+        }
+        let clock = ContinuousClock()
+        let deadline = clock.now + limit
+        while running.contains(where: \.isRunning) {
+            if clock.now >= deadline { return false }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        return true
     }
 }

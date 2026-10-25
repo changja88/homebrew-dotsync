@@ -7,7 +7,7 @@ let package = Package(
     products: [.library(name: "DotsyncKit", type: .static, targets: ["DotsyncKit"])],
     targets: [
         .target(name: "DotsyncKit"),
-        .testTarget(name: "DotsyncKitTests", dependencies: ["DotsyncKit"]),
+        .testTarget(name: "DotsyncKitTests", dependencies: ["DotsyncKit"], resources: [.copy("Fixtures")]),
     ],
     swiftLanguageModes: [.v5]
 )

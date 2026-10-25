@@ -1,0 +1,62 @@
+{
+  "command": "delete",
+  "tool": "claude",
+  "started_at": "2026-10-25T20:01:26Z",
+  "finished_at": "2026-10-25T20:01:26Z",
+  "result": {
+    "tool": "claude",
+    "results": [
+      {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "outcome": "deleted",
+        "freed_bytes": 179
+      },
+      {
+        "id": "22222222-2222-4222-8222-222222222222",
+        "outcome": "skipped",
+        "reason": "rename_failed",
+        "failed": [
+          {
+            "path": "/private/var/folders/50/f629pvj96jl1n3rrw444hz9h0000gn/T/tmpmd9wo156/home/.claude/projects/-b/22222222-2222-4222-8222-222222222222.jsonl",
+            "error": "[Errno 17] File exists: '/private/var/folders/50/f629pvj96jl1n3rrw444hz9h0000gn/T/tmpmd9wo156/home/.claude/projects/-b/22222222-2222-4222-8222-222222222222.jsonl' -> '/private/var/folders/50/f629pvj96jl1n3rrw444hz9h0000gn/T/tmpmd9wo156/home/.claude/projects/-b/22222222-2222-4222-8222-222222222222.jsonl.dotsync-deleting'"
+          }
+        ],
+        "freed_bytes": 0
+      },
+      {
+        "id": "33333333-3333-4333-8333-333333333333",
+        "outcome": "partial",
+        "failed": [
+          {
+            "path": "/private/var/folders/50/f629pvj96jl1n3rrw444hz9h0000gn/T/tmpmd9wo156/home/.claude/file-history/33333333-3333-4333-8333-333333333333",
+            "error": "/private/var/folders/50/f629pvj96jl1n3rrw444hz9h0000gn/T/tmpmd9wo156/home/.claude/file-history/33333333-3333-4333-8333-333333333333/a: [Errno 13] Permission denied: 'a'"
+          }
+        ],
+        "freed_bytes": 0
+      },
+      {
+        "id": "44444444-4444-4444-8444-444444444444",
+        "outcome": "skipped",
+        "reason": "running",
+        "freed_bytes": 0
+      }
+    ],
+    "stopped": false,
+    "removed": {
+      "11111111-1111-4111-8111-111111111111": [
+        "/private/var/folders/50/f629pvj96jl1n3rrw444hz9h0000gn/T/tmpmd9wo156/home/.claude/projects/-work-proj/11111111-1111-4111-8111-111111111111.jsonl.superseded-2",
+        "/private/var/folders/50/f629pvj96jl1n3rrw444hz9h0000gn/T/tmpmd9wo156/home/.claude/projects/-work-proj/11111111-1111-4111-8111-111111111111.orphaned-1-abc.jsonl",
+        "/private/var/folders/50/f629pvj96jl1n3rrw444hz9h0000gn/T/tmpmd9wo156/home/.claude/projects/-work-proj/11111111-1111-4111-8111-111111111111/subagents",
+        "/private/var/folders/50/f629pvj96jl1n3rrw444hz9h0000gn/T/tmpmd9wo156/home/.claude/projects/-work-proj/11111111-1111-4111-8111-111111111111/tool-results",
+        "/private/var/folders/50/f629pvj96jl1n3rrw444hz9h0000gn/T/tmpmd9wo156/home/.claude/projects/-work-proj/11111111-1111-4111-8111-111111111111/mcp-tasks",
+        "/private/var/folders/50/f629pvj96jl1n3rrw444hz9h0000gn/T/tmpmd9wo156/home/.claude/file-history/11111111-1111-4111-8111-111111111111",
+        "/private/var/folders/50/f629pvj96jl1n3rrw444hz9h0000gn/T/tmpmd9wo156/home/.claude/session-env/11111111-1111-4111-8111-111111111111",
+        "/private/var/folders/50/f629pvj96jl1n3rrw444hz9h0000gn/T/tmpmd9wo156/home/.claude/uploads/11111111-1111-4111-8111-111111111111",
+        "/private/var/folders/50/f629pvj96jl1n3rrw444hz9h0000gn/T/tmpmd9wo156/home/.claude/dev-mods/11111111-1111-4111-8111-111111111111",
+        "/private/var/folders/50/f629pvj96jl1n3rrw444hz9h0000gn/T/tmpmd9wo156/home/.claude/image-cache/11111111-1111-4111-8111-111111111111",
+        "/private/var/folders/50/f629pvj96jl1n3rrw444hz9h0000gn/T/tmpmd9wo156/home/.claude/debug/11111111-1111-4111-8111-111111111111.txt",
+        "/private/var/folders/50/f629pvj96jl1n3rrw444hz9h0000gn/T/tmpmd9wo156/home/.claude/projects/-work-proj/11111111-1111-4111-8111-111111111111.jsonl.dotsync-deleting"
+      ]
+    }
+  }
+}

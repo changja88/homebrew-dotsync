@@ -1,0 +1,59 @@
+{
+  "command": "cleanup",
+  "tool": "codex",
+  "started_at": "2026-10-25T20:01:26Z",
+  "finished_at": "2026-10-25T20:01:26Z",
+  "result": {
+    "items": [
+      {
+        "id": "history_rows",
+        "outcome": "done",
+        "count": 1
+      },
+      {
+        "id": "history_lines",
+        "outcome": "done",
+        "count": 1,
+        "lines": 2
+      },
+      {
+        "id": "session_index",
+        "outcome": "done",
+        "count": 1
+      },
+      {
+        "id": "queue",
+        "outcome": "done",
+        "count": 3
+      },
+      {
+        "id": "cache_files",
+        "outcome": "done",
+        "count": 1
+      }
+    ],
+    "vacuum": {
+      "bytes_before": 90112,
+      "bytes_after": 90112,
+      "stopped_because": "freelist_empty"
+    },
+    "stopped": false,
+    "ids": {
+      "history_rows": [
+        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+      ],
+      "history_lines": {
+        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb": 2
+      },
+      "session_index": {
+        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb": 1
+      },
+      "queue": [
+        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+      ],
+      "cache_files": [
+        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+      ]
+    }
+  }
+}
