@@ -59,9 +59,11 @@ final class SessionsModel {
 
     // The Codex cleanup (SessionsModel+Cleanup.swift).
     var cleanup = CleanupState()
-    /// Set on `NSWorkspace.willPowerOffNotification` (`powerOff()`): the unit
-    /// then starts no cleanup and relaunches nothing.
-    private(set) var isPoweringOff = false
+    @ObservationIgnored private var powerOffStarted: ContinuousClock.Instant?
+    /// From `powerOff(at:)` on, for as long as the app's power-off holds (60 s
+    /// if the logout is cancelled): the unit starts no cleanup and relaunches
+    /// nothing.
+    var isPoweringOff: Bool { QuitRules.stillPoweringOff(since: powerOffStarted, now: .now) }
     let chatGPT: any ChatGPTControl
     let flags: any FlagStore
     @ObservationIgnored var cleanupTask: Task<CleanupOutcome, Never>?
@@ -129,9 +131,10 @@ final class SessionsModel {
 
     /// The Mac is logging out or restarting: the cleanup unit starts no
     /// cleanup, stops one not yet registered as a long run, and relaunches
-    /// nothing. The app stops the long runs themselves.
-    func powerOff() {
-        isPoweringOff = true
+    /// nothing. The app stops the long runs themselves. `started` is the
+    /// app's own power-off start, so both lapse together.
+    func powerOff(at started: ContinuousClock.Instant) {
+        powerOffStarted = started
         cleanupTask?.cancel()
     }
 

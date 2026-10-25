@@ -12,6 +12,17 @@ public enum QuitRules {
     public static let hiddenWait: Duration = .seconds(30)
     /// How long a logout or restart waits for the long runs to stop.
     public static let powerOffStop: Duration = .seconds(20)
+    /// A power-off that has not ended the app this long after it began was
+    /// cancelled: the person cancelled the logout, or an app would not quit.
+    public static let powerOffCancelledAfter: Duration = .seconds(60)
+
+    /// Whether a power-off that began at `since` (nil: none) still holds. Once
+    /// it has lapsed, quitting is ordinary again; the runs its SIGTERM
+    /// stopped stay stopped, and their results are in the log.
+    public static func stillPoweringOff(since: ContinuousClock.Instant?, now: ContinuousClock.Instant) -> Bool {
+        guard let since else { return false }
+        return now - since <= powerOffCancelledAfter
+    }
 
     /// The window's line while long work runs, or nil. A delete, recover or
     /// cleanup is 정리; an apply is 작업, also when both run, since the app

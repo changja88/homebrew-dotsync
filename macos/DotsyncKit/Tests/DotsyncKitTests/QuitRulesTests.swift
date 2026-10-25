@@ -72,3 +72,17 @@ private let cleanupLine = "정리가 끝나면 꺼져요"
     #expect(!QuitRules.isPowerOff(eventID: nil, quitReason: UInt32(kAEReallyLogOut)))
     #expect(!QuitRules.isPowerOff(eventID: UInt32(kAEOpenApplication), quitReason: UInt32(kAEReallyLogOut)))
 }
+
+@Test func aPowerOffThatDidNotEndTheAppIn60SecondsWasCancelled() {
+    let started = ContinuousClock.now
+    #expect(QuitRules.stillPoweringOff(since: started, now: started))
+    #expect(QuitRules.stillPoweringOff(since: started, now: started + .seconds(20)))
+    #expect(QuitRules.stillPoweringOff(since: started, now: started + .seconds(60)))
+    // The logout was cancelled (the person, or an app that would not quit):
+    // ordinary quitting is back.
+    #expect(!QuitRules.stillPoweringOff(since: started, now: started + .seconds(60) + .nanoseconds(1)))
+    #expect(!QuitRules.stillPoweringOff(since: nil, now: started))
+    #expect(QuitRules.powerOffCancelledAfter == .seconds(60))
+    // The bounded wait in the quit reply ends well inside it.
+    #expect(QuitRules.powerOffStop < QuitRules.powerOffCancelledAfter)
+}

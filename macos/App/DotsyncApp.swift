@@ -46,8 +46,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Opens the window again: closing it is how most quits start. RootView
     /// sets it, since opening a window is SwiftUI's.
     @ObservationIgnored var showWindow: (() -> Void)?
-    /// From `NSWorkspace.willPowerOffNotification` on.
-    @ObservationIgnored private var poweringOff = false
+    /// When the last power-off began (willPowerOff, or a logout's quit).
+    @ObservationIgnored private var powerOffStarted: ContinuousClock.Instant?
+    /// From that moment until the app ends, or for 60 s: a power-off that has
+    /// not ended the app by then was cancelled, and quitting is ordinary
+    /// again. Read through the rule each time, so it never lapses inside the
+    /// reply's 20 s wait.
+    private var poweringOff: Bool { QuitRules.stillPoweringOff(since: powerOffStarted, now: .now) }
     /// Left once the power-off stop has returned, by `powerOffDeadline`.
     @ObservationIgnored private let powerOffStop = DispatchGroup()
     @ObservationIgnored private var powerOffDeadline = DispatchTime.distantFuture
@@ -212,8 +217,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// the next launch's offer.
     private func powerOff() {
         guard !poweringOff else { return }
-        poweringOff = true
-        sessions.powerOff()
+        let started = ContinuousClock.now
+        powerOffStarted = started
+        sessions.powerOff(at: started)
         let limit = QuitRules.powerOffStop
         powerOffDeadline = .now() + .milliseconds(Int(limit / .milliseconds(1)))
         let stop = powerOffStop
