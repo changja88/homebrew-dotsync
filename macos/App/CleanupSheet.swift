@@ -73,10 +73,10 @@ private struct ChoosingView: View {
                 }
                 Spacer(minLength: 8)
                 Button("취소") { model.closeCleanup() }
-                    .buttonStyle(PillButtonStyle(height: 32, shadowRadius: 1.5))
+                    .buttonStyle(PillButtonStyle(height: 32, shadowRadius: 1.5, sidePadding: 16))
                     .keyboardShortcut(.cancelAction)
                 Button("끄고 정리하기") { Task { await model.startCleanup() } }
-                    .buttonStyle(DeleteButtonStyle())
+                    .buttonStyle(DeleteButtonStyle(fontSize: 13, sidePadding: 18))
                     .keyboardShortcut(.defaultAction)
                     .disabled(!start.allowed)
             }
@@ -112,8 +112,16 @@ private struct ChoosingView: View {
                     Toggle("", isOn: Binding(get: { state.selection.contains(item.id) }, set: { _ in model.toggleCleanupItem(item.id) }))
                         .toggleStyle(.checkbox).labelsHidden().frame(width: 18)
                         .disabled(item.count == 0)
-                    Text(item.label).frame(maxWidth: .infinity, alignment: .leading)
-                    Text(CleanupRules.countText(item)).monospacedDigit().frame(width: 150, alignment: .leading)
+                    HStack(spacing: 6) {
+                        Text(item.label)
+                        if item.id == "history_rows" {
+                            Text(SessionText.historyDbName).font(.system(size: 10.5, design: .monospaced)).foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    // The first item, the store itself, is the one to look at.
+                    Text(CleanupRules.countText(item)).fontWeight(item.id == "history_rows" ? .semibold : .regular)
+                        .monospacedDigit().frame(width: 150, alignment: .leading)
                 }
                 .font(.system(size: 12)).padding(.vertical, 5)
             }
@@ -170,7 +178,7 @@ private struct StartRowView: View {
             Text(row.detail).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if row.canRecheck {
-                Button("다시 확인", action: recheck).buttonStyle(PillButtonStyle(height: 24, shadowRadius: 1.5))
+                Button("다시 확인", action: recheck).buttonStyle(PillButtonStyle(height: 24, shadowRadius: 1.5, fontSize: 12, sidePadding: 10))
             }
         }
         .font(.system(size: 12)).padding(.vertical, 6)
@@ -298,9 +306,11 @@ private struct CleanupBox<Content: View>: View {
                 Text(title).font(.system(size: 12, weight: .bold))
                     .foregroundStyle(secondary ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
                     .padding(.top, 5).padding(.bottom, 4)
+                // The mockup's rows each start with a line, the first one too.
+                RowDivider()
                 content
             }
-            .padding(.horizontal, 14).padding(.bottom, 6)
+            .padding(.horizontal, 14).padding(.vertical, 6)
         }
     }
 }

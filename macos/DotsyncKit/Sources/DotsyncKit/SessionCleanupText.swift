@@ -55,6 +55,9 @@ extension SessionText {
         return lines
     }
 
+    /// The file under the "대화 저장소에 남은 내용" row (the CLI's `HISTORY_DB`).
+    public static let historyDbName = "thread_history_1.sqlite"
+
     /// 그대로 두는 것.
     public static let cleanupKept: [(name: String, reason: String)] = [
         ("데스크톱 앱 상태", "ChatGPT 앱이 스스로 관리해요"),

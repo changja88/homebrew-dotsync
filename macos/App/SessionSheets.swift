@@ -65,10 +65,10 @@ private struct ConfirmSheet: View {
             HStack(spacing: 8) {
                 Spacer()
                 Button("취소") { model.cancelConfirm(tool) }
-                    .buttonStyle(PillButtonStyle(height: 32, shadowRadius: 1.5))
+                    .buttonStyle(PillButtonStyle(height: 32, shadowRadius: 1.5, sidePadding: 16))
                     .keyboardShortcut(.cancelAction)
                 Button("\(counts.count)개 지우기") { Task { await model.confirmDelete(tool) } }
-                    .buttonStyle(DeleteButtonStyle())
+                    .buttonStyle(DeleteButtonStyle(fontSize: 13, sidePadding: 18))
                     .keyboardShortcut(.defaultAction)
                     .disabled(counts.count == 0)
             }
@@ -166,6 +166,8 @@ private struct InfoStrip: View {
     var body: some View {
         let palette = ChipStyle.newerHere
         let dark = colorScheme == .dark
+        // The boards' --infobg: a little lighter than the chips' blue.
+        let fill = Color(red: 10 / 255, green: dark ? 132 / 255 : 122 / 255, blue: 1).opacity(dark ? 0.2 : 0.1)
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "info.circle").font(.system(size: 13, weight: .semibold)).padding(.top, 1)
             Text(text).lineSpacing(2).fixedSize(horizontal: false, vertical: true)
@@ -174,7 +176,7 @@ private struct InfoStrip: View {
         .foregroundStyle(palette.foreground(dark: dark))
         .padding(.horizontal, 12).padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(palette.background(dark: dark)))
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(fill))
     }
 }
 
@@ -236,17 +238,20 @@ private struct ResultSheet: View {
                     Text(freed).font(.system(size: 12.5)).foregroundStyle(.secondary)
                 }
             }
-            ScrollView {
-                ChangeBox(spacing: 0, padded: false) {
-                    ForEach(Array(report.results.enumerated()), id: \.offset) { index, result in
-                        if index > 0 { Divider() }
-                        ResultRow(model: model, report: report, result: result,
-                                  title: SessionDeleteRules.rowTitle(result.id, in: list))
+            // The box stays; the rows scroll inside it.
+            ChangeBox(spacing: 0, padded: false) {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(Array(report.results.enumerated()), id: \.offset) { index, result in
+                            if index > 0 { Divider() }
+                            ResultRow(model: model, report: report, result: result,
+                                      title: SessionDeleteRules.rowTitle(result.id, in: list))
+                        }
                     }
                 }
+                .frame(maxHeight: 380)
+                .fixedSize(horizontal: false, vertical: true)
             }
-            .frame(maxHeight: 380)
-            .fixedSize(horizontal: false, vertical: true)
             if report.tool == .codex {
                 Text("지운 세션의 입력 기록과 대화 저장소의 빈 공간은 \"남은 데이터 정리\"에서 정리할 수 있어요.")
                     .font(.system(size: 11.5)).foregroundStyle(.secondary).padding(.horizontal, 2)
@@ -255,11 +260,11 @@ private struct ResultSheet: View {
                 Spacer()
                 if report.tool == .codex {
                     Button("남은 데이터 정리…") { model.openCleanup() }
-                        .buttonStyle(PillButtonStyle(height: 32, shadowRadius: 1.5))
+                        .buttonStyle(PillButtonStyle(height: 32, shadowRadius: 1.5, sidePadding: 16))
                         .disabled(model.service == nil)
                 }
                 Button("확인") { Task { await model.dismissResult(report.tool) } }
-                    .buttonStyle(PillButtonStyle(prominent: true, height: 32))
+                    .buttonStyle(PillButtonStyle(prominent: true, height: 32, sidePadding: 20))
                     .keyboardShortcut(.defaultAction)
             }
             .padding(.top, 4)
@@ -287,7 +292,7 @@ private struct ResultRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             if SessionDeleteRules.canRetry(result) {
                 Button("다시 시도") { Task { await model.retry(result.id, in: report) } }
-                    .buttonStyle(PillButtonStyle(height: 28, shadowRadius: 1.5))
+                    .buttonStyle(PillButtonStyle(height: 28, shadowRadius: 1.5, fontSize: 12))
                     .disabled(model.service == nil)
                     .padding(.vertical, -2).frame(maxHeight: .infinity, alignment: .center)
             }
@@ -313,7 +318,7 @@ private struct Mark: View {
         let dark = colorScheme == .dark
         let style = self.style
         Image(systemName: symbol)
-            .font(.system(size: 11, weight: .heavy))
+            .font(.system(size: 10, weight: .bold))
             .foregroundStyle(style.foreground(dark: dark))
             .frame(width: 24, height: 24)
             .background(Circle().fill(style.background(dark: dark)))

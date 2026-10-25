@@ -9,14 +9,17 @@ struct PillButtonStyle: ButtonStyle {
     var height: CGFloat = 28
     /// 1.5 lifts a white pill off a white sheet (the mockups' 0 1px 3px).
     var shadowRadius: CGFloat = 0
+    /// The mockups' small buttons are 12 pt with 10-12 pt sides, their sheet buttons 13 pt with 16-20.
+    var fontSize: CGFloat? = nil
+    var sidePadding: CGFloat? = nil
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .labelStyle(.titleAndIcon)
-            .font(.system(size: height > 30 ? 13 : 12.5, weight: .semibold))
+            .font(.system(size: fontSize ?? (height > 30 ? 13 : 12.5), weight: .semibold))
             .foregroundStyle(prominent ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
-            .padding(.horizontal, prominent ? 16 : 12)
+            .padding(.horizontal, sidePadding ?? (prominent ? 16 : 12))
             .frame(height: height)
             .background {
                 if prominent {

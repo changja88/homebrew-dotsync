@@ -34,8 +34,9 @@ struct Rail: View {
             }
             Spacer(minLength: 0)
         }
-        // Room for the window's buttons: 16 above them, 12 for them, 22 below.
-        .padding(.top, 50).padding(.bottom, 14)
+        // Room for the window's buttons: 16 above them, 12 for them, 22 below,
+        // and the mockup's 6 pt gap before the first item.
+        .padding(.top, 56).padding(.bottom, 14)
         .frame(width: 76)
         .frame(maxHeight: .infinity)
         .background(palette.side)

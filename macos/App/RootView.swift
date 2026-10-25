@@ -58,8 +58,7 @@ struct ContentHeader<Trailing: View>: View {
     var body: some View {
         HStack(spacing: 12) {
             Text(title).font(.system(size: 15, weight: .bold))
-            Spacer(minLength: 0)
-            trailing
+            trailing.frame(maxWidth: .infinity, alignment: .trailing)
         }
         .padding(EdgeInsets(top: 14, leading: 20, bottom: 4, trailing: 18))
         .frame(height: 52)

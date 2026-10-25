@@ -55,7 +55,7 @@ struct SessionsView: View {
                     .buttonStyle(PillButtonStyle())
                     .disabled(state.checking || model.service == nil)
                 }
-                .padding(.leading, 12).padding(3)
+                .padding(EdgeInsets(top: 3, leading: 12, bottom: 3, trailing: 3))
                 .background(GlassPanel(cornerRadius: 17))
             }
             .frame(maxWidth: .infinity)
@@ -128,7 +128,7 @@ private struct SessionsPane: View {
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach(rows) { row in
-                        SessionGroupRows(model: model, tool: tool, row: row, state: state, now: now)
+                        SessionGroupRows(model: model, tool: tool, row: row, state: state, now: now, isLast: row.id == rows.last?.id)
                     }
                 }
                 .padding(.vertical, 3)
@@ -154,6 +154,9 @@ private struct SessionsPane: View {
         }
         .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary)
         .padding(.horizontal, 16)
+        // The empty spacer columns are flexible in height: without this the
+        // row takes half of the room the list should have.
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -176,7 +179,7 @@ private struct QuickSelectBar: View {
                 quickButton(days: 30) { Text("30일 넘게 기록 없음") }
             }
             Button { model.clearSelection(tool) } label: { Text("모두 해제") }
-                .buttonStyle(PillButtonStyle(height: 26))
+                .buttonStyle(PillButtonStyle(height: 26, fontSize: 12, sidePadding: 11))
             Spacer(minLength: 0)
             switch tool {
             case .claude: claudeNote
@@ -188,7 +191,7 @@ private struct QuickSelectBar: View {
 
     private func quickButton<Label: View>(days: Int, @ViewBuilder _ label: () -> Label) -> some View {
         Button { model.quickSelect(days: days, tool: tool) } label: { label() }
-            .buttonStyle(PillButtonStyle(height: 26))
+            .buttonStyle(PillButtonStyle(height: 26, fontSize: 12, sidePadding: 11))
     }
 
     private var claudeNote: some View {
@@ -214,7 +217,7 @@ private struct CodexLeftovers: View {
             Text("지운 세션이 남긴 데이터").font(.system(size: 12, weight: .semibold))
             Text("Codex를 껐다 켜요").font(.system(size: 11.5)).foregroundStyle(.secondary)
             Button("정리…") { model.openCleanup() }
-                .buttonStyle(PillButtonStyle(height: 24))
+                .buttonStyle(PillButtonStyle(height: 24, fontSize: 12, sidePadding: 10))
                 .disabled(model.service == nil || model[.codex].work != nil)
         }
         .lineLimit(1)
@@ -233,6 +236,8 @@ private struct SessionGroupRows: View {
     let state: ToolSessions
     /// The time the last records are counted from.
     let now: Date
+    /// The last group has no line under it.
+    let isLast: Bool
 
     var body: some View {
         let open = state.expanded.contains(row.id)
@@ -255,10 +260,11 @@ private struct SessionGroupRows: View {
                 MoreRow(remaining: row.items.count - shown.count) { model.showAll(row.id, in: tool) }
             }
         }
-        Rectangle().fill(Self.line).frame(height: 1).padding(.horizontal, 16)
+        // The mockup's lines run edge to edge under an open group, and inset otherwise.
+        if !isLast { Rectangle().fill(Self.line).frame(height: 1).padding(.horizontal, open ? 0 : 16) }
     }
 
-    private static let line = Color.primary.opacity(0.08)
+    private static let line = Color.primary.opacity(0.1)
 }
 
 private struct GroupRow: View {
@@ -301,7 +307,9 @@ private struct GroupRow: View {
                 .frame(width: Grid.count, alignment: .leading)
             Text(SessionText.bytes(row.bytes)).font(.system(size: 12.5, weight: .bold)).monospacedDigit()
                 .frame(width: Grid.size, alignment: .trailing)
-            Group {
+            // A ZStack, not a Group: an empty Group has no size, and the
+            // columns of a row with no chip would slide right.
+            ZStack(alignment: .leading) {
                 if row.running > 0 { SessionChip(text: "실행 중 \(row.running)", style: .different, dot: true) }
             }
             .frame(width: Grid.status, alignment: .leading)
@@ -341,8 +349,8 @@ private struct ItemRow: View {
                 Text(SessionText.subLine(item, tool: tool)).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
                 if item.state == "interrupted" {
                     HStack(spacing: 6) {
-                        Button("되돌리기") { recover(false) }.buttonStyle(PillButtonStyle(height: 22))
-                        Button("마저 지우기") { recover(true) }.buttonStyle(PillButtonStyle(height: 22))
+                        Button("되돌리기") { recover(false) }.buttonStyle(PillButtonStyle(height: 22, fontSize: 12, sidePadding: 10))
+                        Button("마저 지우기") { recover(true) }.buttonStyle(PillButtonStyle(height: 22, fontSize: 12, sidePadding: 10))
                     }
                     .disabled(!canRecover).padding(.top, 3)
                 }
@@ -352,7 +360,7 @@ private struct ItemRow: View {
                 .frame(width: Grid.count, alignment: .leading)
             Text(SessionText.bytes(item.bytes)).font(.system(size: 12.5)).monospacedDigit()
                 .frame(width: Grid.size, alignment: .trailing)
-            Group {
+            ZStack(alignment: .leading) {
                 if let chip {
                     SessionChip(text: chip, style: item.state == "running" ? .different : .unknown,
                                 dot: item.state == "running")
@@ -462,14 +470,17 @@ private struct BottomBar: View {
 
 /// The red pill of the mockup's "선택 지우기…".
 struct DeleteButtonStyle: ButtonStyle {
+    /// The bar's button is 12.5 pt with 16 sides, the sheets' 13 pt with 18.
+    var fontSize: CGFloat = 12.5
+    var sidePadding: CGFloat = 16
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .labelStyle(.titleAndIcon)
-            .font(.system(size: 12.5, weight: .semibold))
+            .font(.system(size: fontSize, weight: .semibold))
             .foregroundStyle(.white)
-            .padding(.horizontal, 16).frame(height: 32)
+            .padding(.horizontal, sidePadding).frame(height: 32)
             .background(
                 Capsule().fill(LinearGradient(colors: [Color(red: 1, green: 0x6a / 255, blue: 0x5f / 255),
                                                        Color(red: 0xd4 / 255, green: 0x30 / 255, blue: 0x2a / 255)],
