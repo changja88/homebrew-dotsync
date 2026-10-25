@@ -84,6 +84,16 @@ def test_list_text_has_no_titles(world, capsys):
     assert "proj" in out.out and grouping.UNKNOWN_NAME in out.out
 
 
+def test_symlink_loop_at_a_session_dir_is_unsafe_not_a_crash(world, capsys):
+    loop = roots.claude_home() / "projects" / "p1" / IDLE
+    loop.symlink_to(loop)
+    code, out = run_list(capsys, "--json")
+    assert code == 0
+    items = {i["id"]: i for g in json.loads(out.out)["groups"] for i in g["items"]}
+    assert (items[IDLE]["state"], items[IDLE]["reason"]) == ("unknown", "unsafe_path")
+    assert items[RUNNING]["state"] == "running"
+
+
 def test_list_codex_is_unsupported_for_now(world, capsys):
     code = cli.main(["sessions", "list", "codex", "--json"])
     error = json.loads(capsys.readouterr().out)["error"]

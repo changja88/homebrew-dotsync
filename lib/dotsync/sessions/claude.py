@@ -574,6 +574,9 @@ def delete(
     plus the paths removed, goes to the result log."""
     for sid in ids:
         safety.validate_id(sid)  # one bad id and nothing is touched
+    # Once per id: a repeat would be judged on the batch-start snapshot again,
+    # after its first turn may have found it running.
+    ids = list(dict.fromkeys(ids))
     started_at = now_iso()
     results: list[dict] = []
     report = {"tool": "claude", "results": results, "stopped": False}

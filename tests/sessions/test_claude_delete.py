@@ -235,6 +235,39 @@ def test_transcript_created_after_quarantine_is_never_replaced(agents, session, 
     assert quarantined(session).read_bytes() == original
 
 
+def set_aside_count(monkeypatch) -> list[Path]:
+    """Records every rename to a quarantine name; the renames still happen."""
+    asides: list[Path] = []
+    real = claude._rename_no_replace
+
+    def rename(src, dst):
+        if dst.name.endswith(claude.QUARANTINE_SUFFIX):
+            asides.append(dst)
+        real(src, dst)
+
+    monkeypatch.setattr(claude, "_rename_no_replace", rename)
+    return asides
+
+
+def test_repeated_id_found_running_is_not_set_aside_again(agents, session, monkeypatch):
+    agents.answers = [[], [{"sessionId": SID, "kind": "interactive", "pid": 4242, "cwd": CWD}]]
+    asides = set_aside_count(monkeypatch)
+
+    report = run_delete(SID, SID)
+
+    assert report["results"] == [
+        {"id": SID, "outcome": "skipped", "reason": "running", "freed_bytes": 0},
+    ]
+    assert asides == [quarantined(session)]
+    assert session.exists() and not quarantined(session).exists()
+
+
+def test_repeated_id_is_deleted_once_without_a_second_result(agents, session):
+    report = run_delete(SID, SID)
+    assert [(r["id"], r["outcome"]) for r in report["results"]] == [(SID, "deleted")]
+    assert not session.exists() and not quarantined(session).exists()
+
+
 def test_session_running_at_the_start_is_never_renamed(agents, session, monkeypatch):
     agents.answers = [[{"sessionId": SID, "kind": "interactive", "pid": 4242, "cwd": CWD}]]
     renames = []

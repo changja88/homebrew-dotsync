@@ -41,7 +41,11 @@ def child(root: Path, name: str) -> Path:
     if name in ("", ".", "..") or "/" in name:
         raise UnsafePath(f"not a single path component: {name!r}")
     path = root / name
-    if path.parent.resolve() != root.absolute():
+    try:
+        parent = path.parent.resolve()
+    except (RuntimeError, OSError) as e:  # RuntimeError: a symlink loop
+        raise UnsafePath(f"{root} cannot be resolved: {e}") from e
+    if parent != root.absolute():
         raise UnsafePath(f"{path} is not directly inside {root}")
     return path
 

@@ -44,6 +44,22 @@ def test_child_refuses_symlinked_root(tmp_path):
         safety.child(root, "x")
 
 
+def test_child_refuses_a_root_that_is_a_symlink_loop(tmp_path):
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)  # resolve() raises RuntimeError on Python 3.12
+    with pytest.raises(safety.UnsafePath, match="loop"):
+        safety.child(loop, "x")
+
+
+def test_child_refuses_a_root_that_cannot_be_resolved(tmp_path, monkeypatch):
+    def fail(self, strict=False):
+        raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(type(tmp_path), "resolve", fail)
+    with pytest.raises(safety.UnsafePath):
+        safety.child(tmp_path, "x")
+
+
 @pytest.mark.parametrize("name", ["a/b", "", ".", ".."])
 def test_child_refuses_bad_names(tmp_path, name):
     with pytest.raises(safety.UnsafePath):
