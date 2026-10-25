@@ -42,7 +42,8 @@ public enum SessionRules {
         public var id: String {
             switch self {
             case .group(let group): return group.id
-            case .merged(_, _, let members): return "merged:" + members.map(\.id).joined(separator: ",")
+            // One merged row at most; a fixed id keeps UI state across refreshes.
+            case .merged: return "merged"
             }
         }
 

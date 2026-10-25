@@ -129,7 +129,16 @@ public enum SessionText {
         "background": "agent view에 있어서 건너뛰었어요",
         "desktop": "Claude 앱 세션이라 건너뛰었어요",
     ]
-    static let unknownLine = "그사이 새로 기록돼서 건너뛰었어요"
+    /// `unknown:<reason>` is a session the liveness check could not clear;
+    /// the sub-reason says why. Anything not listed is "could not tell".
+    static let unknownLines: [String: String] = [
+        "new_transcript": "그사이 새로 기록돼서 건너뛰었어요",
+        "recent": skippedLines["recent"]!,
+        "unsafe_path": skippedLines["unsafe_path"]!,
+        "unexplained_process": "같은 폴더에서 실행 중인 Claude가 있어서 건너뛰었어요",
+    ]
+    static let unknownFallback = "실행 여부를 확인하지 못해서 건너뛰었어요"
+    static let restoreFailedLine = "되돌리지 못했어요. 지우다 멈춘 상태로 남아 있어요"
     static let skippedFallback = "건너뛰었어요"
 
     /// The partial reasons the CLI emits; they share one line, and
@@ -152,6 +161,8 @@ public enum SessionText {
             if result.unchecked?.isEmpty == false { sentences.append("남은 게 있는지 확인하지 못했어요") }
         case "restored":
             sentences = ["되돌렸어요. 다시 이어서 열 수 있어요"]
+        case "failed":
+            sentences = [restoreFailedLine]
         default:
             sentences = [skippedLine(reason: result.reason)]
         }
@@ -168,6 +179,7 @@ public enum SessionText {
     private static func skippedLine(reason: String?) -> String {
         guard let reason else { return skippedFallback }
         if let line = skippedLines[reason] { return line }
-        return reason.hasPrefix("unknown:") ? unknownLine : skippedFallback
+        guard reason.hasPrefix("unknown:") else { return skippedFallback }
+        return unknownLines[String(reason.dropFirst("unknown:".count))] ?? unknownFallback
     }
 }

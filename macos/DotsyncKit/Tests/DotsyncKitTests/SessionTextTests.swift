@@ -157,6 +157,14 @@ private func report(_ outcomes: [String]) -> DeleteReport {
         "stopped": "멈춰서 지우지 않았어요",
         "running": "그사이 다시 열려서 건너뛰었어요",
         "unknown:new_transcript": "그사이 새로 기록돼서 건너뛰었어요",
+        "unknown:recent": "방금 기록돼서 건너뛰었어요",
+        "unknown:unsafe_path": "경로가 안전하지 않아서 건드리지 않았어요",
+        "unknown:unexplained_process": "같은 폴더에서 실행 중인 Claude가 있어서 건너뛰었어요",
+        "unknown:agents_missing": "실행 여부를 확인하지 못해서 건너뛰었어요",
+        "unknown:agents_failed": "실행 여부를 확인하지 못해서 건너뛰었어요",
+        "unknown:agents_incomplete": "실행 여부를 확인하지 못해서 건너뛰었어요",
+        "unknown:process_scan_failed": "실행 여부를 확인하지 못해서 건너뛰었어요",
+        "unknown:something_new": "실행 여부를 확인하지 못해서 건너뛰었어요",
         "not_found": "이미 없어요",
         "refused": "Codex가 지우지 않았어요. 대화 기록은 그대로예요",
         "invalid_id": "id 형식이 달라서 건드리지 않았어요",
@@ -202,6 +210,10 @@ private let cliPartialReasons = ["failed", "timeout", "no_rollout"]  // codex._j
         #expect(SessionText.partialReasons.contains(reason), "partial \(reason)")
     }
     #expect(Set(cliPartialReasons) == SessionText.partialReasons)
+}
+
+@Test func failedRestoreHasItsOwnLine() {
+    #expect(SessionText.resultLine(result("failed"), tool: .claude) == "되돌리지 못했어요. 지우다 멈춘 상태로 남아 있어요")
 }
 
 @Test func linesForTheCLIsOwnReports() throws {

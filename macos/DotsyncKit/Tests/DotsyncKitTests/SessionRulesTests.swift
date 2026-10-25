@@ -114,3 +114,12 @@ func makeList(_ groups: [SessionGroup]) -> SessionList {
     let totals = SessionRules.selectionTotals(["a", "b", "c", "gone"], in: l)
     #expect((totals.count, totals.bytes) == (2, 30))
 }
+
+@Test func mergedRowIdIsStable() {
+    func mergedID(_ names: [String]) -> String? {
+        let groups = names.enumerated().map { makeGroup($1, gb: 10 - Double($0)) }
+        return SessionRules.rows(groups, limit: 2).first { if case .merged = $0 { true } else { false } }?.id
+    }
+    #expect(mergedID(["a", "b", "c"]) == "merged")
+    #expect(mergedID(["a", "b", "c", "d", "e"]) == "merged")
+}
