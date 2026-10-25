@@ -1,3 +1,6 @@
+// The Apple event constants, as the app reads them; DotsyncKit itself has
+// only their codes.
+import CoreServices
 import Foundation
 import Testing
 @testable import DotsyncKit
@@ -53,4 +56,19 @@ private let cleanupLine = "정리가 끝나면 꺼져요"
 @Test func quitRulesTimings() {
     #expect(QuitRules.hiddenWait == .seconds(30))
     #expect(QuitRules.powerOffStop == .seconds(20))
+}
+
+@Test func aQuitForALogoutRestartOrShutdownIsAPowerOff() {
+    let quit = UInt32(kAEQuitApplication)
+    for reason in [kAELogOut, kAEReallyLogOut, kAEShowRestartDialog, kAEShowShutdownDialog, kAERestart, kAEShutDown] {
+        #expect(QuitRules.isPowerOff(eventID: quit, quitReason: UInt32(reason)), "\(reason)")
+    }
+    // "Quit all" is an installer's request, not the Mac powering off.
+    #expect(!QuitRules.isPowerOff(eventID: quit, quitReason: UInt32(kAEQuitAll)))
+    // A quit with no reason is the person's (Cmd-Q, or another app asking).
+    #expect(!QuitRules.isPowerOff(eventID: quit, quitReason: nil))
+    #expect(!QuitRules.isPowerOff(eventID: quit, quitReason: 0))
+    // No Apple event: the Quit menu, or the app quitting itself.
+    #expect(!QuitRules.isPowerOff(eventID: nil, quitReason: UInt32(kAEReallyLogOut)))
+    #expect(!QuitRules.isPowerOff(eventID: UInt32(kAEOpenApplication), quitReason: UInt32(kAEReallyLogOut)))
 }

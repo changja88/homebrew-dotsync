@@ -192,7 +192,7 @@ struct SettingsRow: View {
             .labelsHidden()
             .toggleStyle(.switch).controlSize(.small)
             .tint(Color(red: 47 / 255, green: 140 / 255, blue: 1))
-            .disabled(model.isBusy || model.report == nil)
+            .disabled(model.isBusy || model.report == nil || sessionsLine != nil)
             .frame(width: SettingsColumns.toggle, alignment: .leading)
         }
         .padding(.horizontal, 18).padding(.vertical, 8)

@@ -74,7 +74,8 @@ public enum SettingsText {
     }
 
     /// The Codex row's line while a Codex delete or cleanup runs; its 받기 ·
-    /// 보내기 wait meanwhile, as the CLI's `codex` lock would make them.
+    /// 보내기 and its 동기화 switch wait meanwhile (spec: "their actions are
+    /// disabled"), as the CLI's `codex` lock would make them.
     public static func sessionsLine(app: String, codexSessionWork: Bool) -> String? {
         app == "codex" && codexSessionWork ? "세션 정리 중" : nil
     }

@@ -21,6 +21,24 @@ public enum QuitRules {
         return sessionWork ? "정리가 끝나면 꺼져요" : nil
     }
 
+    /// The quit Apple event (`kAEQuitApplication`) was sent for a logout,
+    /// restart or shutdown, by its `kAEQuitReason`. The app asks this too,
+    /// in case the quit comes before `willPowerOffNotification`. A quit with
+    /// no reason is the person's; "quit all" is an installer's.
+    public static func isPowerOff(eventID: UInt32?, quitReason: UInt32?) -> Bool {
+        guard eventID == fourCharCode("quit"), let quitReason else { return false }
+        return powerOffReasons.contains(quitReason)
+    }
+
+    /// AERegistry.h's kAELogOut, kAEReallyLogOut, kAEShowRestartDialog,
+    /// kAEShowShutdownDialog, kAERestart and kAEShutDown, as their codes:
+    /// DotsyncKit does not import Carbon.
+    static let powerOffReasons = Set(["logo", "rlgo", "rrst", "rsdn", "rest", "shut"].map(fourCharCode))
+
+    private static func fourCharCode(_ code: String) -> UInt32 {
+        code.utf8.reduce(0) { $0 << 8 | UInt32($1) }
+    }
+
     /// `applicationShouldTerminate`'s answer. `quitBy` is the end of an unseen
     /// wait already running.
     public static func reply(longWork: String?, isWorking: Bool, quitBy: ContinuousClock.Instant?,

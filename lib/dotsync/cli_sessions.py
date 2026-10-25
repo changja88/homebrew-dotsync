@@ -4,6 +4,7 @@ that implement them; session commands need no sync folder."""
 from __future__ import annotations
 
 import argparse
+import errno
 import sys
 from collections.abc import Callable
 
@@ -223,6 +224,20 @@ def _size(n: float) -> str:
     raise AssertionError("unreachable")
 
 
+# Set once a progress line finds stderr's reader gone.
+_stderr_gone = False
+
+
 def progress(done: int, total: int) -> None:
-    """One progress line on stderr; stdout keeps the one JSON object."""
-    print(f"dotsync-progress {done}/{total}", file=sys.stderr, flush=True)
+    """One progress line on stderr; stdout keeps the one JSON object. Once
+    the reader has gone (the app quit while a logout outlived its wait), the
+    lines stop and the run goes on to its end and its log."""
+    global _stderr_gone
+    if _stderr_gone:
+        return
+    try:
+        print(f"dotsync-progress {done}/{total}", file=sys.stderr, flush=True)
+    except OSError as e:  # BrokenPipeError is the EPIPE one
+        if e.errno != errno.EPIPE:
+            raise
+        _stderr_gone = True

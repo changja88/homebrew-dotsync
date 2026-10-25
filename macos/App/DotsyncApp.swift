@@ -132,6 +132,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// — AppKit stops serving the main queue until the reply, which hung the
     /// app and every widget button.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Should the quit for a logout come before willPowerOff, waiting in
+        // the window would cancel the logout: start the same stop now.
+        if quitIsPowerOff { powerOff() }
         switch QuitRules.reply(longWork: longWork, isWorking: isWorking, quitBy: quitBy, now: .now,
                                poweringOff: poweringOff) {
         case .now:
@@ -191,8 +194,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// The Apple event behind this quit says logout, restart or shutdown. The
+    /// reason is read as the attribute, as AppKit apps do, or the parameter,
+    /// as AERegistry.h calls it.
+    private var quitIsPowerOff: Bool {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent else { return false }
+        let key = AEKeyword(kAEQuitReason)
+        let reason = event.attributeDescriptor(forKeyword: key) ?? event.paramDescriptor(forKeyword: key)
+        return QuitRules.isPowerOff(eventID: event.eventID, quitReason: reason?.typeCodeValue)
+    }
+
     /// A logout or restart. AppKit posts the notification when the quit event
-    /// arrives, before it asks `applicationShouldTerminate`. The long runs get
+    /// arrives, before it asks `applicationShouldTerminate` (the reply also
+    /// reads the quit's reason, in case it does not). The long runs get
     /// SIGTERM and stop at their next safe point, logging what they did; the
     /// cleanup unit relaunches nothing, so `dotsyncQuitChatGPT` stays set for
     /// the next launch's offer.

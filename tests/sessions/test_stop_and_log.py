@@ -1,7 +1,11 @@
+import errno
 import json
 import os
 import signal
 import stat
+import sys
+
+import pytest
 
 from dotsync import cli_sessions
 from dotsync.sessions import log, roots
@@ -52,3 +56,28 @@ def test_progress_line_goes_to_stderr(capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == "dotsync-progress 3/10\n"
+
+
+def test_progress_stops_writing_once_stderr_is_gone(gone_stderr, monkeypatch):
+    monkeypatch.setattr(sys, "stderr", gone_stderr)
+    cli_sessions.progress(1, 3)
+    cli_sessions.progress(2, 3)
+    cli_sessions.progress(3, 3)
+    # One try finds the pipe gone; the rest are not attempted.
+    assert gone_stderr.writes == 1
+
+
+def test_progress_treats_an_epipe_oserror_as_gone(gone_stderr, monkeypatch):
+    monkeypatch.setattr(sys, "stderr", gone_stderr)
+    gone_stderr.error = OSError(errno.EPIPE, "Broken pipe")
+    cli_sessions.progress(1, 3)
+    cli_sessions.progress(2, 3)
+    assert gone_stderr.writes == 1
+
+
+def test_progress_still_raises_other_write_errors(gone_stderr, monkeypatch):
+    monkeypatch.setattr(sys, "stderr", gone_stderr)
+    gone_stderr.error = OSError(errno.EIO, "Input/output error")
+    with pytest.raises(OSError) as raised:
+        cli_sessions.progress(1, 3)
+    assert raised.value.errno == errno.EIO

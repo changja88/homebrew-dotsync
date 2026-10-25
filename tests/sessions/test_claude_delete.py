@@ -3,6 +3,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -452,6 +453,28 @@ def test_json_progress_lines_on_stderr(home, agents, session, capsys):
     assert (payload["tool"], payload["stopped"]) == ("claude", False)
     assert [r["outcome"] for r in payload["results"]] == ["deleted", "deleted"]
     assert out.err.splitlines() == ["dotsync-progress 1/2", "dotsync-progress 2/2"]
+
+
+def test_json_delete_runs_to_its_end_after_the_app_is_gone(
+    home, agents, session, capsys, gone_stderr, monkeypatch
+):
+    """A logout outlived the app's 20 s wait: the app and its pipes are gone.
+    The progress lines go nowhere, and the delete still finishes and logs
+    every id."""
+    make_session(home, PROJECT, SID2, CWD, [user("o")])
+    age()
+    monkeypatch.setattr(sys, "stderr", gone_stderr)
+
+    code = cli.main(["sessions", "delete", "claude", SID, SID2, "--json"])
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert [r["outcome"] for r in payload["results"]] == ["deleted", "deleted"]
+    [log_path] = roots.log_dir().iterdir()
+    doc = json.loads(log_path.read_text())
+    assert doc["result"]["stopped"] is False
+    assert [(r["id"], r["outcome"]) for r in doc["result"]["results"]] == [(SID, "deleted"), (SID2, "deleted")]
+    assert gone_stderr.writes == 1
 
 
 def test_text_mode_prints_one_line_per_id(agents, session, capsys):
