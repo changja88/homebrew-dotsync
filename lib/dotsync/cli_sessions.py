@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Callable
 
 from dotsync import cli_json, ui
 from dotsync.cli_json import JSONCommandError
 from dotsync.sessions import claude
+from dotsync.sessions.stop import StopSignal
 
 TOOLS = ("claude", "codex")
 
@@ -21,11 +23,21 @@ def add_parser(sub) -> None:
     list_cmd = cmds.add_parser("list", help="list a tool's sessions, grouped by project")
     list_cmd.add_argument("tool", choices=TOOLS)
     list_cmd.add_argument("--json", action="store_true", help="print one JSON object")
+    delete_cmd = cmds.add_parser(
+        "delete", help="delete sessions after checking again that nothing uses them"
+    )
+    delete_cmd.add_argument("tool", choices=TOOLS)
+    delete_cmd.add_argument("ids", nargs="+", metavar="id")
+    delete_cmd.add_argument(
+        "--json", action="store_true", help="print one JSON object; progress goes to stderr"
+    )
 
 
 def run(args: argparse.Namespace) -> int:
     if args.sessions_cmd == "list":
         return _list(args)
+    if args.sessions_cmd == "delete":
+        return _delete(args)
     raise NotImplementedError(args.sessions_cmd)
 
 
@@ -49,6 +61,40 @@ def _list_payload(tool: str) -> dict:
     if tool == "claude":
         return claude.list_payload()
     raise JSONCommandError("unsupported", f"listing {tool} sessions is not available yet")
+
+
+def _delete(args: argparse.Namespace) -> int:
+    if args.json:
+        return cli_json.emit(lambda: _delete_report(args.tool, args.ids, progress))
+    try:
+        report = _delete_report(args.tool, args.ids, lambda done, total: None)
+    except JSONCommandError as e:
+        ui.error(str(e))
+        return 1
+    for result in report["results"]:
+        print(_delete_line(result))
+    return 0
+
+
+def _delete_report(tool: str, ids: list[str], on_progress: Callable[[int, int], None]) -> dict:
+    if tool == "claude":
+        with StopSignal() as stop:
+            return claude.delete(ids, stop=stop, progress=on_progress)
+    raise JSONCommandError("unsupported", f"deleting {tool} sessions is not available yet")
+
+
+def _delete_line(result: dict) -> str:
+    """One line per id, never a title."""
+    parts = [result["id"], result["outcome"]]
+    if "reason" in result:
+        parts.append(result["reason"])
+    if result["outcome"] != "skipped":
+        parts.append(f"{_size(result['freed_bytes'])} freed")
+    if result.get("kept"):
+        parts.append("kept " + ", ".join(result["kept"]))
+    if result.get("failed"):
+        parts.append(f"{len(result['failed'])} failed")
+    return "  ".join(parts)
 
 
 def _size(n: float) -> str:
