@@ -22,9 +22,12 @@ struct DotsyncApp: App {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    /// Every dotsync command the window runs, one at a time: account and
-    /// sync commands alike.
-    let queue: CommandQueue
+    /// The window's dotsync commands, one at a time per menu: 사용량's account
+    /// commands in one queue, 설정's sync commands in the other, so a check
+    /// does not wait for a usage refresh. Where the two meet (a Claude push or
+    /// pull and an account switch) the CLI's accounts lock takes turns.
+    let accountQueue: CommandQueue
+    let syncQueue: CommandQueue
     /// Here, not in the App, so quitting can see what it runs.
     let model: AccountsModel
     let settings: SettingsModel
@@ -33,14 +36,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// dotsync still at work for the window, a widget button, or a refresh.
     private var isWorking: Bool {
-        queue.running != nil || IntentWork.running > 0 || RefreshGate.shared.isRunning
+        accountQueue.running != nil || syncQueue.running != nil || IntentWork.running > 0
+            || RefreshGate.shared.isRunning
     }
 
     override init() {
-        let queue = CommandQueue()
-        self.queue = queue
-        model = AccountsModel(queue: queue)
-        settings = SettingsModel(queue: queue)
+        accountQueue = CommandQueue()
+        syncQueue = CommandQueue()
+        model = AccountsModel(queue: accountQueue)
+        settings = SettingsModel(queue: syncQueue)
         super.init()
     }
 

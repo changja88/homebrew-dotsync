@@ -2,8 +2,8 @@ import AppKit
 import DotsyncKit
 import Observation
 
-/// The 설정 menu's state. Its dotsync commands wait their turn in the queue it
-/// shares with 사용량; the CLI's locks cover commands started elsewhere.
+/// The 설정 menu's state. Its dotsync commands run one at a time in its own
+/// queue; the CLI's locks cover 사용량's commands and those started elsewhere.
 @MainActor
 @Observable
 final class SettingsModel {

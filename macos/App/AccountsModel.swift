@@ -3,9 +3,8 @@ import Foundation
 import Observation
 import WidgetKit
 
-/// The 사용량 menu's state. dotsync runs one command at a time from the
-/// window, in the `queue` it shares with the settings; the CLI's lock covers
-/// commands started elsewhere.
+/// The 사용량 menu's state. dotsync runs one account command at a time from
+/// here, in `queue`; the CLI's lock covers commands started elsewhere.
 @MainActor
 @Observable
 final class AccountsModel {
