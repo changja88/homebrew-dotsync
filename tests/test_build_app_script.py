@@ -56,3 +56,36 @@ def test_zipped_app_carries_the_build_date(tmp_path):
         check=True,
     )
     assert (out / "dotsync.app").stat().st_mtime >= started - 2
+
+
+BTT_USAGE = "BetterTouchTool 설정을 내보내고 가져오려면 자동화 권한이 필요해요"
+
+
+@pytest.mark.no_subprocess_block
+def test_app_info_plist_explains_the_apple_events_prompt(tmp_path):
+    """xcodegen writes the app's Info.plist from project.yml; macOS shows
+    NSAppleEventsUsageDescription when dotsync first drives BetterTouchTool."""
+    import plistlib
+    import shutil
+
+    if shutil.which("xcodegen") is None:
+        pytest.skip("xcodegen is not installed")
+    for folder in ("App", "Shared", "Widget", "DotsyncKit"):
+        (tmp_path / folder).mkdir()
+    shutil.copy(REPO_ROOT / "macos" / "project.yml", tmp_path / "project.yml")
+
+    subprocess.run(["xcodegen", "generate", "--quiet"], cwd=tmp_path, check=True, capture_output=True)
+
+    info = plistlib.loads((tmp_path / "App" / "Info.plist").read_bytes())
+    assert info["NSAppleEventsUsageDescription"] == BTT_USAGE
+
+
+def test_app_is_signed_with_the_apple_events_entitlement():
+    """build-app.sh signs the app with App.entitlements under the hardened
+    runtime, which blocks Apple Events to BetterTouchTool without this key."""
+    import plistlib
+
+    script = (REPO_ROOT / "scripts" / "build-app.sh").read_text()
+    assert '--entitlements macos/App/App.entitlements -s "$IDENTITY" "$APP"' in script
+    entitlements = plistlib.loads((REPO_ROOT / "macos" / "App" / "App.entitlements").read_bytes())
+    assert entitlements["com.apple.security.automation.apple-events"] is True

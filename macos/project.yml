@@ -39,6 +39,8 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSApplicationCategoryType: public.app-category.developer-tools
+        # Shown when dotsync first drives BetterTouchTool (osascript).
+        NSAppleEventsUsageDescription: "BetterTouchTool 설정을 내보내고 가져오려면 자동화 권한이 필요해요"
         CFBundleURLTypes:
           - CFBundleURLName: com.changja88.dotsync
             CFBundleURLSchemes: [dotsync]
