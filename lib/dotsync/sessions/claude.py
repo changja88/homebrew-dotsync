@@ -1,21 +1,25 @@
 """Claude sessions on disk: which files belong to each session, how big they
-are, and what the session is called."""
+are, what the session is called, and whether it is still in use."""
 
 from __future__ import annotations
 
 import json
 import os
 import re
+import shutil
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from dotsync.sessions import roots, safety
+from dotsync.sessions import procs, roots, safety
 
 QUARANTINE_SUFFIX = ".dotsync-deleting"
 TITLE_LIMIT = 120
 _UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 _TRANSCRIPT = re.compile(rf"^({_UUID})\.jsonl({re.escape(QUARANTINE_SUFFIX)})?$")
+AGENTS_TIMEOUT = 30  # seconds, for `claude agents`
+RECENT_SECONDS = 30 * 60
+_PID_FILE = re.compile(r"^(\d+)\.json$")
 # Directories under claude_home() that hold one entry per session id.
 _HOME_DIRS = ("file-history", "session-env", "uploads", "dev-mods", "image-cache")
 
@@ -253,3 +257,119 @@ def _count_subagents(sid: str, project_dirs: list[Path]) -> int:
             continue
         count += sum(1 for name in _listdir(directory) if name.endswith(".jsonl"))
     return count
+
+
+@dataclass(frozen=True)
+class ClaudeProc:
+    pid: int
+    started: float  # epoch seconds
+    cwd: str | None
+
+
+@dataclass
+class Liveness:
+    agents: list[dict] | None = None  # None when `claude agents` gave no answer
+    error: str | None = None  # agents_missing | agents_failed | agents_incomplete | process_scan_failed
+    procs: list[ClaudeProc] = field(default_factory=list)
+    agent_pids: set[int] = field(default_factory=set)
+    known_cwds: set[str] = field(default_factory=set)  # agents' cwds plus process cwds
+
+
+def claude_binary() -> str | None:
+    homebrew = "/opt/homebrew/bin/claude"
+    if os.access(homebrew, os.X_OK):
+        return homebrew
+    return shutil.which("claude")
+
+
+def gather_liveness(now: float) -> Liveness:
+    live = Liveness()
+    live.agents, live.error = _read_agents()
+    live.agent_pids = {
+        a["pid"] for a in live.agents or [] if isinstance(a.get("pid"), int)
+    }
+    try:
+        table = procs.ps_table()
+        scan = procs.lsof_scan(fds="cwd,txt")
+    except procs.ToolFailure:
+        live.error = live.error or "process_scan_failed"
+        table, scan = {}, {}
+    for pid, proc in table.items():
+        if procs.exe_name(pid, table, scan) == "claude":
+            opened = scan.get(pid)
+            live.procs.append(
+                ClaudeProc(pid, now - proc.elapsed, opened.cwd if opened else None)
+            )
+    if live.agents is not None and live.error is None:
+        if not _live_pids(table) <= live.agent_pids:
+            live.error = "agents_incomplete"
+    live.known_cwds = {a["cwd"] for a in live.agents or [] if isinstance(a.get("cwd"), str)}
+    live.known_cwds |= {p.cwd for p in live.procs if p.cwd}
+    return live
+
+
+def _read_agents() -> tuple[list[dict] | None, str | None]:
+    binary = claude_binary()
+    if binary is None:
+        return None, "agents_missing"
+    # CLAUDE_CONFIG_DIR would point `claude` at another home than the one dotsync scans.
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CONFIG_DIR"}
+    try:
+        result = procs.run(
+            [binary, "agents", "--json", "--all"],
+            timeout=AGENTS_TIMEOUT,
+            cwd=Path.home(),
+            env=env,
+        )
+    except procs.ToolFailure as exc:
+        return None, "agents_missing" if exc.code == "missing" else "agents_failed"
+    if result.returncode != 0:
+        return None, "agents_failed"
+    try:
+        agents = json.loads(result.stdout)
+    except ValueError:
+        return None, "agents_failed"
+    if not isinstance(agents, list) or not all(isinstance(a, dict) for a in agents):
+        return None, "agents_failed"
+    return agents, None
+
+
+def _live_pids(table: dict[int, procs.Proc]) -> set[int]:
+    """Pids named by ~/.claude/sessions/<pid>.json that are still running
+    (names only: the files are never opened)."""
+    named = (_PID_FILE.match(n) for n in _listdir(roots.claude_home() / "sessions"))
+    return {int(m.group(1)) for m in named if m and int(m.group(1)) in table}
+
+
+def state_of(s: ClaudeSession, live: Liveness, now: float) -> tuple[str, str]:
+    """`(state, reason)`; anything that cannot be shown to be unused is unknown."""
+    desktop = Path.home() / "Library" / "Application Support" / "Claude"
+    if s.cwd == str(desktop) or s.cwd.startswith(f"{desktop}/"):
+        return "desktop", "desktop"
+    mine = [a for a in live.agents or [] if a.get("sessionId") == s.id]
+    if any(a.get("kind") == "background" for a in mine):
+        return "background", "background"
+    if any(isinstance(a.get("pid"), int) for a in mine):
+        return "running", "running"
+    if s.unsafe:
+        return "unknown", "unsafe_path"
+    if live.error:
+        return "unknown", live.error
+    if now - s.last_activity < RECENT_SECONDS:
+        return "unknown", "recent"
+    if _has_unexplained_process(s, live):
+        return "unknown", "unexplained_process"
+    if s.quarantined:
+        return "interrupted", "interrupted"
+    return "idle", "idle"
+
+
+def _has_unexplained_process(s: ClaudeSession, live: Liveness) -> bool:
+    folders = {p.name for p in s.project_dirs}
+    return any(
+        p.pid not in live.agent_pids
+        and p.cwd is not None
+        and (p.cwd == s.cwd or encode_cwd(p.cwd) in folders)
+        and p.started < s.last_activity
+        for p in live.procs
+    )
