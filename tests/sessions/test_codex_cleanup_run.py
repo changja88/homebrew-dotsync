@@ -331,6 +331,50 @@ def test_vacuum_does_not_start_after_a_blocker(db, monkeypatch):
     assert {r.get("reason") for r in report["items"]} == {"codex_started"}
 
 
+def test_a_vacuum_that_cannot_open_keeps_the_item_results(db, monkeypatch, capsys):
+    full_home(db)
+    monkeypatch.setattr(codex_cleanup, "support_check", lambda: (None, True))
+    monkeypatch.setattr(codex_cleanup, "reclaim", lambda path, **kw: codex_cleanup._failed_vacuum(0, "unable to open"))
+    argv = ["sessions", "cleanup", "codex", "--yes", "--items", "queue", "--vacuum", "--json"]
+    assert cli.main(argv) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["vacuum"]["stopped_because"] == "error"
+    assert [(r["id"], r["outcome"]) for r in out["items"]][0] == ("queue", "done")
+
+
+def test_an_unopenable_history_db_in_the_run_is_an_error_result(db, monkeypatch):
+    full_home(db)
+    monkeypatch.setattr(codex_cleanup, "support_check", lambda: (None, True))
+    real = codex_cleanup._writing
+
+    def writing(path):
+        if path.name == "thread_history_1.sqlite":
+            raise sqlite3.OperationalError("unable to open database file")
+        return real(path)
+
+    monkeypatch.setattr(codex_cleanup, "_writing", writing)
+    report = run_vacuum(["queue"])
+    assert report["vacuum"]["stopped_because"] == "error"
+    assert ("queue", "done", None) in outcomes(report)
+
+
+def test_a_support_check_failure_in_the_vacuum_keeps_the_items(db, monkeypatch):
+    full_home(db)
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) > 1:  # the first call is the run's own check
+            raise sqlite3.OperationalError("disk I/O error")
+        return None, True
+
+    monkeypatch.setattr(codex_cleanup, "support_check", flaky)
+    report = run_vacuum()
+    assert report["vacuum"]["stopped_because"] == "error"
+    assert "disk I/O error" in report["vacuum"]["message"]
+    assert outcomes(report) == [(i, "done", None) for i in ORDER]
+
+
 # The coordination lock
 
 

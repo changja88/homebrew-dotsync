@@ -713,11 +713,29 @@ def _vacuum(report: dict, stop: StopSignal, progress: Callable[[int, int], None]
         why = "stopped"
     elif "codex_started" in reasons:
         why = "blocker"
-    elif not support_check()[1]:
-        why = "unavailable"
     else:
-        return reclaim(path, stop=stop, detect=detect, progress=progress)
+        try:
+            refusal, available = support_check()
+        except Exception as e:
+            return _failed_vacuum(before, e)
+        if refusal is not None:
+            return _failed_vacuum(before, refusal)
+        if not available:
+            why = "unavailable"
+        else:
+            return reclaim(path, stop=stop, detect=detect, progress=progress)
     return {"stopped_because": why, "bytes_before": before, "bytes_after": before}
+
+
+def _failed_vacuum(before: int, error: object) -> dict:
+    """A vacuum that failed is a result like any other: the items above it
+    were applied and must still be reported."""
+    return {
+        "stopped_because": "error",
+        "message": _one_line(error),
+        "bytes_before": before,
+        "bytes_after": before,
+    }
 
 
 def _chosen(items: list[str]) -> list[str]:
@@ -908,7 +926,8 @@ def reclaim(
     at a time (`PRAGMA incremental_vacuum`), and say why it stopped:
     `freelist_empty`, `no_progress` (a batch freed nothing), `blocker` (a
     Codex started), `stopped` (SIGTERM), `busy` (a checkpoint could not
-    finish, or the database stayed locked) or `time_cap` (`cap` seconds).
+    finish, or the database stayed locked), `error` (any other sqlite or OS
+    error, with a `message`) or `time_cap` (`cap` seconds).
     Between batches it checkpoints, so the WAL does not grow with the file.
     Sizes are the database plus its `-wal`. `progress(freed, total)` runs
     after each batch, in pages."""
@@ -921,6 +940,8 @@ def reclaim(
                 return _reclaimed(path, before, "busy")
             total = con.execute("PRAGMA freelist_count").fetchall()[0][0]
             free = total
+            if free > 0 and detect()["blockers"]:
+                return _reclaimed(path, before, "blocker")
             while True:
                 if free == 0:
                     why = "freelist_empty"
@@ -944,10 +965,11 @@ def reclaim(
                 if now() >= deadline:
                     why = "time_cap"
                     break
-    except sqlite3.OperationalError as e:
-        if "locked" not in str(e) and "busy" not in str(e):
-            raise
-        why = "busy"
+    except (sqlite3.Error, OSError) as e:
+        if isinstance(e, sqlite3.OperationalError) and ("locked" in str(e) or "busy" in str(e)):
+            why = "busy"
+        else:
+            return {**_reclaimed(path, before, "error"), "message": _one_line(e)}
     return _reclaimed(path, before, why)
 
 

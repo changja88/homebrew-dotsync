@@ -136,3 +136,18 @@ def test_a_locked_database_is_busy(monkeypatch, tmp_path):
 
     monkeypatch.setattr(codex_cleanup, "_writing", writing)
     assert reclaim(tmp_path / "x")["stopped_because"] == "busy"
+
+
+def test_an_unopenable_database_is_an_error_not_a_raise(tmp_path):
+    result = reclaim(tmp_path / "missing.sqlite")
+    assert result["stopped_because"] == "error"
+    assert "\n" not in result["message"] and result["message"]
+    assert result["bytes_before"] == result["bytes_after"] == 0
+
+
+def test_a_blocker_before_the_first_batch_runs_no_batch(stub):
+    con = StubConnection([50, 40])
+    blocked = {"blockers": [{"kind": "terminal_codex"}]}
+    result = reclaim(stub(con), detect=lambda: blocked)
+    assert result["stopped_because"] == "blocker"
+    assert not any(c.startswith("PRAGMA incremental_vacuum") for c in con.calls)
