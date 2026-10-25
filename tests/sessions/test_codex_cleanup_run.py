@@ -278,13 +278,57 @@ def test_unknown_item_is_bad_items_before_any_lock(db, capsys, items):
     assert logs() == []
 
 
-def test_vacuum_is_unsupported_until_its_task(db, capsys):
-    # Task 15 replaces this on purpose.
+def run_vacuum(items=ALL, *, stop=None):
+    return codex_cleanup.run_cleanup(
+        list(items), True, stop=stop or StopSignal(), progress=lambda done, total: None
+    )
+
+
+def test_vacuum_runs_after_the_items_under_both_locks(db, monkeypatch):
     full_home(db)
-    before = snapshot()
-    assert cli.main(["sessions", "cleanup", "codex", "--yes", "--vacuum", "--json"]) == 1
-    assert json.loads(capsys.readouterr().out)["error"]["code"] == "unsupported"
-    assert snapshot() == before
+    held: list[bool] = []
+    real = codex_cleanup.reclaim
+
+    def checking(path, **kwargs):
+        held.append(not try_coordination_lock())
+        return real(path, **kwargs)
+
+    monkeypatch.setattr(codex_cleanup, "reclaim", checking)
+    report = run_vacuum()
+    assert held == [True]
+    assert report["vacuum"]["stopped_because"] in ("freelist_empty", "no_progress")
+    assert outcomes(report) == [(i, "done", None) for i in ORDER]
+
+
+def test_vacuum_is_unavailable_without_incremental_auto_vacuum(db):
+    full_home(db)
+    con = sqlite3.connect(db / "thread_history_1.sqlite")
+    con.execute("PRAGMA auto_vacuum = 0")
+    con.execute("VACUUM")
+    con.close()
+    vacuum = run_vacuum()["vacuum"]
+    assert vacuum["stopped_because"] == "unavailable"
+    assert vacuum["bytes_before"] == vacuum["bytes_after"] == codex.history_bytes()
+
+
+def test_vacuum_does_not_start_after_a_stop(db, monkeypatch):
+    full_home(db)
+    monkeypatch.setattr(codex_cleanup, "reclaim", lambda *a, **k: pytest.fail("reclaim ran"))
+    stop = StopSignal()
+    stop.requested = True
+    vacuum = run_vacuum(stop=stop)["vacuum"]
+    assert vacuum["stopped_because"] == "stopped"
+    assert vacuum["bytes_before"] == vacuum["bytes_after"] == codex.history_bytes()
+
+
+def test_vacuum_does_not_start_after_a_blocker(db, monkeypatch):
+    full_home(db)
+    monkeypatch.setattr(codex_cleanup, "reclaim", lambda *a, **k: pytest.fail("reclaim ran"))
+    answers = iter([[], [BLOCKER]])  # clear at the start, then Codex starts
+    monkeypatch.setattr(codex_cleanup, "detect", lambda: {"blockers": next(answers, [BLOCKER])})
+    report = run_vacuum()
+    assert report["vacuum"]["stopped_because"] == "blocker"
+    assert {r.get("reason") for r in report["items"]} == {"codex_started"}
 
 
 # The coordination lock

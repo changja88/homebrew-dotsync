@@ -653,6 +653,8 @@ COORDINATION_WAIT = 10.0  # seconds; a coordination lock held longer means a Cod
 JSONL_LOCK_WAIT = 5.0  # seconds for a JSONL file's own lock
 WRITE_TIMEOUT = 5.0  # seconds a write waits on a locked database
 BACKUP_INFIX = ".dotsync-backup-"
+VACUUM_CAP = 600  # seconds in total (spec: 10 minutes)
+VACUUM_BATCH_PAGES = 25600
 
 
 def run_cleanup(
@@ -674,8 +676,6 @@ def run_cleanup(
     the others. Every run that got the lock is logged, refusals too: ids and
     counts, never contents."""
     chosen = _chosen(items)
-    if vacuum:
-        raise JSONCommandError("unsupported", "--vacuum is not available yet")
     started_at = now_iso()
     report: dict = {"items": [], "vacuum": None, "stopped": False}
     removed: dict[str, object] = {}  # item -> the ids it removed, for the log
@@ -688,6 +688,8 @@ def run_cleanup(
             with _coordination_lock():
                 found = _orphans_to_clean(progress)
                 _run_items([*chosen, CACHE_ITEM], found, report, removed, stop, progress)
+                if vacuum:
+                    report["vacuum"] = _vacuum(report, stop, progress)
         except BaseException as e:
             code = e.code if isinstance(e, JSONCommandError) else "failed"
             error = {"code": code, "message": str(e) or type(e).__name__}
@@ -698,6 +700,24 @@ def run_cleanup(
                 logged["error"] = error
             log.write("cleanup", "codex", started_at, logged)
     return report
+
+
+def _vacuum(report: dict, stop: StopSignal, progress: Callable[[int, int], None]) -> dict:
+    """The `--vacuum` result, run while both locks are still held. It starts
+    only when the items ended normally; a stop or a Codex that started leaves
+    the database as it is, and the result says so."""
+    path = roots.codex_sqlite_home() / codex.HISTORY_DB
+    before = codex.db_bytes(path)
+    reasons = {item.get("reason") for item in report["items"]}
+    if report["stopped"] or stop.requested:
+        why = "stopped"
+    elif "codex_started" in reasons:
+        why = "blocker"
+    elif not support_check()[1]:
+        why = "unavailable"
+    else:
+        return reclaim(path, stop=stop, detect=detect, progress=progress)
+    return {"stopped_because": why, "bytes_before": before, "bytes_after": before}
 
 
 def _chosen(items: list[str]) -> list[str]:
@@ -872,6 +892,73 @@ def _writing(db: Path) -> Iterator[sqlite3.Connection]:
         yield con
     finally:
         con.close()
+
+
+def reclaim(
+    path: Path,
+    *,
+    stop: StopSignal,
+    detect: Callable[[], dict],
+    progress: Callable[[int, int], None] = lambda freed, total: None,
+    now: Callable[[], float] = time.monotonic,
+    cap: float = VACUUM_CAP,
+    batch_pages: int = VACUUM_BATCH_PAGES,
+) -> dict:
+    """Give the history database's free pages back to the disk, `batch_pages`
+    at a time (`PRAGMA incremental_vacuum`), and say why it stopped:
+    `freelist_empty`, `no_progress` (a batch freed nothing), `blocker` (a
+    Codex started), `stopped` (SIGTERM), `busy` (a checkpoint could not
+    finish, or the database stayed locked) or `time_cap` (`cap` seconds).
+    Between batches it checkpoints, so the WAL does not grow with the file.
+    Sizes are the database plus its `-wal`. `progress(freed, total)` runs
+    after each batch, in pages."""
+    deadline = now() + cap
+    before = codex.db_bytes(path)
+    why = "busy"
+    try:
+        with _writing(path) as con:
+            if not _checkpointed(con):
+                return _reclaimed(path, before, "busy")
+            total = con.execute("PRAGMA freelist_count").fetchall()[0][0]
+            free = total
+            while True:
+                if free == 0:
+                    why = "freelist_empty"
+                    break
+                con.execute(f"PRAGMA incremental_vacuum({batch_pages})").fetchall()
+                left = con.execute("PRAGMA freelist_count").fetchall()[0][0]
+                progress(total - left, total)
+                if left >= free:
+                    why = "no_progress"
+                    break
+                free = left
+                if detect()["blockers"]:
+                    why = "blocker"
+                    break
+                if stop.requested:
+                    why = "stopped"
+                    break
+                if not _checkpointed(con):
+                    why = "busy"
+                    break
+                if now() >= deadline:
+                    why = "time_cap"
+                    break
+    except sqlite3.OperationalError as e:
+        if "locked" not in str(e) and "busy" not in str(e):
+            raise
+        why = "busy"
+    return _reclaimed(path, before, why)
+
+
+def _checkpointed(con: sqlite3.Connection) -> bool:
+    """Whether `wal_checkpoint(TRUNCATE)` ran to the end (its first column,
+    `busy`, is 0)."""
+    return con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()[0][0] == 0
+
+
+def _reclaimed(path: Path, before: int, why: str) -> dict:
+    return {"bytes_before": before, "bytes_after": codex.db_bytes(path), "stopped_because": why}
 
 
 @contextlib.contextmanager

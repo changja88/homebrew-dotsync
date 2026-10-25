@@ -185,7 +185,11 @@ def _size_and_mtime(paths: list[Path]) -> tuple[int, float | None]:
 
 
 def history_bytes() -> int:
-    base = roots.codex_sqlite_home() / HISTORY_DB
+    return db_bytes(roots.codex_sqlite_home() / HISTORY_DB)
+
+
+def db_bytes(base: Path) -> int:
+    """The database file plus its `-wal`, in bytes; a missing file counts 0."""
     total = 0
     for p in (base, base.with_name(base.name + "-wal")):
         try:
