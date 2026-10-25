@@ -113,7 +113,7 @@ def test_git_runs_once_per_distinct_cwd(tmp_path, home):
     assert len(calls) == 3
 
 
-def test_resolver_strips_git_env_and_handles_failure(monkeypatch):
+def test_resolver_strips_git_env_and_reports_failure(monkeypatch):
     monkeypatch.setenv("GIT_DIR", "/nope")
     seen = {}
 
@@ -128,7 +128,8 @@ def test_resolver_strips_git_env_and_handles_failure(monkeypatch):
     def failing(argv, **kw):
         raise grouping.procs.ToolFailure("timeout")
 
-    assert RepoResolver(failing).root_of("/r") is None
+    with pytest.raises(grouping.procs.ToolFailure):
+        RepoResolver(failing).root_of("/r")
 
 
 def test_groups_sorted_by_bytes_with_counts():
@@ -153,3 +154,47 @@ def test_groups_sorted_by_bytes_with_counts():
     assert (app["name"], app["folders"], app["folders_deleted"]) == ("app", 2, 1)
     assert (app["sessions"], app["bytes"], app["running"]) == (3, 16, 1)
     assert [i["id"] for i in app["items"]] == ["4", "2", "1"]
+
+
+def _fake_git(returncode=0, stderr="", stdout="", raises=None):
+    calls = []
+
+    def fake(argv, **kw):
+        calls.append(argv)
+        if raises:
+            raise raises
+        return subprocess.CompletedProcess(argv, returncode, stdout, stderr)
+
+    fake.calls = calls
+    return fake
+
+
+def test_git_timeout_is_unknown_not_outside(tmp_path, home):
+    fake = _fake_git(raises=grouping.procs.ToolFailure("timeout"))
+    loc = Locator(RepoResolver(fake), home, [], [])
+    assert loc.place(str(tmp_path), set()) == Place("unknown", "exists")
+    assert loc.known_roots([str(tmp_path)]) == set()
+    assert len(fake.calls) == 1  # the failure is cached too
+
+
+def test_not_a_repo_exit_128_is_outside(tmp_path, home):
+    fake = _fake_git(128, "fatal: not a git repository (or any of the parent directories): .git")
+    loc = Locator(RepoResolver(fake), home, [], [])
+    assert loc.place(str(tmp_path), set()) == Place("outside", "exists")
+
+
+def test_git_other_failure_place_reason_is_git_failed(tmp_path, home):
+    fake = _fake_git(128, "fatal: detected dubious ownership in repository")
+    loc = Locator(RepoResolver(fake), home, [], [])
+    place = loc.place(str(tmp_path), set())
+    assert place == Place("unknown", "exists")
+    item = {"id": "a", "cwd": str(tmp_path), "bytes": 1, "state": "idle", "last_activity": "t"}
+    [group] = grouping.groups([item], {str(tmp_path): place})
+    assert group["items"][0]["place_reason"] == "git_failed"
+
+
+def test_cwd_status_other_errors_are_unreadable(tmp_path):
+    loop = tmp_path / "loop"
+    loop.symlink_to(loop)
+    assert grouping.cwd_status(str(loop)) == "unreadable"
+    assert grouping.cwd_status("a\x00b") == "unreadable"

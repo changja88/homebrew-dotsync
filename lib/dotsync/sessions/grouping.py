@@ -25,27 +25,35 @@ class Place:
 
 class RepoResolver:
     """Finds the main work tree's root for a cwd. A linked worktree maps to
-    the repository it was added from. Runs git once per distinct cwd."""
+    the repository it was added from. Runs git once per distinct cwd.
+
+    `root_of` answers a root, None (git says it is not a repository), or
+    raises ToolFailure (git could not answer: unknown means keep)."""
 
     def __init__(self, run: Callable[..., CompletedProcess[str]] = procs.run) -> None:
         self._run = run
-        self._cache: dict[str, str | None] = {}
+        self._cache: dict[str, str | None | procs.ToolFailure] = {}
 
     def root_of(self, cwd: str) -> str | None:
         if cwd not in self._cache:
-            self._cache[cwd] = self._ask_git(cwd)
-        return self._cache[cwd]
+            try:
+                self._cache[cwd] = self._ask_git(cwd)
+            except procs.ToolFailure as failure:
+                self._cache[cwd] = failure
+        answer = self._cache[cwd]
+        if isinstance(answer, procs.ToolFailure):
+            raise answer
+        return answer
 
     def _ask_git(self, cwd: str) -> str | None:
         env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
         argv = ["git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"]
-        try:
-            result = self._run(argv, timeout=GIT_TIMEOUT, env=env)
-        except procs.ToolFailure:
+        result = self._run(argv, timeout=GIT_TIMEOUT, env=env)
+        if result.returncode == 128 and "not a git repository" in result.stderr:
             return None
         common = result.stdout.strip()
         if result.returncode != 0 or not common:
-            return None
+            raise procs.ToolFailure("failed", f"git exited {result.returncode}")
         path = Path(common)
         return str(path.parent) if path.name == ".git" else str(path)
 
@@ -55,7 +63,7 @@ def cwd_status(cwd: str) -> str:
         os.stat(cwd)
     except (FileNotFoundError, NotADirectoryError):
         return "deleted"
-    except PermissionError:
+    except (OSError, ValueError):  # permission, symlink loop, too long, NUL byte, I/O
         return "unreadable"
     return "exists"
 
@@ -93,7 +101,10 @@ class Locator:
         found: set[str] = set()
         for cwd in set(cwds):
             if cwd_status(cwd) == "exists":
-                root = self._resolver.root_of(cwd)
+                try:
+                    root = self._resolver.root_of(cwd)
+                except procs.ToolFailure:
+                    continue
                 if root is not None:
                     found.add(root)
         return found
@@ -103,7 +114,10 @@ class Locator:
         if status == "unreadable":
             return Place(UNKNOWN, status)
         if status == "exists":
-            return Place(self._resolver.root_of(cwd) or OUTSIDE, status)
+            try:
+                return Place(self._resolver.root_of(cwd) or OUTSIDE, status)
+            except procs.ToolFailure:
+                return Place(UNKNOWN, status)  # git could not answer
         if self._is_scratch(cwd):
             return Place(OUTSIDE, status)
         herdr_root = self._herdr_lane_root(cwd, roots)
@@ -145,7 +159,7 @@ def groups(items: list[dict], places: dict[str, Place]) -> list[dict]:
         )
         cwd_status_by_key.setdefault(place.key, {})[item["cwd"]] = place.status
         if place.key == UNKNOWN:
-            reason = "cwd_unreadable" if place.status == "unreadable" else "not_found"
+            reason = _unknown_reason(place.status)
             item = {**item, "place_reason": reason}
         bucket["items"].append(item)
         bucket["bytes"] += item["bytes"]
@@ -176,3 +190,8 @@ def _name(key: str) -> str:
     if key == UNKNOWN:
         return UNKNOWN_NAME
     return os.path.basename(key)
+
+
+def _unknown_reason(status: str) -> str:
+    # An existing folder only lands in unknown when git could not answer.
+    return {"unreadable": "cwd_unreadable", "exists": "git_failed"}.get(status, "not_found")
