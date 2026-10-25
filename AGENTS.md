@@ -18,10 +18,49 @@ between local app locations and one user-chosen sync folder.
 ## Core Architecture
 
 - `lib/dotsync/cli.py` owns argparse command dispatch for `init`, `config`,
-  `apps`, `status`, `push`, `pull`, and `account`. A bare `dotsync` prints the
+  `apps`, `status`, `push`, `pull`, `account`, and `sessions`. A bare `dotsync` prints the
   help.
 - `lib/dotsync/config.py` owns sync-folder discovery and `dotsync.toml`
   persistence. Config lives only at `<sync folder>/dotsync.toml`.
+- `lib/dotsync/cli_sessions.py` owns the `dotsync sessions` group (`list`,
+  `delete`, `recover`, `cleanup`); the logic is in `lib/dotsync/sessions/`:
+  `claude.py` (scan, liveness, list), `claude_delete.py` (quarantine-rename
+  delete, `recover`), `codex.py` (list, delete through `codex delete`),
+  `codex_blockers.py` (who uses `~/.codex`), `codex_keepset.py` (which thread
+  ids are live), `codex_cleanup.py` (orphans, dry run, the cleanup run,
+  vacuum), `grouping.py` (project grouping), `procs.py` (`ps`/`lsof`, always
+  with a timeout), `safety.py` (id validation, `child` path rule), `roots.py`
+  (every default location, read at call time), `log.py`, `stop.py`. Session
+  commands need no sync folder and never load `dotsync.toml`.
+  - Safety: a session id must match the lowercase UUID regex before any
+    filesystem call (`invalid_session_id`); a path to delete is a known root
+    plus an id-derived name whose parent is exactly that root; no globs;
+    unknown means keep (a check that cannot finish makes the item `unknown`
+    or skips the cleanup item); every child process has a timeout.
+  - JSON contract (the dotsync app depends on it; change both together):
+    every `--json` command (sessions, and `status`, `push`, `pull`, `config`)
+    prints exactly one JSON object on stdout, with `ui` output on stderr
+    (`cli_json.emit`). Success exits 0; failure exits 1 with
+    `{"error": {"code", "message"}}`. A partial outcome is a success with
+    per-item results. Long `sessions … --json` commands write
+    `dotsync-progress <done>/<total>` lines, and nothing else, to stderr.
+  - Locks (`lib/dotsync/locks.py`): `tool_lock(name, shared=…)` holds
+    `~/Library/Application Support/dotsync/locks/<name>.lock` and fails with
+    `busy` after 10 s. Names: `claude-sessions` (exclusive for
+    `delete claude` and `recover claude`) and `codex` (exclusive for
+    `delete codex` and `cleanup codex --yes`; shared for `push`/`pull`/`status`
+    of the `codex` app). `~/.claude.json` writers use `accounts.locked()`.
+  - Log (`sessions/log.py`): every delete, recover and `cleanup --yes` writes
+    `~/Library/Logs/dotsync/sessions-<timestamp>-<pid>.json` (mode 0600, even
+    when stopped) with ids, paths and outcomes, never titles or transcript or
+    history text. `SIGTERM` (`StopSignal`) stops at the next safe point
+    (between sessions, cleanup items, vacuum batches); a running child
+    (`codex delete`, `zstd`) is waited for, never signalled.
+  - Codex cleanup runs only while nothing uses `~/.codex`. The CLI refuses
+    with `codex_running` and quits nothing; dotsync.app quits ChatGPT.app
+    first and relaunches it, and it refuses while a terminal Codex runs.
+  - `.zst` Codex rollouts are read with the Homebrew `zstd` CLI
+    (`depends_on "zstd"` in the Formula).
 - `lib/dotsync/shellrc.py` owns shell rc detection and idempotent
   `DOTSYNC_DIR` export insertion/update logic.
 - `lib/dotsync/accounts.py` owns Claude Code account switching
@@ -60,6 +99,21 @@ between local app locations and one user-chosen sync folder.
 - Concrete app modules live in `lib/dotsync/apps/`: `claude`, `ghostty`,
   `bettertouchtool`, and `zsh`.
 
+## Executor Rules for Sessions
+
+- Real `sessions delete`, `sessions recover`, and `sessions cleanup --yes`
+  against the real home (`~/.claude`, `~/.codex`, `/private/tmp/claude-<uid>`,
+  `~/Library`) need the user's explicit pick of the sessions and their
+  confirmation. Agents never run them on their own.
+- Read-only commands may run on the real home: `sessions list`,
+  `cleanup --blockers`, `cleanup --dry-run`. Report counts, sizes and states
+  only, never session titles or other projects' paths.
+- Tests use fake homes only. `tests/sessions/conftest.py` points every root
+  from `sessions/roots.py` at `tmp_path`, and `tests/conftest.py` blocks
+  `subprocess.run`. A test that would touch a real location is a bug.
+- Never quit or relaunch ChatGPT.app, Ghostty, or the herdr server on the
+  user's behalf.
+
 ## Non-Negotiable Design Rules
 
 - Runtime dependencies must stay stdlib-only. Do not add `click`, `requests`,
@@ -74,7 +128,9 @@ between local app locations and one user-chosen sync folder.
 - The tool must not create files outside the user-selected sync folder, except
   for the explicit, consent-based shell rc update handled by `shellrc.py` and
   `cli.py`, and the `~/.claude-accounts/<name>` folders an explicit
-  `dotsync account login` creates for Claude Code.
+  `dotsync account login` creates for Claude Code, and the lock files and
+  result logs of the session commands (`~/Library/Application Support/dotsync/locks/`,
+  `~/Library/Logs/dotsync/`).
 - Claude tokens never go on a command line or into output: pass them to
   `security` on stdin, and read a Keychain entry back after writing it.
 - Never create `~/.dotsync`, `~/.config/dotsync`, or any hidden global pointer

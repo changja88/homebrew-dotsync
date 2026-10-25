@@ -92,17 +92,18 @@ dotsync init --yes --no-hints
 dotsync init --yes --no-shell-init
 ```
 
-**dotsync creates no files or directories anywhere on your machine outside the sync folder you chose.** All settings live in `<sync folder>/dotsync.toml`. The single exception — opt-in by design — is the one-line `export DOTSYNC_DIR="…"` that `init` writes into your shell rc (see below); pass `--no-shell-init` to disable.
+**dotsync creates no files or directories on your machine outside the sync folder you chose, with these exceptions:** the one-line `export DOTSYNC_DIR="…"` that `init` writes into your shell rc (opt-in; pass `--no-shell-init` to disable), `~/.claude-accounts/` (`dotsync account`), and what the session commands keep: lock files in `~/Library/Application Support/dotsync/locks/` and result logs in `~/Library/Logs/dotsync/` (see [section 7](#7-clean-up-claude-code-and-codex-sessions)). All settings live in `<sync folder>/dotsync.toml`.
 
 #### How does dotsync find the sync folder?
 
-Either of these works:
+The first of these that works wins:
 
 1. The `DOTSYNC_DIR` environment variable holds an absolute path. `init` automatically appends this line to your shell rc (`~/.zshrc` for zsh, `~/.bash_profile` for bash) on your behalf — interactive mode asks first, `--yes` writes silently. Re-running `init` with a different `--dir` updates the line in place; identical lines are left untouched. Skip the auto-write with `--no-shell-init`. Resulting line:
    ```bash
    export DOTSYNC_DIR="/Users/you/my-configs"
    ```
 2. Or, run `dotsync` from inside the sync folder (or any subdirectory) — it walks upward looking for `dotsync.toml` (git-style).
+3. Otherwise dotsync reads the marked `export DOTSYNC_DIR=…` line that `init` left in your shell rc (read, never run), as long as that folder holds a `dotsync.toml`. This is how dotsync.app, opened from Finder without your shell's environment, finds the folder.
 
 #### Restoring on a new machine
 
@@ -281,6 +282,31 @@ brew install --cask changja88/dotsync/dotsync-app   # installs the dotsync CLI t
 - The window adds accounts, logs one in again, renames and removes them.
 - An install or update stops the widget that was running, so the new one takes over. If a widget still stays blank, open the app once: it reloads the widgets.
 
+#### 7. Clean up Claude Code and Codex sessions
+
+List, delete and recover the sessions Claude Code and Codex keep on disk. These commands need no sync folder, and `push`/`pull` never touch sessions.
+
+```bash
+dotsync sessions list claude|codex                       # one line per project: sessions, size, running
+dotsync sessions delete claude|codex <id> [<id> ...]     # delete after checking again that nothing uses them
+dotsync sessions recover claude <id> --restore|--finish  # undo or finish a delete that stopped halfway
+dotsync sessions cleanup codex --blockers                # what uses ~/.codex right now
+dotsync sessions cleanup codex --dry-run                 # what a cleanup would remove (counts only)
+dotsync sessions cleanup codex --yes [--items a,b] [--vacuum]
+```
+
+- A session is not deleted if it is running, was written in the last 30 minutes, or if dotsync cannot tell whether it is in use. dotsync checks again right before each delete and skips what changed meanwhile.
+- **Claude Code** — a delete removes the conversation, subagent transcripts, tool results, MCP task records, file-history, the session environment, debug log, pasted files, and the temp images and task folder. It leaves the prompt history, to-do lists, plans, project memory, settings, and tool results other sessions still use (those files are shared, so they are not picked apart per session). A delete that stops halfway shows as "interrupted": `recover --restore` renames the transcripts back, `recover --finish` deletes what is left. Claude Code deletes the same files itself once 30 days have passed since the last entry.
+- **Codex** — a delete is Codex's own (`codex delete`), so Codex may stay open; it refuses sessions open in another window. It removes the conversation, the thread's rows in the history database, the name-list entry and logs, including the sessions forked below it. dotsync then removes the reference cache files. It leaves the prompt history, attachments, desktop-app state and generated images. The history database does not shrink right away.
+- **Codex cleanup** removes what deleted sessions left in Codex's files (`history_rows`, `history_lines`, `session_index`, `queue`, plus the cache files; `--vacuum` also reclaims the history database's free space). It only runs while nothing uses `~/.codex`: the command refuses with `codex_running` while ChatGPT.app or a terminal Codex runs. dotsync.app quits ChatGPT.app for the cleanup and relaunches it afterwards; the command line never quits anything, so quit them yourself first. A terminal Codex is never closed for you: the cleanup refuses while one runs.
+- Codex rollouts compressed as `.zst` are read with the `zstd` command, which the Homebrew formula installs.
+- Every `delete`, `recover` and `cleanup --yes` writes a log, even when it was stopped: `~/Library/Logs/dotsync/sessions-<timestamp>-<pid>.json`. It holds session ids, file paths and outcomes, never conversation contents (no titles, no transcript or history text).
+- `SIGTERM` stops a running delete or cleanup at the next safe point (between sessions, cleanup items or vacuum batches), then reports and logs what was done.
+- Commands that change the same tool wait for each other, shared with the dotsync app, through lock files in `~/Library/Application Support/dotsync/locks/`: `claude-sessions.lock` (`delete claude`, `recover claude`) and `codex.lock` (`delete codex`, `cleanup codex --yes`; `push`/`pull` of `codex` hold it shared). A lock not free within 10 seconds fails with `busy`.
+- `list`, `delete`, `recover` and `cleanup` take `--json` and print exactly one JSON object; long ones write `dotsync-progress <done>/<total>` lines to stderr. Failures are `{"error": {"code": …, "message": …}}` with exit status 1.
+
+The same `--json` contract now covers the sync commands, which the dotsync app reads: `dotsync status --json`, `dotsync push|pull [app|--all] --json` with `--dry-run` (preview) or `--yes` (apply; one of the two is required), and `dotsync config show|dir|apps --json`. They print one JSON object on stdout and send everything else to stderr.
+
 #### Change the folder or app list later
 
 `dotsync apps` opens the same picker as init's Step 2. Toggling BTT on re-runs preset discovery and writes the result back to config — no separate command needed.
@@ -397,17 +423,18 @@ dotsync init --yes --no-hints
 dotsync init --yes --no-shell-init
 ```
 
-**dotsync는 사용자가 지정한 sync 폴더 외에는 컴퓨터 어디에도 파일/디렉토리를 만들지 않는다.** 모든 설정은 `<sync 폴더>/dotsync.toml`에만 저장된다. 단 하나의 예외는 — 설계상 opt-in으로 — `init`이 셸 rc에 추가하는 `export DOTSYNC_DIR="…"` 한 줄이다 (아래 참고). `--no-shell-init`으로 끌 수 있다.
+**dotsync는 사용자가 지정한 sync 폴더 외에는 컴퓨터 어디에도 파일/디렉토리를 만들지 않는다. 예외는 다음뿐이다.** 설계상 opt-in인, `init`이 셸 rc에 추가하는 `export DOTSYNC_DIR="…"` 한 줄(`--no-shell-init`으로 끌 수 있다), `~/.claude-accounts/`(`dotsync account`), 그리고 세션 명령이 남기는 `~/Library/Application Support/dotsync/locks/`의 락 파일과 `~/Library/Logs/dotsync/`의 결과 로그(아래 [7번](#7-claude-code와-codex-세션-정리) 참고). 모든 설정은 `<sync 폴더>/dotsync.toml`에 저장된다.
 
 #### dotsync는 sync 폴더를 어떻게 찾나?
 
-두 가지 중 하나면 된다.
+아래 순서대로 먼저 되는 것을 쓴다.
 
 1. 환경변수 `DOTSYNC_DIR`이 절대경로로 설정돼 있으면 그것을 사용한다. `init`이 사용자 셸 rc(zsh 면 `~/.zshrc`, bash 면 `~/.bash_profile`)에 이 한 줄을 자동으로 추가해 준다 — 대화형 모드에서는 한 번 물어보고, `--yes`면 묻지 않고 바로 쓴다. 다른 `--dir`로 다시 `init` 하면 기존 라인이 새 경로로 갱신되고, 동일하면 그대로 둔다. 자동 쓰기를 끄려면 `--no-shell-init`. 결과 라인:
    ```bash
    export DOTSYNC_DIR="/Users/you/my-configs"
    ```
 2. 또는 sync 폴더 안(또는 그 하위 어디)에서 dotsync 명령을 실행하면 자동으로 `dotsync.toml`을 위로 거슬러 올라가며 찾는다 (git 방식).
+3. 둘 다 아니면 `init`이 셸 rc에 남긴 표식이 붙은 `export DOTSYNC_DIR=…` 줄을 읽는다(실행하지 않고 읽기만 한다). 그 폴더에 `dotsync.toml`이 있을 때만 쓴다. Finder에서 연 dotsync.app처럼 셸 환경변수가 없는 프로세스는 이렇게 폴더를 찾는다.
 
 #### 새 머신에서 복원할 때
 
@@ -584,6 +611,31 @@ brew install --cask changja88/dotsync/dotsync-app   # dotsync 명령어도 함�
 - 위젯에서 ↻ 는 새로고침(약 10초, 토큰 안 씀), "사용"은 `dotsync account use`처럼 계정을 바꾼다. 앱은 쓸 때만 실행되고 뒤에 남지 않는다.
 - 창에서 계정 추가, 다시 로그인, 이름 바꾸기, 삭제를 한다.
 - 설치하거나 업데이트하면 실행 중이던 위젯을 끄고 새 위젯이 대신 뜬다. 그래도 위젯이 비어 있으면 앱을 한 번 연다. 앱이 위젯을 다시 그린다.
+
+#### 7. Claude Code와 Codex 세션 정리
+
+Claude Code와 Codex가 디스크에 쌓아 둔 세션을 보고, 지우고, 되돌린다. 이 명령들은 sync 폴더가 필요 없고, `push`/`pull`은 세션을 건드리지 않는다.
+
+```bash
+dotsync sessions list claude|codex                       # 프로젝트별 한 줄: 세션 수, 크기, 실행 중
+dotsync sessions delete claude|codex <id> [<id> ...]     # 쓰는 곳이 없는지 다시 확인한 뒤 삭제
+dotsync sessions recover claude <id> --restore|--finish  # 지우다 멈춘 삭제를 되돌리거나 마저 지우기
+dotsync sessions cleanup codex --blockers                # 지금 ~/.codex를 쓰는 것
+dotsync sessions cleanup codex --dry-run                 # 정리하면 지워질 것 (개수만)
+dotsync sessions cleanup codex --yes [--items a,b] [--vacuum]
+```
+
+- 실행 중이거나, 최근 30분 안에 기록됐거나, 쓰는 중인지 알 수 없는 세션은 지우지 않는다. 지우기 직전에 한 번 더 확인하고, 그사이 바뀐 세션은 건너뛴다.
+- **Claude Code** — 삭제하면 대화 기록, 하위 에이전트 기록, 도구 결과, MCP 작업 기록, 파일 되돌리기 기록, 세션 환경, 디버그 로그, 첨부한 파일, 임시 이미지·작업 폴더가 지워진다. 입력 기록, 할 일 목록, 계획, 프로젝트 기억(memory), 설정, 다른 세션이 쓰는 도구 결과는 남는다(여러 세션이 같이 쓰는 파일이라 세션별로 골라 지우지 않는다). 삭제가 중간에 멈추면 "지우다 멈춤"으로 보이고, `recover --restore`는 대화 기록 이름을 되돌리고 `recover --finish`는 남은 것을 마저 지운다. 그냥 두어도 마지막 기록에서 30일이 지나면 Claude Code가 같은 범위를 지운다.
+- **Codex** — 삭제는 Codex 자체의 `codex delete`라서 Codex를 켜 둔 채로 할 수 있고, 다른 창에서 열린 세션은 Codex가 거절한다. 대화 기록, 대화 저장소의 해당 내용, 이름 목록, 로그가 지워지고, 그 세션에서 갈라져 나온 하위 세션도 같이 지워진다. 이어서 dotsync가 참조 캐시 파일을 지운다. 입력 기록, 첨부 파일, 데스크톱 앱 상태, 생성 이미지는 남는다. 대화 저장소의 빈 공간은 바로 줄지 않는다.
+- **Codex 남은 데이터 정리**는 지운 세션이 Codex 파일에 남긴 것(`history_rows`, `history_lines`, `session_index`, `queue`, 그리고 캐시 파일)을 지운다. `--vacuum`을 붙이면 대화 저장소의 빈 공간도 돌려받는다. `~/.codex`를 쓰는 것이 없을 때만 실행된다. ChatGPT.app이나 터미널 Codex가 실행 중이면 `codex_running`으로 거절한다. dotsync.app은 정리하는 동안 ChatGPT.app을 끄고 끝나면 다시 켠다. 명령줄은 아무것도 끄지 않으므로 직접 먼저 끄면 된다. 터미널 Codex는 대신 닫아 주지 않으며, 실행 중이면 정리를 거절한다.
+- `.zst`로 압축된 Codex 기록은 `zstd` 명령으로 읽는다. Homebrew Formula가 설치한다.
+- `delete`, `recover`, `cleanup --yes`는 멈춘 경우에도 로그를 남긴다: `~/Library/Logs/dotsync/sessions-<timestamp>-<pid>.json`. 세션 id, 파일 경로, 결과만 담고 대화 내용(제목, 대화·입력 기록 텍스트)은 담지 않는다.
+- `SIGTERM`을 받으면 실행 중인 삭제나 정리는 다음 안전한 지점(세션 사이, 정리 항목 사이, vacuum 배치 사이)에서 멈추고, 한 일을 알리고 로그에 남긴다.
+- 같은 도구를 바꾸는 명령끼리는 dotsync 앱과도 함께 서로 기다린다. `~/Library/Application Support/dotsync/locks/`의 락 파일을 쓴다: `claude-sessions.lock`(`delete claude`, `recover claude`), `codex.lock`(`delete codex`, `cleanup codex --yes`. `codex`의 `push`/`pull`은 공유로 잡는다). 10초 안에 락이 풀리지 않으면 `busy`로 실패한다.
+- `list`, `delete`, `recover`, `cleanup`은 `--json`을 받아 JSON 객체 하나만 출력하고, 오래 걸리는 명령은 stderr에 `dotsync-progress <done>/<total>` 줄을 쓴다. 실패는 `{"error": {"code": …, "message": …}}`와 종료 코드 1이다.
+
+같은 `--json` 규약이 dotsync 앱이 읽는 동기화 명령에도 적용된다: `dotsync status --json`, `dotsync push|pull [app|--all] --json`(`--dry-run`으로 미리보기, `--yes`로 적용. 둘 중 하나는 필수), `dotsync config show|dir|apps --json`. 객체 하나를 stdout에 출력하고 나머지는 모두 stderr로 보낸다.
 
 #### 폴더/앱 목록을 나중에 바꾸고 싶으면
 

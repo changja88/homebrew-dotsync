@@ -21,6 +21,8 @@ class Dotsync < Formula
   end
 
   depends_on "python@3.12" if external_python.nil?
+  # `dotsync sessions` reads compressed (.zst) Codex rollouts with `zstd -dc`.
+  depends_on "zstd"
 
   def install
     libexec.install "lib/dotsync"
