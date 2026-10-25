@@ -31,6 +31,46 @@ _EXPORT_WAIT_TIMEOUT = 5.0
 # BTT's stock starter preset; used when no preset names are configured.
 DEFAULT_PRESETS: tuple[str, ...] = ("Master_bt",)
 
+
+class OsascriptError(RuntimeError):
+    """An osascript call to BetterTouchTool that did not answer "done".
+    rc is None when it timed out."""
+
+    def __init__(self, rc: "int | None", stdout: str, stderr: str) -> None:
+        super().__init__(
+            f"osascript failed (rc={rc}): stdout={stdout!r} stderr={stderr!r}. "
+            f"Is BetterTouchTool installed and running?"
+        )
+        self.rc = rc
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+_UNKNOWN_DETAILS = {
+    "btt_not_running": "BTT not running — cannot diff live preset",
+    "btt_permission": "not allowed to control BetterTouchTool — allow it in "
+    "System Settings › Privacy & Security › Automation",
+    "timeout": "BetterTouchTool did not answer in time",
+}
+
+
+def classify_osascript_failure(err: OsascriptError) -> str:
+    """Why osascript failed, as AppStatus.reason: the dotsync app shows a
+    permission button for "btt_permission" and a hint for the rest."""
+    stderr = err.stderr.lower()
+    if err.stderr == "timeout":
+        return "timeout"
+    if "-1743" in stderr or "not authorized" in stderr or "not allowed" in stderr:
+        return "btt_permission"
+    if (
+        err.stdout == "missing value"
+        or "-600" in stderr
+        or "isn’t running" in stderr
+        or "is not running" in stderr
+    ):
+        return "btt_not_running"
+    return "error"
+
 # BTT regenerates BTTPresetUUID on every export_preset call, may rewrite
 # BTTLastUpdatedAt during app updates or database migrations, records
 # BTTLastUsed runtime history when triggers fire, bumps app runtime counters in
@@ -298,30 +338,29 @@ class BetterTouchToolApp(App):
             ["open", "-gja", "BetterTouchTool"],
             capture_output=True,
             text=True,
+            timeout=self.EXTERNAL_TIMEOUT,
         )
         time.sleep(1.0)
 
-    def _osascript(self, script: str, *, auto_launch: bool = False) -> None:
-        result = subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True,
-            text=True,
-        )
-        out = (result.stdout or "").strip()
-        if auto_launch and result.returncode == 0 and out == "missing value":
-            self._launch_btt()
+    def _run_osascript(self, script: str) -> "tuple[int, str, str]":
+        try:
             result = subprocess.run(
                 ["osascript", "-e", script],
                 capture_output=True,
                 text=True,
+                timeout=self.EXTERNAL_TIMEOUT,
             )
-            out = (result.stdout or "").strip()
-        if result.returncode != 0 or out != "done":
-            raise RuntimeError(
-                f"osascript failed (rc={result.returncode}): "
-                f"stdout={out!r} stderr={result.stderr.strip()!r}. "
-                f"Is BetterTouchTool installed and running?"
-            )
+        except subprocess.TimeoutExpired:
+            raise OsascriptError(None, "", "timeout") from None
+        return result.returncode, (result.stdout or "").strip(), (result.stderr or "").strip()
+
+    def _osascript(self, script: str, *, auto_launch: bool = False) -> None:
+        rc, out, err = self._run_osascript(script)
+        if auto_launch and rc == 0 and out == "missing value":
+            self._launch_btt()
+            rc, out, err = self._run_osascript(script)
+        if rc != 0 or out != "done":
+            raise OsascriptError(rc, out, err)
 
     def plan_from(self, target_dir: Path) -> AppPlan:
         status = self.status(target_dir)
@@ -453,15 +492,18 @@ class BetterTouchToolApp(App):
                 )
                 try:
                     self._osascript(export_script)
-                except RuntimeError:
+                except OsascriptError as err:
+                    reason = classify_osascript_failure(err)
                     return AppStatus(
                         state="unknown",
-                        details="BTT not running — cannot diff live preset",
+                        details=_UNKNOWN_DETAILS.get(reason, str(err)),
+                        reason=reason,
                     )
                 if not self._wait_for_export(live):
                     return AppStatus(
                         state="unknown",
                         details="BTT export produced no file",
+                        reason="error",
                     )
                 if _hash_preset(live) != _hash_preset(stored):
                     differs.append(f"{preset}.bttpreset")

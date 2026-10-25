@@ -322,7 +322,7 @@ def test_sync_to_launches_btt_and_retries_missing_value(tmp_path):
     (presets_dir / "Master_bt.bttpreset").write_text("<bttpreset/>")
     calls: list[list[str]] = []
 
-    def fake_run(cmd, capture_output, text):
+    def fake_run(cmd, capture_output, text, timeout=None):
         calls.append(cmd)
 
         class R:
@@ -384,7 +384,7 @@ def test_sync_from_escapes_quote_in_export_path(tmp_path, monkeypatch):
     target.mkdir()
     scripts = []
 
-    def fake_run(cmd, capture_output, text):
+    def fake_run(cmd, capture_output, text, timeout=None):
         scripts.append(cmd[2])
 
         class R:
@@ -1399,3 +1399,52 @@ def test_btt_resolve_options_returns_none_when_btt_not_in_new_apps():
         interactive=False,
     )
     assert opts is None  # don't touch app_options if BTT isn't tracked
+
+
+@pytest.mark.parametrize("rc,stdout,stderr,reason", [
+    (1, "", "execution error: Not authorized to send Apple events to BetterTouchTool. (-1743)", "btt_permission"),
+    (0, "missing value", "", "btt_not_running"),
+    (1, "", "execution error: BetterTouchTool got an error: Application isn’t running. (-600)", "btt_not_running"),
+    (None, "", "timeout", "timeout"),
+    (1, "", "something else", "error"),
+])
+def test_status_reason_from_osascript_failure(tmp_path, rc, stdout, stderr, reason):
+    import subprocess
+
+    target = tmp_path / "configs"
+    stored = target / "bettertouchtool" / "presets" / "Master_bt.bttpreset"
+    stored.parent.mkdir(parents=True)
+    stored.write_text("<bttpreset/>")
+    timeouts = []
+
+    def fake_run(cmd, **kwargs):
+        timeouts.append(kwargs.get("timeout"))
+        if rc is None:
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+        return subprocess.CompletedProcess(cmd, rc, stdout=stdout, stderr=stderr)
+
+    with patch("dotsync.apps.bettertouchtool.subprocess.run", side_effect=fake_run):
+        status = BetterTouchToolApp(presets=["Master_bt"]).status(target)
+
+    assert status.state == "unknown"
+    assert status.reason == reason
+    assert timeouts == [120]
+
+
+def test_status_reason_error_when_export_writes_no_file(tmp_path, monkeypatch):
+    import subprocess
+
+    target = tmp_path / "configs"
+    stored = target / "bettertouchtool" / "presets" / "Master_bt.bttpreset"
+    stored.parent.mkdir(parents=True)
+    stored.write_text("<bttpreset/>")
+    app = BetterTouchToolApp(presets=["Master_bt"])
+    monkeypatch.setattr(app, "_wait_for_export", lambda path: False)
+
+    with patch(
+        "dotsync.apps.bettertouchtool.subprocess.run",
+        return_value=subprocess.CompletedProcess([], 0, stdout="done", stderr=""),
+    ):
+        status = app.status(target)
+
+    assert (status.state, status.reason) == ("unknown", "error")

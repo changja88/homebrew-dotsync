@@ -45,6 +45,9 @@ class AppStatus:
     state: StatusState
     details: str = ""
     direction: str = ""  # "local-newer" | "folder-newer" | "diverged" | ""
+    # Why the state is "unknown", for callers that act on it (the dotsync
+    # app): "btt_not_running", "btt_permission", "timeout", "error" or "".
+    reason: str = ""
 
 
 @dataclass
