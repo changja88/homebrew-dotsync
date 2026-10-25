@@ -13,13 +13,6 @@ enum RailItem: String, CaseIterable, Identifiable {
         case .settings: "설정"
         }
     }
-
-    var systemImage: String {
-        switch self {
-        case .usage: "gauge.with.needle"
-        case .settings: "slider.horizontal.3"
-        }
-    }
 }
 
 /// The 76 pt column down the window's left edge (mockup `D-usage`): the
@@ -62,8 +55,8 @@ struct RailButton: View {
         let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
         Button(action: select) {
             VStack(spacing: 4) {
-                Image(systemName: item.systemImage)
-                    .font(.system(size: 17, weight: .medium))
+                RailIcon(item: item)
+                    .stroke(style: StrokeStyle(lineWidth: 1.9 * 22 / 24, lineCap: .round, lineJoin: .round))
                     .frame(width: 22, height: 22)
                 Text(item.title).font(.system(size: 10.5, weight: .semibold))
             }
@@ -79,6 +72,41 @@ struct RailButton: View {
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+/// The mockup's rail icons, drawn from its 24 × 24 SVG paths: no SF Symbol
+/// has its open gauge or its two sliders.
+struct RailIcon: Shape {
+    let item: RailItem
+
+    func path(in rect: CGRect) -> Path {
+        let scale = min(rect.width, rect.height) / 24
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + x * scale, y: rect.minY + y * scale)
+        }
+        func circle(_ x: CGFloat, _ y: CGFloat, _ radius: CGFloat) -> CGRect {
+            CGRect(x: rect.minX + (x - radius) * scale, y: rect.minY + (y - radius) * scale,
+                   width: radius * 2 * scale, height: radius * 2 * scale)
+        }
+        var path = Path()
+        switch item {
+        case .usage:
+            // "M4.2 17a8.5 8.5 0 1 1 15.6 0": the long way over the top.
+            path.addArc(center: point(12, 17 - (8.5 * 8.5 - 7.8 * 7.8).squareRoot()), radius: 8.5 * scale,
+                        startAngle: .degrees(156.6), endAngle: .degrees(23.4), clockwise: false)
+            path.move(to: point(12, 14.5))
+            path.addLine(to: point(15.8, 9.6))
+            path.addEllipse(in: circle(12, 14.5, 1.3))
+        case .settings:
+            for (from, to) in [((4, 7), (13, 7)), ((19, 7), (20, 7)), ((4, 17), (7, 17)), ((13, 17), (20, 17))] {
+                path.move(to: point(CGFloat(from.0), CGFloat(from.1)))
+                path.addLine(to: point(CGFloat(to.0), CGFloat(to.1)))
+            }
+            path.addEllipse(in: circle(16, 7, 2.4))
+            path.addEllipse(in: circle(10, 17, 2.4))
+        }
+        return path
     }
 }
 

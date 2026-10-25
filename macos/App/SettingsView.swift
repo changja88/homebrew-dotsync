@@ -26,6 +26,7 @@ struct SettingsView: View {
                     .padding(EdgeInsets(top: 8, leading: 20, bottom: 18, trailing: 18))
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         // Not .task: leaving 설정 must not stop a check that has started.
         .onAppear { Task { await model.checkFirstTime() } }

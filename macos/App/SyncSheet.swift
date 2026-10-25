@@ -98,12 +98,11 @@ struct SyncSheetView: View {
             }
         } else if changedPlans.isEmpty {
             Text("바뀌는 것이 없어요").font(.system(size: 12)).foregroundStyle(.secondary)
+        } else if changedPlans.reduce(0, { $0 + $1.changes.count + 2 }) > 12 {
+            // A long "모두 …" list scrolls; a short one keeps the sheet small.
+            ScrollView { planRows }.frame(height: 300)
         } else {
-            ViewThatFits(in: .vertical) {
-                planRows
-                ScrollView { planRows }
-            }
-            .frame(maxHeight: 300)
+            planRows
         }
     }
 
@@ -114,12 +113,19 @@ struct SyncSheetView: View {
                     Text(SettingsText.appLabel(name: plan.app))
                         .font(.system(size: 12, weight: .bold)).padding(.top, 2)
                 }
-                ForEach(Array(plan.changes.filter { $0.kind != "unchanged" }.enumerated()), id: \.offset) { _, change in
-                    ChangeLine(name: change.label, value: change.details.isEmpty ? Self.kindText(change.kind) : change.details,
+                let changes = plan.changes.filter { $0.kind != "unchanged" }
+                let plugins = plan.pluginActions.flatMap(SettingsText.pluginActionsText)
+                // The plugin actions read as what installed_plugins.json's change does.
+                let carrier = plugins == nil ? nil : changes.firstIndex { $0.label.hasSuffix("installed_plugins.json") }
+                ForEach(changes.indices, id: \.self) { index in
+                    let change = changes[index]
+                    ChangeLine(name: Self.fileName(change.label),
+                               value: index == carrier ? plugins!
+                                   : change.details.isEmpty ? Self.kindText(change.kind) : change.details,
                                monospaced: true)
                 }
-                if let actions = plan.pluginActions, let text = SettingsText.pluginActionsText(actions) {
-                    ChangeLine(name: "플러그인", value: text)
+                if carrier == nil, let plugins {
+                    ChangeLine(name: "플러그인", value: plugins)
                 }
                 if plan.app == "claude" {
                     ChangeLine(name: "바꾸지 않는 것", value: "로그인 · 대화 기록 · 프로젝트 기억(memory)", secondary: true)
@@ -133,6 +139,12 @@ struct SyncSheetView: View {
         case .success(let result): preview = result
         case .failure(let error): failure = SettingsModel.describe(error)
         }
+    }
+
+    /// "plugins/installed_plugins.json" → "installed_plugins.json"; a folder
+    /// ("rules/") keeps its name.
+    private static func fileName(_ label: String) -> String {
+        label.hasSuffix("/") ? label : (label as NSString).lastPathComponent
     }
 
     private static func kindText(_ kind: String) -> String {
@@ -177,10 +189,10 @@ struct ChangeLine: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(name)
-                .font(monospaced ? .system(size: 11.5, design: .monospaced) : .system(size: 12, weight: .semibold))
+                .font(.system(size: monospaced ? 11.5 : 12, weight: .semibold, design: monospaced ? .monospaced : .default))
                 .foregroundStyle(.secondary)
-                .lineLimit(1).truncationMode(.middle)
-                .frame(width: 150, alignment: .leading)
+                .lineLimit(1).fixedSize()
+                .frame(minWidth: 150, alignment: .leading)
             Text(value).font(.system(size: 12))
                 .foregroundStyle(secondary ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
                 .fixedSize(horizontal: false, vertical: true)
