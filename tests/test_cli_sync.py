@@ -1,6 +1,7 @@
 from unittest.mock import patch
 import pytest
-from dotsync.cli import _build_parser, _change_diff_text, main
+from dotsync.cli import _build_parser, main
+from dotsync.cli_json import change_diff_text as _change_diff_text
 from dotsync.config import Config, save_config
 from dotsync.plan import AppPlan, Change
 

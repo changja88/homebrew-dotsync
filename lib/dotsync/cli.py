@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Sequence
-from dotsync import __version__, accounts, diffinfo, locks, ui
+from dotsync import __version__, accounts, cli_json, locks, ui
 from dotsync.apps import APP_CLASSES, APP_NAMES, build_app, detect_present
 from dotsync.config import (
     Config,
@@ -79,7 +79,8 @@ def _build_parser() -> argparse.ArgumentParser:
     cfg_sub.add_parser("show", help="print current config")
 
     sub.add_parser("apps", help="pick which apps to track (same UI as init)")
-    sub.add_parser("status", help="report sync state")
+    status = sub.add_parser("status", help="report sync state")
+    status.add_argument("--json", action="store_true", help="print one JSON object (for the dotsync app)")
 
     push = sub.add_parser("push", help="local app configs → sync folder")
     _add_sync_args(push)
@@ -474,9 +475,17 @@ def _sync_locks(apps: list[str], *, writes: bool) -> contextlib.ExitStack:
 
 
 def cmd_status(args) -> int:
+    if args.json:
+        return cli_json.emit(_status_payload)
     cfg = load_config()
     with _sync_locks(cfg.apps, writes=False):
         return _print_status(cfg)
+
+
+def _status_payload() -> dict:
+    cfg = load_config()
+    with _sync_locks(cfg.apps, writes=False):
+        return cli_json.status_json(cfg)
 
 
 def _print_status(cfg: Config) -> int:
@@ -591,45 +600,8 @@ def _print_full_diffs(plans: "list[AppPlan]") -> None:
                 continue
             print()
             ui.divider(f"{plan.app}/{change.label}")
-            ui.diff(_change_diff_text(change))
+            ui.diff(cli_json.change_diff_text(change))
     print()
-
-
-def _change_diff_text(change) -> str:
-    if not change.diffable:
-        return "(semantic change — no file diff)"
-    unavailable = "(diff unavailable: no on-disk copy to compare)"
-    if change.file_changes:  # tree mirror: 파일별 diff
-        if change.source is None or change.dest is None:
-            return unavailable
-        return _tree_diff_text(change)
-    if change.kind == "update":
-        if change.source is None or change.dest is None:
-            return unavailable
-        return diffinfo.unified_diff_text(change.source, change.dest)
-    if change.kind == "create":
-        if change.source is None:
-            return unavailable
-        return diffinfo.full_file_lines(change.source, "+")
-    if change.dest is None:
-        return unavailable
-    return diffinfo.full_file_lines(change.dest, "-")
-
-
-def _tree_diff_text(change) -> str:
-    blocks: "list[str]" = []
-    for entry in change.file_changes:
-        symbol, _, rel = entry.partition(" ")
-        if symbol == "+":
-            block = diffinfo.full_file_lines(change.source / rel, "+")
-        elif symbol == "−":
-            block = diffinfo.full_file_lines(change.dest / rel, "-")
-        elif symbol == "~":
-            block = diffinfo.unified_diff_text(change.source / rel, change.dest / rel)
-        else:
-            continue
-        blocks.append(f"◦ {rel}\n{block}")
-    return "\n\n".join(blocks)
 
 
 def cmd_from(args) -> int:
