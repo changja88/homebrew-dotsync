@@ -209,3 +209,38 @@ def test_known_cwds_and_procs(env):
     live = claude.gather_liveness(NOW)
     assert live.procs == [claude.ClaudeProc(5, NOW - 60, "/a")]
     assert live.known_cwds == {"/a", "/c"}
+
+
+def test_agents_entry_without_session_id_does_not_explain_its_pid(env):
+    env.claude_proc(123, cwd="/elsewhere", elapsed=10)
+    env.pid_file(123)
+    env.agents = [{"kind": "interactive", "pid": 123, "cwd": "/e"}]
+    live = claude.gather_liveness(NOW)
+    assert live.agent_pids == set()
+    assert live.error == "agents_incomplete"
+    # without a pid file the same entry leaves the process unexplained
+    (roots.claude_home() / "sessions" / "123.json").unlink()
+    env.claude_proc(77, cwd=CWD, elapsed=10000)
+    env.agents = [{"sessionId": "not-an-id", "kind": "interactive", "pid": 77, "cwd": CWD}]
+    assert state(env) == ("unknown", "unexplained_process")
+
+
+def test_background_entry_without_session_id_is_incomplete(env):
+    env.agents = [{"kind": "background", "cwd": CWD, "state": "working"}]
+    live = claude.gather_liveness(NOW)
+    assert live.error == "agents_incomplete"
+    assert claude.state_of(session(), live, NOW) == ("unknown", "agents_incomplete")
+
+
+def test_unlistable_sessions_dir_is_incomplete(env):
+    home = roots.claude_home()
+    home.mkdir(parents=True)
+    (home / "sessions").write_text("a file, not a directory")  # ENOTDIR
+    env.agents = []
+    assert claude.gather_liveness(NOW).error == "agents_incomplete"
+
+
+def test_claude_process_with_unknown_cwd_is_unexplained(env):
+    env.claude_proc(77, cwd=None, elapsed=10000)
+    assert state(env) == ("unknown", "unexplained_process")
+    assert state(env, session(last_activity=NOW - 20000)) == ("idle", "idle")  # started later

@@ -285,8 +285,11 @@ def claude_binary() -> str | None:
 def gather_liveness(now: float) -> Liveness:
     live = Liveness()
     live.agents, live.error = _read_agents()
+    # An entry only explains its pid when it names a valid session.
     live.agent_pids = {
-        a["pid"] for a in live.agents or [] if isinstance(a.get("pid"), int)
+        a["pid"]
+        for a in live.agents or []
+        if isinstance(a.get("pid"), int) and safety.is_valid_id(a.get("sessionId"))
     }
     try:
         table = procs.ps_table()
@@ -301,7 +304,12 @@ def gather_liveness(now: float) -> Liveness:
                 ClaudeProc(pid, now - proc.elapsed, opened.cwd if opened else None)
             )
     if live.agents is not None and live.error is None:
-        if not _live_pids(table) <= live.agent_pids:
+        pid_files = _live_pids(table)
+        anonymous_background = any(
+            a.get("kind") == "background" and not safety.is_valid_id(a.get("sessionId"))
+            for a in live.agents
+        )
+        if pid_files is None or not pid_files <= live.agent_pids or anonymous_background:
             live.error = "agents_incomplete"
     live.known_cwds = {a["cwd"] for a in live.agents or [] if isinstance(a.get("cwd"), str)}
     live.known_cwds |= {p.cwd for p in live.procs if p.cwd}
@@ -334,10 +342,17 @@ def _read_agents() -> tuple[list[dict] | None, str | None]:
     return agents, None
 
 
-def _live_pids(table: dict[int, procs.Proc]) -> set[int]:
+def _live_pids(table: dict[int, procs.Proc]) -> set[int] | None:
     """Pids named by ~/.claude/sessions/<pid>.json that are still running
-    (names only: the files are never opened)."""
-    named = (_PID_FILE.match(n) for n in _listdir(roots.claude_home() / "sessions"))
+    (names only: the files are never opened). None when the directory exists
+    but cannot be listed: only a missing directory means no live sessions."""
+    try:
+        names = os.listdir(roots.claude_home() / "sessions")
+    except FileNotFoundError:
+        return set()
+    except OSError:
+        return None
+    named = (_PID_FILE.match(n) for n in names)
     return {int(m.group(1)) for m in named if m and int(m.group(1)) in table}
 
 
@@ -368,8 +383,8 @@ def _has_unexplained_process(s: ClaudeSession, live: Liveness) -> bool:
     folders = {p.name for p in s.project_dirs}
     return any(
         p.pid not in live.agent_pids
-        and p.cwd is not None
-        and (p.cwd == s.cwd or encode_cwd(p.cwd) in folders)
+        # a process whose cwd lsof could not map may belong to any session
+        and (p.cwd is None or p.cwd == s.cwd or encode_cwd(p.cwd) in folders)
         and p.started < s.last_activity
         for p in live.procs
     )
