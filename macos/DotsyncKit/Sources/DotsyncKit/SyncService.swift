@@ -26,9 +26,12 @@ public struct SyncService: Sendable {
                               try await cli.runJSON(arguments, timeout: .seconds(300), stopsOnCancel: true))
     }
 
+    /// Runs to the end, unless the Mac logs out or restarts: the apply is a
+    /// long run, so the app's power-off stop reaches it, and the CLI stops
+    /// before the next app and reports the rest as skipped.
     public func apply(_ direction: SyncDirection, app: String?) async throws -> ApplyReport {
         let arguments = [direction.rawValue, app ?? "--all", "--yes", "--json"]
-        return try cli.decode(ApplyReport.self, try await cli.runJSON(arguments, timeout: .seconds(600)))
+        return try cli.decode(ApplyReport.self, try await cli.runJSON(arguments, timeout: .seconds(600), longRun: true))
     }
 
     public func setDir(_ path: String) async throws -> ConfigDirResult {

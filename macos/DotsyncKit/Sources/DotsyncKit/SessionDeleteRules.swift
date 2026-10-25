@@ -1,7 +1,7 @@
 import Foundation
 
 /// The decisions behind the delete sheets: what the confirm sheet counts, how
-/// a result reads, and whether a result left by a closed app should show.
+/// a result reads, and what a delete or cleanup left by a closed app shows.
 /// Pure logic: the app only draws what comes back.
 public enum SessionDeleteRules {
     /// What the confirm sheet says about the sessions it is about to delete.
@@ -61,11 +61,26 @@ public enum SessionDeleteRules {
         stamp.flatMap { ISO8601DateFormatter().date(from: $0) }
     }
 
-    /// What to show after a relaunch: the report a delete or recover logged.
-    /// Nil when there is no log, the run left no report (refused or busy), or
-    /// it was a cleanup, which has its own sheet.
-    public static func pendingResult(_ log: SessionLogEntry?) -> (tool: SessionTool, report: DeleteReport)? {
-        guard let log, case .delete(let report)? = log.result else { return nil }
-        return (report.tool, report)
+    /// What a run the app did not see the end of left to show.
+    public enum PendingResult: Equatable, Sendable {
+        /// A delete's or recover's report, for its tool's result sheet.
+        case delete(DeleteReport)
+        /// A cleanup's, as the cleanup sheet's finished summary. ChatGPT is
+        /// not in it: the launch asks about ChatGPT on its own.
+        case cleanup(CleanupRules.Summary)
+    }
+
+    /// What to show after a relaunch: what a delete, recover or cleanup
+    /// logged. Nil when there is no log or the run left no report (refused
+    /// or busy).
+    public static func pendingResult(_ log: SessionLogEntry?) -> PendingResult? {
+        switch log?.result {
+        case .delete(let report)?:
+            return .delete(report)
+        case .cleanup(let report)?:
+            return CleanupRules.summary(of: .finished(report, relaunch: .notNeeded)).map(PendingResult.cleanup)
+        case nil:
+            return nil
+        }
     }
 }

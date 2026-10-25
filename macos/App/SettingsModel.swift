@@ -31,6 +31,10 @@ final class SettingsModel {
     private(set) var report: StatusReport?
     /// From asking for a check to its answer, the wait in the queue included.
     private(set) var checking = false
+    /// From pressing 가져오기 (내보내기) to the apply's answer, the wait in the
+    /// queue included. Quitting waits for it in the window: an apply cut off
+    /// leaves some apps done and the rest not.
+    private(set) var applying = false
     var message: String?
     var sheet: SyncSheet?
     let queue: CommandQueue
@@ -107,7 +111,8 @@ final class SettingsModel {
     /// Runs the sheet's pull or push, closes the sheet, tells what failed,
     /// and checks again.
     func apply(_ sheet: SyncSheet) async {
-        guard let service else { return }
+        guard let service, !applying else { return }
+        applying = true
         await queue.run(sheet.direction == .pull ? "가져오는 중…" : "내보내는 중…") {
             do {
                 let report = try await service.apply(sheet.direction, app: sheet.app)
@@ -116,6 +121,7 @@ final class SettingsModel {
                 self.message = Self.describe(error)
             }
         }
+        applying = false
         self.sheet = nil
         await check()
     }

@@ -137,3 +137,56 @@ private func decoded<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
         _ = try await SyncService(cli: fake.cli).status()
     }
 }
+
+// Task 22: a logout stops a running apply at its next app (the CLI's safe
+// point), so only the apply is registered with the power-off stop.
+
+private final class Done: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    func set() { lock.withLock { value = true } }
+    var isSet: Bool { lock.withLock { value } }
+}
+
+@Test(.serialized, arguments: ["status", "preview", "apply", "setDir", "setApps"])
+func onlyTheApplyIsALongRun(_ method: String) async throws {
+    let files = try FakeDotsync(script: "")
+    let status = try files.file("status.json", sampleStatus)
+    let preview = try files.file("preview.json", samplePreview)
+    let apply = try files.file("apply.json", sampleApply)
+    let dir = try files.file("dir.json", sampleConfigDir)
+    let apps = try files.file("apps.json", sampleConfigApps)
+    let fake = try FakeDotsync(script: """
+    sleep 1
+    case "$1 $2 $3" in
+      status*) cat '\(status)' ;;
+      *--dry-run*) cat '\(preview)' ;;
+      push*|pull*) cat '\(apply)' ;;
+      "config dir"*) cat '\(dir)' ;;
+      "config apps"*) cat '\(apps)' ;;
+    esac
+    """)
+    let registry = RunningCommands()
+    let service = SyncService(cli: DotsyncCLI(executable: fake.executable, environment: fake.cli.environment,
+                                              runningCommands: registry))
+    let done = Done()
+    let run = Task {
+        defer { done.set() }
+        switch method {
+        case "status": _ = try await service.status()
+        case "preview": _ = try await service.preview(.pull, app: nil)
+        case "apply": _ = try await service.apply(.pull, app: nil)
+        case "setDir": _ = try await service.setDir("/x")
+        default: _ = try await service.setApps(["zsh"])
+        }
+    }
+    var seen = 0
+    while !done.isSet {
+        seen = max(seen, registry.count)
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    try await run.value
+    #expect(registry.count == 0)
+    #expect(seen == (method == "apply" ? 1 : 0), "\(method)")
+}

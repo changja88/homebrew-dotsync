@@ -6,20 +6,30 @@ struct RootView: View {
     let accounts: AccountsModel
     let settings: SettingsModel
     let sessions: SessionsModel
+    /// Quitting that waits here for long work to end.
+    let quitting: AppDelegate
     /// Remembered across launches.
     @AppStorage("rail") private var selection: RailItem = .usage
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         HStack(spacing: 0) {
             Rail(selection: $selection, badges: [.settings: settings.badge])
-            Group {
-                switch selection {
-                case .usage: AccountsWindow(model: accounts)
-                case .settings: SettingsView(model: settings)
-                case .sessions: SessionsView(model: sessions)
+            VStack(spacing: 0) {
+                // "정리가 끝나면 꺼져요" and the progress; ✕ keeps dotsync open.
+                if let notice = quitting.quitNotice {
+                    MessageBar(text: notice) { quitting.keepOpen() }
+                        .padding(EdgeInsets(top: 14, leading: 20, bottom: 0, trailing: 18))
                 }
+                Group {
+                    switch selection {
+                    case .usage: AccountsWindow(model: accounts)
+                    case .settings: SettingsView(model: settings, codexSessionWork: sessions[.codex].work != nil)
+                    case .sessions: SessionsView(model: sessions)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .ignoresSafeArea(.container, edges: .top)
         .frame(minWidth: 1080, minHeight: 640)
@@ -35,6 +45,7 @@ struct RootView: View {
         }
         // Once per window, not on every return to 사용량.
         .task { await accounts.refresh() }
+        .onAppear { quitting.showWindow = { openWindow(id: "main") } }
     }
 }
 

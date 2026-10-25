@@ -5,6 +5,8 @@ import SwiftUI
 /// was checked on top, a banner when apps differ, then one row per app.
 struct SettingsView: View {
     @Bindable var model: SettingsModel
+    /// A Codex delete or cleanup runs: the Codex row waits for it.
+    let codexSessionWork: Bool
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
@@ -19,7 +21,7 @@ struct SettingsView: View {
                             if let banner = SettingsText.banner(report) {
                                 DifferBanner(title: banner, note: SettingsText.directionNote(report), model: model)
                             }
-                            SettingsTable(report: report, model: model)
+                            SettingsTable(report: report, model: model, codexSessionWork: codexSessionWork)
                         }
                         Footnotes()
                     }
@@ -116,6 +118,7 @@ enum SettingsColumns {
 struct SettingsTable: View {
     let report: StatusReport
     let model: SettingsModel
+    let codexSessionWork: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -133,7 +136,8 @@ struct SettingsTable: View {
                     if index > 0 {
                         Rectangle().fill(.primary.opacity(0.08)).frame(height: 1).padding(.horizontal, 16)
                     }
-                    SettingsRow(app: app, model: model)
+                    SettingsRow(app: app, model: model,
+                                sessionsLine: SettingsText.sessionsLine(app: app.name, codexSessionWork: codexSessionWork))
                 }
             }
             .padding(.vertical, 3)
@@ -145,11 +149,13 @@ struct SettingsTable: View {
 struct SettingsRow: View {
     let app: AppSyncStatus
     let model: SettingsModel
+    /// "세션 정리 중": a session run holds this app's files.
+    let sessionsLine: String?
 
     var body: some View {
         let label = SettingsText.appLabel(name: app.name)
         // A clean or untracked app has nothing to bring over.
-        let canSync = app.tracked && app.state != "clean" && !model.isBusy
+        let canSync = app.tracked && app.state != "clean" && !model.isBusy && sessionsLine == nil
         HStack(spacing: SettingsColumns.spacing) {
             VStack(alignment: .leading, spacing: 1) {
                 Text(label).font(.system(size: 13.5, weight: .semibold)).lineLimit(1)
@@ -193,6 +199,7 @@ struct SettingsRow: View {
     }
 
     private var subLine: String? {
+        if let sessionsLine { return sessionsLine }
         guard app.tracked else { return nil }
         if app.name == "bettertouchtool",
            let line = SettingsText.bttLine(presets: app.options?.presets ?? [], reason: app.reason) {

@@ -46,18 +46,22 @@ final class SessionsModel {
     var tools: [SessionTool: ToolSessions] = [.claude: ToolSessions(), .codex: ToolSessions()]
     let queues: [SessionTool: CommandQueue]
     let service: SessionService?
-    /// Holds the start time of a delete from before it runs until its result
-    /// is on screen, so a result the app missed (quit, crash) can be shown.
+    /// Holds the start time of a delete, recover or cleanup from before it
+    /// runs until its result is on screen, so a result the app missed
+    /// (logout, crash) can be shown.
     static let pendingKey = "pendingSessionsResult"
     private let defaults: UserDefaults
     @ObservationIgnored private var runningTasks: [SessionTool: Task<DeleteReport, Error>] = [:]
     @ObservationIgnored var stopRequested: Set<SessionTool> = []
+    /// The app quits as soon as the work ends (Task 22): a result that lands
+    /// meanwhile goes unseen, so its start time stays for the next launch.
+    @ObservationIgnored private var quitsWhenDone = false
 
     // The Codex cleanup (SessionsModel+Cleanup.swift).
     var cleanup = CleanupState()
-    /// Set on `NSWorkspace.willPowerOffNotification` (Task 22): the unit then
-    /// starts no cleanup and relaunches nothing.
-    var isPoweringOff = false
+    /// Set on `NSWorkspace.willPowerOffNotification` (`powerOff()`): the unit
+    /// then starts no cleanup and relaunches nothing.
+    private(set) var isPoweringOff = false
     let chatGPT: any ChatGPTControl
     let flags: any FlagStore
     @ObservationIgnored var cleanupTask: Task<CleanupOutcome, Never>?
@@ -82,24 +86,64 @@ final class SessionsModel {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/dotsync")
     }
 
-    /// A delete that began before the app closed: show what its log says, on
-    /// the 세션 menu. With no log (it never ran, or left none) show nothing.
+    /// A delete or cleanup that began before the app closed: show what its log
+    /// says, on the 세션 menu. With no log (it never ran, or left none) show
+    /// nothing.
     private func showPendingResult(_ logDirectory: URL) {
         guard let stamp = defaults.string(forKey: Self.pendingKey) else { return }
         defaults.removeObject(forKey: Self.pendingKey)
         guard let since = SessionDeleteRules.pendingStart(stamp),
               let pending = SessionDeleteRules.pendingResult(SessionLog.latest(since: since, in: logDirectory)) else { return }
+        let tool: SessionTool
+        switch pending {
+        case .delete(let report):
+            tool = report.tool
+            tools[tool]?.sheet = .result(report)
+        case .cleanup(let summary):
+            tool = .codex
+            cleanup.phase = .finished(summary)
+            tools[tool]?.sheet = .cleanup
+        }
         defaults.set(RailItem.sessions.rawValue, forKey: "rail")
-        defaults.set(pending.tool.rawValue, forKey: "sessionsTab")
-        tools[pending.tool]?.sheet = .result(pending.report)
+        defaults.set(tool.rawValue, forKey: "sessionsTab")
+    }
+
+    /// Before a delete, recover or cleanup is queued. Another tool's run in
+    /// flight keeps its earlier time.
+    func holdPendingResult() {
+        if !isWorking { defaults.set(SessionDeleteRules.pendingStamp(.now), forKey: Self.pendingKey) }
+    }
+
+    /// Once a run's result is on screen. The time stays while another tool's
+    /// run goes on, and while the app is about to quit unseen.
+    func releasePendingResult() {
+        if !isWorking && !quitsWhenDone { defaults.removeObject(forKey: Self.pendingKey) }
+    }
+
+    /// Quitting waits for the work to end, or no longer does (the person
+    /// closed the line and stays).
+    func setQuitsWhenDone(_ quits: Bool) {
+        quitsWhenDone = quits
+        if !quits { releasePendingResult() }
+    }
+
+    /// The Mac is logging out or restarting: the cleanup unit starts no
+    /// cleanup, stops one not yet registered as a long run, and relaunches
+    /// nothing. The app stops the long runs themselves.
+    func powerOff() {
+        isPoweringOff = true
+        cleanupTask?.cancel()
     }
 
     subscript(tool: SessionTool) -> ToolSessions {
         tools[tool] ?? ToolSessions()
     }
 
-    /// A delete or cleanup is running, for quitting to wait for.
+    /// A delete, recover or cleanup is running, for quitting to wait for.
     var isWorking: Bool { tools.values.contains { $0.work != nil } }
+
+    /// The runs in flight, Claude Code first, for the line quitting shows.
+    var runningWork: [SessionWork] { SessionTool.allCases.compactMap { tools[$0]?.work } }
 
     func dismissMessage(_ tool: SessionTool) {
         tools[tool]?.message = nil
@@ -215,8 +259,7 @@ final class SessionsModel {
     private func run(_ tool: SessionTool, label: String, total: Int, stoppable: Bool = true, previous: DeleteReport?,
                      operation: @escaping @Sendable (@escaping SessionService.Progress) async throws -> DeleteReport) async {
         guard let queue = queues[tool], tools[tool]?.work == nil else { return }
-        // Another tool's run in flight keeps its earlier time.
-        if !isWorking { defaults.set(SessionDeleteRules.pendingStamp(.now), forKey: Self.pendingKey) }
+        holdPendingResult()
         tools[tool]?.work = SessionWork(label: label, done: 0, total: total, stoppable: stoppable)
         tools[tool]?.sheet = .running
         await queue.run(label) {
@@ -242,7 +285,7 @@ final class SessionsModel {
         runningTasks[tool] = nil
         stopRequested.remove(tool)
         tools[tool]?.work = nil
-        if !isWorking { defaults.removeObject(forKey: Self.pendingKey) }
+        releasePendingResult()
     }
 
     func advance(_ tool: SessionTool, done: Int, total: Int) {

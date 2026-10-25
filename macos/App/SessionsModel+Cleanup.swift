@@ -117,6 +117,9 @@ extension SessionsModel {
         cleanupReadTask = nil
         cleanup.phase = .running
         let label = "Codex 정리 중…"
+        // Before the unit's own CLI runs: a cleanup cut off by a logout or
+        // crash shows its logged result on the next launch.
+        holdPendingResult()
         tools[.codex]?.work = SessionWork(label: label, done: 0, total: 0, stoppable: true)
         let shown = cleanup.shownOpenThreads
 
@@ -141,6 +144,7 @@ extension SessionsModel {
         stopRequested.remove(.codex)
         tools[.codex]?.work = nil
         await finishCleanup(outcome)
+        releasePendingResult()
     }
 
     private func finishCleanup(_ outcome: CleanupOutcome?) async {

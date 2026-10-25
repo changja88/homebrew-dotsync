@@ -73,6 +73,12 @@ public enum SettingsText {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
+    /// The Codex row's line while a Codex delete or cleanup runs; its 받기 ·
+    /// 보내기 wait meanwhile, as the CLI's `codex` lock would make them.
+    public static func sessionsLine(app: String, codexSessionWork: Bool) -> String? {
+        app == "codex" && codexSessionWork ? "세션 정리 중" : nil
+    }
+
     /// The banner's second line: "모두 가져오기" would overwrite these apps'
     /// newer settings on this Mac.
     public static func directionNote(_ report: StatusReport) -> String? {

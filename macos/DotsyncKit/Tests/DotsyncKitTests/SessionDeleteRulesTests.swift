@@ -83,17 +83,48 @@ private func logEntry(_ command: String, result: String) throws -> SessionLogEnt
     #expect(SessionDeleteRules.pendingStart("yesterday") == nil)
 }
 
-@Test func aPendingResultShowsOnlyForALoggedDeleteOrRecover() throws {
+@Test func aPendingResultShowsALoggedDeleteRecoverOrCleanup() throws {
     let done = #""result": {"tool": "codex", "results": [{"id": "a", "outcome": "deleted"}], "stopped": false}"#
-    let shown = try #require(SessionDeleteRules.pendingResult(try logEntry("delete", result: done)))
+    guard case .delete(let shown)? = SessionDeleteRules.pendingResult(try logEntry("delete", result: done)) else {
+        Issue.record("a logged delete shows its report")
+        return
+    }
     #expect(shown.tool == .codex)
-    #expect(shown.report.results.map(\.id) == ["a"])
-    #expect(SessionDeleteRules.pendingResult(try logEntry("recover", result: done)) != nil)
+    #expect(shown.results.map(\.id) == ["a"])
+    guard case .delete? = SessionDeleteRules.pendingResult(try logEntry("recover", result: done)) else {
+        Issue.record("a logged recover shows its report")
+        return
+    }
 
     #expect(SessionDeleteRules.pendingResult(nil) == nil)
     // Busy or refused: the log holds an error, not a report.
     let refused = #""error": {"code": "busy", "message": "x"}"#
     #expect(SessionDeleteRules.pendingResult(try logEntry("delete", result: refused)) == nil)
-    let cleanup = #""result": {"items": [], "vacuum": null, "stopped": false}"#
-    #expect(SessionDeleteRules.pendingResult(try logEntry("cleanup", result: cleanup)) == nil)
+    #expect(SessionDeleteRules.pendingResult(try logEntry("cleanup", result: refused)) == nil)
+}
+
+@Test func aPendingCleanupShowsAsTheCleanupSheetsSummary() throws {
+    // Stopped by a logout: what it did, and that it stopped.
+    let stopped = #"""
+    "result": {"items": [{"id": "history_rows", "outcome": "done", "count": 3},
+                         {"id": "queue", "outcome": "skipped", "count": 0, "reason": "stopped"}],
+               "vacuum": null, "stopped": true}
+    """#
+    guard case .cleanup(let summary)? = SessionDeleteRules.pendingResult(try logEntry("cleanup", result: stopped)) else {
+        Issue.record("a logged cleanup shows its summary")
+        return
+    }
+    #expect(summary.title == "정리를 멈췄어요")
+    #expect(summary.rows.map(\.label) == ["대화 저장소에 남은 내용", "큐 기록"])
+    #expect(summary.rows.map(\.text) == ["3개 정리했어요", "멈춰서 하지 않았어요"])
+    // ChatGPT is the launch alert's question, not the summary's.
+    #expect(summary.notes.isEmpty)
+    #expect(!summary.relaunchFailed)
+
+    let clean = #""result": {"items": [], "vacuum": null, "stopped": false}"#
+    guard case .cleanup(let finished)? = SessionDeleteRules.pendingResult(try logEntry("cleanup", result: clean)) else {
+        Issue.record("a logged cleanup shows its summary")
+        return
+    }
+    #expect(finished.title == "정리했어요")
 }

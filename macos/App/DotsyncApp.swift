@@ -10,7 +10,8 @@ struct DotsyncApp: App {
         // A single Window: the app quits when it closes (Apple's Window docs),
         // and a dotsync:// link opens it again (scene routing for external events).
         Window("dotsync", id: "main") {
-            RootView(accounts: delegate.model, settings: delegate.settings, sessions: delegate.sessions)
+            RootView(accounts: delegate.model, settings: delegate.settings, sessions: delegate.sessions,
+                     quitting: delegate)
         }
         .windowStyle(.hiddenTitleBar)
         // With no title bar left, the window moves by its background.
@@ -21,6 +22,7 @@ struct DotsyncApp: App {
 }
 
 @MainActor
+@Observable
 final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The window's dotsync commands, one at a time per menu: 사용량's account
     /// commands in one queue, 설정's sync commands in the other, so a check
@@ -36,13 +38,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let claudeSessionQueue: CommandQueue
     let codexSessionQueue: CommandQueue
     let sessions: SessionsModel
-    /// Set when quitting starts to wait for work in flight.
-    private var quitBy: ContinuousClock.Instant?
+    /// Set when quitting starts to wait unseen for work in flight.
+    @ObservationIgnored private var quitBy: ContinuousClock.Instant?
+    /// Quitting waits in the window for long work, then quits.
+    private(set) var quitWhenDone = false
+    @ObservationIgnored private var windowWait: Task<Void, Never>?
+    /// Opens the window again: closing it is how most quits start. RootView
+    /// sets it, since opening a window is SwiftUI's.
+    @ObservationIgnored var showWindow: (() -> Void)?
+    /// From `NSWorkspace.willPowerOffNotification` on.
+    @ObservationIgnored private var poweringOff = false
+    /// Left once the power-off stop has returned, by `powerOffDeadline`.
+    @ObservationIgnored private let powerOffStop = DispatchGroup()
+    @ObservationIgnored private var powerOffDeadline = DispatchTime.distantFuture
+
+    /// Work that quitting must not cut off halfway: a session delete or
+    /// recover, the whole Codex cleanup unit, a sync apply. Its value is the
+    /// window's line while quitting waits for it.
+    var longWork: String? {
+        QuitRules.longWork(sessionWork: sessions.isWorking, applying: settings.applying)
+    }
+
+    /// The line at the top of the window while quitting waits; nil otherwise.
+    var quitNotice: String? {
+        guard quitWhenDone, let longWork else { return nil }
+        return QuitRules.notice(longWork, runs: sessions.runningWork.map { ($0.label, $0.done, $0.total) })
+    }
 
     /// dotsync still at work for the window, a widget button, or a refresh.
     private var isWorking: Bool {
         accountQueue.running != nil || syncQueue.running != nil || IntentWork.running > 0
-            || RefreshGate.shared.isRunning || sessions.isWorking
+            || RefreshGate.shared.isRunning || longWork != nil
+            || claudeSessionQueue.running != nil || codexSessionQueue.running != nil
     }
 
     override init() {
@@ -60,14 +87,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppHooks.open = { url in _ = NSWorkspace.shared.open(url) }
         offerRelaunchIfNeeded()
         // A widget button may launch the app with no window (spike Q1). Once
-        // every button's work is done, don't stay behind.
-        AppHooks.afterIntent = {
+        // every button's work is done, and nothing else runs, don't stay behind.
+        AppHooks.afterIntent = { [weak self] in
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(2))
-                if IntentWork.running == 0 && !NSApp.windows.contains(where: \.isVisible) {
-                    NSApp.terminate(nil)
-                }
+                guard let self, !self.isWorking, !NSApp.windows.contains(where: \.isVisible) else { return }
+                NSApp.terminate(nil)
             }
+        }
+        // Only NSWorkspace's own center posts it.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willPowerOffNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.powerOff() }
         }
     }
 
@@ -90,18 +122,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Closing the window quits the app, often while something it started
-    /// still runs: the refresh on opening, a switch, a widget button's work.
-    /// Quitting then drops the result — the widget stays on 조회 중…, the card
-    /// on the old account — so: stop a login waiting for the browser, stay
-    /// unseen until the rest is done (30 s at most), then quit again. Not
-    /// `.terminateLater` — AppKit stops serving the main queue until the
-    /// reply, which hung the app and every widget button.
+    /// still runs. Long work cut off halfway leaves sessions half deleted or
+    /// an apply half done, so the window stays until it ends (`QuitRules`).
+    /// Other work — the refresh on opening, a switch, a widget button's work —
+    /// would only lose its result (the widget stays on 조회 중…, the card on
+    /// the old account), so: stop a login waiting for the browser, stay unseen
+    /// until the rest is done (30 s at most), then quit again. A logout or
+    /// restart quits once the long runs have stopped. Never `.terminateLater`
+    /// — AppKit stops serving the main queue until the reply, which hung the
+    /// app and every widget button.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if let quitBy {
-            return isWorking && ContinuousClock.now < quitBy ? .terminateCancel : .terminateNow
+        switch QuitRules.reply(longWork: longWork, isWorking: isWorking, quitBy: quitBy, now: .now,
+                               poweringOff: poweringOff) {
+        case .now:
+            // Blocking here is the only way to give the CLI its safe-point
+            // exit before the reply; the stop runs off the main thread.
+            if poweringOff { _ = powerOffStop.wait(timeout: powerOffDeadline) }
+            return .terminateNow
+        case .waitVisible:
+            waitInTheWindow()
+            return .terminateCancel
+        case .waitHidden(let limit):
+            waitUnseen(sender, for: limit)
+            return .terminateCancel
+        case .alreadyWaiting:
+            return .terminateCancel
         }
-        guard isWorking else { return .terminateNow }
-        quitBy = ContinuousClock.now + .seconds(30)
+    }
+
+    /// The window stays, or opens again if closing it was the quit, with the
+    /// line and the progress on top; the app quits when the long work ends.
+    /// Nothing is stopped: a restore has no safe point, and a delete or
+    /// cleanup the person wants stopped has 멈추기.
+    private func waitInTheWindow() {
+        // Whatever is left after the long work gets its own unseen wait.
+        quitBy = nil
+        quitWhenDone = true
+        sessions.setQuitsWhenDone(true)
+        // Once AppKit has the reply and is done with this quit.
+        Task { showWindow?() }
+        guard windowWait == nil else { return }
+        windowWait = Task {
+            while longWork != nil {
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+            windowWait = nil
+            if quitWhenDone { NSApp.terminate(nil) }
+        }
+    }
+
+    /// The line's ✕: dotsync stays open after all.
+    func keepOpen() {
+        quitWhenDone = false
+        sessions.setQuitsWhenDone(false)
+    }
+
+    private func waitUnseen(_ sender: NSApplication, for limit: Duration) {
+        quitBy = ContinuousClock.now + limit
         model.cancelLogin()
         for window in sender.windows { window.orderOut(nil) }
         Task {
@@ -112,6 +189,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await RefreshGate.shared.settle(within: .zero)
             NSApp.terminate(nil)
         }
-        return .terminateCancel
+    }
+
+    /// A logout or restart. AppKit posts the notification when the quit event
+    /// arrives, before it asks `applicationShouldTerminate`. The long runs get
+    /// SIGTERM and stop at their next safe point, logging what they did; the
+    /// cleanup unit relaunches nothing, so `dotsyncQuitChatGPT` stays set for
+    /// the next launch's offer.
+    private func powerOff() {
+        guard !poweringOff else { return }
+        poweringOff = true
+        sessions.powerOff()
+        let limit = QuitRules.powerOffStop
+        powerOffDeadline = .now() + .milliseconds(Int(limit / .milliseconds(1)))
+        let stop = powerOffStop
+        stop.enter()
+        // terminateAll blocks while it waits.
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = RunningCommands.shared.terminateAll(waitingUpTo: limit)
+            stop.leave()
+        }
     }
 }

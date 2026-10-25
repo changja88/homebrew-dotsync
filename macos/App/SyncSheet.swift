@@ -9,7 +9,6 @@ struct SyncSheetView: View {
     @State private var preview: SyncPreview?
     @State private var failure: String?
     @State private var showsDiff = false
-    @State private var applying = false
 
     private var isPull: Bool { sheet.direction == .pull }
 
@@ -47,23 +46,24 @@ struct SyncSheetView: View {
                 Button("취소") { model.sheet = nil }
                     .buttonStyle(PillButtonStyle(height: 32, shadowRadius: 1.5))
                     .keyboardShortcut(.cancelAction)
-                    .disabled(applying)
-                Button(applying ? (isPull ? "가져오는 중…" : "내보내는 중…") : (isPull ? "가져오기" : "내보내기")) {
-                    applying = true
+                    .disabled(model.applying)
+                Button(model.applying ? (isPull ? "가져오는 중…" : "내보내는 중…") : (isPull ? "가져오기" : "내보내기")) {
                     Task { await model.apply(sheet) }
                 }
                 .buttonStyle(PillButtonStyle(prominent: true, height: 32))
                 .keyboardShortcut(.defaultAction)
-                .disabled(applying || changedPlans.isEmpty)
+                .disabled(model.applying || changedPlans.isEmpty)
             }
             .padding(.top, 4)
         }
         .padding(EdgeInsets(top: 20, leading: 22, bottom: 18, trailing: 22))
         .frame(width: 580)
-        .interactiveDismissDisabled(applying)
+        .interactiveDismissDisabled(model.applying)
         // The system sheet is clear glass: the table showed through the title.
         .presentationBackground { SheetBackdrop() }
-        .task { await load() }
+        // A window opened again while the apply runs (quitting waits in it)
+        // shows the sheet again; a preview then would only queue behind it.
+        .task { if !model.applying { await load() } }
     }
 
     private var title: String {

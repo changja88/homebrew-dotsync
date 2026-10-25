@@ -163,3 +163,10 @@ private func applied(_ results: [ApplyResult]) -> ApplyReport {
     #expect(SettingsText.applyMessage(report, direction: .push)
         == "내보냈지만 확인할 것이 있어요\nClaude Code: plugin a@m not found")
 }
+
+@Test func theCodexRowWaitsForCodexSessionWork() {
+    #expect(SettingsText.sessionsLine(app: "codex", codexSessionWork: true) == "세션 정리 중")
+    #expect(SettingsText.sessionsLine(app: "codex", codexSessionWork: false) == nil)
+    // Claude Code's session runs take no lock a sync waits on.
+    #expect(SettingsText.sessionsLine(app: "claude", codexSessionWork: true) == nil)
+}
