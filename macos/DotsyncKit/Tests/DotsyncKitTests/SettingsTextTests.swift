@@ -139,3 +139,27 @@ private func change(_ label: String, _ details: String = "", kind: String = "upd
     #expect(SettingsText.directionNote(report([app("skills", state: "dirty", direction: "local-newer")]))
         == "스킬은 이 맥 쪽이 더 최신이에요")
 }
+
+private func applied(_ results: [ApplyResult]) -> ApplyReport {
+    ApplyReport(dir: "/x", direction: "to", results: results)
+}
+
+@Test func aCleanApplyHasNoMessage() {
+    let report = applied([ApplyResult(app: "zsh", outcome: "changed", error: nil, warnings: [])])
+    #expect(SettingsText.applyMessage(report, direction: .pull) == nil)
+}
+
+@Test func failedAppsAreNamedWithTheirErrors() {
+    let report = applied([
+        ApplyResult(app: "zsh", outcome: "changed", error: nil, warnings: []),
+        ApplyResult(app: "codex", outcome: "failed", error: "codex timed out after 120 s", warnings: ["skipped x"]),
+    ])
+    #expect(SettingsText.applyMessage(report, direction: .pull)
+        == "1개 앱을 가져오지 못했어요\nCodex: codex timed out after 120 s\nCodex: skipped x")
+}
+
+@Test func warningsAloneStillReachThePerson() {
+    let report = applied([ApplyResult(app: "claude", outcome: "changed", error: nil, warnings: ["plugin a@m not found"])])
+    #expect(SettingsText.applyMessage(report, direction: .push)
+        == "내보냈지만 확인할 것이 있어요\nClaude Code: plugin a@m not found")
+}

@@ -12,10 +12,18 @@ final class SettingsModel {
         case pull(app: String?)
         case push(app: String?)
 
-        var id: String {
+        var id: String { "\(direction.rawValue)-\(app ?? "all")" }
+
+        var direction: SyncDirection {
             switch self {
-            case .pull(let app): "pull-\(app ?? "all")"
-            case .push(let app): "push-\(app ?? "all")"
+            case .pull: .pull
+            case .push: .push
+            }
+        }
+
+        var app: String? {
+            switch self {
+            case .pull(let app), .push(let app): app
             }
         }
     }
@@ -78,6 +86,37 @@ final class SettingsModel {
         for index in self.report?.apps.indices ?? 0..<0 {
             self.report?.apps[index].tracked = names.contains(report.apps[index].name)
         }
+        await check()
+    }
+
+    /// What the sheet's pull or push would change. Read only: closing the
+    /// sheet stops it.
+    func preview(_ sheet: SyncSheet) async -> Result<SyncPreview, CLIError> {
+        guard let service else { return .failure(CLIError(code: "failed", message: "dotsync를 찾을 수 없어요")) }
+        var outcome: Result<SyncPreview, CLIError> = .failure(CLIError(code: "cancelled", message: "취소했어요"))
+        await queue.run("바뀌는 내용 확인 중…") {
+            do {
+                outcome = .success(try await service.preview(sheet.direction, app: sheet.app))
+            } catch {
+                outcome = .failure(error as? CLIError ?? CLIError(code: "failed", message: error.localizedDescription))
+            }
+        }
+        return outcome
+    }
+
+    /// Runs the sheet's pull or push, closes the sheet, tells what failed,
+    /// and checks again.
+    func apply(_ sheet: SyncSheet) async {
+        guard let service else { return }
+        await queue.run(sheet.direction == .pull ? "가져오는 중…" : "내보내는 중…") {
+            do {
+                let report = try await service.apply(sheet.direction, app: sheet.app)
+                self.message = SettingsText.applyMessage(report, direction: sheet.direction)
+            } catch {
+                self.message = Self.describe(error)
+            }
+        }
+        self.sheet = nil
         await check()
     }
 

@@ -29,6 +29,9 @@ struct SettingsView: View {
         }
         // Not .task: leaving 설정 must not stop a check that has started.
         .onAppear { Task { await model.checkFirstTime() } }
+        .sheet(item: $model.sheet) { sheet in
+            SyncSheetView(sheet: sheet, model: model)
+        }
     }
 
     private func headerPills(now: Date) -> some View {

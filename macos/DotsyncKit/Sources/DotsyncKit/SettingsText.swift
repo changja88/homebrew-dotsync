@@ -111,6 +111,24 @@ public enum SettingsText {
         "\(appLabel) 설정을 폴더로 내보낼까요?"
     }
 
+    /// What to tell the person after a pull or push: the apps that failed
+    /// and every warning, or nil when there is nothing to tell.
+    public static func applyMessage(_ report: ApplyReport, direction: SyncDirection) -> String? {
+        let failed = report.results.filter { $0.outcome == "failed" }
+            .map { "\(appLabel(name: $0.app)): \($0.error ?? "알 수 없는 오류")" }
+        let warnings = report.results.flatMap { result in
+            result.warnings.map { "\(appLabel(name: result.app)): \($0)" }
+        }
+        if failed.isEmpty && warnings.isEmpty { return nil }
+        let header = switch (direction, failed.isEmpty) {
+        case (.pull, false): "\(failed.count)개 앱을 가져오지 못했어요"
+        case (.push, false): "\(failed.count)개 앱을 내보내지 못했어요"
+        case (.pull, true): "가져왔지만 확인할 것이 있어요"
+        case (.push, true): "내보냈지만 확인할 것이 있어요"
+        }
+        return ([header] + failed + warnings).joined(separator: "\n")
+    }
+
     public static func appLabel(name: String) -> String {
         switch name {
         case "claude": return "Claude Code"
