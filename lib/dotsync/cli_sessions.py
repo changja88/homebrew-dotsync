@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 from dotsync import cli_json, ui
 from dotsync.cli_json import JSONCommandError
-from dotsync.sessions import claude, codex
+from dotsync.sessions import claude, codex, codex_cleanup
 from dotsync.sessions.stop import StopSignal
 
 TOOLS = ("claude", "codex")
@@ -42,6 +42,15 @@ def add_parser(sub) -> None:
     recover_cmd.add_argument(
         "--json", action="store_true", help="print one JSON object; progress goes to stderr"
     )
+    cleanup_cmd = cmds.add_parser(
+        "cleanup", help="clean up what Codex leaves behind, once nothing uses it"
+    )
+    cleanup_cmd.add_argument("tool", choices=("codex",))
+    mode = cleanup_cmd.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--blockers", action="store_true", help="list what uses ~/.codex")
+    mode.add_argument("--dry-run", action="store_true", help="show what would be cleaned")
+    mode.add_argument("--yes", action="store_true", help="clean up")
+    cleanup_cmd.add_argument("--json", action="store_true", help="print one JSON object")
 
 
 def run(args: argparse.Namespace) -> int:
@@ -51,6 +60,8 @@ def run(args: argparse.Namespace) -> int:
         return _delete(args)
     if args.sessions_cmd == "recover":
         return _recover(args)
+    if args.sessions_cmd == "cleanup":
+        return _cleanup(args)
     raise NotImplementedError(args.sessions_cmd)
 
 
@@ -109,6 +120,29 @@ def _recover(args: argparse.Namespace) -> int:
     for result in report["results"]:
         print(_delete_line(result))
     return 0
+
+
+def _cleanup(args: argparse.Namespace) -> int:
+    if args.json:
+        return cli_json.emit(lambda: _cleanup_payload(args))
+    try:
+        payload = _cleanup_payload(args)
+    except JSONCommandError as e:
+        ui.error(str(e))
+        return 1
+    entries = payload["blockers"]
+    for entry in entries:
+        print(f"{entry['pid']}  {entry['kind']}  {entry['name']}  {entry['elapsed']}s")
+    if not entries:
+        print("nothing uses ~/.codex")
+    return 0
+
+
+def _cleanup_payload(args: argparse.Namespace) -> dict:
+    if args.blockers:
+        return codex_cleanup.detect()
+    # --dry-run and --yes arrive with the cleanup tasks that follow.
+    raise JSONCommandError("unsupported", "only --blockers is available so far")
 
 
 def _recover_report(args: argparse.Namespace, on_progress: Callable[[int, int], None]) -> dict:
