@@ -141,14 +141,6 @@ private func decoded<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
 // Task 22: a logout stops a running apply at its next app (the CLI's safe
 // point), so only the apply is registered with the power-off stop.
 
-private final class Done: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = false
-
-    func set() { lock.withLock { value = true } }
-    var isSet: Bool { lock.withLock { value } }
-}
-
 @Test(.serialized, arguments: ["status", "preview", "apply", "setDir", "setApps"])
 func onlyTheApplyIsALongRun(_ method: String) async throws {
     let files = try FakeDotsync(script: "")
@@ -158,7 +150,7 @@ func onlyTheApplyIsALongRun(_ method: String) async throws {
     let dir = try files.file("dir.json", sampleConfigDir)
     let apps = try files.file("apps.json", sampleConfigApps)
     let fake = try FakeDotsync(script: """
-    sleep 1
+    \(FakeDotsync.readyThenWait)
     case "$1 $2 $3" in
       status*) cat '\(status)' ;;
       *--dry-run*) cat '\(preview)' ;;
@@ -170,9 +162,7 @@ func onlyTheApplyIsALongRun(_ method: String) async throws {
     let registry = RunningCommands()
     let service = SyncService(cli: DotsyncCLI(executable: fake.executable, environment: fake.cli.environment,
                                               runningCommands: registry))
-    let done = Done()
     let run = Task {
-        defer { done.set() }
         switch method {
         case "status": _ = try await service.status()
         case "preview": _ = try await service.preview(.pull, app: nil)
@@ -181,12 +171,12 @@ func onlyTheApplyIsALongRun(_ method: String) async throws {
         default: _ = try await service.setApps(["zsh"])
         }
     }
-    var seen = 0
-    while !done.isSet {
-        seen = max(seen, registry.count)
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    try await fake.waitUntilReady()
+    // Registering follows the spawn at once; the fake waits to be let go.
+    try await Task.sleep(for: .milliseconds(50))
+    let registered = registry.count
+    fake.letGo()
     try await run.value
     #expect(registry.count == 0)
-    #expect(seen == (method == "apply" ? 1 : 0), "\(method)")
+    #expect(registered == (method == "apply" ? 1 : 0), "\(method)")
 }

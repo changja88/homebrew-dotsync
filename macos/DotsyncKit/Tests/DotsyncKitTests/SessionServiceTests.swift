@@ -128,17 +128,9 @@ private func writeLog(_ directory: URL, _ name: String, command: String, started
 
 // Task 22's power-off stop reaches only the runs registered as long runs.
 
-private final class Finished: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = false
-
-    func set() { lock.withLock { value = true } }
-    var isSet: Bool { lock.withLock { value } }
-}
-
 private func slowFake() throws -> FakeDotsync {
     try FakeDotsync(script: """
-    sleep 1
+    \(FakeDotsync.readyThenWait)
     case "$2" in
       list) echo '{"tool": "claude", "checked_at": "2026-10-25T03:04:05Z", "totals": {"sessions": 0, "bytes": 0, "running": 0}, "groups": []}' ;;
       delete|recover) echo '\(emptyDelete)' ;;
@@ -151,22 +143,18 @@ private func slowFake() throws -> FakeDotsync {
     """)
 }
 
-/// The most commands the registry held at once while `call` ran, sampled until
-/// it finished.
+/// The commands the registry holds while `call`'s fake runs; the fake waits
+/// to be let go, so the count is read while it still runs.
 private func registered(during call: @escaping @Sendable (SessionService) async throws -> Void,
                         registry: RunningCommands, fake: FakeDotsync) async throws -> Int {
     let service = SessionService(cli: DotsyncCLI(executable: fake.executable, environment: fake.cli.environment,
                                                  runningCommands: registry))
-    let finished = Finished()
-    let run = Task {
-        defer { finished.set() }
-        try await call(service)
-    }
-    var seen = 0
-    while !finished.isSet {
-        seen = max(seen, registry.count)
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    let run = Task { try await call(service) }
+    try await fake.waitUntilReady()
+    // Registering follows the spawn at once.
+    try await Task.sleep(for: .milliseconds(50))
+    let seen = registry.count
+    fake.letGo()
     try await run.value
     #expect(registry.count == 0)
     return seen

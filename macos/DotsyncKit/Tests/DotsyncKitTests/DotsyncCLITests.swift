@@ -65,34 +65,19 @@ import Testing
     #expect(info.name == "x")
 }
 
-@Test func cancellingALoginSendsSIGTERM() async throws {
-    // The sleeping child must not hold the output pipes, or reading them
-    // would wait for it; the trap stops it like dotsync stops `claude`.
-    let fake = try FakeDotsync(script: """
-    sleep 30 >/dev/null 2>&1 &
-    child=$!
-    trap 'kill $child; echo "{\\"error\\": {\\"code\\": \\"cancelled\\", \\"message\\": \\"login cancelled\\"}}"; exit 1' TERM
-    wait $child
-    """)
-    let login = Task { try await fake.cli.login("slow") }
-    while fake.calls().isEmpty { try await Task.sleep(for: .milliseconds(20)) }
-    login.cancel()
-    await #expect(throws: CLIError(code: "cancelled", message: "login cancelled")) {
-        _ = try await login.value
-    }
-}
-
 @Test func cancellingAUseLetsDotsyncFinish() async throws {
     // `use` writes the Keychain, then Claude's files; stopped between the two,
     // the next switch would hand one account's login to another. A cancelled
     // caller (a widget button the system gave up on) waits for the answer.
     let fake = try FakeDotsync(script: """
     trap 'echo stopped >&2; exit 1' TERM
+    \(FakeDotsync.ready)
     sleep 0.5
     echo '{"name": "work", "label": "work", "email": null, "logged_in": true}'
     """)
     let use = Task { try await fake.cli.use("work", overwriteUnsaved: false) }
-    while fake.calls().isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+    // Past the trap: a SIGTERM sent on cancel would end it with "stopped".
+    try await fake.waitUntilReady()
     use.cancel()
     let info = try await use.value
     #expect(info.name == "work")
@@ -189,63 +174,6 @@ import Testing
     #expect(String(decoding: lines.kept, as: UTF8.self) == "first\nlast words\n")
 }
 
-/// A fake that stops like dotsync does: TERM makes it finish what it is
-/// doing for `finishing` seconds, then answer `{}`.
-private func stubbornFake(finishing seconds: String) throws -> FakeDotsync {
-    try FakeDotsync(script: """
-    sleep 30 >/dev/null 2>&1 &
-    child=$!
-    trap 'kill $child; sleep \(seconds); echo "{}"; exit 0' TERM
-    wait $child
-    """)
-}
-
-private func waitUntilRunning(_ fake: FakeDotsync, _ registry: RunningCommands) async throws {
-    while fake.calls().isEmpty || registry.count == 0 { try await Task.sleep(for: .milliseconds(20)) }
-}
-
-@Test func terminateAllStopsLongRuns() async throws {
-    let registry = RunningCommands()
-    let fake = try stubbornFake(finishing: "0.5")
-    let cli = DotsyncCLI(executable: fake.executable, environment: fake.cli.environment, runningCommands: registry)
-    let run = Task { try await cli.runJSON(["sessions", "delete"], timeout: .seconds(60), longRun: true) }
-    try await waitUntilRunning(fake, registry)
-
-    let clock = ContinuousClock()
-    let started = clock.now
-    let allExited = registry.terminateAll(waitingUpTo: .seconds(5))
-    #expect(allExited)
-    #expect(clock.now - started < .seconds(2))
-    #expect(String(decoding: try await run.value, as: UTF8.self) == "{}\n")
-    #expect(registry.count == 0)
-}
-
-@Test func terminateAllGivesUpAtTheLimit() async throws {
-    let registry = RunningCommands()
-    let fake = try FakeDotsync(script: "trap '' TERM; sleep 1.5; echo '{}'")
-    let cli = DotsyncCLI(executable: fake.executable, environment: fake.cli.environment, runningCommands: registry)
-    let run = Task { try await cli.runJSON(["x"], timeout: .seconds(60), longRun: true) }
-    try await waitUntilRunning(fake, registry)
-
-    let clock = ContinuousClock()
-    let started = clock.now
-    #expect(registry.terminateAll(waitingUpTo: .milliseconds(300)) == false)
-    #expect(clock.now - started < .seconds(1))
-    _ = try await run.value
-}
-
-@Test func terminateAllCountsARunThatEndsOnItsOwn() async throws {
-    let registry = RunningCommands()
-    let fake = try FakeDotsync(script: "trap '' TERM; sleep 0.4; echo '{}'")
-    let cli = DotsyncCLI(executable: fake.executable, environment: fake.cli.environment, runningCommands: registry)
-    let run = Task { try await cli.runJSON(["x"], timeout: .seconds(60), longRun: true) }
-    try await waitUntilRunning(fake, registry)
-
-    #expect(registry.terminateAll(waitingUpTo: .seconds(5)))
-    _ = try await run.value
-    #expect(registry.count == 0)
-}
-
 @Test func terminateAllWithNothingRunningIsImmediate() {
     #expect(RunningCommands().terminateAll(waitingUpTo: .seconds(5)))
 }
@@ -260,21 +188,123 @@ private func waitUntilRunning(_ fake: FakeDotsync, _ registry: RunningCommands) 
     _ = try await run.value
 }
 
-@Test func terminateAllReturnsTrueOnlyAfterTheChildHasExited() async throws {
-    let registry = RunningCommands()
-    let fake = try FakeDotsync(script: """
+/// A fake that stops like dotsync does: TERM makes it finish what it is
+/// doing for `finishing` seconds, then answer `{}`.
+private func stubbornFake(finishing seconds: String) throws -> FakeDotsync {
+    try FakeDotsync(script: """
     sleep 30 >/dev/null 2>&1 &
     child=$!
-    trap 'kill $child; sleep 0.5; echo exited > "$0.exited"; echo "{}"; exit 0' TERM
+    trap 'kill $child; sleep \(seconds); echo "{}"; exit 0' TERM
+    \(FakeDotsync.ready)
     wait $child
     """)
-    let marker = fake.executable.path + ".exited"
-    let cli = DotsyncCLI(executable: fake.executable, environment: fake.cli.environment, runningCommands: registry)
-    let run = Task { try await cli.runJSON(["x"], timeout: .seconds(60), longRun: true) }
-    try await waitUntilRunning(fake, registry)
+}
 
-    #expect(registry.terminateAll(waitingUpTo: .seconds(5)))
-    // Before awaiting the run: the child's last act was in place already.
-    #expect(FileManager.default.fileExists(atPath: marker))
-    _ = try await run.value
+/// Until the fake has set its trap and the run is registered.
+private func waitUntilRunning(_ fake: FakeDotsync, _ registry: RunningCommands) async throws {
+    try await fake.waitUntilReady()
+    while registry.count == 0 { try await Task.sleep(for: .milliseconds(20)) }
+}
+
+/// Runs whose fake goes on until the test signals it or lets it go. Each
+/// running fake holds two threads of the concurrency pool (DotsyncCLI's
+/// pipe readers block), so these take turns: enough of them at once would
+/// leave no thread for the tests to resume and act.
+@Suite(.serialized)
+struct FakesThatWaitForTheTest {
+    @Test func cancellingALoginSendsSIGTERM() async throws {
+        // The sleeping child must not hold the output pipes, or reading them
+        // would wait for it; the trap stops it like dotsync stops `claude`.
+        let fake = try FakeDotsync(script: """
+        sleep 30 >/dev/null 2>&1 &
+        child=$!
+        trap 'kill $child; echo "{\\"error\\": {\\"code\\": \\"cancelled\\", \\"message\\": \\"login cancelled\\"}}"; exit 1' TERM
+        \(FakeDotsync.ready)
+        wait $child
+        """)
+        let login = Task { try await fake.cli.login("slow") }
+        try await fake.waitUntilReady()
+        login.cancel()
+        await #expect(throws: CLIError(code: "cancelled", message: "login cancelled")) {
+            _ = try await login.value
+        }
+    }
+
+    @Test func terminateAllStopsLongRuns() async throws {
+        let registry = RunningCommands()
+        let fake = try stubbornFake(finishing: "0.5")
+        let cli = DotsyncCLI(executable: fake.executable, environment: fake.cli.environment, runningCommands: registry)
+        let run = Task { try await cli.runJSON(["sessions", "delete"], timeout: .seconds(60), longRun: true) }
+        try await waitUntilRunning(fake, registry)
+
+        let clock = ContinuousClock()
+        let started = clock.now
+        let allExited = registry.terminateAll(waitingUpTo: .seconds(5))
+        #expect(allExited)
+        #expect(clock.now - started < .seconds(2))
+        #expect(String(decoding: try await run.value, as: UTF8.self) == "{}\n")
+        #expect(registry.count == 0)
+    }
+
+    @Test func terminateAllGivesUpAtTheLimit() async throws {
+        let registry = RunningCommands()
+        // Ignores TERM, and cannot finish until let go.
+        let fake = try FakeDotsync(script: """
+        trap '' TERM
+        \(FakeDotsync.readyThenWait)
+        echo '{}'
+        """)
+        let cli = DotsyncCLI(executable: fake.executable, environment: fake.cli.environment, runningCommands: registry)
+        let run = Task { try await cli.runJSON(["x"], timeout: .seconds(60), longRun: true) }
+        try await waitUntilRunning(fake, registry)
+
+        let clock = ContinuousClock()
+        let started = clock.now
+        #expect(registry.terminateAll(waitingUpTo: .milliseconds(300)) == false)
+        #expect(clock.now - started < .seconds(1))
+        fake.letGo()
+        _ = try await run.value
+    }
+
+    @Test func terminateAllCountsARunThatEndsOnItsOwn() async throws {
+        let registry = RunningCommands()
+        // Ignores TERM; it ends when let go, while terminateAll waits.
+        let fake = try FakeDotsync(script: """
+        trap '' TERM
+        \(FakeDotsync.readyThenWait)
+        echo '{}'
+        """)
+        let cli = DotsyncCLI(executable: fake.executable, environment: fake.cli.environment, runningCommands: registry)
+        let run = Task { try await cli.runJSON(["x"], timeout: .seconds(60), longRun: true) }
+        try await waitUntilRunning(fake, registry)
+
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(300)) { fake.letGo() }
+        let clock = ContinuousClock()
+        let started = clock.now
+        #expect(registry.terminateAll(waitingUpTo: .seconds(5)))
+        // It waited for the end, rather than finding the fake already gone.
+        #expect(clock.now - started >= .milliseconds(250))
+        _ = try await run.value
+        #expect(registry.count == 0)
+    }
+
+    @Test func terminateAllReturnsTrueOnlyAfterTheChildHasExited() async throws {
+        let registry = RunningCommands()
+        let fake = try FakeDotsync(script: """
+        sleep 30 >/dev/null 2>&1 &
+        child=$!
+        trap 'kill $child; sleep 0.5; echo exited > "$0.exited"; echo "{}"; exit 0' TERM
+        \(FakeDotsync.ready)
+        wait $child
+        """)
+        let marker = fake.executable.path + ".exited"
+        let cli = DotsyncCLI(executable: fake.executable, environment: fake.cli.environment, runningCommands: registry)
+        let run = Task { try await cli.runJSON(["x"], timeout: .seconds(60), longRun: true) }
+        try await waitUntilRunning(fake, registry)
+
+        #expect(registry.terminateAll(waitingUpTo: .seconds(5)))
+        // Before awaiting the run: the child's last act was in place already.
+        #expect(FileManager.default.fileExists(atPath: marker))
+        _ = try await run.value
+    }
 }
