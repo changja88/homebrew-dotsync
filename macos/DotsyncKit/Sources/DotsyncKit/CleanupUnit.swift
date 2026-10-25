@@ -262,7 +262,7 @@ public enum CleanupGate {
         }
         // The dry-run has not arrived yet.
         guard let preview else { return (false, nil) }
-        if let refusal = preview.refusal { return (false, refusal.message) }
+        if let refusal = preview.refusal { return (false, SessionText.cleanupRefusal(refusal)) }
         return (true, nil)
     }
 }

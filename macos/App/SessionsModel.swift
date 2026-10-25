@@ -2,7 +2,8 @@ import DotsyncKit
 import Foundation
 import Observation
 
-/// What a delete (or recover) run leaves on screen. Task 21 fills `cleanup`.
+/// What a delete (or recover) run leaves on screen. `cleanup` is the Codex
+/// cleanup sheet, whose state is `SessionsModel.cleanup`.
 enum SessionSheet {
     case confirm
     /// A delete or recover in flight; its progress is the tool's `work`.
@@ -42,7 +43,7 @@ struct ToolSessions {
 @MainActor
 @Observable
 final class SessionsModel {
-    private(set) var tools: [SessionTool: ToolSessions] = [.claude: ToolSessions(), .codex: ToolSessions()]
+    var tools: [SessionTool: ToolSessions] = [.claude: ToolSessions(), .codex: ToolSessions()]
     let queues: [SessionTool: CommandQueue]
     let service: SessionService?
     /// Holds the start time of a delete from before it runs until its result
@@ -50,13 +51,26 @@ final class SessionsModel {
     static let pendingKey = "pendingSessionsResult"
     private let defaults: UserDefaults
     @ObservationIgnored private var runningTasks: [SessionTool: Task<DeleteReport, Error>] = [:]
-    @ObservationIgnored private var stopRequested: Set<SessionTool> = []
+    @ObservationIgnored var stopRequested: Set<SessionTool> = []
+
+    // The Codex cleanup (SessionsModel+Cleanup.swift).
+    var cleanup = CleanupState()
+    /// Set on `NSWorkspace.willPowerOffNotification` (Task 22): the unit then
+    /// starts no cleanup and relaunches nothing.
+    var isPoweringOff = false
+    let chatGPT: any ChatGPTControl
+    let flags: any FlagStore
+    @ObservationIgnored var cleanupTask: Task<CleanupOutcome, Never>?
+    @ObservationIgnored var cleanupReadTask: Task<Void, Never>?
 
     init(claudeQueue: CommandQueue, codexQueue: CommandQueue, service: SessionService? = SessionService.standard(),
-         defaults: UserDefaults = .standard, logDirectory: URL = SessionsModel.standardLogDirectory) {
+         defaults: UserDefaults = .standard, logDirectory: URL = SessionsModel.standardLogDirectory,
+         chatGPT: (any ChatGPTControl)? = nil, flags: any FlagStore = UserDefaults.standard) {
         queues = [.claude: claudeQueue, .codex: codexQueue]
         self.service = service
         self.defaults = defaults
+        self.chatGPT = chatGPT ?? ChatGPTApp()
+        self.flags = flags
         if service == nil {
             let message = "dotsync를 찾을 수 없어요 — brew install changja88/dotsync/dotsync"
             for tool in SessionTool.allCases { tools[tool]?.message = message }
@@ -231,7 +245,7 @@ final class SessionsModel {
         if !isWorking { defaults.removeObject(forKey: Self.pendingKey) }
     }
 
-    private func advance(_ tool: SessionTool, done: Int, total: Int) {
+    func advance(_ tool: SessionTool, done: Int, total: Int) {
         guard var work = tools[tool]?.work else { return }
         // Updates hop to the main actor one by one and may land out of order.
         work.done = max(work.done, done)
@@ -243,6 +257,7 @@ final class SessionsModel {
     func stop(_ tool: SessionTool) {
         stopRequested.insert(tool)
         runningTasks[tool]?.cancel()
+        if tool == .codex { cleanupTask?.cancel() }
     }
 
     /// 확인 on a result: close it and read the list again, whose pruning drops
@@ -253,7 +268,11 @@ final class SessionsModel {
     }
 
     func cancelConfirm(_ tool: SessionTool) {
-        if case .confirm? = tools[tool]?.sheet { tools[tool]?.sheet = nil }
+        switch tools[tool]?.sheet {
+        case .confirm?: tools[tool]?.sheet = nil
+        case .cleanup? where cleanupTask == nil && tools[tool]?.work == nil: closeCleanup()
+        default: break
+        }
     }
 
     func askToDelete(_ tool: SessionTool) {

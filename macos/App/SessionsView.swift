@@ -32,7 +32,7 @@ struct SessionsView: View {
         .onAppear { Task { await model.checkFirstTime(tool) } }
         .onChange(of: tool) { _, tool in Task { await model.checkFirstTime(tool) } }
         .sheet(isPresented: Binding(
-            get: { model[tool].sheet.map(SessionSheetHost.presents) ?? false },
+            get: { model[tool].sheet != nil },
             set: { if !$0 { model.cancelConfirm(tool) } }
         )) {
             SessionSheetHost(model: model, tool: tool)
@@ -180,7 +180,7 @@ private struct QuickSelectBar: View {
             Spacer(minLength: 0)
             switch tool {
             case .claude: claudeNote
-            case .codex: CodexLeftovers()
+            case .codex: CodexLeftovers(model: model)
             }
         }
         .font(.system(size: 12))
@@ -202,8 +202,9 @@ private struct QuickSelectBar: View {
 }
 
 /// The orange pill that opens the cleanup of what deleted Codex sessions leave
-/// behind. Task 21 opens its sheet; the button waits for it.
+/// behind.
 private struct CodexLeftovers: View {
+    let model: SessionsModel
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -212,9 +213,9 @@ private struct CodexLeftovers: View {
                 .foregroundStyle(ChipStyle.different.foreground(dark: colorScheme == .dark))
             Text("지운 세션이 남긴 데이터").font(.system(size: 12, weight: .semibold))
             Text("Codex를 껐다 켜요").font(.system(size: 11.5)).foregroundStyle(.secondary)
-            Button("정리…") {}
+            Button("정리…") { model.openCleanup() }
                 .buttonStyle(PillButtonStyle(height: 24))
-                .disabled(true)
+                .disabled(model.service == nil || model[.codex].work != nil)
         }
         .lineLimit(1)
         .padding(EdgeInsets(top: 2, leading: 10, bottom: 2, trailing: 2))

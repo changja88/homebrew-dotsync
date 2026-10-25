@@ -2,18 +2,12 @@ import DotsyncKit
 import SwiftUI
 
 /// The sheet over the 세션 menu while a delete is being decided, run, or
-/// reported: the confirm sheet (`F-claude-confirm`, `F-codex-confirm`), the
+/// reported (the Codex cleanup sheet is CleanupSheet.swift): the confirm sheet (`F-claude-confirm`, `F-codex-confirm`), the
 /// run's progress, and the result (`F-codex-result`). All of them say only what
 /// the CLI reported.
 struct SessionSheetHost: View {
     let model: SessionsModel
     let tool: SessionTool
-
-    /// The cleanup sheet is Task 21's.
-    static func presents(_ sheet: SessionSheet) -> Bool {
-        if case .cleanup = sheet { return false }
-        return true
-    }
 
     var body: some View {
         let state = model[tool]
@@ -29,7 +23,9 @@ struct SessionSheetHost: View {
                 ResultSheet(model: model, report: report, list: state.list)
             case .failure(let message):
                 FailureSheet(model: model, tool: tool, message: message)
-            case .cleanup, nil:
+            case .cleanup:
+                CleanupSheet(model: model)
+            case nil:
                 EmptyView()
             }
         }
@@ -258,10 +254,9 @@ private struct ResultSheet: View {
             HStack(spacing: 8) {
                 Spacer()
                 if report.tool == .codex {
-                    // Task 21 opens the cleanup sheet.
-                    Button("남은 데이터 정리…") {}
+                    Button("남은 데이터 정리…") { model.openCleanup() }
                         .buttonStyle(PillButtonStyle(height: 32, shadowRadius: 1.5))
-                        .disabled(true)
+                        .disabled(model.service == nil)
                 }
                 Button("확인") { Task { await model.dismissResult(report.tool) } }
                     .buttonStyle(PillButtonStyle(prominent: true, height: 32))

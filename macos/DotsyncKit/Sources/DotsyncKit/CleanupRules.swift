@@ -1,0 +1,185 @@
+import Foundation
+
+/// What the Codex cleanup sheet shows and when it lets the person start
+/// (spec "Codex cleanup sheet"): the rows before the start, the items, the
+/// button's state and the summary of a finished unit. The view only lays it out.
+public enum CleanupRules {
+    // MARK: 시작하기 전에
+
+    public struct StartRow: Equatable, Sendable, Identifiable {
+        public enum Style: Sendable { case ok, warn, wait }
+        public var id: String
+        public var style: Style
+        public var title: String
+        public var detail: String
+        /// "다시 확인" is offered on the rows that wait for something.
+        public var canRecheck: Bool
+
+        /// The row as one line: "터미널 Codex 1개 · codex · 12분째 실행 중 · …".
+        public var text: String { title.isEmpty ? detail : "\(title) · \(detail)" }
+    }
+
+    /// The ChatGPT row, then one row per kind and name of the other blockers.
+    /// With nothing running, one neutral row says so.
+    public static func startRows(_ seen: CleanupBlockers) -> [StartRow] {
+        var rows: [StartRow] = []
+        if seen.blockers.contains(where: \.isChatGPT) {
+            let open = seen.chatgptOpenThreads
+            rows.append(StartRow(
+                id: "chatgpt", style: open > 0 ? .warn : .ok, title: "ChatGPT 앱",
+                detail: open > 0 ? "열린 세션 \(open)개가 닫혀요. 하던 작업이 있으면 멈춰요" : "dotsync가 끄고, 끝나면 다시 켜요",
+                canRecheck: false))
+        }
+        let others = seen.blockers.filter { !$0.isChatGPT }
+        if others.contains(where: { $0.kind == "detection_failed" }) {
+            rows.append(StartRow(id: "detection_failed", style: .wait, title: "Codex 확인",
+                                 detail: "실행 중인 Codex를 확인하지 못했어요", canRecheck: true))
+            return rows
+        }
+        rows += groups(others).map { group in
+            StartRow(id: "\(group.kind)/\(group.name)", style: .wait,
+                     title: "\(kindLabel(group.kind)) \(group.count)개",
+                     detail: "\(group.name) · \(running(group.elapsed)) · 끝나야 시작할 수 있어요", canRecheck: true)
+        }
+        if rows.isEmpty {
+            rows.append(StartRow(id: "none", style: .ok, title: "Codex", detail: "Codex를 쓰는 프로그램이 없어요", canRecheck: false))
+        }
+        return rows
+    }
+
+    private struct Group {
+        var kind: String
+        var name: String
+        var count = 0
+        var elapsed = 0
+    }
+
+    /// By kind and name, in the order first seen; the longest run of a group.
+    private static func groups(_ blockers: [Blocker]) -> [Group] {
+        var groups: [Group] = []
+        for blocker in blockers {
+            if let index = groups.firstIndex(where: { $0.kind == blocker.kind && $0.name == blocker.name }) {
+                groups[index].count += 1
+                groups[index].elapsed = max(groups[index].elapsed, blocker.elapsed)
+            } else {
+                groups.append(Group(kind: blocker.kind, name: blocker.name, count: 1, elapsed: blocker.elapsed))
+            }
+        }
+        return groups
+    }
+
+    private static func kindLabel(_ kind: String) -> String {
+        kind == "terminal_codex" ? "터미널 Codex" : "Codex를 쓰는 프로그램"
+    }
+
+    private static func running(_ elapsed: Int) -> String {
+        elapsed < 60 ? "1분 미만 실행 중" : "\(elapsed / 60)분째 실행 중"
+    }
+
+    // MARK: 정리할 것
+
+    /// The dry-run's items, without `cache_files`: it always runs, last, and
+    /// is not a choice (spec 6.5).
+    public static func visibleItems(_ items: [CleanupItem]) -> [CleanupItem] {
+        items.filter { $0.id != "cache_files" }
+    }
+
+    /// Each checkbox starts at the item's `checked`.
+    public static func initialSelection(_ items: [CleanupItem]) -> Set<String> {
+        Set(visibleItems(items).filter(\.checked).map(\.id))
+    }
+
+    /// What goes to `--items`: the picked ones that are still in the dry-run, in its order.
+    public static func selectedIds(_ items: [CleanupItem], selection: Set<String>) -> [String] {
+        visibleItems(items).map(\.id).filter(selection.contains)
+    }
+
+    /// The right column of an item: "세션 2,304개", "세션 2개 · 37줄", "83개".
+    public static func countText(_ item: CleanupItem) -> String {
+        let count = item.count.formatted(.number.locale(Locale(identifier: "en_US")))
+        if let lines = item.lines { return "세션 \(count)개 · \(lines.formatted(.number.locale(Locale(identifier: "en_US"))))줄" }
+        return item.id == "history_rows" ? "세션 \(count)개" : "\(count)개"
+    }
+
+    public static func vacuumHint(historyDbBytes: Int64) -> String {
+        "\(SessionText.bytes(historyDbBytes))에서 지운 만큼 줄어요. 얼마나 줄지는 정리해 봐야 알아요."
+    }
+
+    // MARK: 끄고 정리하기
+
+    /// The blocker gate, then something to clean: an item or the vacuum.
+    public static func startState(blockers: CleanupBlockers, preview: CleanupPreview?, selected: [String],
+                                  vacuum: Bool) -> (allowed: Bool, note: String?) {
+        let gate = CleanupGate.canStart(blockers: blockers, preview: preview)
+        guard gate.allowed else { return gate }
+        if selected.isEmpty && !vacuum { return (false, "정리할 것을 골라 주세요") }
+        return (true, nil)
+    }
+
+    // MARK: After the unit
+
+    public struct ResultRow: Equatable, Sendable {
+        public var label: String
+        public var text: String
+        public var failed: Bool
+    }
+
+    public struct Summary: Equatable, Sendable {
+        public var title: String
+        public var rows: [ResultRow] = []
+        public var vacuumLines: [String] = []
+        /// Lines under the title: what was left, or why nothing ran.
+        public var notes: [String] = []
+        /// ChatGPT did not open again: the sheet offers "ChatGPT 다시 켜기".
+        public var relaunchFailed = false
+
+        /// After "ChatGPT 다시 켜기" opened it: the failure line goes.
+        public func afterRelaunch() -> Summary {
+            var summary = self
+            summary.relaunchFailed = false
+            summary.notes.removeAll { $0 == CleanupRules.relaunchFailedNote }
+            return summary
+        }
+    }
+
+    static let relaunchFailedNote = "ChatGPT를 다시 켜지 못했어요"
+
+    /// nil for the outcomes that end in the sheet as it was: a grown count
+    /// (wait for another press) and a new blocker (the rows show it).
+    public static func summary(of outcome: CleanupOutcome) -> Summary? {
+        switch outcome {
+        case .needsConfirmation, .blocked:
+            return nil
+        case .chatgptDidNotQuit(let names, let relaunch):
+            return finish(Summary(title: "ChatGPT를 끄지 못했어요",
+                                  notes: ["남아 있는 것: \(names.joined(separator: ", "))", "아무것도 정리하지 않았어요"]), relaunch)
+        case .failed(let error, let relaunch):
+            let why = error.code == "cancelled" ? "멈춰서 정리하지 않았어요" : SessionText.cleanupRefusal(error)
+            return finish(Summary(title: "정리하지 못했어요", notes: [why]), relaunch)
+        case .finished(let report, let relaunch):
+            let rows = report.items.filter { $0.id != "cache_files" }.map {
+                ResultRow(label: SessionText.cleanupItemLabels[$0.id] ?? $0.id, text: SessionText.cleanupResultLine($0),
+                          failed: $0.outcome == "failed")
+            }
+            let title = report.stopped ? "정리를 멈췄어요" : rows.contains(where: \.failed) ? "일부는 정리하지 못했어요" : "정리했어요"
+            return finish(Summary(title: title, rows: rows, vacuumLines: report.vacuum.map(SessionText.vacuumLines) ?? []), relaunch)
+        }
+    }
+
+    private static func finish(_ summary: Summary, _ relaunch: RelaunchResult) -> Summary {
+        var summary = summary
+        if relaunch == .failed {
+            summary.notes.append(relaunchFailedNote)
+            summary.relaunchFailed = true
+        }
+        return summary
+    }
+}
+
+extension CleanupBlockers {
+    /// The blocker fields of a dry-run: newer than an earlier `--blockers`.
+    public init(_ preview: CleanupPreview) {
+        self.init(blockers: preview.blockers, chatgptHelpers: preview.chatgptHelpers,
+                  chatgptOpenThreads: preview.chatgptOpenThreads)
+    }
+}

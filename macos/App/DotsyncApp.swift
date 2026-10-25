@@ -58,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppHooks.open = { url in _ = NSWorkspace.shared.open(url) }
+        offerRelaunchIfNeeded()
         // A widget button may launch the app with no window (spike Q1). Once
         // every button's work is done, don't stay behind.
         AppHooks.afterIntent = {
@@ -66,6 +67,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if IntentWork.running == 0 && !NSApp.windows.contains(where: \.isVisible) {
                     NSApp.terminate(nil)
                 }
+            }
+        }
+    }
+
+    /// A cleanup the app did not finish (a crash, a logout) can leave ChatGPT
+    /// quit by dotsync. Ask once whether to open it again.
+    private func offerRelaunchIfNeeded() {
+        guard sessions.shouldOfferRelaunch else { return }
+        let alert = NSAlert()
+        alert.messageText = "dotsync가 끈 ChatGPT를 다시 켤까요?"
+        alert.addButton(withTitle: "다시 켜기")
+        alert.addButton(withTitle: "그대로 두기")
+        Task { @MainActor in
+            if alert.runModal() == .alertFirstButtonReturn {
+                // A failure keeps the flag, so the next launch asks again.
+                _ = await sessions.relaunchChatGPT()
+            } else {
+                sessions.declineRelaunch()
             }
         }
     }
