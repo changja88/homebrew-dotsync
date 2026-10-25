@@ -18,6 +18,7 @@ from typing import Callable
 from dotsync import diffinfo
 from dotsync.config import Config, ConfigError
 from dotsync.plan import Change
+from dotsync.sessions.stop import StopSignal
 from dotsync.shellrc import ShellRcResult
 
 
@@ -220,6 +221,26 @@ def preview_json(cfg: Config, apps: list[str], direction: str) -> dict:
     return {"dir": str(cfg.dir), "dir_source": cfg.dir_source, "direction": direction, "plans": plans}
 
 
+def _apply_one(name: str, cfg: Config, direction: str, unchanged: bool) -> dict:
+    from dotsync.apps import build_app
+
+    app = build_app(name, cfg)
+    result: dict = {"app": name}
+    if unchanged:
+        result["outcome"] = "unchanged"
+    else:
+        try:
+            if direction == "from":
+                app.sync_from(cfg.dir)
+            else:
+                app.sync_to(cfg.dir)
+            result["outcome"] = "changed"
+        except (OSError, RuntimeError) as e:
+            result.update(outcome="failed", error=str(e))
+    result["warnings"] = list(app.warnings)
+    return result
+
+
 def apply_json(cfg: Config, apps: list[str], direction: str) -> dict:
     """push/pull with the text command's rules: an app whose plan has
     changes but none that change anything is "unchanged"; one whose sync
@@ -232,20 +253,12 @@ def apply_json(cfg: Config, apps: list[str], direction: str) -> dict:
         plan = _plan(build_app(name, cfg), cfg, direction)
         unchanged[name] = bool(plan.changes) and not plan.has_changes
     results = []
-    for name in apps:
-        app = build_app(name, cfg)
-        result: dict = {"app": name}
-        if unchanged[name]:
-            result["outcome"] = "unchanged"
-        else:
-            try:
-                if direction == "from":
-                    app.sync_from(cfg.dir)
-                else:
-                    app.sync_to(cfg.dir)
-                result["outcome"] = "changed"
-            except (OSError, RuntimeError) as e:
-                result.update(outcome="failed", error=str(e))
-        result["warnings"] = list(app.warnings)
-        results.append(result)
+    with StopSignal() as stop:
+        for name in apps:
+            if stop.requested:  # SIGTERM: finish the app in flight, start no more
+                results.append(
+                    {"app": name, "outcome": "skipped", "reason": "stopped", "warnings": []}
+                )
+                continue
+            results.append(_apply_one(name, cfg, direction, unchanged[name]))
     return {"dir": str(cfg.dir), "dir_source": cfg.dir_source, "direction": direction, "results": results}

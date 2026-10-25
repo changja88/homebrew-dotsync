@@ -306,3 +306,41 @@ def test_pull_dry_run_json_carries_claude_plugin_actions(fake_home, monkeypatch,
     _, payload, _ = _run(capsys, ["pull", "claude", "--dry-run", "--json"])
 
     assert payload["plans"][0]["plugin_actions"] == {"install": ["a@m"], "disable": ["b@m"]}
+
+
+def test_apply_json_stops_between_apps_on_sigterm(fake_home, monkeypatch, tmp_path, capsys):
+    import os
+    import signal
+
+    import dotsync.apps
+
+    _folder(monkeypatch, tmp_path, ["zsh", "ghostty"])
+    synced = []
+
+    class Plan:
+        changes = [object()]
+        has_changes = True
+
+    class StubApp:
+        warnings: list = []
+
+        def __init__(self, name):
+            self.name = name
+
+        def plan_to(self, _dir):
+            return Plan()
+
+        def sync_to(self, _dir):
+            synced.append(self.name)
+            if self.name == "zsh":
+                os.kill(os.getpid(), signal.SIGTERM)
+
+    monkeypatch.setattr(dotsync.apps, "build_app", lambda name, cfg: StubApp(name))
+
+    rc, payload, _ = _run(capsys, ["pull", "--all", "--yes", "--json"])
+
+    assert rc == 0
+    assert synced == ["zsh"]
+    first, second = payload["results"]
+    assert first["outcome"] == "changed"
+    assert (second["outcome"], second["reason"]) == ("skipped", "stopped")

@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Sequence
-from dotsync import __version__, accounts, cli_json, locks, ui
+from dotsync import __version__, accounts, cli_json, cli_sessions, locks, ui
 from dotsync.apps import APP_CLASSES, APP_NAMES, build_app, detect_present
 from dotsync.config import (
     Config,
@@ -123,6 +123,8 @@ def _build_parser() -> argparse.ArgumentParser:
         account_cmd.add_argument(
             "--json", action="store_true", help="print one JSON object (for the dotsync app)"
         )
+
+    cli_sessions.add_parser(sub)
 
     return p
 
@@ -976,6 +978,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return cmd_to(args)
         if args.cmd == "account":
             return cmd_account(args)
+        if args.cmd == "sessions":
+            return cli_sessions.run(args)
         parser.print_help()
         return 2
     except ConfigError as e:
