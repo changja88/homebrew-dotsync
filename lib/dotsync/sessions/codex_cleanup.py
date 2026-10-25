@@ -17,6 +17,7 @@ Codex's own coordination lock, and deletes only what `orphans` reports."""
 from __future__ import annotations
 
 import contextlib
+import errno
 import fcntl
 import json
 import os
@@ -920,8 +921,8 @@ def rewrite_jsonl(path: Path, drop: Callable[[bytes], bool]) -> int:
     Under flock(LOCK_EX) on the file. When nothing is dropped the file is not
     touched. Otherwise it is hard-linked to `<name>.dotsync-backup-<ts>`, the
     kept lines go to a uniquely named temp file in the same folder with the
-    file's mode, fsynced, renamed over the file, the folder is fsynced, and
-    the backup removed. A failure or crash leaves the old file or the new one,
+    file's mode, synced to the drive (`_full_fsync`), renamed over the file,
+    the folder is synced the same way, and the backup removed. A failure or crash leaves the old file or the new one,
     whole, plus the backup; the temp file never stays. A symlink in the
     file's place is refused, not followed."""
     try:
@@ -960,7 +961,7 @@ def _replace(path: Path, lines: list[bytes], mode: int) -> None:
             os.fchmod(out.fileno(), mode)
             out.writelines(lines)
             out.flush()
-            os.fsync(out.fileno())
+            _full_fsync(out.fileno())
         os.replace(temp, path)
     except BaseException:
         with contextlib.suppress(FileNotFoundError):
@@ -968,6 +969,24 @@ def _replace(path: Path, lines: list[bytes], mode: int) -> None:
         raise
     folder = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        os.fsync(folder)
+        _full_fsync(folder)
     finally:
         os.close(folder)
+
+
+_NO_FULLFSYNC = (errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP)  # the filesystem cannot
+
+
+def _full_fsync(fd: int) -> None:
+    """Get `fd`'s data onto the drive itself. On macOS fsync(2) only hands it
+    to the drive, which may write it later and out of order (`man 2 fsync`);
+    F_FULLFSYNC waits until it is written. A filesystem that does not support
+    F_FULLFSYNC gets plain fsync; any other error raises."""
+    if hasattr(fcntl, "F_FULLFSYNC"):
+        try:
+            fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
+            return
+        except OSError as e:
+            if e.errno not in _NO_FULLFSYNC:
+                raise
+    os.fsync(fd)

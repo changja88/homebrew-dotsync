@@ -4,11 +4,13 @@ while nothing uses ~/.codex and under Codex's coordination lock; kept rows and
 lines must come out byte-for-byte as they went in, and a history file is never
 left half-written."""
 
+import errno
 import fcntl
 import json
 import os
 import signal
 import sqlite3
+import stat
 from pathlib import Path
 
 import pytest
@@ -552,6 +554,95 @@ def test_rewrite_holds_the_files_lock(folder):
 
     codex_cleanup.rewrite_jsonl(path, drop)
     assert free == [False]
+
+
+class Syncs:
+    """Records the F_FULLFSYNC calls on `fcntl.fcntl` (raising `error` when
+    set) and the plain `os.fsync` calls, by the kind of file each fd is."""
+
+    def __init__(self, monkeypatch, error: OSError | None = None):
+        self.full: list[str] = []
+        self.plain: list[str] = []
+        self.error = error
+        real = fcntl.fcntl
+
+        def fake_fcntl(fd, cmd, *args):
+            if cmd != fcntl.F_FULLFSYNC:
+                return real(fd, cmd, *args)
+            self.full.append(self.kind(fd))
+            if self.error:
+                raise self.error
+            return 0
+
+        monkeypatch.setattr(fcntl, "fcntl", fake_fcntl)
+        monkeypatch.setattr(os, "fsync", lambda fd: self.plain.append(self.kind(fd)))
+
+    @staticmethod
+    def kind(fd):
+        mode = os.fstat(fd).st_mode
+        return "folder" if stat.S_ISDIR(mode) else "file" if stat.S_ISREG(mode) else "other"
+
+
+def test_full_fsync_asks_the_drive_with_f_fullfsync(folder, monkeypatch):
+    syncs = Syncs(monkeypatch)
+    fd = os.open(folder, os.O_RDONLY)
+    try:
+        codex_cleanup._full_fsync(fd)
+    finally:
+        os.close(fd)
+    assert (syncs.full, syncs.plain) == (["folder"], [])
+
+
+@pytest.mark.parametrize("code", [errno.ENOTSUP, errno.EOPNOTSUPP, errno.EINVAL])
+def test_full_fsync_falls_back_to_fsync_where_unsupported(folder, monkeypatch, code):
+    syncs = Syncs(monkeypatch, OSError(code, os.strerror(code)))
+    fd = os.open(folder, os.O_RDONLY)
+    try:
+        codex_cleanup._full_fsync(fd)
+    finally:
+        os.close(fd)
+    assert (syncs.full, syncs.plain) == (["folder"], ["folder"])
+
+
+def test_full_fsync_other_errors_still_fail(folder, monkeypatch):
+    syncs = Syncs(monkeypatch, OSError(errno.EIO, "I/O error"))
+    fd = os.open(folder, os.O_RDONLY)
+    try:
+        with pytest.raises(OSError, match="I/O error"):
+            codex_cleanup._full_fsync(fd)
+    finally:
+        os.close(fd)
+    assert syncs.plain == []
+
+
+def test_full_fsync_without_the_constant_is_fsync(folder, monkeypatch):
+    syncs = Syncs(monkeypatch)
+    monkeypatch.delattr(fcntl, "F_FULLFSYNC")
+    fd = os.open(folder, os.O_RDONLY)
+    try:
+        codex_cleanup._full_fsync(fd)
+    finally:
+        os.close(fd)
+    assert (syncs.full, syncs.plain) == ([], ["folder"])
+
+
+def test_rewrite_full_fsyncs_the_new_file_then_the_folder(folder, monkeypatch):
+    path = folder / "history.jsonl"
+    path.write_bytes(b"drop\nkeep\n")
+    syncs = Syncs(monkeypatch)
+    assert codex_cleanup.rewrite_jsonl(path, lambda raw: raw == b"drop\n") == 1
+    assert (syncs.full, syncs.plain) == (["file", "folder"], [])
+    assert path.read_bytes() == b"keep\n"
+
+
+def test_a_failed_full_fsync_of_the_new_file_keeps_the_old_file(folder, monkeypatch):
+    path = folder / "history.jsonl"
+    path.write_bytes(b"drop\nkeep\n")
+    Syncs(monkeypatch, OSError(errno.EIO, "I/O error"))
+    with pytest.raises(OSError, match="I/O error"):
+        codex_cleanup.rewrite_jsonl(path, lambda raw: raw == b"drop\n")
+    assert path.read_bytes() == b"drop\nkeep\n"
+    assert [p.name.startswith("history.jsonl.dotsync-backup-") for p in folder.iterdir() if p != path] == [True]
 
 
 def test_an_older_backup_is_left_alone(db):
