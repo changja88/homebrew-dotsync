@@ -185,6 +185,9 @@ class App(ABC):
 
     name: str = ""  # short id, must match config and dir/<name>/
     description: str = ""  # human-readable
+    # Seconds an external tool (claude, codex, npx, …) may run before it is
+    # killed — the dotsync app waits on sync commands.
+    EXTERNAL_TIMEOUT = 120
 
     @classmethod
     def from_config(cls, cfg) -> "App":
@@ -235,8 +238,19 @@ class App(ABC):
           plugin restoration, optional backups, etc.
         - fail_mode="raise": on rc!=0 raise RuntimeError. Use when the failure
           should abort the whole app's sync.
+        - A command still running after EXTERNAL_TIMEOUT seconds is killed and
+          treated as a failure under the same policy.
         """
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=self.EXTERNAL_TIMEOUT
+            )
+        except subprocess.TimeoutExpired:
+            msg = f"{desc} timed out after {self.EXTERNAL_TIMEOUT} s"
+            if fail_mode == "raise":
+                raise RuntimeError(msg) from None
+            self.warnings.append(msg)
+            return subprocess.CompletedProcess(cmd, returncode=-9, stdout="", stderr="timeout")
         if result.returncode == 0:
             return result
         msg = (

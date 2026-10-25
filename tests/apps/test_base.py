@@ -587,3 +587,40 @@ def test_default_plan_to_uses_stored_as_source_and_local_as_destination(tmp_path
     assert plan.direction == "to"
     assert plan.changes[0].kind == "create"
     assert plan.changes[0].source.name == "local.cfg"
+
+
+def test_run_external_timeout_warns(monkeypatch):
+    import subprocess
+
+    class _Toy(App):
+        name = "toy"
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(kwargs.get("timeout"))
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    app = _Toy()
+    result = app._run_external(["slow"], desc="slow tool", fail_mode="warn")
+
+    assert calls == [120]
+    assert result.returncode != 0
+    assert any("slow tool timed out after 120 s" in w for w in app.warnings)
+
+
+def test_run_external_timeout_raises_in_raise_mode(monkeypatch):
+    import subprocess
+
+    class _Toy(App):
+        name = "toy"
+
+    def fake_run(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        _Toy()._run_external(["slow"], desc="slow tool", fail_mode="raise")

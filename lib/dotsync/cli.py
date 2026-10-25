@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Sequence
-from dotsync import __version__, accounts, ui, diffinfo
+from dotsync import __version__, accounts, diffinfo, locks, ui
 from dotsync.apps import APP_CLASSES, APP_NAMES, build_app, detect_present
 from dotsync.config import (
     Config,
@@ -456,8 +456,30 @@ def cmd_apps(args) -> int:
     return 0
 
 
+def _sync_locks(apps: list[str], *, writes: bool) -> contextlib.ExitStack:
+    """The locks a sync command over `apps` holds while it runs, shared with
+    the dotsync app and other terminals: accounts.locked() when it may write
+    ~/.claude.json (push or pull of `claude`, like `dotsync account use`),
+    and the Codex lock, shared, whenever it runs the codex CLI."""
+    stack = contextlib.ExitStack()
+    try:
+        if writes and "claude" in apps:
+            stack.enter_context(accounts.locked())
+        if "codex" in apps:
+            stack.enter_context(locks.tool_lock("codex", shared=True))
+    except BaseException:
+        stack.close()
+        raise
+    return stack
+
+
 def cmd_status(args) -> int:
     cfg = load_config()
+    with _sync_locks(cfg.apps, writes=False):
+        return _print_status(cfg)
+
+
+def _print_status(cfg: Config) -> int:
     ui.section("status", sub=str(cfg.dir))
     print()
     for name in cfg.apps:
@@ -615,6 +637,11 @@ def cmd_from(args) -> int:
     apps = _resolve_app_list(args, cfg)
     if not apps:
         return 2
+    with _sync_locks(apps, writes=True):
+        return _push(args, cfg, apps)
+
+
+def _push(args, cfg: Config, apps: list[str]) -> int:
     cfg.dir.mkdir(parents=True, exist_ok=True)
 
     ui.banner(
@@ -670,6 +697,11 @@ def cmd_to(args) -> int:
     apps = _resolve_app_list(args, cfg)
     if not apps:
         return 2
+    with _sync_locks(apps, writes=True):
+        return _pull(args, cfg, apps)
+
+
+def _pull(args, cfg: Config, apps: list[str]) -> int:
     cfg.dir.mkdir(parents=True, exist_ok=True)
 
     ui.banner(

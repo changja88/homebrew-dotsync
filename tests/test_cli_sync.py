@@ -496,3 +496,122 @@ def test_change_diff_text_non_diffable_change_skips_file_diff(tmp_path):
 
     assert text == "(semantic change — no file diff)"
     assert "secret-token" not in text
+
+
+# ----- sync commands hold the locks the dotsync app and terminal share -----
+
+
+def _lock_recorders(monkeypatch):
+    import contextlib
+    from dotsync import cli
+
+    held: list[str] = []
+    seen: dict[str, list[str]] = {}
+
+    @contextlib.contextmanager
+    def fake_accounts_locked():
+        held.append("accounts")
+        try:
+            yield
+        finally:
+            held.remove("accounts")
+
+    @contextlib.contextmanager
+    def fake_tool_lock(name, *, shared, wait=10.0):
+        tag = f"{name}:{'shared' if shared else 'exclusive'}"
+        held.append(tag)
+        try:
+            yield
+        finally:
+            held.remove(tag)
+
+    monkeypatch.setattr(cli.accounts, "locked", fake_accounts_locked)
+    monkeypatch.setattr(cli.locks, "tool_lock", fake_tool_lock)
+    return held, seen
+
+
+def _stub_app(name, held, seen):
+    from dotsync.plan import AppPlan, Change
+
+    class Stub:
+        description = "stub"
+        warnings: list = []
+
+        def plan_to(self, target_dir):
+            return AppPlan(app=name, direction="to", changes=[Change("f", "update")])
+
+        def plan_from(self, target_dir):
+            return AppPlan(app=name, direction="from", changes=[Change("f", "update")])
+
+        def sync_to(self, target_dir):
+            seen["sync_to"] = list(held)
+
+        def sync_from(self, target_dir):
+            seen["sync_from"] = list(held)
+
+        def _finish_ok(self):
+            pass
+
+        def _finish_unchanged(self):
+            pass
+
+    return Stub()
+
+
+def _sync_setup(monkeypatch, tmp_path, app):
+    target = tmp_path / "configs"
+    target.mkdir()
+    save_config(Config(dir=target, apps=[app]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+
+
+def test_pull_claude_holds_accounts_lock(fake_home, monkeypatch, tmp_path):
+    from dotsync import cli
+
+    _sync_setup(monkeypatch, tmp_path, "claude")
+    held, seen = _lock_recorders(monkeypatch)
+    monkeypatch.setattr(cli, "build_app", lambda name, cfg: _stub_app(name, held, seen))
+
+    assert main(["pull", "claude", "--yes"]) == 0
+    assert seen["sync_to"] == ["accounts"]
+    assert held == []
+
+
+def test_push_codex_holds_shared_codex_lock(fake_home, monkeypatch, tmp_path):
+    from dotsync import cli
+
+    _sync_setup(monkeypatch, tmp_path, "codex")
+    held, seen = _lock_recorders(monkeypatch)
+    monkeypatch.setattr(cli, "build_app", lambda name, cfg: _stub_app(name, held, seen))
+
+    assert main(["push", "codex", "--yes"]) == 0
+    assert seen["sync_from"] == ["codex:shared"]
+
+
+def test_pull_zsh_takes_no_lock(fake_home, monkeypatch, tmp_path):
+    from dotsync import cli
+
+    _sync_setup(monkeypatch, tmp_path, "zsh")
+    held, seen = _lock_recorders(monkeypatch)
+    monkeypatch.setattr(cli, "build_app", lambda name, cfg: _stub_app(name, held, seen))
+
+    assert main(["pull", "zsh", "--yes"]) == 0
+    assert seen["sync_to"] == []
+
+
+def test_status_codex_holds_shared_codex_lock(fake_home, monkeypatch, tmp_path):
+    from dotsync import cli
+    from dotsync.apps.base import AppStatus
+
+    _sync_setup(monkeypatch, tmp_path, "codex")
+    held, seen = _lock_recorders(monkeypatch)
+
+    class StatusStub:
+        def status(self, target_dir):
+            seen["status"] = list(held)
+            return AppStatus(state="clean")
+
+    monkeypatch.setattr(cli, "build_app", lambda name, cfg: StatusStub())
+
+    assert main(["status"]) == 0
+    assert seen["status"] == ["codex:shared"]
