@@ -444,11 +444,15 @@ def _rc_action_text(rc: ShellRcResult) -> str:
 
 
 def _apps_payload(names: str) -> dict:
+    """`config apps --json` sets which apps are tracked. The dotsync app sends
+    them in its table's order, so the ones already tracked keep their order
+    in dotsync.toml and new ones go at the end."""
     cfg = load_config()
     new_apps = [a.strip() for a in names.split(",") if a.strip()]
     bad = [a for a in new_apps if a not in SUPPORTED_APPS]
     if bad:
         raise cli_json.JSONCommandError("unknown_apps", f"unknown apps: {bad}")
+    new_apps = [a for a in cfg.apps if a in new_apps] + [a for a in new_apps if a not in cfg.apps]
     cfg.apps = new_apps
     save_config(cfg)
     return {"dir": str(cfg.dir), "dir_source": cfg.dir_source, "apps": new_apps}

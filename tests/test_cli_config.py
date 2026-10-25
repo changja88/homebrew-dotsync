@@ -174,3 +174,16 @@ def test_config_show_json(fake_home, monkeypatch, capsys):
         "apps": ["bettertouchtool"],
         "app_options": {"bettertouchtool": {"presets": ["Foo"]}},
     }
+
+
+def test_config_apps_json_keeps_the_existing_order(fake_home, monkeypatch, capsys):
+    # The dotsync app sends every tracked app in its table's order when one
+    # switch flips; the order in dotsync.toml stays the person's.
+    target = fake_home / "configs"
+    save_config(Config(dir=target, apps=["zsh", "bettertouchtool", "claude"]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+
+    assert main(["config", "apps", "claude,codex,bettertouchtool,zsh", "--json"]) == 0
+
+    assert load_config().apps == ["zsh", "bettertouchtool", "claude", "codex"]
+    assert json.loads(capsys.readouterr().out)["apps"] == ["zsh", "bettertouchtool", "claude", "codex"]
