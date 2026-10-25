@@ -259,3 +259,22 @@ private func waitUntilRunning(_ fake: FakeDotsync, _ registry: RunningCommands) 
     #expect(registry.count == 0)
     _ = try await run.value
 }
+
+@Test func terminateAllReturnsTrueOnlyAfterTheChildHasExited() async throws {
+    let registry = RunningCommands()
+    let fake = try FakeDotsync(script: """
+    sleep 30 >/dev/null 2>&1 &
+    child=$!
+    trap 'kill $child; sleep 0.5; echo exited > "$0.exited"; echo "{}"; exit 0' TERM
+    wait $child
+    """)
+    let marker = fake.executable.path + ".exited"
+    let cli = DotsyncCLI(executable: fake.executable, environment: fake.cli.environment, runningCommands: registry)
+    let run = Task { try await cli.runJSON(["x"], timeout: .seconds(60), longRun: true) }
+    try await waitUntilRunning(fake, registry)
+
+    #expect(registry.terminateAll(waitingUpTo: .seconds(5)))
+    // Before awaiting the run: the child's last act was in place already.
+    #expect(FileManager.default.fileExists(atPath: marker))
+    _ = try await run.value
+}

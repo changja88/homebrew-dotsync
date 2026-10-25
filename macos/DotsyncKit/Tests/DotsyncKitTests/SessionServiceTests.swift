@@ -125,3 +125,68 @@ private func writeLog(_ directory: URL, _ name: String, command: String, started
     #expect(SessionLog.latest(since: at("2026-10-25T03:00:01Z"), in: directory) == nil)
     #expect(SessionLog.latest(since: .distantPast, in: directory.appendingPathComponent("missing")) == nil)
 }
+
+// Task 22's power-off stop reaches only the runs registered as long runs.
+
+private final class Finished: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    func set() { lock.withLock { value = true } }
+    var isSet: Bool { lock.withLock { value } }
+}
+
+private func slowFake() throws -> FakeDotsync {
+    try FakeDotsync(script: """
+    sleep 1
+    case "$2" in
+      list) echo '{"tool": "claude", "checked_at": "2026-10-25T03:04:05Z", "totals": {"sessions": 0, "bytes": 0, "running": 0}, "groups": []}' ;;
+      delete|recover) echo '\(emptyDelete)' ;;
+      cleanup) case "$4" in
+        --blockers) echo '{"blockers": [], "chatgpt_helpers": [], "chatgpt_open_threads": 0}' ;;
+        --dry-run) echo '{"blockers": [], "chatgpt_helpers": [], "chatgpt_open_threads": 0, "items": [], "history_db_bytes": 0, "vacuum_available": false, "refusal": null}' ;;
+        *) echo '\(emptyCleanup)' ;;
+      esac ;;
+    esac
+    """)
+}
+
+/// The most commands the registry held at once while `call` ran, sampled until
+/// it finished.
+private func registered(during call: @escaping @Sendable (SessionService) async throws -> Void,
+                        registry: RunningCommands, fake: FakeDotsync) async throws -> Int {
+    let service = SessionService(cli: DotsyncCLI(executable: fake.executable, environment: fake.cli.environment,
+                                                 runningCommands: registry))
+    let finished = Finished()
+    let run = Task {
+        defer { finished.set() }
+        try await call(service)
+    }
+    var seen = 0
+    while !finished.isSet {
+        seen = max(seen, registry.count)
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    try await run.value
+    #expect(registry.count == 0)
+    return seen
+}
+
+@Test(.serialized, arguments: [
+    "delete", "recover", "cleanup", "list", "blockers", "cleanupPreview",
+])
+func onlyDeleteRecoverAndCleanupAreLongRuns(_ method: String) async throws {
+    let registry = RunningCommands()
+    let fake = try slowFake()
+    let seen = try await registered(during: { service in
+        switch method {
+        case "delete": _ = try await service.delete(.claude, ids: ["a"])
+        case "recover": _ = try await service.recover("a", finish: true)
+        case "cleanup": _ = try await service.cleanup(items: ["queue"], vacuum: false)
+        case "list": _ = try await service.list(.claude)
+        case "blockers": _ = try await service.blockers()
+        default: _ = try await service.cleanupPreview()
+        }
+    }, registry: registry, fake: fake)
+    #expect(seen == (["delete", "recover", "cleanup"].contains(method) ? 1 : 0), "\(method)")
+}
