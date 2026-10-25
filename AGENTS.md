@@ -56,7 +56,10 @@ between local app locations and one user-chosen sync folder.
     history text. `SIGTERM` (`StopSignal`) stops at the next safe point
     (between sessions, cleanup items, vacuum batches); a running child
     (`codex delete`, `zstd`) is waited for, never signalled.
-  - Codex cleanup runs only while nothing uses `~/.codex`. The CLI refuses
+  - Codex cleanup runs only while nothing uses `~/.codex` (ChatGPT.app, a
+    terminal Codex, or any other process holding a file there). It also
+    refuses as a whole (`incomplete_scan`, `codex_version`) when the keep-set
+    cannot be trusted. The CLI refuses
     with `codex_running` and quits nothing; dotsync.app quits ChatGPT.app
     first and relaunches it, and it refuses while a terminal Codex runs.
   - `.zst` Codex rollouts are read with the Homebrew `zstd` CLI
