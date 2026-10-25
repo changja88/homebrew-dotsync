@@ -2044,3 +2044,29 @@ def test_sync_from_still_warns_about_npx_skill_links_without_skills_app(
     app.sync_from(target)
 
     assert app.warnings == ["skills/herdr is a symlink; skipped"]
+
+
+def test_plugin_actions_to_lists_missing_installs_and_new_disables(fake_home, tmp_path):
+    present = tmp_path / "cache" / "present"
+    present.mkdir(parents=True)
+    _make_local(
+        fake_home,
+        settings={"enabledPlugins": {"old-off@m": False, "now-off@m": True}},
+    )
+    target = tmp_path / "configs"
+    cdir = _make_minimal_stored(target)
+    (cdir / "plugins" / "installed_plugins.json").write_text(json.dumps({
+        "version": 2,
+        "plugins": {
+            "zeta@m": [_plugin_entry("/nowhere/zeta")],
+            "alpha@m": [_plugin_entry("/nowhere/alpha")],
+            "here@m": [_plugin_entry(str(present))],
+        },
+    }))
+    (cdir / "settings.json").write_text(json.dumps({
+        "enabledPlugins": {"old-off@m": False, "now-off@m": False, "on@m": True},
+    }))
+
+    actions = ClaudeApp().plugin_actions_to(target)
+
+    assert actions == {"install": ["alpha@m", "zeta@m"], "disable": ["now-off@m"]}

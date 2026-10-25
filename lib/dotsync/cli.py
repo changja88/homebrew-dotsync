@@ -42,6 +42,9 @@ def _add_sync_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--yes", action="store_true", help="skip the confirmation prompt"
     )
+    parser.add_argument(
+        "--json", action="store_true", help="print one JSON object (for the dotsync app)"
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -604,7 +607,22 @@ def _print_full_diffs(plans: "list[AppPlan]") -> None:
     print()
 
 
+def _sync_payload(args, direction: str) -> dict:
+    if not (args.dry_run or args.yes):
+        raise cli_json.JSONCommandError(
+            "needs_yes_or_dry_run", "pass --dry-run to preview or --yes to apply"
+        )
+    cfg = load_config()
+    apps = cli_json.sync_apps(cfg, args.app, args.all)
+    with _sync_locks(apps, writes=True):
+        if args.dry_run:
+            return cli_json.preview_json(cfg, apps, direction)
+        return cli_json.apply_json(cfg, apps, direction)
+
+
 def cmd_from(args) -> int:
+    if args.json:
+        return cli_json.emit(lambda: _sync_payload(args, "from"))
     cfg = load_config()
     apps = _resolve_app_list(args, cfg)
     if not apps:
@@ -665,6 +683,8 @@ def _push(args, cfg: Config, apps: list[str]) -> int:
 
 
 def cmd_to(args) -> int:
+    if args.json:
+        return cli_json.emit(lambda: _sync_payload(args, "to"))
     cfg = load_config()
     apps = _resolve_app_list(args, cfg)
     if not apps:

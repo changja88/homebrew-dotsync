@@ -34,6 +34,8 @@ def emit(work: Callable[[], dict]) -> int:
         payload, status = _error("config", e), 1
     except LockBusy as e:
         payload, status = _error("busy", e), 1
+    except JSONCommandError as e:
+        payload, status = _error(e.code, e), 1
     except AccountError as e:
         payload, status = _error(e.code, e), 1
     except KeyboardInterrupt:
@@ -139,3 +141,79 @@ def tree_diff_text(change: Change) -> str:
             continue
         blocks.append(f"◦ {rel}\n{block}")
     return "\n\n".join(blocks)
+
+
+class JSONCommandError(Exception):
+    """A `--json` command refused before doing anything; `code` goes in the
+    error envelope."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def sync_apps(cfg: Config, app: "str | None", all_apps: bool) -> list[str]:
+    """The apps a push/pull --json covers: every tracked one with --all, or
+    the one named (tracked or not, like the text command)."""
+    from dotsync.apps import APP_NAMES
+
+    if all_apps:
+        return list(cfg.apps)
+    if not app:
+        raise JSONCommandError("bad_app", "provide an app name or --all")
+    if app not in APP_NAMES:
+        raise JSONCommandError("bad_app", f"unknown app `{app}` (supported: {sorted(APP_NAMES)})")
+    return [app]
+
+
+def _plan(app, cfg: Config, direction: str):
+    return app.plan_from(cfg.dir) if direction == "from" else app.plan_to(cfg.dir)
+
+
+def preview_json(cfg: Config, apps: list[str], direction: str) -> dict:
+    from dotsync.apps import build_app
+
+    plans = []
+    for name in apps:
+        app = build_app(name, cfg)
+        plan = _plan(app, cfg, direction)
+        entry = {
+            "app": plan.app,
+            "description": plan.description,
+            "changes": [change_json(c, with_diff=True) for c in plan.changes],
+        }
+        if name == "claude" and direction == "to":
+            entry["plugin_actions"] = app.plugin_actions_to(cfg.dir)
+        plans.append(entry)
+    return {"dir": str(cfg.dir), "dir_source": cfg.dir_source, "direction": direction, "plans": plans}
+
+
+def apply_json(cfg: Config, apps: list[str], direction: str) -> dict:
+    """push/pull with the text command's rules: an app whose plan has
+    changes but none that change anything is "unchanged"; one whose sync
+    raises is "failed" and the rest still run."""
+    from dotsync.apps import build_app
+
+    cfg.dir.mkdir(parents=True, exist_ok=True)
+    unchanged = {}
+    for name in apps:
+        plan = _plan(build_app(name, cfg), cfg, direction)
+        unchanged[name] = bool(plan.changes) and not plan.has_changes
+    results = []
+    for name in apps:
+        app = build_app(name, cfg)
+        result: dict = {"app": name}
+        if unchanged[name]:
+            result["outcome"] = "unchanged"
+        else:
+            try:
+                if direction == "from":
+                    app.sync_from(cfg.dir)
+                else:
+                    app.sync_to(cfg.dir)
+                result["outcome"] = "changed"
+            except (OSError, RuntimeError) as e:
+                result.update(outcome="failed", error=str(e))
+        result["warnings"] = list(app.warnings)
+        results.append(result)
+    return {"dir": str(cfg.dir), "dir_source": cfg.dir_source, "direction": direction, "results": results}

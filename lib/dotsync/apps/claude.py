@@ -1248,6 +1248,29 @@ class ClaudeApp(App):
                 desc=f"plugin install {plugin_id}",
             )
 
+    def plugin_actions_to(self, target_dir: Path) -> dict[str, list[str]]:
+        """What a pull will do through `claude plugin`, for its preview:
+        plugins it installs (no entry's installPath exists — the test
+        _restore_plugins uses) and plugins it turns off (false in the stored
+        settings.json enabledPlugins, not already off here)."""
+        stored = self._stored(target_dir)
+        installed = stored / "plugins" / "installed_plugins.json"
+        install: list[str] = []
+        if installed.exists():
+            plugins = self._plugins_from_installed_doc(self._load_json_file(installed), installed)
+            for plugin_id, entries in plugins.items():
+                entries = entries if isinstance(entries, list) else []
+                if not any(Path(e.get("installPath", "")).is_dir() for e in entries):
+                    install.append(plugin_id)
+        stored_enabled = _enabled_plugins(stored / "settings.json")
+        local_enabled = _enabled_plugins(self._claude_dir() / "settings.json")
+        disable = [
+            plugin_id
+            for plugin_id, enabled in stored_enabled.items()
+            if not enabled and local_enabled.get(plugin_id, True)
+        ]
+        return {"install": sorted(install), "disable": sorted(disable)}
+
     def _enforce_disabled(self, settings_json_path: Path) -> None:
         if not settings_json_path.exists():
             return
@@ -1306,3 +1329,14 @@ class ClaudeApp(App):
                 self.warnings.pop()
         else:
             ui.warn(f"{desc} failed: {stderr or 'unknown'}")
+
+
+def _enabled_plugins(settings_json_path: Path) -> dict[str, Any]:
+    """settings.json's enabledPlugins map, or {} when the file or map is
+    missing or unreadable."""
+    try:
+        settings = json.loads(settings_json_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    enabled = settings.get("enabledPlugins", {}) if isinstance(settings, dict) else {}
+    return enabled if isinstance(enabled, dict) else {}
