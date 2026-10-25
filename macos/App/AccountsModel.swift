@@ -3,8 +3,9 @@ import Foundation
 import Observation
 import WidgetKit
 
-/// The window's state. dotsync runs one command at a time from here, in
-/// `queue`; the CLI's lock covers commands started elsewhere.
+/// The 사용량 menu's state. dotsync runs one command at a time from the
+/// window, in the `queue` it shares with the settings; the CLI's lock covers
+/// commands started elsewhere.
 @MainActor
 @Observable
 final class AccountsModel {
@@ -25,14 +26,16 @@ final class AccountsModel {
     }
 
     private(set) var file: UsageFile
-    let queue = CommandQueue()
+    let queue: CommandQueue
     var message: String?
     var sheet: Sheet?
     var pendingRemoval: AccountUsage?
     let service: AccountService?
     private var loginTask: Task<Result<AccountInfo, CLIError>, Never>?
 
-    init(service: AccountService? = AccountService.standard(didSave: { WidgetCenter.shared.reloadAllTimelines() })) {
+    init(queue: CommandQueue,
+         service: AccountService? = AccountService.standard(didSave: { WidgetCenter.shared.reloadAllTimelines() })) {
+        self.queue = queue
         self.service = service
         file = service?.current() ?? .empty
         if service == nil {

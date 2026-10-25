@@ -1,14 +1,35 @@
 import DotsyncKit
 import SwiftUI
 
-/// The window, as the approved mockup "앱 A": the account in use on top in a
-/// tinted glass card, the others in one glass list under column titles.
+/// The 사용량 menu, as the approved mockup "앱 A": the account in use on top
+/// in a tinted glass card, the others in one glass list under column titles.
 struct AccountsWindow: View {
     @Bindable var model: AccountsModel
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 30)) { context in
             VStack(spacing: 0) {
+                ContentHeader(title: "Claude 계정") {
+                    HStack(spacing: 12) {
+                        HStack(spacing: 8) {
+                            Text(model.running ?? "\(UsageText.ago(model.file.fetchedAt, now: context.date)) 갱신")
+                                .font(.system(size: 12)).foregroundStyle(.secondary)
+                            Button { Task { await model.refresh() } } label: {
+                                Label("새로고침", systemImage: "arrow.clockwise")
+                            }
+                            .buttonStyle(PillButtonStyle())
+                            .disabled(model.isBusy)
+                        }
+                        .padding(.leading, 12).padding(3)
+                        .background(GlassPanel(cornerRadius: 17))
+                        Button { model.sheet = .add(thenUse: nil) } label: {
+                            Label("계정 추가", systemImage: "plus")
+                        }
+                        .buttonStyle(PillButtonStyle(prominent: true, height: 34))
+                        .disabled(model.isBusy)
+                    }
+                    .fixedSize()
+                }
                 if let message = model.message {
                     HStack {
                         Text(message).font(.callout)
@@ -52,44 +73,7 @@ struct AccountsWindow: View {
                     .padding(.horizontal, 18).padding(.top, 8).padding(.bottom, 18)
                 }
             }
-            .toolbar(removing: .title)
-            .toolbar {
-                ToolbarItem(placement: .navigation) {
-                    Text("Claude 계정").font(.system(size: 15, weight: .bold)).padding(.leading, 8)
-                }
-                .sharedBackgroundVisibility(.hidden)
-                ToolbarSpacer(.flexible)
-                ToolbarItem {
-                    HStack(spacing: 12) {
-                        HStack(spacing: 8) {
-                            Text(model.running ?? "\(UsageText.ago(model.file.fetchedAt, now: context.date)) 갱신")
-                                .font(.system(size: 12)).foregroundStyle(.secondary)
-                            Button { Task { await model.refresh() } } label: {
-                                Label("새로고침", systemImage: "arrow.clockwise")
-                            }
-                            .buttonStyle(PillButtonStyle())
-                            .disabled(model.isBusy)
-                        }
-                        .padding(.leading, 12).padding(3)
-                        .background(GlassPanel(cornerRadius: 17))
-                        Button { model.sheet = .add(thenUse: nil) } label: {
-                            Label("계정 추가", systemImage: "plus")
-                        }
-                        .buttonStyle(PillButtonStyle(prominent: true, height: 34))
-                        .disabled(model.isBusy)
-                    }
-                    .fixedSize()
-                    .padding(.trailing, 2)
-                }
-                .sharedBackgroundVisibility(.hidden)
-            }
         }
-        .frame(minWidth: 760, minHeight: 420)
-        // Looks the same focused or not: macOS would dim what follows the
-        // window's state in a window that isn't in front.
-        .environment(\.appearsActive, true)
-        // The desktop shows through, behind the glass panels.
-        .containerBackground(for: .window) { WindowBackdrop() }
         .sheet(item: $model.sheet) { sheet in
             AccountSheet(sheet: sheet, model: model)
         }
@@ -104,7 +88,6 @@ struct AccountsWindow: View {
         } message: { account in
             Text("이 맥에서 \(account.label)의 로그인이 지워져요.")
         }
-        .task { await model.refresh() }
     }
 }
 

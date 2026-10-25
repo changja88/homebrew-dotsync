@@ -9,25 +9,37 @@ struct DotsyncApp: App {
     var body: some Scene {
         // A single Window: the app quits when it closes (Apple's Window docs),
         // and a dotsync:// link opens it again (scene routing for external events).
-        Window("Claude 계정", id: "main") {
-            AccountsWindow(model: delegate.model)
-                .onOpenURL { delegate.model.handle($0) }
+        Window("dotsync", id: "main") {
+            RootView(accounts: delegate.model)
         }
-        .defaultSize(width: 920, height: 600)
+        .windowStyle(.hiddenTitleBar)
+        // With no title bar left, the window moves by its background.
+        .windowBackgroundDragBehavior(.enabled)
+        .defaultSize(width: 1080, height: 640)
         .windowResizability(.contentMinSize)
     }
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Every dotsync command the window runs, one at a time: account and
+    /// sync commands alike.
+    let queue: CommandQueue
     /// Here, not in the App, so quitting can see what it runs.
-    let model = AccountsModel()
+    let model: AccountsModel
     /// Set when quitting starts to wait for work in flight.
     private var quitBy: ContinuousClock.Instant?
 
     /// dotsync still at work for the window, a widget button, or a refresh.
     private var isWorking: Bool {
-        model.running != nil || IntentWork.running > 0 || RefreshGate.shared.isRunning
+        queue.running != nil || IntentWork.running > 0 || RefreshGate.shared.isRunning
+    }
+
+    override init() {
+        let queue = CommandQueue()
+        self.queue = queue
+        model = AccountsModel(queue: queue)
+        super.init()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
