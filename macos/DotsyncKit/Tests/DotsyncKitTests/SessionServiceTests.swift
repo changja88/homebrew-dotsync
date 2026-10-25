@@ -130,7 +130,7 @@ private func writeLog(_ directory: URL, _ name: String, command: String, started
 
 private func slowFake() throws -> FakeDotsync {
     try FakeDotsync(script: """
-    \(FakeDotsync.readyThenWait)
+    \(FakeDotsync.readyThenWait())
     case "$2" in
       list) echo '{"tool": "claude", "checked_at": "2026-10-25T03:04:05Z", "totals": {"sessions": 0, "bytes": 0, "running": 0}, "groups": []}' ;;
       delete|recover) echo '\(emptyDelete)' ;;
@@ -160,7 +160,7 @@ private func registered(during call: @escaping @Sendable (SessionService) async 
     return seen
 }
 
-@Test(.serialized, arguments: [
+@Test(.serialized, .timeLimit(.minutes(1)), arguments: [
     "delete", "recover", "cleanup", "list", "blockers", "cleanupPreview",
 ])
 func onlyDeleteRecoverAndCleanupAreLongRuns(_ method: String) async throws {

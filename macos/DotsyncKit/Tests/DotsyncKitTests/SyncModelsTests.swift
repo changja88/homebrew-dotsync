@@ -141,7 +141,7 @@ private func decoded<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
 // Task 22: a logout stops a running apply at its next app (the CLI's safe
 // point), so only the apply is registered with the power-off stop.
 
-@Test(.serialized, arguments: ["status", "preview", "apply", "setDir", "setApps"])
+@Test(.serialized, .timeLimit(.minutes(1)), arguments: ["status", "preview", "apply", "setDir", "setApps"])
 func onlyTheApplyIsALongRun(_ method: String) async throws {
     let files = try FakeDotsync(script: "")
     let status = try files.file("status.json", sampleStatus)
@@ -150,7 +150,7 @@ func onlyTheApplyIsALongRun(_ method: String) async throws {
     let dir = try files.file("dir.json", sampleConfigDir)
     let apps = try files.file("apps.json", sampleConfigApps)
     let fake = try FakeDotsync(script: """
-    \(FakeDotsync.readyThenWait)
+    \(FakeDotsync.readyThenWait())
     case "$1 $2 $3" in
       status*) cat '\(status)' ;;
       *--dry-run*) cat '\(preview)' ;;

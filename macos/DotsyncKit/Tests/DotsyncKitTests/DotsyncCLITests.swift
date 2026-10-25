@@ -200,18 +200,43 @@ private func stubbornFake(finishing seconds: String) throws -> FakeDotsync {
     """)
 }
 
-/// Until the fake has set its trap and the run is registered.
+/// Until the fake has set its trap and the run is registered, 10 s each at
+/// most.
 private func waitUntilRunning(_ fake: FakeDotsync, _ registry: RunningCommands) async throws {
     try await fake.waitUntilReady()
-    while registry.count == 0 { try await Task.sleep(for: .milliseconds(20)) }
+    let clock = ContinuousClock()
+    let deadline = clock.now + .seconds(10)
+    while registry.count == 0 {
+        guard clock.now < deadline else { throw FakeNotReady(what: "the run was not registered") }
+        try await Task.sleep(for: .milliseconds(20))
+    }
 }
 
 /// Runs whose fake goes on until the test signals it or lets it go. Each
 /// running fake holds two threads of the concurrency pool (DotsyncCLI's
 /// pipe readers block), so these take turns: enough of them at once would
 /// leave no thread for the tests to resume and act.
-@Suite(.serialized)
+@Suite(.serialized, .timeLimit(.minutes(1)))
 struct FakesThatWaitForTheTest {
+    // A test that throws before `letGo()` must not hang the suite.
+
+    @Test func aGatedFakeThatIsNeverLetGoGivesUp() async throws {
+        let fake = try FakeDotsync(script: """
+        \(FakeDotsync.readyThenWait(givingUpAfter: 1))
+        echo '{}'
+        """)
+        await #expect(throws: CLIError.self) {
+            _ = try await fake.cli.runJSON(["x"], timeout: .seconds(20))
+        }
+    }
+
+    @Test func waitingForAFakeThatNeverGetsReadyEnds() async throws {
+        let fake = try FakeDotsync(script: "")
+        await #expect(throws: FakeNotReady.self) {
+            try await fake.waitUntilReady(timeout: .milliseconds(300))
+        }
+    }
+
     @Test func cancellingALoginSendsSIGTERM() async throws {
         // The sleeping child must not hold the output pipes, or reading them
         // would wait for it; the trap stops it like dotsync stops `claude`.
@@ -251,7 +276,7 @@ struct FakesThatWaitForTheTest {
         // Ignores TERM, and cannot finish until let go.
         let fake = try FakeDotsync(script: """
         trap '' TERM
-        \(FakeDotsync.readyThenWait)
+        \(FakeDotsync.readyThenWait())
         echo '{}'
         """)
         let cli = DotsyncCLI(executable: fake.executable, environment: fake.cli.environment, runningCommands: registry)
@@ -271,7 +296,7 @@ struct FakesThatWaitForTheTest {
         // Ignores TERM; it ends when let go, while terminateAll waits.
         let fake = try FakeDotsync(script: """
         trap '' TERM
-        \(FakeDotsync.readyThenWait)
+        \(FakeDotsync.readyThenWait())
         echo '{}'
         """)
         let cli = DotsyncCLI(executable: fake.executable, environment: fake.cli.environment, runningCommands: registry)

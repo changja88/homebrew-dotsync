@@ -50,14 +50,26 @@ struct FakeDotsync {
     static let ready = #": > "$0.ready""#
 
     /// `ready`, then wait until the test calls `letGo()`: the fake cannot
-    /// finish before the test has looked.
-    static let readyThenWait = """
-    : > "$0.ready"
-    while [ ! -e "$0.go" ]; do sleep 0.05; done
-    """
+    /// finish before the test has looked. A test that never lets it go (it
+    /// threw first) does not hang the suite: after `seconds` the fake exits 1.
+    static func readyThenWait(givingUpAfter seconds: Int = 30) -> String {
+        """
+        : > "$0.ready"
+        tries=0
+        while [ ! -e "$0.go" ]; do
+          tries=$((tries + 1)); [ $tries -gt \(seconds * 20) ] && exit 1
+          sleep 0.05
+        done
+        """
+    }
 
-    func waitUntilReady() async throws {
+    /// Throws `FakeNotReady` (the test's issue) if the fake is not ready by
+    /// `timeout`.
+    func waitUntilReady(timeout: Duration = .seconds(10)) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
         while !FileManager.default.fileExists(atPath: executable.path + ".ready") {
+            guard clock.now < deadline else { throw FakeNotReady(what: "the fake did not get ready") }
             try await Task.sleep(for: .milliseconds(20))
         }
     }
@@ -65,4 +77,10 @@ struct FakeDotsync {
     func letGo() {
         FileManager.default.createFile(atPath: executable.path + ".go", contents: nil)
     }
+}
+
+/// A gated fake's wait ran out; thrown, it fails the test that waited.
+struct FakeNotReady: Error, CustomStringConvertible {
+    var what: String
+    var description: String { "\(what) in time" }
 }
