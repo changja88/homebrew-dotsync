@@ -188,3 +188,73 @@ def test_update_shell_rc_returns_typed_result(tmp_path):
     assert hasattr(result, "rc_path")
     assert hasattr(result, "line")
     assert result.line == export_line(tmp_path / "sync")
+
+
+# ---------------- marked line first, atomic writes ------------------------
+
+
+def test_update_replaces_marked_line_not_first_export(tmp_path):
+    rc = tmp_path / ".zshrc"
+    old = export_line(tmp_path / "old")
+    rc.write_text(f"{old}\nalias ll='ls -la'\n\n{MARKER}\n{export_line(tmp_path / 'marked-old')}\n# tail\n")
+
+    result = update_shell_rc(rc, tmp_path / "new")
+
+    lines = rc.read_text().splitlines()
+    assert result.action == "updated"
+    assert lines[0] == old
+    assert lines[lines.index(MARKER) + 1] == export_line(tmp_path / "new")
+    assert lines[-1] == "# tail"
+
+
+def test_update_already_set_checks_the_marked_line(tmp_path):
+    rc = tmp_path / ".zshrc"
+    new = tmp_path / "new"
+    rc.write_text(f"{export_line(tmp_path / 'other')}\n{MARKER}\n{export_line(new)}\n")
+
+    assert update_shell_rc(rc, new).action == "already_set"
+
+
+def test_update_keeps_file_mode(tmp_path):
+    import os
+
+    rc = tmp_path / ".zshrc"
+    rc.write_text(f"{MARKER}\n{export_line(tmp_path / 'old')}\n")
+    os.chmod(rc, 0o600)
+
+    update_shell_rc(rc, tmp_path / "new")
+
+    assert (rc.stat().st_mode & 0o777) == 0o600
+
+
+def test_update_through_symlink_keeps_link(tmp_path):
+    target = tmp_path / "dotfiles" / "zshrc"
+    target.parent.mkdir()
+    target.write_text(f"{MARKER}\n{export_line(tmp_path / 'old')}\n")
+    rc = tmp_path / ".zshrc"
+    rc.symlink_to(target)
+
+    update_shell_rc(rc, tmp_path / "new")
+
+    assert rc.is_symlink()
+    assert export_line(tmp_path / "new") in target.read_text()
+
+
+def test_update_uses_replace_not_inplace_write(tmp_path, monkeypatch):
+    import os
+
+    calls = []
+    real_replace = os.replace
+
+    def recording_replace(src, dst):
+        calls.append((str(src), str(dst)))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", recording_replace)
+    rc = tmp_path / ".zshrc"
+    rc.write_text(f"{MARKER}\n{export_line(tmp_path / 'old')}\n")
+
+    update_shell_rc(rc, tmp_path / "new")
+
+    assert len(calls) == 1
+    assert calls[0][1] == str(rc)

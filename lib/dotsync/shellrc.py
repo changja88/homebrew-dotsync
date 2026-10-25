@@ -7,8 +7,10 @@ user consent (interactive prompt or `--yes`).
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shlex
+import tempfile
 from pathlib import Path
 from typing import Literal, NamedTuple, Optional
 
@@ -112,12 +114,18 @@ def marked_dir(rc_path: Path) -> Optional[Path]:
 def update_shell_rc(rc_path: Path, dotsync_dir: Path) -> ShellRcResult:
     """Idempotently ensure rc_path contains the export line for dotsync_dir.
 
+    The line to keep is the one right after MARKER (the last such, as in the
+    shell); without a marked line, the first unmarked export line.
+
     Outcomes:
       - rc file missing       → "rc_missing" (we never create rc files)
       - exact line present    → "already_set"
       - existing export with
         a different path      → "updated" (replace in place)
       - otherwise             → "added"   (append marker + line at EOF)
+
+    Every write goes through _write_atomic: other shells may source the file
+    at any moment.
     """
     export = export_line(dotsync_dir)
     if not rc_path.exists():
@@ -126,11 +134,12 @@ def update_shell_rc(rc_path: Path, dotsync_dir: Path) -> ShellRcResult:
     text = rc_path.read_text()
     lines = text.splitlines()
 
-    target_idx = None
-    for i, rc_line in enumerate(lines):
-        if rc_line.strip().startswith(f"export {ENV_VAR}="):
-            target_idx = i
-            break
+    target_idx = _marked_export_index(lines)
+    if target_idx is None:
+        for i, rc_line in enumerate(lines):
+            if rc_line.strip().startswith(f"export {ENV_VAR}="):
+                target_idx = i
+                break
 
     if target_idx is not None:
         if lines[target_idx].strip() == export:
@@ -139,7 +148,7 @@ def update_shell_rc(rc_path: Path, dotsync_dir: Path) -> ShellRcResult:
         new_text = "\n".join(lines)
         if text.endswith("\n"):
             new_text += "\n"
-        rc_path.write_text(new_text)
+        _write_atomic(rc_path, new_text)
         return ShellRcResult("updated", rc_path, export)
 
     # Append: separate from previous content with a blank line so the marker
@@ -150,5 +159,34 @@ def update_shell_rc(rc_path: Path, dotsync_dir: Path) -> ShellRcResult:
         block = f"\n{MARKER}\n{export}\n"
     else:
         block = f"\n\n{MARKER}\n{export}\n"
-    rc_path.write_text(text + block)
+    _write_atomic(rc_path, text + block)
     return ShellRcResult("added", rc_path, export)
+
+
+def _marked_export_index(lines: list[str]) -> Optional[int]:
+    """Index of the export line right after the last MARKER line, or None."""
+    found = None
+    for i in range(len(lines) - 1):
+        if lines[i].strip() == MARKER and lines[i + 1].strip().startswith(f"export {ENV_VAR}="):
+            found = i + 1
+    return found
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """Replace path's content in one step: a temp file next to the real file,
+    fsync, then os.replace. Keeps the file mode; through a symlink, writes the
+    link's target and leaves the link."""
+    real = path.resolve() if path.is_symlink() else path
+    mode = real.stat().st_mode & 0o7777 if real.exists() else 0o644
+    fd, tmp = tempfile.mkstemp(prefix=f".{real.name}.", suffix=".dotsync-tmp", dir=real.parent)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, real)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp)
+        raise
