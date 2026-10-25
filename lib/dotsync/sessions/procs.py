@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import os
+import selectors
 import subprocess
+import time
+from collections.abc import Generator
 from dataclasses import dataclass, field
 from pathlib import Path
 
 TOOL_TIMEOUT = 10  # seconds, for ps and lsof
+_CHUNK = 65536  # bytes per read of a streamed child's stdout
 
 
 class ToolFailure(Exception):
@@ -43,6 +47,65 @@ def run(
         raise ToolFailure("missing", f"{argv[0]} not found") from exc
     except OSError as exc:
         raise ToolFailure("failed", f"{argv[0]} could not start: {exc.strerror}") from exc
+
+
+def stream_lines(argv: list[str], *, timeout: float) -> Generator[bytes, None, None]:
+    """The lines `argv` writes to stdout, each as it arrives (the last one may
+    lack its newline). Reads wait in a selector, never in a blocking
+    readline, so a child that writes no newline still meets the deadline.
+    Passing the deadline kills the child and raises ToolFailure("timeout");
+    closing the generator early kills it too. A non-zero exit raises
+    ToolFailure("failed") after the last line, as does a failed read. Either
+    way the child is reaped before the generator ends."""
+    deadline = time.monotonic() + timeout
+    try:
+        child = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=0,
+        )
+    except FileNotFoundError as exc:
+        raise ToolFailure("missing", f"{argv[0]} not found") from exc
+    except OSError as exc:
+        raise ToolFailure("failed", f"{argv[0]} could not start: {exc.strerror}") from exc
+    try:
+        yield from _read_lines(child.stdout.fileno(), deadline, argv[0])
+        try:
+            code = child.wait(timeout=max(deadline - time.monotonic(), 0))
+        except subprocess.TimeoutExpired as exc:  # stdout closed, but it has not exited
+            raise ToolFailure("timeout", f"{argv[0]} timed out") from exc
+        if code != 0:
+            raise ToolFailure("failed", f"{argv[0]} exited {code}")
+    except OSError as exc:  # reading its stdout failed
+        raise ToolFailure("failed", f"{argv[0]} could not be read: {exc.strerror}") from exc
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait()
+        child.stdout.close()
+
+
+def _read_lines(fd: int, deadline: float, name: str) -> Generator[bytes, None, None]:
+    tail = bytearray()
+    with selectors.DefaultSelector() as selector:
+        selector.register(fd, selectors.EVENT_READ)
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0 or not selector.select(left):
+                raise ToolFailure("timeout", f"{name} timed out")
+            chunk = os.read(fd, _CHUNK)
+            if not chunk:
+                break
+            tail += chunk
+            if b"\n" in chunk:  # only then can a line be complete
+                *lines, rest = tail.split(b"\n")
+                for line in lines:
+                    yield bytes(line) + b"\n"
+                tail = bytearray(rest)
+    if tail:
+        yield bytes(tail)
 
 
 def _run_clean(argv: list[str]) -> str:

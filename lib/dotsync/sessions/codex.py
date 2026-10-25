@@ -25,9 +25,12 @@ from dotsync.sessions import grouping, log, procs, roots, safety
 from dotsync.sessions.stop import StopSignal
 
 STATE_DB = "state_5.sqlite"
+QUEUE_DB = "queue_1.sqlite"
 HISTORY_DB = "thread_history_1.sqlite"
+ROLLOUT_TREES = ("sessions", "archived_sessions")  # under the Codex home
 _UUID = r"[0-9a-fA-F-]{36}"
-_ROLLOUT = re.compile(
+# Group 1 is the thread id; group 2, when there, the rollout id.
+ROLLOUT_NAME = re.compile(
     rf"^rollout-\d{{4}}-\d{{2}}-\d{{2}}T\d{{2}}-\d{{2}}-\d{{2}}-({_UUID})(?:_({_UUID}))?\.jsonl(?:\.zst)?$"
 )
 
@@ -103,11 +106,11 @@ def rollout_files(*, strict: bool = False) -> dict[str, list[Path]]:
             raise error
 
     found: dict[str, list[Path]] = {}
-    for top in ("sessions", "archived_sessions"):
+    for top in ROLLOUT_TREES:
         walk = os.walk(roots.codex_home() / top, followlinks=False, onerror=fail if strict else None)
         for dirpath, _dirs, names in walk:
             for name in sorted(names):
-                m = _ROLLOUT.match(name)
+                m = ROLLOUT_NAME.match(name)
                 if not m or not safety.is_valid_id(m.group(1)):
                     continue
                 if m.group(2) and not safety.is_valid_id(m.group(2)):
@@ -380,7 +383,7 @@ def _exists(path: Path) -> bool:
 def _rollout_id(path: Path) -> str:
     """What a rollout file's history rows are keyed by: the rollout id in its
     name, else its thread id."""
-    m = _ROLLOUT.match(path.name)
+    m = ROLLOUT_NAME.match(path.name)
     return m.group(2) or m.group(1)
 
 

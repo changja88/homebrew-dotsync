@@ -1,4 +1,9 @@
+import errno
+import os
+import signal
 import subprocess
+import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -58,7 +63,7 @@ def test_lsof_scan_parses_records(monkeypatch):
     assert scan[10] == procs.OpenFiles("claude", "/work/a", ["/opt/claude"], ["/tmp/x", "/tmp/y"])
     assert scan[20] == procs.OpenFiles("node", "/work/b", [], [])
     argv, kwargs = calls[0]
-    assert argv[:6] == ["/usr/sbin/lsof", "-nP", "-w", "-u", str(__import__("os").getuid()), "-F"]
+    assert argv[:6] == ["/usr/sbin/lsof", "-nP", "-w", "-u", str(os.getuid()), "-F"]
     assert argv[6] == "pcfn" and "-a" not in argv
     assert kwargs["timeout"] == 10
 
@@ -133,3 +138,97 @@ def test_run_maps_other_oserror_to_failed(monkeypatch):
     with pytest.raises(procs.ToolFailure) as info:
         procs.run(["x"], timeout=1)
     assert info.value.code == "failed"
+
+
+# stream_lines runs a real, harmless child: the Python running these tests.
+
+
+@pytest.fixture
+def spawned(monkeypatch):
+    """The real Popen, recording each child it starts."""
+    children = []
+    real = subprocess.Popen
+
+    def spy(*args, **kwargs):
+        child = real(*args, **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(subprocess, "Popen", spy)
+    return children
+
+
+def python(code):
+    return [sys.executable, "-I", "-c", code]
+
+
+def assert_killed_and_reaped(child):
+    assert child.returncode == -signal.SIGKILL
+    with pytest.raises(ChildProcessError):  # no such child left to wait for
+        os.waitpid(child.pid, os.WNOHANG)
+
+
+@pytest.mark.no_subprocess_block
+def test_stream_lines_yields_each_line_and_the_unterminated_tail(spawned):
+    lines = procs.stream_lines(python("import sys; sys.stdout.write('a\\nbb\\n\\nc')"), timeout=30)
+    assert list(lines) == [b"a\n", b"bb\n", b"\n", b"c"]
+    assert spawned[0].returncode == 0
+
+
+@pytest.mark.no_subprocess_block
+def test_stream_lines_closed_early_kills_and_reaps_the_child(spawned):
+    code = "import time\nprint('one', flush=True)\ntime.sleep(60)"
+    lines = procs.stream_lines(python(code), timeout=30)
+    assert next(lines) == b"one\n"
+    lines.close()
+    assert_killed_and_reaped(spawned[0])
+
+
+@pytest.mark.no_subprocess_block
+@pytest.mark.parametrize(
+    "code",
+    [
+        "import time; time.sleep(60)",
+        "import sys, time; sys.stdout.write('no newline'); sys.stdout.flush(); time.sleep(60)",
+        "import sys\nwhile True: sys.stdout.write('more\\n' * 1000)",
+    ],
+    ids=["silent", "no_newline", "endless_output"],
+)
+def test_stream_lines_past_the_deadline_kills_the_child_and_times_out(spawned, code):
+    started = time.monotonic()
+    with pytest.raises(procs.ToolFailure) as info:
+        for _line in procs.stream_lines(python(code), timeout=1):
+            pass
+    assert info.value.code == "timeout"
+    assert time.monotonic() - started < 10
+    assert_killed_and_reaped(spawned[0])
+
+
+@pytest.mark.no_subprocess_block
+def test_stream_lines_nonzero_exit_fails_after_the_last_line(spawned):
+    lines = procs.stream_lines(python("import sys; print('partial'); sys.exit(3)"), timeout=30)
+    assert next(lines) == b"partial\n"
+    with pytest.raises(procs.ToolFailure) as info:
+        next(lines)
+    assert info.value.code == "failed"
+    assert spawned[0].returncode == 3
+
+
+@pytest.mark.no_subprocess_block
+def test_stream_lines_missing_binary(tmp_path):
+    with pytest.raises(procs.ToolFailure) as info:
+        next(procs.stream_lines([str(tmp_path / "no-such-zstd"), "-dc"], timeout=5))
+    assert info.value.code == "missing"
+
+
+@pytest.mark.no_subprocess_block
+def test_stream_lines_read_error_fails_and_reaps_the_child(spawned, monkeypatch):
+    def broken(fd, deadline, name):
+        raise OSError(errno.EIO, "Input/output error")
+        yield  # a generator, like the real one
+
+    monkeypatch.setattr(procs, "_read_lines", broken)
+    with pytest.raises(procs.ToolFailure) as info:
+        list(procs.stream_lines(python("import time; time.sleep(60)"), timeout=30))
+    assert info.value.code == "failed"
+    assert_killed_and_reaped(spawned[0])
