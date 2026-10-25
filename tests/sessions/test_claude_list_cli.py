@@ -93,8 +93,3 @@ def test_symlink_loop_at_a_session_dir_is_unsafe_not_a_crash(world, capsys):
     assert (items[IDLE]["state"], items[IDLE]["reason"]) == ("unknown", "unsafe_path")
     assert items[RUNNING]["state"] == "running"
 
-
-def test_list_codex_is_unsupported_for_now(world, capsys):
-    code = cli.main(["sessions", "list", "codex", "--json"])
-    error = json.loads(capsys.readouterr().out)["error"]
-    assert code == 1 and error["code"] == "unsupported"

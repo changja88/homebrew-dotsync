@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 from dotsync import cli_json, ui
 from dotsync.cli_json import JSONCommandError
-from dotsync.sessions import claude
+from dotsync.sessions import claude, codex
 from dotsync.sessions.stop import StopSignal
 
 TOOLS = ("claude", "codex")
@@ -72,8 +72,17 @@ def _list(args: argparse.Namespace) -> int:
 
 def _list_payload(tool: str) -> dict:
     if tool == "claude":
-        return claude.list_payload()
-    raise JSONCommandError("unsupported", f"listing {tool} sessions is not available yet")
+        return claude.list_payload(_best_effort(codex.cwds))
+    return codex.list_payload(_best_effort(lambda: [s.cwd for s in claude.scan() if s.cwd]))
+
+
+def _best_effort(other_cwds: Callable[[], list[str]]) -> list[str]:
+    """The other tool's cwds only sharpen grouping; failing to get them is not
+    a reason to fail the list."""
+    try:
+        return other_cwds()
+    except Exception:
+        return []
 
 
 def _delete(args: argparse.Namespace) -> int:
