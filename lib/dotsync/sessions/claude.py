@@ -7,11 +7,13 @@ import json
 import os
 import re
 import shutil
-from collections.abc import Iterator
+import time
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
-from dotsync.sessions import procs, roots, safety
+from dotsync.sessions import grouping, procs, roots, safety
 
 QUARANTINE_SUFFIX = ".dotsync-deleting"
 TITLE_LIMIT = 120
@@ -388,3 +390,50 @@ def _has_unexplained_process(s: ClaudeSession, live: Liveness) -> bool:
         and p.started < s.last_activity
         for p in live.procs
     )
+
+
+def list_payload(extra_cwds: Iterable[str] = ()) -> dict:
+    """The `sessions list claude --json` object. `extra_cwds` are the other
+    tool's cwds: a root found by either tool counts for both."""
+    now = time.time()
+    sessions = scan()
+    live = gather_liveness(now)
+    items: list[dict] = []
+    for s in sessions:
+        state, reason = state_of(s, live, now)
+        item = {
+            "id": s.id,
+            "title": s.title,
+            "folder": os.path.basename(s.cwd),
+            "cwd": s.cwd,
+            "last_activity": _iso(s.last_activity),
+            "bytes": s.bytes,
+            "state": state,
+            "subagents": s.subagents,
+        }
+        if state == "unknown":
+            item["reason"] = reason
+        items.append(item)
+
+    locator = grouping.Locator.default()
+    cwds = {i["cwd"] for i in items}
+    known = locator.known_roots(cwds | live.known_cwds | set(extra_cwds))
+    places = {cwd: locator.place(cwd, known) for cwd in cwds}
+    payload = {
+        "tool": "claude",
+        "checked_at": _iso(now),
+        "totals": {
+            "sessions": len(items),
+            "bytes": sum(i["bytes"] for i in items),
+            "running": sum(i["state"] == "running" for i in items),
+        },
+        "groups": grouping.groups(items, places),
+    }
+    if live.error:
+        payload["agents_error"] = live.error
+    return payload
+
+
+def _iso(epoch: float) -> str:
+    """UTC with whole seconds, as Swift's .iso8601 decoding expects."""
+    return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
