@@ -102,6 +102,11 @@ def load_config() -> Config:
         )
     if not folder.is_absolute():
         raise ConfigError(f"{ENV_VAR} must be an absolute path, got: {folder}")
+    return read_folder_config(folder, source)
+
+
+def read_folder_config(folder: Path, source: str = "") -> Config:
+    """The config in `folder`'s dotsync.toml, checked as load_config checks it."""
     if not folder.exists():
         raise ConfigError(
             f"sync folder not found at {folder}. "

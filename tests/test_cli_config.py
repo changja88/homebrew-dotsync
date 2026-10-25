@@ -127,6 +127,43 @@ def test_config_dir_without_rc_file(fake_home, monkeypatch, capsys):
     assert not (fake_home / ".zshrc").exists()
 
 
+def test_config_dir_keeps_the_folders_own_dotsync_toml(fake_home, monkeypatch, capsys):
+    # Choosing a folder another Mac already syncs with must not replace its
+    # tracked apps and options with this folder's.
+    from dotsync.shellrc import marked_dir
+
+    old, shared = fake_home / "old", fake_home / "shared"
+    save_config(Config(dir=old, apps=["zsh"]))
+    save_config(Config(dir=shared, apps=["codex", "bettertouchtool"],
+                       app_options={"bettertouchtool": {"presets": ["Work"]}}))
+    before = (shared / "dotsync.toml").read_bytes()
+    rc = _write_rc(fake_home, old)
+    _app_context(monkeypatch, fake_home)
+
+    assert main(["config", "dir", "--json", "--", str(shared)]) == 0
+
+    assert (shared / "dotsync.toml").read_bytes() == before
+    assert marked_dir(rc) == shared.resolve()
+    assert load_config().apps == ["codex", "bettertouchtool"]
+
+
+def test_config_dir_refuses_a_folder_with_a_broken_dotsync_toml(fake_home, monkeypatch, capsys):
+    from dotsync.shellrc import marked_dir
+
+    old, broken = fake_home / "old", fake_home / "broken"
+    save_config(Config(dir=old, apps=["zsh"]))
+    broken.mkdir()
+    (broken / "dotsync.toml").write_text("apps = [\n")
+    rc = _write_rc(fake_home, old)
+    _app_context(monkeypatch, fake_home)
+
+    assert main(["config", "dir", "--json", "--", str(broken)]) == 1
+
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "config"
+    assert (broken / "dotsync.toml").read_text() == "apps = [\n"
+    assert marked_dir(rc) == old.resolve()
+
+
 def test_config_apps_json_saves_apps(fake_home, monkeypatch, capsys):
     target = fake_home / "configs"
     save_config(Config(dir=target, apps=["zsh"]))

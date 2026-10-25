@@ -17,6 +17,7 @@ from dotsync.config import (
     ConfigError,
     folder_config_path,
     load_config,
+    read_folder_config,
     save_config,
 )
 from dotsync.plan import AppPlan
@@ -418,14 +419,19 @@ def cmd_config(args) -> int:
 
 
 def _set_dir(path: str) -> "tuple[Path, ShellRcResult]":
-    """Write the config into the folder at `path` (files are not moved) and
-    point the marked DOTSYNC_DIR line at it, so the next command — from a
-    new shell or the dotsync app — finds it."""
-    cfg = load_config()
+    """Point dotsync at the folder at `path` (files are not moved) through the
+    marked DOTSYNC_DIR line, so the next command — from a new shell or the
+    dotsync app — finds it. A folder that already has a dotsync.toml keeps
+    its own apps and options (a broken one is refused); any other gets this
+    folder's config."""
     new_dir = Path(path).expanduser().resolve()
-    new_dir.mkdir(parents=True, exist_ok=True)
-    cfg.dir = new_dir
-    save_config(cfg)
+    if folder_config_path(new_dir).exists():
+        read_folder_config(new_dir)
+    else:
+        cfg = load_config()
+        new_dir.mkdir(parents=True, exist_ok=True)
+        cfg.dir = new_dir
+        save_config(cfg)
     return new_dir, _point_rc_at(new_dir)
 
 
