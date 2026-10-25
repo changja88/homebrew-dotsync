@@ -32,7 +32,8 @@ def test_find_sync_folder_ascends_cwd(monkeypatch, tmp_path):
     assert find_sync_folder() == folder
 
 
-def test_find_sync_folder_returns_none_when_nothing_found(monkeypatch, tmp_path):
+def test_find_sync_folder_returns_none_when_nothing_found(fake_home, monkeypatch, tmp_path):
+    # fake_home: the rc fallback must not read the real ~/.zshrc.
     monkeypatch.delenv("DOTSYNC_DIR", raising=False)
     monkeypatch.chdir(tmp_path)
     assert find_sync_folder() is None
@@ -282,3 +283,111 @@ def test_save_writes_only_apps_and_app_option_tables(tmp_path):
     assert (tmp_path / "dotsync.toml").read_text() == (
         'apps = ["bettertouchtool"]\n\n[options.bettertouchtool]\npresets = ["A"]\n'
     )
+
+
+# ----- the marked DOTSYNC_DIR line in the shell rc (Finder-launched app) -----
+
+
+def _marked_rc(home, folder, name=".zshrc"):
+    from dotsync.shellrc import MARKER, export_line
+
+    rc = home / name
+    rc.write_text(f"export PATH=/x:$PATH\n\n{MARKER}\n{export_line(folder)}\n")
+    return rc
+
+
+def test_rc_marked_line_is_the_last_fallback(fake_home, monkeypatch, tmp_path):
+    folder = tmp_path / "sync"
+    folder.mkdir()
+    save_config(Config(dir=folder, apps=[]))
+    _marked_rc(fake_home, folder)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    cfg = load_config()
+
+    assert cfg.dir == folder
+    assert cfg.dir_source == "rc"
+
+
+def test_rc_line_ignored_without_dotsync_toml(fake_home, monkeypatch, tmp_path):
+    folder = tmp_path / "sync"
+    folder.mkdir()
+    _marked_rc(fake_home, folder)
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(ConfigError):
+        load_config()
+
+
+def test_unmarked_export_line_is_ignored(fake_home, monkeypatch, tmp_path):
+    from dotsync.shellrc import export_line
+
+    folder = tmp_path / "sync"
+    folder.mkdir()
+    save_config(Config(dir=folder, apps=[]))
+    (fake_home / ".zshrc").write_text(export_line(folder) + "\n")
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(ConfigError):
+        load_config()
+
+
+def test_env_and_cwd_win_over_rc(fake_home, monkeypatch, tmp_path):
+    rc_folder = tmp_path / "rc-sync"
+    rc_folder.mkdir()
+    save_config(Config(dir=rc_folder, apps=[]))
+    _marked_rc(fake_home, rc_folder)
+    cwd_folder = tmp_path / "cwd-sync"
+    cwd_folder.mkdir()
+    save_config(Config(dir=cwd_folder, apps=[]))
+    env_folder = tmp_path / "env-sync"
+    env_folder.mkdir()
+    save_config(Config(dir=env_folder, apps=[]))
+    monkeypatch.chdir(cwd_folder)
+
+    assert (load_config().dir, load_config().dir_source) == (cwd_folder, "cwd")
+    monkeypatch.setenv("DOTSYNC_DIR", str(env_folder))
+    assert (load_config().dir, load_config().dir_source) == (env_folder, "env")
+
+
+def test_rc_path_with_spaces_and_korean_round_trips(tmp_path):
+    from dotsync.shellrc import MARKER, export_line, marked_dir
+
+    folder = tmp_path / "Mobile Documents" / "it's dotsync 설정"
+    rc = tmp_path / ".zshrc"
+    rc.write_text(f"{MARKER}\n{export_line(folder)}\n")
+
+    assert marked_dir(rc) == folder
+
+
+def test_marked_dir_missing_file_or_line(tmp_path):
+    from dotsync.shellrc import MARKER, marked_dir
+
+    assert marked_dir(tmp_path / "nope") is None
+    rc = tmp_path / ".zshrc"
+    rc.write_text(f"{MARKER}\necho hi\n")
+    assert marked_dir(rc) is None
+
+
+def test_rc_found_when_shell_unset(fake_home, monkeypatch, tmp_path):
+    monkeypatch.delenv("SHELL", raising=False)
+    folder = tmp_path / "sync"
+    folder.mkdir()
+    save_config(Config(dir=folder, apps=[]))
+    _marked_rc(fake_home, folder, ".zshrc")
+    monkeypatch.chdir(tmp_path)
+
+    assert load_config().dir == folder
+
+
+def test_rc_candidates_order_and_dedup(tmp_path):
+    from dotsync.shellrc import rc_candidates
+
+    assert rc_candidates(shell="/bin/zsh", home=tmp_path) == [
+        tmp_path / ".zshrc",
+        tmp_path / ".bash_profile",
+        tmp_path / ".bashrc",
+    ]
+    assert rc_candidates(shell="", home=tmp_path)[0] == tmp_path / ".zshrc"

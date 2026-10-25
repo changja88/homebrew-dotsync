@@ -65,6 +65,50 @@ def detect_rc_path(
     return None
 
 
+def rc_candidates(
+    shell: Optional[str] = None,
+    home: Optional[Path] = None,
+) -> list[Path]:
+    """The rc files that may hold dotsync's marked export line, most likely
+    first. A process started from Finder may have no $SHELL, so the usual
+    zsh and bash files follow the detected one."""
+    home = home or Path.home()
+    candidates: list[Path] = []
+    for path in (
+        detect_rc_path(shell=shell, home=home),
+        home / ".zshrc",
+        home / ".bash_profile",
+        home / ".bashrc",
+    ):
+        if path is not None and path not in candidates:
+            candidates.append(path)
+    return candidates
+
+
+def marked_dir(rc_path: Path) -> Optional[Path]:
+    """The folder named by the export line right after MARKER in rc_path, or
+    None. Parsed with shlex like the shell would, never sourced. With several
+    marked lines the last one wins, as it does in the shell."""
+    try:
+        lines = rc_path.read_text().splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    found: Optional[Path] = None
+    for marker, line in zip(lines, lines[1:]):
+        if marker.strip() != MARKER:
+            continue
+        line = line.strip()
+        if not line.startswith(f"export {ENV_VAR}="):
+            continue
+        try:
+            words = shlex.split(line[len("export ") :])
+        except ValueError:
+            continue
+        if len(words) == 1 and words[0].startswith(f"{ENV_VAR}="):
+            found = Path(words[0][len(ENV_VAR) + 1 :])
+    return found
+
+
 def update_shell_rc(rc_path: Path, dotsync_dir: Path) -> ShellRcResult:
     """Idempotently ensure rc_path contains the export line for dotsync_dir.
 

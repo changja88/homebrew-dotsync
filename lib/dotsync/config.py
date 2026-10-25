@@ -1,14 +1,22 @@
 """dotsync config persistence.
 
-Design goal: dotsync MUST NOT create any file or directory anywhere on the
-user's machine outside the sync folder they explicitly chose. There is no
-~/.config/dotsync, no ~/.dotsync pointer, nothing in $HOME.
+Design goal: sync config lives only in the sync folder the user chose. There
+is no ~/.config/dotsync and no pointer file in $HOME. The only things dotsync
+writes outside the sync folder are:
+  - ~/.claude-accounts/ — saved Claude logins (`dotsync account`) and its lock
+  - ~/Library/Application Support/dotsync/locks/ — locks shared by the
+    terminal and the dotsync app
+  - ~/Library/Logs/dotsync/ — the log of session deletes and cleanups
+  - the marked `export DOTSYNC_DIR=…` line in the shell rc (init, config dir)
 
 How does dotsync know where the sync folder is then?
   1. $DOTSYNC_DIR environment variable (absolute path), if set, wins.
   2. Otherwise, walk up from cwd looking for a folder containing dotsync.toml
      (git-style). This means running dotsync from inside the sync folder
      (or any subdirectory) just works.
+  3. Otherwise, the marked export line in the shell rc (parsed, never
+     sourced), when that folder has a dotsync.toml. This is what a process
+     without the shell's environment finds — dotsync.app opened from Finder.
 
 Real config lives at:
   <sync-folder>/dotsync.toml
@@ -48,28 +56,43 @@ class Config:
     apps: List[str]
     # [options.<app>] tables, each parsed by that app's from_config().
     app_options: dict = field(default_factory=dict)
+    # How the folder was found: "env", "cwd" or "rc" (see the module docstring).
+    dir_source: str = ""
 
 
-def find_sync_folder() -> Optional[Path]:
-    """Locate the user's sync folder.
+def locate_sync_folder() -> tuple[Optional[Path], str]:
+    """Locate the user's sync folder and say how it was found.
 
-    1. $DOTSYNC_DIR (must be absolute).
-    2. Walk up from cwd looking for FOLDER_CONFIG_FILENAME.
-    Returns None if neither succeeds.
+    1. $DOTSYNC_DIR (must be absolute) → "env".
+    2. Walk up from cwd looking for FOLDER_CONFIG_FILENAME → "cwd".
+    3. The marked export line in the shell rc, if that folder has
+       FOLDER_CONFIG_FILENAME → "rc".
+    Returns (None, "") if none succeeds.
     """
     env = os.environ.get(ENV_VAR)
     if env:
         p = Path(env).expanduser()
-        return p  # validity (absolute, exists) is checked by load_config
+        return p, "env"  # validity (absolute, exists) is checked by load_config
     cwd = Path.cwd()
     for parent in [cwd, *cwd.parents]:
         if (parent / FOLDER_CONFIG_FILENAME).exists():
-            return parent
-    return None
+            return parent, "cwd"
+    from dotsync.shellrc import marked_dir, rc_candidates
+
+    for rc_path in rc_candidates():
+        folder = marked_dir(rc_path)
+        if folder is not None and folder.is_absolute() and (folder / FOLDER_CONFIG_FILENAME).exists():
+            return folder, "rc"
+    return None, ""
+
+
+def find_sync_folder() -> Optional[Path]:
+    """The sync folder from locate_sync_folder(), or None."""
+    return locate_sync_folder()[0]
 
 
 def load_config() -> Config:
-    folder = find_sync_folder()
+    folder, source = locate_sync_folder()
     if folder is None:
         raise ConfigError(
             "dotsync is not initialized in this context. Either:\n"
@@ -123,7 +146,7 @@ def load_config() -> Config:
             "only [options.<app>] tables are allowed — remove the line"
         )
 
-    return Config(dir=folder, apps=apps, app_options=options)
+    return Config(dir=folder, apps=apps, app_options=options, dir_source=source)
 
 
 def _toml_value(v) -> str:
