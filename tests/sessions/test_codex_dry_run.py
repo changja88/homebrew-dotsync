@@ -10,7 +10,7 @@ import sqlite3
 import pytest
 
 from dotsync import cli
-from dotsync.sessions import codex, codex_cleanup, procs, roots
+from dotsync.sessions import codex, codex_cleanup, codex_keepset, procs, roots
 from tests.sessions.codex_fixtures import (
     add_history,
     add_thread,
@@ -88,7 +88,7 @@ def test_counts_each_store(home):
     assert all(i["checked"] for i in payload["items"])
     assert payload["vacuum_available"] is True
     assert payload["history_db_bytes"] > 0
-    assert codex_cleanup.orphans(codex_cleanup.keep_set()).cache_ids == {GONE}
+    assert codex_cleanup.orphans(codex_keepset.keep_set()).cache_ids == {GONE}
 
 
 def test_empty_stores_give_unchecked_items(home):
@@ -108,7 +108,7 @@ def test_history_line_matches_session_id_exactly(home):
             f'"{GONE}"',
         ],
     )
-    found = codex_cleanup.orphans(codex_cleanup.keep_set())
+    found = codex_cleanup.orphans(codex_keepset.keep_set())
     assert found.history_lines == {GONE: 1}
 
 
@@ -118,7 +118,7 @@ def test_unparsable_lines_are_not_counted(home):
         ['{"session_id": "' + GONE + '", "text": ', "not json " + GONE, "", "[1,2"],
     )
     (roots.codex_home() / "session_index.jsonl").write_bytes(b'\xff\xfe{"id":"' + GONE.encode() + b'"}\n')
-    found = codex_cleanup.orphans(codex_cleanup.keep_set())
+    found = codex_cleanup.orphans(codex_keepset.keep_set())
     assert found.history_lines == {} and found.index_ids == set()
 
 
@@ -147,7 +147,7 @@ def test_ids_that_are_not_canonical_are_ignored(home):
     (cache / (GONE + ".lock")).write_text("")
     (cache / GONE2).mkdir()
     (cache / BASE).symlink_to(cache / UPPER)
-    found = codex_cleanup.orphans(codex_cleanup.keep_set())
+    found = codex_cleanup.orphans(codex_keepset.keep_set())
     assert found == codex_cleanup.Orphans(set(), {}, set(), 0, set(), set())
 
 
@@ -167,7 +167,7 @@ def test_support_refusal_skips_the_keep_set_walk(home, monkeypatch):
     run.execute("DROP TABLE _sqlx_migrations")
     run.commit()
     run.close()
-    monkeypatch.setattr(codex_cleanup, "keep_set", lambda progress=None: pytest.fail("walked"))
+    monkeypatch.setattr(codex_keepset, "keep_set", lambda progress=None: pytest.fail("walked"))
     assert codex_cleanup.dry_run_payload()["refusal"]["code"] == "codex_version"
 
 

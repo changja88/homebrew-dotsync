@@ -50,6 +50,10 @@ def child(root: Path, name: str) -> Path:
     return path
 
 
+def is_under(path: str, directory: str) -> bool:
+    return path == directory or path.startswith(directory.rstrip("/") + "/")
+
+
 def remove(path: Path) -> str | None:
     """Delete a file, symlink (never its target) or directory tree. None when
     done or already gone, else a one-line error naming the path."""

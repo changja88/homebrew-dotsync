@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 from dotsync import cli_json, ui
 from dotsync.cli_json import JSONCommandError
-from dotsync.sessions import claude, codex, codex_cleanup
+from dotsync.sessions import claude, codex, codex_blockers, codex_cleanup
 from dotsync.sessions.stop import StopSignal
 
 TOOLS = ("claude", "codex")
@@ -176,7 +176,7 @@ def _cleanup_payload(
     args: argparse.Namespace, on_progress: Callable[[int, int], None] | None
 ) -> dict:
     if args.blockers:
-        return codex_cleanup.detect()
+        return codex_blockers.detect()
     if args.dry_run:
         return codex_cleanup.dry_run_payload(on_progress)
     items = args.items.split(",") if args.items is not None else list(codex_cleanup.ITEMS)

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from dotsync.sessions import codex_cleanup, codex_migrations, procs, roots
+from dotsync.sessions import codex_keepset, codex_migrations, procs, roots
 from tests.sessions.codex_fixtures import (
     DATABASES,
     FIXTURES,
@@ -77,7 +77,7 @@ class FakeZstd:
 @pytest.fixture
 def zstd(monkeypatch):
     fake = FakeZstd()
-    monkeypatch.setattr(codex_cleanup, "zstd_binary", lambda: ZSTD)
+    monkeypatch.setattr(codex_keepset, "zstd_binary", lambda: ZSTD)
     monkeypatch.setattr(procs, "stream_lines", fake)
     return fake
 
@@ -131,7 +131,7 @@ def test_known_checksums_match_the_fixture_files():
 
 
 def test_codex_0164_home_is_supported(home):
-    assert codex_cleanup.support_check() == (None, True)
+    assert codex_keepset.support_check() == (None, True)
 
 
 @pytest.mark.parametrize("db_name", list(DATABASES))
@@ -141,7 +141,7 @@ def test_unknown_migration_in_any_db_refuses(home, db_name):
         "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time)"
         " VALUES (9999, 'next', 1, x'00', 0)",
     )
-    refusal, vacuum_available = codex_cleanup.support_check()
+    refusal, vacuum_available = codex_keepset.support_check()
     assert refusal.code == "codex_version"
     assert db_name in refusal.message
     assert vacuum_available is False
@@ -159,27 +159,27 @@ def test_unknown_migration_in_any_db_refuses(home, db_name):
 )
 def test_any_other_migration_set_refuses(home, db_name, change):
     run_sql(home / db_name, change)
-    refusal, _ = codex_cleanup.support_check()
+    refusal, _ = codex_keepset.support_check()
     assert refusal.code == "codex_version"
 
 
 @pytest.mark.parametrize("db_name", list(DATABASES))
 def test_missing_db_refuses_as_an_unknown_version(home, db_name):
     remove_db(home / db_name)
-    refusal, _ = codex_cleanup.support_check()
+    refusal, _ = codex_keepset.support_check()
     assert refusal.code == "codex_version"
 
 
 def test_db_without_applied_migrations_refuses_as_an_unknown_version(home):
     replace_db(home / "queue_1.sqlite", b"")  # an empty file is an empty database
-    refusal, _ = codex_cleanup.support_check()
+    refusal, _ = codex_keepset.support_check()
     assert refusal.code == "codex_version"
 
 
 @pytest.mark.parametrize("db_name", list(DATABASES))
 def test_db_that_cannot_be_read_refuses_with_db_failed(home, db_name):
     replace_db(home / db_name, b"not a database at all" * 100)
-    refusal, _ = codex_cleanup.support_check()
+    refusal, _ = codex_keepset.support_check()
     assert refusal.code == "codex_db_failed"
 
 
@@ -187,14 +187,14 @@ def test_dbs_are_read_from_the_sqlite_home(tmp_path, monkeypatch):
     sqlite_home = tmp_path / "elsewhere"
     make_codex_home(roots.codex_home(), sqlite_home)
     monkeypatch.setenv("CODEX_SQLITE_HOME", str(sqlite_home))
-    assert codex_cleanup.support_check() == (None, True)
+    assert codex_keepset.support_check() == (None, True)
 
 
 def test_pending_rollout_migration_refuses(home):
     folder = home / "rollout-migrations"
     folder.mkdir()
     (folder / f"{THREAD}.pending").touch()
-    refusal, _ = codex_cleanup.support_check()
+    refusal, _ = codex_keepset.support_check()
     assert (refusal.code, refusal.message) == ("codex_version", "Codex is migrating rollouts")
 
 
@@ -202,7 +202,7 @@ def test_staging_file_in_rollout_migrations_refuses(home):
     folder = home / "rollout-migrations"
     folder.mkdir()
     (folder / f".{THREAD}.pending.a1b2c3.tmp").touch()
-    refusal, _ = codex_cleanup.support_check()
+    refusal, _ = codex_keepset.support_check()
     assert refusal.code == "codex_version"
 
 
@@ -210,7 +210,7 @@ def test_other_files_in_rollout_migrations_do_not_refuse(home):
     folder = home / "rollout-migrations"
     folder.mkdir()
     (folder / ".DS_Store").touch()
-    assert codex_cleanup.support_check() == (None, True)
+    assert codex_keepset.support_check() == (None, True)
 
 
 def test_auto_vacuum_not_2_only_disables_vacuum(home):
@@ -220,7 +220,7 @@ def test_auto_vacuum_not_2_only_disables_vacuum(home):
     con.execute("VACUUM")
     assert con.execute("PRAGMA auto_vacuum").fetchone()[0] == 0
     con.close()
-    assert codex_cleanup.support_check() == (None, False)
+    assert codex_keepset.support_check() == (None, False)
 
 
 # The keep-set
@@ -229,10 +229,10 @@ def test_auto_vacuum_not_2_only_disables_vacuum(home):
 def test_keep_set_takes_rollout_ids_from_file_names(home):
     write_rollout(home, THREAD, rollout_id=ROLLOUT, meta={"id": THREAD})
     write_rollout(home, OTHER)
-    keep = codex_cleanup.keep_set()
+    keep = codex_keepset.keep_set()
     assert keep.ids == {THREAD, ROLLOUT, OTHER}
     assert (keep.unreadable, keep.staging) == (0, 0)
-    assert codex_cleanup.scan_refusal(keep) is None
+    assert codex_keepset.scan_refusal(keep) is None
 
 
 def test_keep_set_finds_meta_after_leading_non_meta_lines(home):
@@ -250,7 +250,7 @@ def test_keep_set_finds_meta_after_leading_non_meta_lines(home):
             {"type": "session_meta", "payload": {"id": META}},
         ],
     )
-    keep = codex_cleanup.keep_set()
+    keep = codex_keepset.keep_set()
     assert keep.ids == {THREAD, META}
     assert keep.unreadable == 0
 
@@ -261,13 +261,13 @@ def test_first_session_meta_returns_its_payload(home):
         day_folder(home) / rollout_name(THREAD),
         [{"type": "event_msg", "payload": {}}, {"type": "session_meta", "payload": payload}],
     )
-    assert codex_cleanup.first_session_meta(path) == payload
+    assert codex_keepset.first_session_meta(path) == payload
 
 
 def test_keep_set_takes_history_base_ids(home):
     write_rollout(home, THREAD, meta={"id": THREAD, "history_base": {"thread_id": BASE}})
     write_rollout(home, OTHER, meta={"id": OTHER, "history_base": None})
-    keep = codex_cleanup.keep_set()
+    keep = codex_keepset.keep_set()
     assert keep.ids == {THREAD, BASE, OTHER}
     assert keep.unreadable == 0
 
@@ -279,7 +279,7 @@ def test_keep_set_reads_archived_and_zst(home, zstd):
     )
     with compressed.open("a") as f:
         f.write(json.dumps({"type": "response_item", "payload": {}}) + "\n")  # past the meta
-    keep = codex_cleanup.keep_set()
+    keep = codex_keepset.keep_set()
     assert keep.ids == {OTHER, THREAD, META, BASE}
     assert keep.unreadable == 0
     assert zstd.calls == [([ZSTD, "-dc", "--", str(compressed)], 10)]
@@ -290,7 +290,7 @@ def test_keep_set_reads_archived_and_zst(home, zstd):
 def test_keep_set_reads_a_rollout_and_its_zst_both(home, zstd):
     write_rollout(home, THREAD, meta={"id": THREAD})
     write_rollout(home, THREAD, zst=True, meta={"id": THREAD, "history_base": {"thread_id": BASE}})
-    keep = codex_cleanup.keep_set()
+    keep = codex_keepset.keep_set()
     assert keep.ids == {THREAD, BASE}
     assert len(zstd.calls) == 1
 
@@ -298,7 +298,7 @@ def test_keep_set_reads_a_rollout_and_its_zst_both(home, zstd):
 def test_keep_set_takes_state_thread_and_edge_ids(home):
     add_thread(home, THREAD)
     add_edge(home, OTHER, CHILD)
-    keep = codex_cleanup.keep_set()
+    keep = codex_keepset.keep_set()
     assert keep.ids == {THREAD, OTHER, CHILD}
     assert (keep.unreadable, keep.staging) == (0, 0)
 
@@ -308,14 +308,14 @@ def test_keep_set_reads_the_state_db_in_the_sqlite_home(tmp_path, monkeypatch):
     make_codex_home(roots.codex_home(), sqlite_home)
     monkeypatch.setenv("CODEX_SQLITE_HOME", str(sqlite_home))
     add_thread(sqlite_home, THREAD)
-    assert codex_cleanup.keep_set().ids == {THREAD}
+    assert codex_keepset.keep_set().ids == {THREAD}
 
 
 def test_keep_set_reports_progress_per_rollout(home):
     for thread_id in (THREAD, OTHER, CHILD):
         write_rollout(home, thread_id)
     calls = []
-    codex_cleanup.keep_set(lambda done, total: calls.append((done, total)))
+    codex_keepset.keep_set(lambda done, total: calls.append((done, total)))
     assert calls == [(1, 3), (2, 3), (3, 3)]
 
 
@@ -409,10 +409,10 @@ UNREADABLE = {
 def test_one_unreadable_rollout_refuses_everything(home, build):
     write_rollout(home, THREAD, rollout_id=ROLLOUT, meta={"id": META})
     build(home)
-    keep = codex_cleanup.keep_set()
+    keep = codex_keepset.keep_set()
     assert keep.unreadable == 1
     assert {THREAD, ROLLOUT, META} <= keep.ids
-    refusal = codex_cleanup.scan_refusal(keep)
+    refusal = codex_keepset.scan_refusal(keep)
     assert refusal.code == "incomplete_scan"
     assert refusal.message == "could not read 1 of the rollout files"
 
@@ -422,11 +422,11 @@ def test_rollout_that_cannot_be_opened_is_unreadable(home):
     path = write_rollout(home, CHILD)
     path.chmod(0)
     try:
-        keep = codex_cleanup.keep_set()
+        keep = codex_keepset.keep_set()
     finally:
         path.chmod(0o644)
     assert keep.unreadable == 1
-    assert codex_cleanup.scan_refusal(keep).code == "incomplete_scan"
+    assert codex_keepset.scan_refusal(keep).code == "incomplete_scan"
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root lists any folder")
@@ -435,43 +435,43 @@ def test_folder_that_cannot_be_listed_is_unreadable(home):
     folder = home / "sessions" / "2026" / "01"
     folder.chmod(0)
     try:
-        keep = codex_cleanup.keep_set()
+        keep = codex_keepset.keep_set()
     finally:
         folder.chmod(0o755)
     assert keep.unreadable == 1
-    assert codex_cleanup.scan_refusal(keep).code == "incomplete_scan"
+    assert codex_keepset.scan_refusal(keep).code == "incomplete_scan"
 
 
 def test_zstd_that_fails_makes_the_rollout_unreadable(home, zstd):
     write_rollout(home, THREAD, zst=True)
     zstd.failure = procs.ToolFailure("timeout", "zstd timed out")
-    keep = codex_cleanup.keep_set()
+    keep = codex_keepset.keep_set()
     assert keep.unreadable == 1
     assert THREAD in keep.ids
-    assert codex_cleanup.scan_refusal(keep).code == "incomplete_scan"
+    assert codex_keepset.scan_refusal(keep).code == "incomplete_scan"
 
 
 def test_unreadable_rollouts_are_counted(home):
     for thread_id in (THREAD, OTHER, CHILD):
         _no_meta_for(home, thread_id)
-    keep = codex_cleanup.keep_set()
-    assert codex_cleanup.scan_refusal(keep).message == "could not read 3 of the rollout files"
+    keep = codex_keepset.keep_set()
+    assert codex_keepset.scan_refusal(keep).message == "could not read 3 of the rollout files"
 
 
 def test_missing_zstd_refuses(home, monkeypatch):
     def no_child(argv, *, timeout):
         raise AssertionError(f"nothing should run without zstd: {argv!r}")
 
-    monkeypatch.setattr(codex_cleanup, "zstd_binary", lambda: None)
+    monkeypatch.setattr(codex_keepset, "zstd_binary", lambda: None)
     monkeypatch.setattr(procs, "stream_lines", no_child)
     write_rollout(home, OTHER)
-    assert codex_cleanup.scan_refusal(codex_cleanup.keep_set()) is None  # no .zst, no need
+    assert codex_keepset.scan_refusal(codex_keepset.keep_set()) is None  # no .zst, no need
 
     write_rollout(home, THREAD, zst=True)
-    keep = codex_cleanup.keep_set()
+    keep = codex_keepset.keep_set()
     assert keep.zstd_missing is True
     assert keep.unreadable == 1
-    refusal = codex_cleanup.scan_refusal(keep)
+    refusal = codex_keepset.scan_refusal(keep)
     assert refusal.code == "incomplete_scan"
     assert "zstd" in refusal.message
 
@@ -479,10 +479,10 @@ def test_missing_zstd_refuses(home, monkeypatch):
 def test_staging_file_refuses(home):
     path = write_rollout(home, THREAD)
     (path.parent / f".{path.name}.a1b2c3.tmp").write_text("half")
-    keep = codex_cleanup.keep_set()
+    keep = codex_keepset.keep_set()
     assert (keep.staging, keep.unreadable) == (1, 0)
     assert THREAD in keep.ids
-    assert codex_cleanup.scan_refusal(keep).code == "codex_version"
+    assert codex_keepset.scan_refusal(keep).code == "codex_version"
 
 
 @pytest.mark.parametrize(
@@ -496,41 +496,41 @@ def test_staging_file_refuses(home):
 )
 def test_db_id_that_is_not_canonical_refuses_as_an_unknown_version(home, bad):
     bad(home)
-    with pytest.raises(codex_cleanup.Refusal) as info:
-        codex_cleanup.keep_set()
+    with pytest.raises(codex_keepset.Refusal) as info:
+        codex_keepset.keep_set()
     assert info.value.code == "codex_version"
 
 
 def test_keep_set_without_a_state_db_refuses_as_an_unknown_version(home):
     remove_db(home / "state_5.sqlite")
-    with pytest.raises(codex_cleanup.Refusal) as info:
-        codex_cleanup.keep_set()
+    with pytest.raises(codex_keepset.Refusal) as info:
+        codex_keepset.keep_set()
     assert info.value.code == "codex_version"
 
 
 def test_keep_set_with_an_unreadable_state_db_refuses_with_db_failed(home):
     replace_db(home / "state_5.sqlite", b"not a database at all" * 100)
-    with pytest.raises(codex_cleanup.Refusal) as info:
-        codex_cleanup.keep_set()
+    with pytest.raises(codex_keepset.Refusal) as info:
+        codex_keepset.keep_set()
     assert info.value.code == "codex_db_failed"
 
 
 def test_refusal_is_a_json_command_error():
     from dotsync.cli_json import JSONCommandError
 
-    refusal = codex_cleanup.Refusal("codex_version", "why")
+    refusal = codex_keepset.Refusal("codex_version", "why")
     assert isinstance(refusal, JSONCommandError)
     assert (refusal.code, refusal.message, str(refusal)) == ("codex_version", "why", "why")
 
 
 def test_zstd_binary_prefers_homebrew(monkeypatch):
-    monkeypatch.setattr(codex_cleanup.os, "access", lambda path, mode: path == "/opt/homebrew/bin/zstd")
-    monkeypatch.setattr(codex_cleanup.shutil, "which", lambda name: "/usr/local/bin/zstd")
-    assert codex_cleanup.zstd_binary() == "/opt/homebrew/bin/zstd"
-    monkeypatch.setattr(codex_cleanup.os, "access", lambda path, mode: False)
-    assert codex_cleanup.zstd_binary() == "/usr/local/bin/zstd"
-    monkeypatch.setattr(codex_cleanup.shutil, "which", lambda name: None)
-    assert codex_cleanup.zstd_binary() is None
+    monkeypatch.setattr(codex_keepset.os, "access", lambda path, mode: path == "/opt/homebrew/bin/zstd")
+    monkeypatch.setattr(codex_keepset.shutil, "which", lambda name: "/usr/local/bin/zstd")
+    assert codex_keepset.zstd_binary() == "/opt/homebrew/bin/zstd"
+    monkeypatch.setattr(codex_keepset.os, "access", lambda path, mode: False)
+    assert codex_keepset.zstd_binary() == "/usr/local/bin/zstd"
+    monkeypatch.setattr(codex_keepset.shutil, "which", lambda name: None)
+    assert codex_keepset.zstd_binary() is None
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root searches any folder")
@@ -542,11 +542,11 @@ def test_rollout_tree_that_cannot_be_checked_is_unreadable(tmp_path, monkeypatch
     write_rollout(codex_home, THREAD)
     codex_home.chmod(0o600)  # no search: whether sessions/ is there cannot be told
     try:
-        keep = codex_cleanup.keep_set()
+        keep = codex_keepset.keep_set()
     finally:
         codex_home.chmod(0o755)
     assert keep.unreadable == 2  # both trees
-    assert codex_cleanup.scan_refusal(keep).code == "incomplete_scan"
+    assert codex_keepset.scan_refusal(keep).code == "incomplete_scan"
 
 
 # Fix round 1: rollout paths named by the state DB, strict lines, config.toml
@@ -556,16 +556,16 @@ def test_rollout_tree_that_cannot_be_checked_is_unreadable(tmp_path, monkeypatch
 def test_missing_rollout_named_by_a_thread_keeps_its_ids(home, tree):
     # A Codex delete that stopped halfway: the row is there, its file is not.
     add_thread(home, THREAD, rollout_path=str(home / tree / rollout_name(THREAD, ROLLOUT)))
-    keep = codex_cleanup.keep_set()
+    keep = codex_keepset.keep_set()
     assert keep.ids == {THREAD, ROLLOUT}
     assert keep.unreadable == 0
-    assert codex_cleanup.scan_refusal(keep) is None
+    assert codex_keepset.scan_refusal(keep) is None
 
 
 def test_rollout_named_by_a_thread_that_the_walk_read_counts_once(home):
     path = write_rollout(home, THREAD, rollout_id=ROLLOUT, meta={"id": THREAD})
     add_thread(home, THREAD, rollout_path=str(path))
-    keep = codex_cleanup.keep_set()
+    keep = codex_keepset.keep_set()
     assert keep.ids == {THREAD, ROLLOUT}
     assert keep.unreadable == 0
 
@@ -573,9 +573,9 @@ def test_rollout_named_by_a_thread_that_the_walk_read_counts_once(home):
 def test_rollout_path_outside_the_trees_is_unreadable(home, tmp_path):
     outside = write_rollout(tmp_path / "moved-codex-home", THREAD, rollout_id=ROLLOUT)
     add_thread(home, THREAD, rollout_path=str(outside))
-    keep = codex_cleanup.keep_set()
+    keep = codex_keepset.keep_set()
     assert keep.unreadable == 1
-    assert codex_cleanup.scan_refusal(keep).code == "incomplete_scan"
+    assert codex_keepset.scan_refusal(keep).code == "incomplete_scan"
 
 
 @pytest.mark.parametrize(
@@ -585,9 +585,9 @@ def test_rollout_path_outside_the_trees_is_unreadable(home, tmp_path):
 )
 def test_rollout_path_with_an_unreadable_name_is_unreadable(home, name):
     add_thread(home, THREAD, rollout_path=str(home / "sessions" / "2026" / "01" / "02" / name))
-    keep = codex_cleanup.keep_set()
+    keep = codex_keepset.keep_set()
     assert keep.unreadable == 1
-    assert codex_cleanup.scan_refusal(keep).code == "incomplete_scan"
+    assert codex_keepset.scan_refusal(keep).code == "incomplete_scan"
 
 
 def test_meta_line_with_invalid_utf8_is_unreadable(home):
@@ -595,9 +595,9 @@ def test_meta_line_with_invalid_utf8_is_unreadable(home):
     first = json.dumps({"type": "session_meta", "payload": {"id": META, "note": "XX"}}).encode()
     later = json.dumps({"type": "session_meta", "payload": {"id": OTHER}}).encode()
     path.write_bytes(first.replace(b"XX", b"\xff\xfe") + b"\n" + later + b"\n")
-    with pytest.raises(codex_cleanup.MetaUnreadable):
-        codex_cleanup.first_session_meta(path)
-    assert codex_cleanup.keep_set().unreadable == 1
+    with pytest.raises(codex_keepset.MetaUnreadable):
+        codex_keepset.first_session_meta(path)
+    assert codex_keepset.keep_set().unreadable == 1
 
 
 def test_unparseable_line_that_mentions_session_meta_is_unreadable(home):
@@ -608,14 +608,14 @@ def test_unparseable_line_that_mentions_session_meta_is_unreadable(home):
             {"type": "session_meta", "payload": {"id": OTHER}},
         ],
     )
-    with pytest.raises(codex_cleanup.MetaUnreadable):
-        codex_cleanup.first_session_meta(path)
-    assert codex_cleanup.keep_set().unreadable == 1
+    with pytest.raises(codex_keepset.MetaUnreadable):
+        codex_keepset.first_session_meta(path)
+    assert codex_keepset.keep_set().unreadable == 1
 
 
 def test_unreadable_config_toml_refuses_without_falling_back(home):
     (home / "config.toml").write_text('sqlite_home = "/somewhere\n')  # not TOML
-    refusal, vacuum_available = codex_cleanup.support_check()
+    refusal, vacuum_available = codex_keepset.support_check()
     assert refusal.code == "codex_db_failed"
     assert "config.toml" in refusal.message
     assert vacuum_available is False
@@ -627,7 +627,7 @@ def test_config_toml_that_cannot_be_opened_refuses(home):
     config.write_text('model = "x"\n')
     config.chmod(0)
     try:
-        refusal, _ = codex_cleanup.support_check()
+        refusal, _ = codex_keepset.support_check()
     finally:
         config.chmod(0o644)
     assert refusal.code == "codex_db_failed"
@@ -635,4 +635,4 @@ def test_config_toml_that_cannot_be_opened_refuses(home):
 
 def test_readable_config_toml_is_fine(home):
     (home / "config.toml").write_text('model = "x"\n')
-    assert codex_cleanup.support_check() == (None, True)
+    assert codex_keepset.support_check() == (None, True)

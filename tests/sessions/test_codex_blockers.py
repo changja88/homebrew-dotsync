@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from dotsync import cli
-from dotsync.sessions import codex_cleanup, procs, roots
+from dotsync.sessions import codex_blockers, procs, roots
 
 CHATGPT = "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"
 LOCK_A = "11111111-1111-4111-8111-111111111111"
@@ -37,7 +37,7 @@ def test_codex_found_by_exe_path_when_comm_lacks_it(monkeypatch):
         {500: (1, "node")},
         {500: opened("node", txt=["/opt/homebrew/Caskroom/codex/0.164.0/bin/codex"])},
     )
-    result = codex_cleanup.detect()
+    result = codex_blockers.detect()
     assert result["blockers"] == [
         {"pid": 500, "kind": "terminal_codex", "name": "codex", "elapsed": 60}
     ]
@@ -65,7 +65,7 @@ def test_other_codex_binaries_are_blockers(monkeypatch):
             14: opened("s", txt=["/elsewhere/SkyComputerUseService"]),
         },
     )
-    blockers = by_pid(codex_cleanup.detect()["blockers"])
+    blockers = by_pid(codex_blockers.detect()["blockers"])
     assert set(blockers) == {10, 11, 12}
     assert {b["kind"] for b in blockers.values()} == {"other"}
 
@@ -84,7 +84,7 @@ def test_chatgpt_child_by_parent_chain(monkeypatch):
             102: opened("codex", txt=["/x/codex"]),
         },
     )
-    result = codex_cleanup.detect()
+    result = codex_blockers.detect()
     kinds = {b["pid"]: b["kind"] for b in result["blockers"]}
     # ChatGPT is a blocker through its parent chain; the codex child is a child
     # of ChatGPT before it is a terminal codex. 101 runs no Codex binary.
@@ -94,7 +94,7 @@ def test_chatgpt_child_by_parent_chain(monkeypatch):
 
 def test_chatgpt_main_without_lsof_record_is_found_by_comm(monkeypatch):
     fake(monkeypatch, {100: (1, CHATGPT)}, {})
-    assert codex_cleanup.detect()["blockers"][0]["kind"] == "chatgpt_app"
+    assert codex_blockers.detect()["blockers"][0]["kind"] == "chatgpt_app"
 
 
 def test_sparkle_and_crashpad_are_helpers_not_blockers(monkeypatch):
@@ -108,7 +108,7 @@ def test_sparkle_and_crashpad_are_helpers_not_blockers(monkeypatch):
         },
         {100: opened("ChatGPT", txt=[CHATGPT])},
     )
-    result = codex_cleanup.detect()
+    result = codex_blockers.detect()
     assert [b["pid"] for b in result["blockers"]] == [100]
     assert result["chatgpt_helpers"] == [
         {"pid": 110, "kind": "chatgpt_helper", "name": "Autoupdate", "elapsed": 60},
@@ -141,7 +141,7 @@ def test_any_process_with_codex_home_file_open_blocks(tmp_path, monkeypatch):
             203: opened("tail", files=[str(real_home) + "-sibling/f"]),  # prefix, not a child
         },
     )
-    result = codex_cleanup.detect()
+    result = codex_blockers.detect()
     assert result["blockers"] == [
         {"pid": 200, "kind": "other", "name": "vim", "elapsed": 60},
         {"pid": 201, "kind": "other", "name": "less", "elapsed": 60},
@@ -165,7 +165,7 @@ def test_open_threads_counts_only_chatgpt_tree_locks(monkeypatch):
             300: opened("codex", txt=["/x/codex"], files=[path(LOCK_C)]),  # terminal, not counted
         },
     )
-    assert codex_cleanup.detect()["chatgpt_open_threads"] == 2
+    assert codex_blockers.detect()["chatgpt_open_threads"] == 2
 
 
 def test_own_pid_is_not_a_blocker(monkeypatch):
@@ -175,7 +175,7 @@ def test_own_pid_is_not_a_blocker(monkeypatch):
         {me: (1, "/x/python")},
         {me: opened("python", files=[str(roots.codex_home() / "state_5.sqlite")])},
     )
-    result = codex_cleanup.detect()
+    result = codex_blockers.detect()
     assert result == {"blockers": [], "chatgpt_helpers": [], "chatgpt_open_threads": 0}
 
 
@@ -188,7 +188,7 @@ def test_tool_failure_is_detection_failed(monkeypatch, broken, error):
         raise error
 
     monkeypatch.setattr(procs, "ps_table" if broken == "ps" else "lsof_scan", fail)
-    assert codex_cleanup.detect() == {
+    assert codex_blockers.detect() == {
         "blockers": [{"pid": 0, "kind": "detection_failed", "name": broken, "elapsed": 0}],
         "chatgpt_helpers": [],
         "chatgpt_open_threads": 0,
@@ -202,7 +202,7 @@ def test_output_has_no_arguments_or_paths(monkeypatch):
         {1: (0, "launchd"), 400: (1, "/usr/bin/vim")},
         {400: opened("vim", files=[str(roots.codex_home() / "f"), secret])},
     )
-    text = json.dumps(codex_cleanup.detect())
+    text = json.dumps(codex_blockers.detect())
     assert "secret" not in text and "/Users" not in text
 
 

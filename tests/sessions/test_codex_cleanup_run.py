@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from dotsync import cli, locks
-from dotsync.sessions import codex, codex_cleanup, procs, roots
+from dotsync.sessions import codex, codex_blockers, codex_cleanup, codex_keepset, procs, roots
 from dotsync.sessions.stop import StopSignal
 from tests.sessions.codex_fixtures import (
     HISTORY_TABLES,
@@ -201,8 +201,8 @@ def test_any_blocker_refuses_with_codex_running(db, monkeypatch, failing):
     if failing:
         monkeypatch.setattr(procs, "ps_table", lambda: (_ for _ in ()).throw(procs.ToolFailure("timeout")))
     else:
-        monkeypatch.setattr(codex_cleanup, "detect", lambda: {"blockers": [BLOCKER]})
-    monkeypatch.setattr(codex_cleanup, "support_check", lambda: pytest.fail("checked while Codex runs"))
+        monkeypatch.setattr(codex_blockers, "detect", lambda: {"blockers": [BLOCKER]})
+    monkeypatch.setattr(codex_keepset, "support_check", lambda: pytest.fail("checked while Codex runs"))
     before = snapshot()
     with pytest.raises(codex_cleanup.JSONCommandError) as err:
         run()
@@ -325,7 +325,7 @@ def test_vacuum_does_not_start_after_a_blocker(db, monkeypatch):
     full_home(db)
     monkeypatch.setattr(codex_cleanup, "reclaim", lambda *a, **k: pytest.fail("reclaim ran"))
     answers = iter([[], [BLOCKER]])  # clear at the start, then Codex starts
-    monkeypatch.setattr(codex_cleanup, "detect", lambda: {"blockers": next(answers, [BLOCKER])})
+    monkeypatch.setattr(codex_blockers, "detect", lambda: {"blockers": next(answers, [BLOCKER])})
     report = run_vacuum()
     assert report["vacuum"]["stopped_because"] == "blocker"
     assert {r.get("reason") for r in report["items"]} == {"codex_started"}
@@ -333,7 +333,7 @@ def test_vacuum_does_not_start_after_a_blocker(db, monkeypatch):
 
 def test_a_vacuum_that_cannot_open_keeps_the_item_results(db, monkeypatch, capsys):
     full_home(db)
-    monkeypatch.setattr(codex_cleanup, "support_check", lambda: (None, True))
+    monkeypatch.setattr(codex_keepset, "support_check", lambda: (None, True))
     monkeypatch.setattr(codex_cleanup, "reclaim", lambda path, **kw: codex_cleanup._failed_vacuum(0, "unable to open"))
     argv = ["sessions", "cleanup", "codex", "--yes", "--items", "queue", "--vacuum", "--json"]
     assert cli.main(argv) == 0
@@ -344,7 +344,7 @@ def test_a_vacuum_that_cannot_open_keeps_the_item_results(db, monkeypatch, capsy
 
 def test_an_unopenable_history_db_in_the_run_is_an_error_result(db, monkeypatch):
     full_home(db)
-    monkeypatch.setattr(codex_cleanup, "support_check", lambda: (None, True))
+    monkeypatch.setattr(codex_keepset, "support_check", lambda: (None, True))
     real = codex_cleanup._writing
 
     def writing(path):
@@ -368,7 +368,7 @@ def test_a_support_check_failure_in_the_vacuum_keeps_the_items(db, monkeypatch):
             raise sqlite3.OperationalError("disk I/O error")
         return None, True
 
-    monkeypatch.setattr(codex_cleanup, "support_check", flaky)
+    monkeypatch.setattr(codex_keepset, "support_check", flaky)
     report = run_vacuum()
     assert report["vacuum"]["stopped_because"] == "error"
     assert "disk I/O error" in report["vacuum"]["message"]
@@ -396,7 +396,7 @@ def test_coordination_lock_is_held_during_the_run(db, monkeypatch):
 def test_coordination_lock_is_taken_before_the_checks(db, monkeypatch):
     full_home(db)
     free_at: dict[str, bool] = {}
-    real_support, real_keep = codex_cleanup.support_check, codex_cleanup.keep_set
+    real_support, real_keep = codex_keepset.support_check, codex_keepset.keep_set
 
     def support():
         free_at["support_check"] = try_coordination_lock()
@@ -406,8 +406,8 @@ def test_coordination_lock_is_taken_before_the_checks(db, monkeypatch):
         free_at["keep_set"] = try_coordination_lock()
         return real_keep(progress)
 
-    monkeypatch.setattr(codex_cleanup, "support_check", support)
-    monkeypatch.setattr(codex_cleanup, "keep_set", keep)
+    monkeypatch.setattr(codex_keepset, "support_check", support)
+    monkeypatch.setattr(codex_keepset, "keep_set", keep)
     run()
     assert free_at == {"support_check": False, "keep_set": False}
 
@@ -776,7 +776,7 @@ ODD_LINES = [
 def test_a_line_the_dry_run_does_not_count_is_never_dropped(db, odd):
     data = line("session_id", GONE2) + odd + line("session_id", BASE)
     jsonl("history.jsonl", data)
-    found = codex_cleanup.orphans(codex_cleanup.keep_set())
+    found = codex_cleanup.orphans(codex_keepset.keep_set())
     assert found.history_lines == {GONE2: 1}
     report = run(["history_lines"])
     assert by_id(report)["history_lines"]["lines"] == 1
@@ -882,7 +882,7 @@ def test_blocker_appearing_mid_run_stops_the_rest(db, monkeypatch):
         calls.append(1)
         return {"blockers": [BLOCKER] if len(calls) >= 3 else []}  # start, item 1, item 2
 
-    monkeypatch.setattr(codex_cleanup, "detect", detect)
+    monkeypatch.setattr(codex_blockers, "detect", detect)
     before = (roots.codex_home() / "history.jsonl").read_bytes()
     report = run()
     assert outcomes(report) == [("history_rows", "done", None)] + [
