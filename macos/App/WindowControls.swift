@@ -7,6 +7,8 @@ import SwiftUI
 struct PillButtonStyle: ButtonStyle {
     var prominent = false
     var height: CGFloat = 28
+    /// 1.5 lifts a white pill off a white sheet (the mockups' 0 1px 3px).
+    var shadowRadius: CGFloat = 0
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
@@ -17,7 +19,11 @@ struct PillButtonStyle: ButtonStyle {
             .padding(.horizontal, prominent ? 16 : 12)
             .frame(height: height)
             .background {
-                if prominent { BlueFill() } else { GlassPanel(cornerRadius: height / 2, milk: 0.7, shadowRadius: 0) }
+                if prominent {
+                    BlueFill()
+                } else {
+                    GlassPanel(cornerRadius: height / 2, milk: 0.7, shadowRadius: shadowRadius)
+                }
             }
             .contentShape(Capsule())
             .opacity(configuration.isPressed ? 0.7 : isEnabled ? 1 : 0.5)

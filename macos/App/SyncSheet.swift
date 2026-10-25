@@ -45,7 +45,7 @@ struct SyncSheetView: View {
             HStack(spacing: 8) {
                 Spacer()
                 Button("취소") { model.sheet = nil }
-                    .buttonStyle(PillButtonStyle(height: 32))
+                    .buttonStyle(PillButtonStyle(height: 32, shadowRadius: 1.5))
                     .keyboardShortcut(.cancelAction)
                     .disabled(applying)
                 Button(applying ? (isPull ? "가져오는 중…" : "내보내는 중…") : (isPull ? "가져오기" : "내보내기")) {
@@ -61,6 +61,8 @@ struct SyncSheetView: View {
         .padding(EdgeInsets(top: 20, leading: 22, bottom: 18, trailing: 22))
         .frame(width: 580)
         .interactiveDismissDisabled(applying)
+        // The system sheet is clear glass: the table showed through the title.
+        .presentationBackground { SheetBackdrop() }
         .task { await load() }
     }
 
@@ -86,7 +88,7 @@ struct SyncSheetView: View {
             Spacer()
             if let preview, preview.plans.contains(where: { $0.changes.contains { $0.diff != nil } }) {
                 Button(showsDiff ? "차이 숨기기" : "전체 차이 보기") { showsDiff.toggle() }
-                    .buttonStyle(PillButtonStyle(height: 26))
+                    .buttonStyle(PillButtonStyle(height: 26, shadowRadius: 1.5))
             }
         }
         if let failure {
@@ -167,15 +169,37 @@ struct SyncSheetView: View {
     }
 }
 
-/// The mockup's box: glass with a thin line around it.
-struct ChangeBox<Content: View>: View {
-    @ViewBuilder var content: Content
+/// The mockup's sheet ground (--sheet): frosted, nearly opaque.
+struct SheetBackdrop: View {
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        ZStack {
+            Rectangle().fill(.regularMaterial)
+            colorScheme == .dark
+                ? Color(red: 44 / 255, green: 46 / 255, blue: 56 / 255).opacity(0.92)
+                : Color(red: 250 / 255, green: 250 / 255, blue: 253 / 255).opacity(0.86)
+        }
+    }
+}
+
+/// The mockup's box: glass with a thin line around it, which a white
+/// glass panel alone would lose on the white sheet.
+struct ChangeBox<Content: View>: View {
+    @ViewBuilder var content: Content
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
         VStack(alignment: .leading, spacing: 6) { content }
             .padding(.horizontal, 14).padding(.vertical, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(GlassPanel(cornerRadius: 12, shadowRadius: 0))
+            .background {
+                shape.fill(colorScheme == .dark
+                           ? Color(red: 60 / 255, green: 62 / 255, blue: 76 / 255).opacity(0.38)
+                           : .white.opacity(0.42))
+                    .overlay(shape.strokeBorder(.primary.opacity(0.1), lineWidth: 1))
+            }
     }
 }
 
