@@ -100,6 +100,92 @@ public enum SessionText {
         }
     }
 
+    // MARK: Confirm
+
+    public static func toolName(_ tool: SessionTool) -> String {
+        tool == .claude ? "Claude Code" : "Codex"
+    }
+
+    public static func confirmTitle(tool: SessionTool, count: Int) -> String {
+        "\(toolName(tool)) 세션 \(count)개를 지울까요?"
+    }
+
+    /// The line under the title; Codex also says how many threads go along.
+    public static func confirmSizeLine(tool: SessionTool, children: Int, bytes size: Int64) -> String {
+        switch tool {
+        case .claude:
+            return "\(bytes(size)) · 되돌릴 수 없어요. 이 세션은 다시 이어서 열 수 없게 돼요."
+        case .codex:
+            return "하위 세션 \(children)개 포함 · \(bytes(size)) · 되돌릴 수 없어요. Codex는 켜 둔 채로 지워요."
+        }
+    }
+
+    /// One line of the confirm sheet's box.
+    public struct ConfirmRow: Equatable, Sendable {
+        public enum Kind: Sendable { case removes, keeps }
+        public var label: String
+        public var pills: [String]
+        public var kind: Kind
+        /// The reason under a row of pills.
+        public var note: String?
+    }
+
+    /// What gets deleted, by whom, and what stays. A Codex session with no
+    /// threads below it leaves "하위 세션" out.
+    public static func confirmRows(tool: SessionTool, children: Int) -> [ConfirmRow] {
+        switch tool {
+        case .claude:
+            return [
+                ConfirmRow(label: "지우는 것", pills: [
+                    "대화 기록", "하위 에이전트 기록", "도구 결과", "MCP 작업 기록", "파일 되돌리기 기록", "세션 환경",
+                    "디버그 로그", "첨부한 파일", "임시 이미지·작업 폴더",
+                ], kind: .removes, note: nil),
+                ConfirmRow(label: "남는 것", pills: [
+                    "입력 기록", "할 일 목록", "계획", "프로젝트 기억(memory)", "설정", "다른 세션이 쓰는 도구 결과",
+                ], kind: .keeps, note: "여러 세션이 같이 쓰는 파일이라 이 세션 것만 골라 지우지 않아요."),
+            ]
+        case .codex:
+            let own = ["대화 기록", "대화 저장소의 내용", "이름 목록", "로그"] + (children > 0 ? ["하위 세션 \(children)개"] : [])
+            return [
+                ConfirmRow(label: "Codex가 지움", pills: own, kind: .removes, note: nil),
+                ConfirmRow(label: "dotsync가 이어서", pills: ["참조 캐시 파일"], kind: .removes, note: nil),
+                ConfirmRow(label: "남는 것", pills: [
+                    "입력 기록", "첨부 파일", "데스크톱 앱 상태", "생성 이미지 — 다른 세션이 쓸 수 있어요",
+                ], kind: .keeps,
+                    note: "입력 기록은 Codex를 끈 뒤 \"남은 데이터 정리\"에서 지워요. 첨부 파일은 어느 세션 것인지 알 수 없어서 두어요."),
+            ]
+        }
+    }
+
+    public static func confirmInfo(tool: SessionTool) -> String {
+        switch tool {
+        case .claude:
+            return "지우기 직전에 실행 중인 Claude 세션을 한 번 더 확인해요. 그사이 다시 열렸거나 새로 기록된 세션은 건너뛰고 결과에서 알려 드려요."
+        case .codex:
+            return "다른 창에서 열려 있는 세션은 Codex가 지우기를 거절해요. 그사이 다시 열린 세션도 그대로 두고 결과에서 알려 드려요."
+        }
+    }
+
+    /// Codex only: under the info strip.
+    public static func confirmFinePrint(tool: SessionTool) -> String? {
+        tool == .codex ? "Codex 공식 지우기와 같은 방식이에요. 지우는 바로 그 순간 같은 세션을 갈라 쓰면 그 기록이 깨질 수 있어요." : nil
+    }
+
+    public static func confirmNote(tool: SessionTool, historyDbBytes: Int64?) -> String {
+        switch tool {
+        case .claude:
+            return "그냥 두어도 마지막 기록에서 30일이 지나면 Claude Code가 같은 범위를 지워요."
+        case .codex:
+            let store = historyDbBytes.map { "대화 저장소(\(bytes($0)))" } ?? "대화 저장소"
+            return "\(store)의 빈 공간은 바로 줄지 않아요. \"남은 데이터 정리\"에서 돌려받을 수 있어요."
+        }
+    }
+
+    /// "12/240", while a run reports its progress.
+    public static func progress(done: Int, total: Int) -> String {
+        "\(done)/\(total)"
+    }
+
     // MARK: Results
 
     /// "2개를 지웠고 1개는 건너뛰었어요": one clause per kind of outcome.
@@ -116,6 +202,11 @@ public enum SessionText {
             index == 0 ? "\(entry.0)개를 \(entry.1)" : "\(entry.0)개는 \(entry.1)"
         }
         return clauses.joined(separator: "고 ") + "어요"
+    }
+
+    /// "세션 파일 0.4 GB가 비었어요."; nil when nothing was freed.
+    public static func freedLine(_ freed: Int64) -> String? {
+        freed > 0 ? "세션 파일 \(bytes(freed))가 비었어요." : nil
     }
 
     /// Why a session was skipped, by the reason the CLI gives. A reason with a

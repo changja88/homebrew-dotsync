@@ -186,13 +186,16 @@ struct SheetBackdrop: View {
 /// The mockup's box: glass with a thin line around it, which a white
 /// glass panel alone would lose on the white sheet.
 struct ChangeBox<Content: View>: View {
+    var spacing: CGFloat = 6
+    /// Off for a list whose rows pad themselves.
+    var padded = true
     @ViewBuilder var content: Content
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
-        VStack(alignment: .leading, spacing: 6) { content }
-            .padding(.horizontal, 14).padding(.vertical, 12)
+        VStack(alignment: .leading, spacing: spacing) { content }
+            .padding(.horizontal, padded ? 14 : 0).padding(.vertical, padded ? 12 : 0)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background {
                 shape.fill(colorScheme == .dark

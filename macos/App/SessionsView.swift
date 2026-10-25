@@ -31,6 +31,12 @@ struct SessionsView: View {
         // Not .task: leaving 세션 must not stop a list that has started.
         .onAppear { Task { await model.checkFirstTime(tool) } }
         .onChange(of: tool) { _, tool in Task { await model.checkFirstTime(tool) } }
+        .sheet(isPresented: Binding(
+            get: { model[tool].sheet.map(SessionSheetHost.presents) ?? false },
+            set: { if !$0 { model.cancelConfirm(tool) } }
+        )) {
+            SessionSheetHost(model: model, tool: tool)
+        }
     }
 
     private func header(_ state: ToolSessions) -> some View {
@@ -130,7 +136,9 @@ private struct SessionsPane: View {
             .background(GlassPanel(cornerRadius: 16))
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             BottomBar(count: totals.count, bytes: totals.bytes,
-                      rule: SessionText.bottomRule(tool: tool, historyDbBytes: list.totals.historyDbBytes))
+                      rule: SessionText.bottomRule(tool: tool, historyDbBytes: list.totals.historyDbBytes),
+                      canDelete: totals.count > 0 && model.service != nil && state.work == nil,
+                      delete: { model.askToDelete(tool) })
         }
         .padding(EdgeInsets(top: 8, leading: 20, bottom: 18, trailing: 18))
     }
@@ -238,7 +246,9 @@ private struct SessionGroupRows: View {
             let shown = SessionRules.visibleItems(row, showAll: all)
             ForEach(shown) { item in
                 ItemRow(item: item, tool: tool, picked: state.selection.contains(item.id), now: now,
-                        toggle: { model.toggle(item.id, in: tool) })
+                        canRecover: model.service != nil && state.work == nil,
+                        toggle: { model.toggle(item.id, in: tool) },
+                        recover: { finish in Task { await model.recover(item.id, finish: finish) } })
             }
             if shown.count < row.items.count {
                 MoreRow(remaining: row.items.count - shown.count) { model.showAll(row.id, in: tool) }
@@ -312,7 +322,10 @@ private struct ItemRow: View {
     let tool: SessionTool
     let picked: Bool
     let now: Date
+    let canRecover: Bool
     let toggle: () -> Void
+    /// `finish`: 마저 지우기; otherwise 되돌리기.
+    let recover: (_ finish: Bool) -> Void
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -326,12 +339,11 @@ private struct ItemRow: View {
                 Text(item.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                 Text(SessionText.subLine(item, tool: tool)).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
                 if item.state == "interrupted" {
-                    // Task 19 wires these.
                     HStack(spacing: 6) {
-                        Button("되돌리기") {}.buttonStyle(PillButtonStyle(height: 22))
-                        Button("마저 지우기") {}.buttonStyle(PillButtonStyle(height: 22))
+                        Button("되돌리기") { recover(false) }.buttonStyle(PillButtonStyle(height: 22))
+                        Button("마저 지우기") { recover(true) }.buttonStyle(PillButtonStyle(height: 22))
                     }
-                    .disabled(true).padding(.top, 3)
+                    .disabled(!canRecover).padding(.top, 3)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -424,12 +436,13 @@ private struct SessionChip: View {
     }
 }
 
-/// "N개 선택 · X GB", the rule, and the red button. The button waits for
-/// Task 19 and is off with nothing picked.
+/// "N개 선택 · X GB", the rule, and the red button, off with nothing picked.
 private struct BottomBar: View {
     let count: Int
     let bytes: Int64
     let rule: String
+    let canDelete: Bool
+    let delete: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
@@ -437,9 +450,9 @@ private struct BottomBar: View {
                 .font(.system(size: 13, weight: .bold)).monospacedDigit()
             Text(rule).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Button {} label: { Label("선택 지우기…", systemImage: "trash") }
+            Button(action: delete) { Label("선택 지우기…", systemImage: "trash") }
                 .buttonStyle(DeleteButtonStyle())
-                .disabled(true)
+                .disabled(!canDelete)
         }
         .padding(EdgeInsets(top: 6, leading: 18, bottom: 6, trailing: 6))
         .background(GlassPanel(cornerRadius: 22))
@@ -447,7 +460,7 @@ private struct BottomBar: View {
 }
 
 /// The red pill of the mockup's "선택 지우기…".
-private struct DeleteButtonStyle: ButtonStyle {
+struct DeleteButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {

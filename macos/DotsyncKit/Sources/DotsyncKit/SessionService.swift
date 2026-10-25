@@ -31,11 +31,12 @@ public struct SessionService: Sendable {
     }
 
     /// Finishes (deletes what is left) or undoes (renames the transcripts
-    /// back) a delete that stopped halfway.
+    /// back) a delete that stopped halfway. Only finishing stops on cancel:
+    /// the CLI has no safe point in the middle of undoing.
     public func recover(_ id: String, finish: Bool, progress: Progress? = nil) async throws -> DeleteReport {
         try cli.decode(DeleteReport.self, try await cli.runJSON(
             ["sessions", "recover", "claude", "--json", finish ? "--finish" : "--restore", "--", id],
-            timeout: .seconds(300), longRun: true, progress: progress))
+            timeout: .seconds(300), stopsOnCancel: finish, longRun: true, progress: progress))
     }
 
     public func blockers() async throws -> CleanupBlockers {

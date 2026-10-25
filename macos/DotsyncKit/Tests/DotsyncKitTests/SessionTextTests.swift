@@ -237,3 +237,38 @@ private let cliPartialReasons = ["failed", "timeout", "no_rollout"]  // codex._j
 @Test func zeroBytesReadAsANumber() {
     #expect(!SessionText.bytes(0).contains("Zero"))
 }
+
+// MARK: Confirm and result copy
+
+@Test func confirmCopyOfTheBoards() {
+    #expect(SessionText.confirmTitle(tool: .claude, count: 2) == "Claude Code 세션 2개를 지울까요?")
+    #expect(SessionText.confirmTitle(tool: .codex, count: 3) == "Codex 세션 3개를 지울까요?")
+    #expect(SessionText.confirmSizeLine(tool: .claude, children: 0, bytes: 2_600_000_000)
+        == "2.6 GB · 되돌릴 수 없어요. 이 세션은 다시 이어서 열 수 없게 돼요.")
+    #expect(SessionText.confirmSizeLine(tool: .codex, children: 3, bytes: 500_000_000)
+        == "하위 세션 3개 포함 · 500 MB · 되돌릴 수 없어요. Codex는 켜 둔 채로 지워요.")
+    #expect(SessionText.confirmNote(tool: .codex, historyDbBytes: 8_600_000_000)
+        == "대화 저장소(8.6 GB)의 빈 공간은 바로 줄지 않아요. \"남은 데이터 정리\"에서 돌려받을 수 있어요.")
+    #expect(SessionText.confirmNote(tool: .codex, historyDbBytes: nil).hasPrefix("대화 저장소의 빈 공간은"))
+    #expect(SessionText.confirmFinePrint(tool: .claude) == nil)
+    #expect(SessionText.confirmFinePrint(tool: .codex) != nil)
+}
+
+@Test func confirmRowsSplitWhoDeletesWhat() {
+    let codex = SessionText.confirmRows(tool: .codex, children: 3)
+    #expect(codex.map(\.label) == ["Codex가 지움", "dotsync가 이어서", "남는 것"])
+    #expect(codex[0].pills.last == "하위 세션 3개")
+    #expect(codex[1].pills == ["참조 캐시 파일"])
+    #expect(codex[2].pills.last == "생성 이미지 — 다른 세션이 쓸 수 있어요")
+    #expect(!SessionText.confirmRows(tool: .codex, children: 0)[0].pills.contains { $0.hasPrefix("하위 세션") })
+    let claude = SessionText.confirmRows(tool: .claude, children: 0)
+    #expect(claude.map(\.label) == ["지우는 것", "남는 것"])
+    #expect(claude[0].pills.count == 9)
+    #expect(claude[1].pills.last == "다른 세션이 쓰는 도구 결과")
+}
+
+@Test func freedLineIsLeftOutForZero() {
+    #expect(SessionText.freedLine(400_000_000) == "세션 파일 400 MB가 비었어요.")
+    #expect(SessionText.freedLine(0) == nil)
+    #expect(SessionText.progress(done: 12, total: 240) == "12/240")
+}

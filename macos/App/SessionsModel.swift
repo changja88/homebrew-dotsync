@@ -2,10 +2,14 @@ import DotsyncKit
 import Foundation
 import Observation
 
-/// What a delete (or recover) run leaves on screen. Tasks 19 and 21 fill these.
+/// What a delete (or recover) run leaves on screen. Task 21 fills `cleanup`.
 enum SessionSheet {
     case confirm
+    /// A delete or recover in flight; its progress is the tool's `work`.
+    case running
     case result(DeleteReport)
+    /// A delete or recover that threw (busy, CLI error, timeout).
+    case failure(String)
     case cleanup
 }
 
@@ -14,6 +18,8 @@ struct SessionWork: Equatable {
     var label: String
     var done = 0
     var total = 0
+    /// 멈추기 is offered; undoing a delete (되돌리기) has no safe point to stop at.
+    var stoppable = true
 }
 
 /// One tool's list on the 세션 menu, and what the person did to it.
@@ -39,14 +45,39 @@ final class SessionsModel {
     private(set) var tools: [SessionTool: ToolSessions] = [.claude: ToolSessions(), .codex: ToolSessions()]
     let queues: [SessionTool: CommandQueue]
     let service: SessionService?
+    /// Holds the start time of a delete from before it runs until its result
+    /// is on screen, so a result the app missed (quit, crash) can be shown.
+    static let pendingKey = "pendingSessionsResult"
+    private let defaults: UserDefaults
+    @ObservationIgnored private var runningTasks: [SessionTool: Task<DeleteReport, Error>] = [:]
+    @ObservationIgnored private var stopRequested: Set<SessionTool> = []
 
-    init(claudeQueue: CommandQueue, codexQueue: CommandQueue, service: SessionService? = SessionService.standard()) {
+    init(claudeQueue: CommandQueue, codexQueue: CommandQueue, service: SessionService? = SessionService.standard(),
+         defaults: UserDefaults = .standard, logDirectory: URL = SessionsModel.standardLogDirectory) {
         queues = [.claude: claudeQueue, .codex: codexQueue]
         self.service = service
+        self.defaults = defaults
         if service == nil {
             let message = "dotsync를 찾을 수 없어요 — brew install changja88/dotsync/dotsync"
             for tool in SessionTool.allCases { tools[tool]?.message = message }
         }
+        showPendingResult(logDirectory)
+    }
+
+    nonisolated static var standardLogDirectory: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/dotsync")
+    }
+
+    /// A delete that began before the app closed: show what its log says, on
+    /// the 세션 menu. With no log (it never ran, or left none) show nothing.
+    private func showPendingResult(_ logDirectory: URL) {
+        guard let stamp = defaults.string(forKey: Self.pendingKey) else { return }
+        defaults.removeObject(forKey: Self.pendingKey)
+        guard let since = SessionDeleteRules.pendingStart(stamp),
+              let pending = SessionDeleteRules.pendingResult(SessionLog.latest(since: since, in: logDirectory)) else { return }
+        defaults.set(RailItem.sessions.rawValue, forKey: "rail")
+        defaults.set(pending.tool.rawValue, forKey: "sessionsTab")
+        tools[pending.tool]?.sheet = .result(pending.report)
     }
 
     subscript(tool: SessionTool) -> ToolSessions {
@@ -125,5 +156,103 @@ final class SessionsModel {
 
     func clearSelection(_ tool: SessionTool) {
         tools[tool]?.selection = []
+    }
+
+    // MARK: Delete and recover
+
+    /// 지우기 in the confirm sheet. Only ids that are still in the latest list
+    /// and idle go to the CLI; with none left nothing runs.
+    func confirmDelete(_ tool: SessionTool) async {
+        guard let state = tools[tool], let list = state.list, state.work == nil else { return }
+        let ids = SessionRules.pruned(state.selection, in: list).sorted()
+        guard !ids.isEmpty else {
+            tools[tool]?.sheet = nil
+            return
+        }
+        await runDelete(tool, ids: ids, label: "지우는 중…", previous: nil)
+    }
+
+    /// 다시 시도 on a partial row: only that id runs again, and its new result
+    /// takes the row's place.
+    func retry(_ id: String, in report: DeleteReport) async {
+        guard tools[report.tool]?.work == nil else { return }
+        await runDelete(report.tool, ids: [id], label: "다시 지우는 중…", previous: report)
+    }
+
+    /// 되돌리기 (`finish: false`) or 마저 지우기 on a Claude session that a
+    /// delete left half done.
+    func recover(_ id: String, finish: Bool) async {
+        guard let service, tools[.claude]?.work == nil else { return }
+        await run(.claude, label: finish ? "마저 지우는 중…" : "되돌리는 중…", total: 1, stoppable: finish, previous: nil) {
+            try await service.recover(id, finish: finish, progress: $0)
+        }
+    }
+
+    private func runDelete(_ tool: SessionTool, ids: [String], label: String, previous: DeleteReport?) async {
+        guard let service else { return }
+        await run(tool, label: label, total: ids.count, previous: previous) {
+            try await service.delete(tool, ids: ids, progress: $0)
+        }
+    }
+
+    /// Runs through the tool's queue. The task is made once the queue's turn
+    /// comes; 멈추기 pressed before that cancels it at its start. The CLI then
+    /// answers with what it did, and that answer is what the sheet shows.
+    private func run(_ tool: SessionTool, label: String, total: Int, stoppable: Bool = true, previous: DeleteReport?,
+                     operation: @escaping @Sendable (@escaping SessionService.Progress) async throws -> DeleteReport) async {
+        guard let queue = queues[tool], tools[tool]?.work == nil else { return }
+        // Another tool's run in flight keeps its earlier time.
+        if !isWorking { defaults.set(SessionDeleteRules.pendingStamp(.now), forKey: Self.pendingKey) }
+        tools[tool]?.work = SessionWork(label: label, done: 0, total: total, stoppable: stoppable)
+        tools[tool]?.sheet = .running
+        await queue.run(label) {
+            let progress: SessionService.Progress = { [weak self] done, total in
+                Task { @MainActor in self?.advance(tool, done: done, total: total) }
+            }
+            let task = Task { try await operation(progress) }
+            runningTasks[tool] = task
+            if stopRequested.contains(tool) { task.cancel() }
+            do {
+                let report = try await task.value
+                tools[tool]?.sheet = .result(previous.map { SessionDeleteRules.merged($0, replacing: report) } ?? report)
+            } catch {
+                tools[tool]?.sheet = .failure(SettingsModel.describe(error))
+            }
+        }
+        // Every way out: the result or the failure is on screen now.
+        runningTasks[tool] = nil
+        stopRequested.remove(tool)
+        tools[tool]?.work = nil
+        if !isWorking { defaults.removeObject(forKey: Self.pendingKey) }
+    }
+
+    private func advance(_ tool: SessionTool, done: Int, total: Int) {
+        guard var work = tools[tool]?.work else { return }
+        // Updates hop to the main actor one by one and may land out of order.
+        work.done = max(work.done, done)
+        work.total = max(total, 1)
+        tools[tool]?.work = work
+    }
+
+    /// 멈추기: the CLI stops at its next safe point and reports.
+    func stop(_ tool: SessionTool) {
+        stopRequested.insert(tool)
+        runningTasks[tool]?.cancel()
+    }
+
+    /// 확인 on a result: close it and read the list again, whose pruning drops
+    /// the deleted ids from the selection.
+    func dismissResult(_ tool: SessionTool) async {
+        tools[tool]?.sheet = nil
+        await refresh(tool)
+    }
+
+    func cancelConfirm(_ tool: SessionTool) {
+        if case .confirm? = tools[tool]?.sheet { tools[tool]?.sheet = nil }
+    }
+
+    func askToDelete(_ tool: SessionTool) {
+        guard self[tool].work == nil else { return }
+        tools[tool]?.sheet = .confirm
     }
 }
