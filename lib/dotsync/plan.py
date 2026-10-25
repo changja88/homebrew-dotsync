@@ -38,6 +38,9 @@ class Change:
     details: str = ""
     file_changes: tuple[str, ...] = ()
     diffable: bool = True
+    # What dest will hold, when that is not a copy of source (a zsh pull
+    # keeps this Mac's own DOTSYNC_DIR lines); its diff is shown against this.
+    new_text: str | None = None
 
     @property
     def is_change(self) -> bool:

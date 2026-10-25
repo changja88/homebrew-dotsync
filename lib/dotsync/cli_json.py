@@ -121,6 +121,8 @@ def change_diff_text(change: Change) -> str:
     if change.kind == "update":
         if change.source is None or change.dest is None:
             return unavailable
+        if change.new_text is not None:
+            return diffinfo.unified_diff_to_text(change.dest, change.new_text, tofile=str(change.source))
         return diffinfo.unified_diff_text(change.source, change.dest)
     if change.kind == "create":
         if change.source is None:

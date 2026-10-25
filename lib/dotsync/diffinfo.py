@@ -113,12 +113,28 @@ def unified_diff_text(
         return f"(diff unavailable: {new_err or old_err})"
     if new_text is None or old_text is None:
         return "(binary — no diff)"
+    return _diff_texts(old_text, new_text, str(dest), str(source), max_lines)
+
+
+def unified_diff_to_text(
+    dest: Path, new_text: str, *, tofile: str, max_lines: int = DIFF_MAX_LINES
+) -> str:
+    """Unified diff of dest → new_text, for contents computed in memory."""
+    old_text, old_err = _load(dest)
+    if old_err:
+        return f"(diff unavailable: {old_err})"
+    if old_text is None:
+        return "(binary — no diff)"
+    return _diff_texts(old_text, new_text, str(dest), tofile, max_lines)
+
+
+def _diff_texts(old_text: str, new_text: str, fromfile: str, tofile: str, max_lines: int) -> str:
     lines = list(
         difflib.unified_diff(
             old_text.splitlines(),
             new_text.splitlines(),
-            fromfile=str(dest),
-            tofile=str(source),
+            fromfile=fromfile,
+            tofile=tofile,
             lineterm="",
         )
     )

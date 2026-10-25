@@ -190,24 +190,21 @@ def strip_marked_block(text: str) -> str:
 
 def with_local_marked_block(stored_text: str, local_text: str) -> str:
     """stored_text with its marked block replaced by local_text's (the last
-    one, with its leading blank line), at the line where it sat locally. With
-    no local block, the stored block is simply dropped."""
-    result = strip_marked_block(stored_text).splitlines(keepends=True)
+    one), appended at the end after a blank line, where `dotsync init` puts
+    it: a line index from this Mac's file could fall inside an `if` or a
+    quoted string in the other Mac's. With no local block, the stored block
+    is simply dropped."""
+    result = strip_marked_block(stored_text)
     local = local_text.splitlines(keepends=True)
     starts = [i for i in range(len(local)) if _is_block_start(local, i)]
     if not starts:
-        return "".join(result)
-    start = starts[-1]
-    block = local[start : start + 2]
-    head = local[:start]
-    if head and head[-1].strip() == "":
-        block = [head.pop(), *block]
-    position = min(len(strip_marked_block("".join(head)).splitlines()), len(result))
-    if position == len(result) and result and not result[-1].endswith("\n"):
-        result[-1] += "\n"
+        return result
+    block = local[starts[-1] : starts[-1] + 2]
     if not block[-1].endswith("\n"):
         block[-1] += "\n"
-    return "".join(result[:position] + block + result[position:])
+    if result == "":
+        return "".join(block)
+    return result + ("\n" if result.endswith("\n") else "\n\n") + "".join(block)
 
 
 def _marked_export_index(lines: list[str]) -> Optional[int]:

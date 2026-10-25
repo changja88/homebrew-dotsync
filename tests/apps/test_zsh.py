@@ -112,9 +112,52 @@ def test_pull_keeps_local_dotsync_dir_lines(fake_home, tmp_path):
 
     ZshApp().sync_to(target)
 
+    # This Mac's block goes at the end, where `dotsync init` puts it.
     assert (fake_home / ".zshrc").read_text() == (
-        "export NEW=1\n\n" + _block("/Users/me/B") + "# stored tail\n"
+        "export NEW=1\n# stored tail\n\n" + _block("/Users/me/B")
     )
+
+
+_IF = "if [ -f ~/.fzf.zsh ]; then\n  source ~/.fzf.zsh\nfi\n"
+
+
+def test_pull_keeps_block_out_of_an_if_when_folder_copy_is_longer(fake_home, tmp_path):
+    target = _setup(
+        fake_home, tmp_path,
+        local="alias a=1\n" + _IF + "\n" + _block("/Users/me/B"),
+        stored="alias a=1\nalias b=2\nalias c=3\n" + _IF + "\n" + _block("/Users/me/A"),
+    )
+
+    ZshApp().sync_to(target)
+
+    assert (fake_home / ".zshrc").read_text() == (
+        "alias a=1\nalias b=2\nalias c=3\n" + _IF + "\n" + _block("/Users/me/B")
+    )
+
+
+def test_pull_keeps_block_out_of_an_if_when_folder_copy_is_shorter(fake_home, tmp_path):
+    target = _setup(
+        fake_home, tmp_path,
+        local="alias a=1\nalias b=2\nalias c=3\n\n" + _block("/Users/me/B") + _IF,
+        stored="alias a=1\n" + _IF,
+    )
+
+    ZshApp().sync_to(target)
+
+    assert (fake_home / ".zshrc").read_text() == "alias a=1\n" + _IF + "\n" + _block("/Users/me/B")
+
+
+def test_pull_preview_leaves_out_the_block_lines(fake_home, tmp_path):
+    from dotsync.cli_json import change_diff_text
+
+    target = _setup(fake_home, tmp_path, local="X\n\n" + _block("/B"), stored="Y\n\n" + _block("/A"))
+
+    change = ZshApp().plan_to(target).changes[0]
+
+    assert change.details == "+1 −1"
+    diff = change_diff_text(change)
+    assert "-X" in diff and "+Y" in diff
+    assert "-export DOTSYNC_DIR" not in diff and "+export DOTSYNC_DIR" not in diff
 
 
 def test_pull_drops_stored_block_when_local_has_none(fake_home, tmp_path):

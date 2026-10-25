@@ -7,6 +7,7 @@ different sync folder.
 """
 
 from __future__ import annotations
+from dataclasses import replace
 from pathlib import Path
 from dotsync import ui
 from dotsync.apps.base import (
@@ -16,6 +17,7 @@ from dotsync.apps.base import (
     ensure_not_symlink,
     ensure_path_within_root,
 )
+from dotsync.diffinfo import summarize_texts
 from dotsync.plan import AppPlan, Change
 from dotsync.shellrc import _write_atomic, strip_marked_block, with_local_marked_block
 
@@ -65,7 +67,25 @@ class ZshApp(App):
         return self._ignore_block(super().plan_from(target_dir), target_dir)
 
     def plan_to(self, target_dir: Path) -> AppPlan:
-        return self._ignore_block(super().plan_to(target_dir), target_dir)
+        plan = self._ignore_block(super().plan_to(target_dir), target_dir)
+        return AppPlan(
+            app=plan.app,
+            direction=plan.direction,
+            changes=[self._as_pulled(c) for c in plan.changes],
+            description=plan.description,
+        )
+
+    def _as_pulled(self, change: Change) -> Change:
+        """An update shows what the pull writes — the folder's copy with this
+        Mac's own block — not the folder's copy as it is."""
+        if change.kind != "update" or change.source is None or change.dest is None:
+            return change
+        try:
+            local = change.dest.read_text()
+            pulled = with_local_marked_block(change.source.read_text(), local)
+        except (OSError, UnicodeDecodeError):
+            return change
+        return replace(change, details=summarize_texts(local, pulled, ""), new_text=pulled)
 
     def sync_to(self, target_dir: Path) -> None:
         pair = self.tracked_files(target_dir)[0]
