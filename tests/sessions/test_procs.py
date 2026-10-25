@@ -122,3 +122,14 @@ def test_exe_name_prefers_txt_path():
     scan = {7: procs.OpenFiles("claude", None, ["/opt/homebrew/Caskroom/claude-code@latest/2.1.310/claude"], [])}
     assert procs.exe_name(7, table, scan) == "claude"
     assert procs.exe_name(7, table, {}) == "node"
+
+
+def test_exe_name_is_empty_for_an_unknown_pid():
+    assert procs.exe_name(99, {}, {}) == ""
+
+
+def test_run_maps_other_oserror_to_failed(monkeypatch):
+    patch_run(monkeypatch, PermissionError(13, "Permission denied"))
+    with pytest.raises(procs.ToolFailure) as info:
+        procs.run(["x"], timeout=1)
+    assert info.value.code == "failed"

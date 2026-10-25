@@ -41,6 +41,8 @@ def run(
         raise ToolFailure("timeout", f"{argv[0]} timed out") from exc
     except FileNotFoundError as exc:
         raise ToolFailure("missing", f"{argv[0]} not found") from exc
+    except OSError as exc:
+        raise ToolFailure("failed", f"{argv[0]} could not start: {exc.strerror}") from exc
 
 
 def _run_clean(argv: list[str]) -> str:
@@ -144,8 +146,11 @@ def ancestors(pid: int, table: dict[int, Proc]) -> list[int]:
 
 def exe_name(pid: int, table: dict[int, Proc], scan: dict[int, OpenFiles]) -> str:
     """The executable's basename: the first txt mapping if lsof saw one,
-    else `comm` (which can be a launcher such as `node`)."""
+    else `comm` (which can be a launcher such as `node`). A pid in neither
+    (it exited between the scans) gives "": an empty name matches no tool, so
+    callers treat the process as unidentified."""
     opened = scan.get(pid)
     if opened is not None and opened.txt:
         return os.path.basename(opened.txt[0])
-    return os.path.basename(table[pid].comm)
+    proc = table.get(pid)
+    return os.path.basename(proc.comm) if proc is not None else ""
