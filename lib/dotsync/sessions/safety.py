@@ -42,8 +42,13 @@ def child(root: Path, name: str) -> Path:
         raise UnsafePath(f"not a single path component: {name!r}")
     path = root / name
     try:
-        parent = path.parent.resolve()
-    except (RuntimeError, OSError) as e:  # RuntimeError: a symlink loop
+        # strict: from Python 3.13 a non-strict resolve() returns a symlink
+        # loop as is instead of raising.
+        try:
+            parent = path.parent.resolve(strict=True)
+        except FileNotFoundError:  # a root that does not exist (yet)
+            parent = path.parent.resolve()
+    except (RuntimeError, OSError) as e:  # a symlink loop: RuntimeError up to 3.12, OSError after
         raise UnsafePath(f"{root} cannot be resolved: {e}") from e
     if parent != root.absolute():
         raise UnsafePath(f"{path} is not directly inside {root}")
