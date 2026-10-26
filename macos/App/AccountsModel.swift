@@ -135,7 +135,8 @@ final class AccountsModel {
             if let account = file.accounts.first(where: { $0.name == name }) {
                 sheet = .relogin(account)
             }
-        case .open?, nil:
+        // RootView hands an auto-switch link to the auto-switch model.
+        case .open?, .autoSwitch?, nil:
             break
         }
     }

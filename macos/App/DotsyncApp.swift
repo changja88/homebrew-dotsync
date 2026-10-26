@@ -2,7 +2,7 @@ import AppKit
 import DotsyncKit
 import SwiftUI
 
-@main
+/// Started by `Entry`, unless launchd runs the executable in check mode.
 struct DotsyncApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
