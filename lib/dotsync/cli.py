@@ -425,12 +425,15 @@ def _set_dir(path: str) -> "tuple[Path, ShellRcResult]":
     marked DOTSYNC_DIR line, so the next command — from a new shell or the
     dotsync app — finds it. A folder that already has a dotsync.toml keeps
     its own apps and options (a broken one is refused); any other gets this
-    folder's config."""
+    folder's config, or one that tracks nothing when there is none to read."""
     new_dir = Path(path).expanduser().resolve()
     if folder_config_path(new_dir).exists():
         read_folder_config(new_dir)
     else:
-        cfg = load_config()
+        try:
+            cfg = load_config()
+        except ConfigError:
+            cfg = Config(dir=new_dir, apps=[])
         new_dir.mkdir(parents=True, exist_ok=True)
         cfg.dir = new_dir
         save_config(cfg)
@@ -454,13 +457,18 @@ def _rc_action_text(rc: ShellRcResult) -> str:
 def _apps_payload(names: str) -> dict:
     """`config apps --json` sets which apps are tracked. The dotsync app sends
     them in its table's order, so the ones already tracked keep their order
-    in dotsync.toml and new ones go at the end."""
+    in dotsync.toml and new ones go at the end. An app turned on finds its
+    options (BetterTouchTool's preset names)."""
     cfg = load_config()
     new_apps = [a.strip() for a in names.split(",") if a.strip()]
     bad = [a for a in new_apps if a not in SUPPORTED_APPS]
     if bad:
         raise cli_json.JSONCommandError("unknown_apps", f"unknown apps: {bad}")
     new_apps = [a for a in cfg.apps if a in new_apps] + [a for a in new_apps if a not in cfg.apps]
+    options = _resolve_app_options(
+        argparse.Namespace(), prev_apps=cfg.apps, new_apps=new_apps, interactive=True
+    )
+    cfg.app_options.update(options)
     cfg.apps = new_apps
     save_config(cfg)
     return {"dir": str(cfg.dir), "dir_source": cfg.dir_source, "apps": new_apps}

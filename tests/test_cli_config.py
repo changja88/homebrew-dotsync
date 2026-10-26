@@ -147,6 +147,37 @@ def test_config_dir_keeps_the_folders_own_dotsync_toml(fake_home, monkeypatch, c
     assert load_config().apps == ["codex", "bettertouchtool"]
 
 
+def test_config_dir_json_starts_a_sync_folder_on_a_mac_without_one(fake_home, monkeypatch, capsys):
+    # The first folder the dotsync app picks gets a dotsync.toml that tracks
+    # nothing yet; the app's table turns the apps on.
+    from dotsync.shellrc import marked_dir
+
+    rc = fake_home / ".zshrc"
+    rc.write_text("alias ll='ls -l'\n")
+    _app_context(monkeypatch, fake_home)
+    new = fake_home / "new"
+
+    assert main(["config", "dir", "--json", "--", str(new)]) == 0
+
+    assert json.loads(capsys.readouterr().out)["dir"] == str(new.resolve())
+    assert marked_dir(rc) == new.resolve()
+    cfg = load_config()
+    assert (cfg.dir, cfg.apps, cfg.app_options) == (new.resolve(), [], {})
+
+
+def test_config_dir_json_starts_over_when_the_rc_line_names_a_folder_gone(fake_home, monkeypatch, capsys):
+    from dotsync.shellrc import marked_dir
+
+    rc = _write_rc(fake_home, fake_home / "deleted")
+    _app_context(monkeypatch, fake_home)
+    new = fake_home / "new"
+
+    assert main(["config", "dir", "--json", "--", str(new)]) == 0
+
+    assert marked_dir(rc) == new.resolve()
+    assert load_config().apps == []
+
+
 def test_config_dir_refuses_a_folder_with_a_broken_dotsync_toml(fake_home, monkeypatch, capsys):
     from dotsync.shellrc import marked_dir
 
@@ -177,6 +208,38 @@ def test_config_apps_json_saves_apps(fake_home, monkeypatch, capsys):
         "apps": ["zsh", "claude"],
     }
     assert load_config().apps == ["zsh", "claude"]
+
+
+def _discover_presets(monkeypatch, names):
+    monkeypatch.setattr(
+        "dotsync.apps.bettertouchtool.BetterTouchToolApp.discover_preset_names",
+        classmethod(lambda cls: list(names)),
+    )
+
+
+def test_config_apps_json_finds_the_presets_of_bettertouchtool_turned_on(fake_home, monkeypatch, capsys):
+    target = fake_home / "configs"
+    save_config(Config(dir=target, apps=["zsh"]))
+    _write_rc(fake_home, target)
+    _app_context(monkeypatch, fake_home)
+    _discover_presets(monkeypatch, ["Home", "Work"])
+
+    assert main(["config", "apps", "zsh,bettertouchtool", "--json"]) == 0
+
+    assert load_config().app_options == {"bettertouchtool": {"presets": ["Home", "Work"]}}
+
+
+def test_config_apps_json_keeps_the_presets_of_bettertouchtool_left_on(fake_home, monkeypatch, capsys):
+    target = fake_home / "configs"
+    save_config(Config(dir=target, apps=["bettertouchtool"],
+                       app_options={"bettertouchtool": {"presets": ["Mine"]}}))
+    _write_rc(fake_home, target)
+    _app_context(monkeypatch, fake_home)
+    _discover_presets(monkeypatch, ["Other"])
+
+    assert main(["config", "apps", "bettertouchtool,zsh", "--json"]) == 0
+
+    assert load_config().app_options == {"bettertouchtool": {"presets": ["Mine"]}}
 
 
 def test_config_apps_json_rejects_unknown(fake_home, monkeypatch, capsys):

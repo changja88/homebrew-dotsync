@@ -163,7 +163,7 @@ final class SettingsModel {
         let failure = error as? CLIError ?? CLIError(code: "failed", message: error.localizedDescription)
         switch failure.code {
         case "busy": return "다른 dotsync 작업이 끝나면 다시 해 주세요"
-        case "config": return "동기화 폴더를 찾지 못했어요 — 터미널에서 dotsync init을 먼저 해 주세요"
+        case "config": return "동기화 폴더를 찾지 못했어요 — ‘다른 폴더…’로 골라 주세요"
         case "cancelled": return "취소했어요"
         default: return failure.message
         }
