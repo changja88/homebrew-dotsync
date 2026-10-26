@@ -24,6 +24,36 @@ public enum AutoSwitchAgent {
         guard !wanted.executable.contains("/AppTranslocation/") else { return .none }
         return installed == wanted ? .none : .install
     }
+
+    /// launchctl run with these arguments: its exit status and what it wrote
+    /// to stderr.
+    public typealias Launchctl = ([String]) -> (status: Int32, error: String)
+
+    /// launchctl refused the agent; `message` is what it said.
+    public struct InstallFailure: Error, Equatable {
+        public var message: String
+    }
+
+    /// Writes the plist and loads it afresh in the person's GUI domain.
+    /// bootout finishes on its own time and bootstrapping a label still
+    /// loaded fails, so it waits until launchd lets go, 3 s at most. A failed
+    /// bootstrap takes the plist away again: nothing is left half on.
+    public static func install(_ plist: AgentPlist, at url: URL, uid: uid_t, launchctl: Launchctl,
+                               pause: () -> Void = { Thread.sleep(forTimeInterval: 0.1) }) throws {
+        let service = "gui/\(uid)/\(label)"
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try plist.data().write(to: url, options: .atomic)
+        _ = launchctl(["bootout", service])
+        for _ in 0..<30 {
+            guard launchctl(["print", service]).status == 0 else { break }
+            pause()
+        }
+        let result = launchctl(["bootstrap", "gui/\(uid)", url.path])
+        guard result.status == 0 else {
+            try? FileManager.default.removeItem(at: url)
+            throw InstallFailure(message: result.error)
+        }
+    }
 }
 
 /// The plist's own content: which executable runs, which folder it watches.

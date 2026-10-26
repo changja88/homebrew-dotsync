@@ -49,3 +49,67 @@ private let folder = URL(fileURLWithPath: "/Users/me/Library/Group Containers/GR
         watched: folder)
     #expect(AutoSwitchAgent.action(enabled: true, installed: nil, wanted: translocated) == .none)
 }
+
+/// launchctl as the tests script it: `print` answers "still loaded" a given
+/// number of times, then "not found".
+private final class FakeLaunchctl {
+    var calls: [[String]] = []
+    var loadedPrints: Int
+    var bootstrap: (status: Int32, error: String)
+
+    init(loadedPrints: Int, bootstrap: (status: Int32, error: String) = (0, "")) {
+        self.loadedPrints = loadedPrints
+        self.bootstrap = bootstrap
+    }
+
+    func run(_ arguments: [String]) -> (status: Int32, error: String) {
+        calls.append(arguments)
+        switch arguments.first {
+        case "print":
+            guard loadedPrints > 0 else { return (113, "Could not find service") }
+            loadedPrints -= 1
+            return (0, "")
+        case "bootstrap": return bootstrap
+        default: return (0, "")
+        }
+    }
+}
+
+@Test func installStopsWaitingOnceLaunchdHasLetGo() throws {
+    let url = try temporaryDirectory().appendingPathComponent("LaunchAgents/agent.plist")
+    let launchctl = FakeLaunchctl(loadedPrints: 2)
+    var pauses = 0
+    let plist = AgentPlist(executable: installed, watched: folder)
+
+    try AutoSwitchAgent.install(plist, at: url, uid: 501, launchctl: launchctl.run, pause: { pauses += 1 })
+
+    let service = "gui/501/com.changja88.dotsync.autoswitch"
+    #expect(launchctl.calls == [["bootout", service], ["print", service], ["print", service], ["print", service],
+                                ["bootstrap", "gui/501", url.path]])
+    #expect(pauses == 2)
+    #expect(AgentPlist(data: try Data(contentsOf: url)) == plist)
+}
+
+@Test func installWaitsThreeSecondsAtMostForTheOldAgentToGo() throws {
+    let url = try temporaryDirectory().appendingPathComponent("agent.plist")
+    let launchctl = FakeLaunchctl(loadedPrints: .max)
+
+    try AutoSwitchAgent.install(AgentPlist(executable: installed, watched: folder), at: url, uid: 501,
+                                launchctl: launchctl.run, pause: {})
+
+    #expect(launchctl.calls.filter { $0.first == "print" }.count == 30)
+    #expect(launchctl.calls.last?.first == "bootstrap")
+}
+
+@Test func aFailedBootstrapLeavesNoPlistBehind() throws {
+    // A plist launchd never took would read as "on but not loaded" until the
+    // app is opened again.
+    let url = try temporaryDirectory().appendingPathComponent("agent.plist")
+    let launchctl = FakeLaunchctl(loadedPrints: 0, bootstrap: (5, "Bootstrap failed: 5: Input/output error"))
+
+    #expect(throws: AutoSwitchAgent.InstallFailure(message: "Bootstrap failed: 5: Input/output error")) {
+        try AutoSwitchAgent.install(AgentPlist(executable: installed, watched: folder), at: url, uid: 501,
+                                    launchctl: launchctl.run, pause: {})
+    }
+    #expect(!FileManager.default.fileExists(atPath: url.path))
+}

@@ -7,10 +7,6 @@ import ServiceManagement
 /// in their GUI domain: no password. It blocks while launchctl works, so
 /// callers run it off the main actor.
 enum AgentRegistration {
-    struct Failure: Error {
-        var message: String
-    }
-
     private static var plistURL: URL {
         AutoSwitchAgent.plistURL(home: FileManager.default.homeDirectoryForCurrentUser)
     }
@@ -24,18 +20,9 @@ enum AgentRegistration {
         return AgentPlist(executable: executable, watched: folder)
     }
 
+    /// Throws `AutoSwitchAgent.InstallFailure` with launchctl's words.
     static func install(_ plist: AgentPlist) throws {
-        try FileManager.default.createDirectory(
-            at: plistURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try plist.data().write(to: plistURL, options: .atomic)
-        _ = launchctl(["bootout", service])
-        // bootout finishes on its own time, and bootstrapping a label that is
-        // still loaded fails.
-        for _ in 0..<30 where launchctl(["print", service]).status == 0 {
-            Thread.sleep(forTimeInterval: 0.1)
-        }
-        let result = launchctl(["bootstrap", "gui/\(getuid())", plistURL.path])
-        guard result.status == 0 else { throw Failure(message: result.error) }
+        try AutoSwitchAgent.install(plist, at: plistURL, uid: getuid(), launchctl: launchctl)
     }
 
     static func remove() {

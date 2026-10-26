@@ -64,7 +64,7 @@ final class AutoSwitchModel {
                 try await Task.detached { try AgentRegistration.install(wanted) }.value
             } catch {
                 try? store.updateSettings { $0.enabled = false }
-                let reason = (error as? AgentRegistration.Failure)?.message ?? error.localizedDescription
+                let reason = (error as? AutoSwitchAgent.InstallFailure)?.message ?? error.localizedDescription
                 message = "자동 교체를 켜지 못했어요 — \(reason)"
             }
         } else {

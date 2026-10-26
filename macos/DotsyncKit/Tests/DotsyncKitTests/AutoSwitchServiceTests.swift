@@ -56,6 +56,30 @@ private func useCalls(_ fake: FakeDotsync) -> [[String]] {
     #expect(store.loadLog().isEmpty)
 }
 
+@Test func runDoesNothingWhileResting() async throws {
+    // The checker never wakes the app in a rest; a dotsync://auto-switch link
+    // opened some other way must not probe or switch in one either.
+    var resting = AutoSwitchSettings(enabled: true, rule: .even, excluded: [])
+    resting.restUntil = t0.addingTimeInterval(60)
+    resting.restReason = .belowLimit
+    let (service, store, fake) = try autoSwitch(usage: usageReport([("a", 93, 20), ("b", 10, 10)]), settings: resting)
+
+    #expect(await service.run(.switchNow, now: t0) == nil)
+    #expect(fake.calls().isEmpty)
+    #expect(store.loadLog().isEmpty)
+    #expect(store.loadSettings().restUntil == t0.addingTimeInterval(60))
+}
+
+@Test func runGoesOnOnceTheRestIsOver() async throws {
+    var rested = AutoSwitchSettings(enabled: true, rule: .even, excluded: [])
+    rested.restUntil = t0
+    rested.restReason = .belowLimit
+    let (service, _, fake) = try autoSwitch(usage: usageReport([("a", 93, 20), ("b", 10, 10)]), settings: rested)
+
+    #expect(await service.run(.switchNow, now: t0)?.result == .switched)
+    #expect(useCalls(fake).map(\.last) == ["b"])
+}
+
 @Test func runCountsAFailedProbeAsAFailure() async throws {
     // A failed probe leaves the old numbers in usage.json; they are no reading.
     let (service, store, fake) = try autoSwitch(usage: "not json")

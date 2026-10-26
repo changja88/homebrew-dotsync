@@ -1895,6 +1895,64 @@ def test_status_dirty_when_installed_plugin_set_differs(fake_home, tmp_path):
     assert "installed_plugins.json" in status.details
 
 
+def _with_hud_plugin(home: Path, target: Path, local_config: dict | None, stored_config: dict | None):
+    """claude-hud installed on both sides, everything else the same, and its
+    config.json as given on each side (None: no file)."""
+    installed = {"version": 2, "plugins": {"claude-hud@market": [_plugin_entry("/local/cache/hud")]}}
+    _make_local(
+        home,
+        settings={"theme": "x"},
+        plugins=installed,
+        plugin_configs={"claude-hud": local_config} if local_config is not None else None,
+    )
+    stored = _make_minimal_stored(target)
+    (stored / "plugins" / "installed_plugins.json").write_text(json.dumps(installed))
+    if stored_config is not None:
+        (stored / "plugins" / "claude-hud").mkdir()
+        (stored / "plugins" / "claude-hud" / "config.json").write_text(json.dumps(stored_config))
+
+
+def test_status_dirty_when_a_plugin_config_differs(fake_home, tmp_path):
+    # Push and pull carry each installed plugin's config.json; status must
+    # not call the app clean while they would copy one (10-26: claude-hud).
+    target = tmp_path / "configs"
+    _with_hud_plugin(fake_home, target, {"externalUsageWritePath": "/x"}, {})
+
+    status = ClaudeApp().status(target)
+
+    assert status.state == "dirty"
+    assert "plugins/claude-hud/config.json" in status.details
+
+
+def test_status_dirty_when_a_plugin_config_is_only_local(fake_home, tmp_path):
+    # Push would create it in the folder.
+    target = tmp_path / "configs"
+    _with_hud_plugin(fake_home, target, {"lang": "ko"}, None)
+
+    status = ClaudeApp().status(target)
+
+    assert status.state == "dirty"
+    assert "plugins/claude-hud/config.json" in status.details
+
+
+def test_status_dirty_when_a_plugin_config_is_only_in_the_folder(fake_home, tmp_path):
+    # Pull would create it here.
+    target = tmp_path / "configs"
+    _with_hud_plugin(fake_home, target, None, {"lang": "ko"})
+
+    status = ClaudeApp().status(target)
+
+    assert status.state == "dirty"
+    assert "plugins/claude-hud/config.json" in status.details
+
+
+def test_status_clean_when_plugin_configs_match(fake_home, tmp_path):
+    target = tmp_path / "configs"
+    _with_hud_plugin(fake_home, target, {"lang": "ko"}, {"lang": "ko"})
+
+    assert ClaudeApp().status(target).state == "clean"
+
+
 def _claude_app_ignoring(tmp_path: Path, *names: str) -> ClaudeApp:
     from dotsync.config import Config
 

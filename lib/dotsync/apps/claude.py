@@ -1167,8 +1167,26 @@ class ClaudeApp(App):
                 )
             else:
                 base = AppStatus(state="dirty", details="mcp-servers.json")
+        base = self._merge_status(base, self._diff_plugin_configs(stored))
         rules = self._diff_global_rules(target_dir)
         return self._merge_status(base, rules)
+
+    def _diff_plugin_configs(self, stored: Path) -> AppStatus:
+        """Each installed plugin's config.json, compared as push and pull plan
+        it: one that either would copy makes the app dirty."""
+        changes = self._installed_plugin_config_changes_from(
+            stored
+        ) + self._installed_plugin_config_changes_to(stored)
+        unknown = [c for c in changes if c.kind == "unknown"]
+        if unknown:
+            return AppStatus(
+                state="unknown",
+                details=", ".join(f"{c.label}: {c.details}" for c in unknown),
+            )
+        differs = sorted({c.label for c in changes if c.is_change})
+        if differs:
+            return AppStatus(state="dirty", details=", ".join(differs))
+        return AppStatus(state="clean")
 
     @staticmethod
     def _installed_plugin_names(installed_plugins_path: Path) -> list[str]:
