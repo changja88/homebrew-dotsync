@@ -103,7 +103,7 @@ def test_pull_keeps_local_dotsync_dir_lines(fake_home, tmp_path):
 
     ZshApp().sync_to(target)
 
-    # This Mac's block goes at the end, where `dotsync init` puts it.
+    # This Mac's block goes at the end, where update_shell_rc puts it.
     assert (fake_home / ".zshrc").read_text() == (
         "export NEW=1\n# stored tail\n\n" + _block("/Users/me/B")
     )

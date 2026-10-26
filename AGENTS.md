@@ -12,16 +12,20 @@ two closely related deliverables:
 - `Formula/dotsync.rb`, the Homebrew formula used by
   `brew install changja88/dotsync/dotsync`.
 
-`dotsync` is a macOS-only CLI for syncing selected app configuration files
-between local app locations and one user-chosen sync folder.
+`dotsync` is a macOS-only CLI that dotsync.app runs to sync selected app
+configuration files between local app locations and one user-chosen sync
+folder. It has no terminal use: every command takes `--json` and answers the
+app with one JSON object; without `--json` it says so and exits 2.
 
 ## Core Architecture
 
-- `lib/dotsync/cli.py` owns argparse command dispatch for `init`, `config`,
-  `apps`, `status`, `push`, `pull`, `account`, and `sessions`. A bare `dotsync` prints the
-  help.
+- `lib/dotsync/cli.py` owns argparse command dispatch for `config` (`dir`,
+  `apps`), `status`, `push`, `pull`, `account`, and `sessions` — the
+  commands dotsync.app runs, and nothing else.
 - `lib/dotsync/config.py` owns sync-folder discovery and `dotsync.toml`
-  persistence. Config lives only at `<sync folder>/dotsync.toml`.
+  persistence. Config lives only at `<sync folder>/dotsync.toml`; the folder
+  is found only through the marked `export DOTSYNC_DIR=…` line in the shell
+  rc (`$DOTSYNC_DIR` and the cwd are not read: the app has neither).
 - `lib/dotsync/cli_sessions.py` owns the `dotsync sessions` group (`list`,
   `delete`, `recover`, `cleanup`); the logic is in `lib/dotsync/sessions/`:
   `claude.py` (scan, liveness, list), `claude_delete.py` (quarantine-rename
@@ -38,9 +42,8 @@ between local app locations and one user-chosen sync folder.
     unknown means keep (a check that cannot finish makes the item `unknown`
     or skips the cleanup item); every child process has a timeout.
   - JSON contract (the dotsync app depends on it; change both together):
-    every `--json` command (sessions, and `status`, `push`, `pull`, `config`)
-    prints exactly one JSON object on stdout, with `ui` output on stderr
-    (`cli_json.emit`). Success exits 0; failure exits 1 with
+    every command prints exactly one JSON object on stdout, with anything
+    an app prints on stderr (`cli_json.emit`). Success exits 0; failure exits 1 with
     `{"error": {"code", "message"}}`. A partial outcome is a success with
     per-item results. Long `sessions … --json` commands write
     `dotsync-progress <done>/<total>` lines, and nothing else, to stderr.
@@ -64,8 +67,10 @@ between local app locations and one user-chosen sync folder.
     first and relaunches it, and it refuses while a terminal Codex runs.
   - `.zst` Codex rollouts are read with the Homebrew `zstd` CLI
     (`depends_on "zstd"` in the Formula).
-- `lib/dotsync/shellrc.py` owns shell rc detection and idempotent
-  `DOTSYNC_DIR` export insertion/update logic.
+- `lib/dotsync/shellrc.py` owns the marked `DOTSYNC_DIR` line: finding it
+  (`rc_candidates`, `marked_dir`) and keeping it (`update_shell_rc`, which
+  `config dir` calls; with no rc file it starts `~/.zshrc`). The marker text
+  stays word for word: existing rc files carry it.
 - `lib/dotsync/accounts.py` owns Claude Code account switching
   (`dotsync account`). Saved logins are Claude Code config folders under
   `~/.claude-accounts/<name>`; `use` copies one into Claude's default Keychain
@@ -93,14 +98,12 @@ between local app locations and one user-chosen sync folder.
   process running, and macOS then refuses what it draws (blank widgets): the
   Cask stops it after each install (`terminate_process "dotsyncWidget"`);
   after a local install run `killall dotsyncWidget` yourself.
-- `lib/dotsync/ui.py` and `lib/dotsync/ui_picker.py` own terminal output,
-  colors, prompts, summaries, and picker behavior.
 - `lib/dotsync/apps/base.py` defines the app plugin contract:
   `App`, `AppStatus`, `FilePair`, and `diff_files`.
 - `lib/dotsync/apps/__init__.py` is the single source of truth for registered
   apps through `APP_CLASSES`.
-- Concrete app modules live in `lib/dotsync/apps/`: `claude`, `ghostty`,
-  `bettertouchtool`, and `zsh`.
+- Concrete app modules live in `lib/dotsync/apps/`: `claude`, `codex`,
+  `herdr`, `skills`, `ghostty`, `bettertouchtool`, and `zsh`.
 
 ## Executor Rules for Sessions
 
@@ -129,8 +132,8 @@ between local app locations and one user-chosen sync folder.
 - `dotsync` itself must not make network calls. External tools invoked by a
   user's existing app CLI are acceptable when already part of app behavior.
 - The tool must not create files outside the user-selected sync folder, except
-  for the explicit, consent-based shell rc update handled by `shellrc.py` and
-  `cli.py`, and the `~/.claude-accounts/<name>` folders an explicit
+  for the marked shell rc line `config dir` keeps (`shellrc.py`, `cli.py`),
+  and the `~/.claude-accounts/<name>` folders an explicit
   `dotsync account login` creates for Claude Code, and the lock files and
   result logs of the session commands (`~/Library/Application Support/dotsync/locks/`,
   `~/Library/Logs/dotsync/`).
@@ -141,9 +144,9 @@ between local app locations and one user-chosen sync folder.
 - Public command names are important: `push` means local app config to sync
   folder; `pull` means sync folder to local app config. The internal app
   plugin methods still use `sync_from` and `sync_to(target_dir)`.
-- dotsync keeps no backup copies in either direction. Every `push`/`pull`
-  previews the plan and asks for confirmation (unless `--yes`/`--dry-run`);
-  that preview is the safety net, so keep it accurate.
+- dotsync keeps no backup copies in either direction. dotsync.app previews
+  every `push`/`pull` (`--dry-run`) before it applies one (`--yes`); that
+  preview is the safety net, so keep it accurate.
 - `dotsync.toml` holds only `apps` and `[options.<app>]` tables; reject any
   other key under `[options]` instead of ignoring it.
 
@@ -153,7 +156,6 @@ Simple file-based apps should usually only implement:
 
 - `name`
 - `description`
-- `is_present_locally()`
 - `tracked_files(target_dir) -> list[FilePair]`
 
 The base `App` implementation handles default `sync_from`, `sync_to`, and
@@ -161,6 +163,10 @@ The base `App` implementation handles default `sync_from`, `sync_to`, and
 
 Only override sync methods for app-specific behavior such as external
 processes, live exports, plugin replay, or non-file state.
+
+An app with options reads them in `from_config` and gets them when
+dotsync.app turns it on from `options_when_turned_on()` (BetterTouchTool's
+preset names).
 
 For external commands, use `self._run_external(cmd, desc=..., fail_mode=...)`.
 Use `fail_mode="warn"` for best-effort behavior and `fail_mode="raise"` when
@@ -195,20 +201,21 @@ make test
 .venv/bin/python3 -m pytest
 .venv/bin/python3 -m pytest tests/test_config.py -v
 .venv/bin/python3 -m pytest tests/apps/test_claude.py::test_status_clean -v
-PYTHONPATH=lib python3 -m dotsync --help
-PYTHONPATH=lib python3 bin/dotsync --help
+PYTHONPATH=lib python3 -m dotsync status --json
 ```
 
-Tests isolate `$HOME`, scrub `DOTSYNC_DIR`, and block accidental
-`subprocess.run` calls by default in `tests/conftest.py`. If a test needs an
-external command, mock or monkeypatch it explicitly.
+`tests/conftest.py` gives every test an empty `$HOME` of its own (so none
+reads the real `~/.zshrc`; `fake_home` makes it `tmp_path`, `point_at`
+points dotsync at a sync folder through the rc line) and blocks accidental
+`subprocess.run` calls. If a test needs an external command, mock or
+monkeypatch it explicitly.
 
 ## Documentation Expectations
 
 Update `README.md` whenever user-visible behavior changes, including:
 
-- CLI commands or options
-- output wording or status states
+- what the app does, and the `--json` commands it runs
+- status states
 - supported app list
 - config schema
 - install or release behavior
@@ -248,8 +255,6 @@ brew style Casks/dotsync-app.rb
 - Prefer small, explicit functions and dataclasses over broad abstractions.
 - Keep app-specific config inside `cfg.app_options[<app_name>]` and let each
   app parse its own options in `from_config`.
-- Preserve the existing terminal tone and glyph vocabulary in UI output.
-- Respect `NO_COLOR=1` in output paths.
 - Keep command behavior idempotent where user files are touched.
-- Do not silently swallow partial failures; surface warnings through the
-  app warning channel and CLI summaries.
+- Do not silently swallow partial failures; surface warnings through
+  `App.warnings`, which each push/pull result carries.

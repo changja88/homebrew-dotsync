@@ -1,6 +1,6 @@
 # dotsync
 
-A CLI that consolidates your macOS app configs into **one folder of your choice**, with two-way sync · macOS 앱 설정을 **사용자가 지정한 한 폴더**에서 관리하는 양방향 sync CLI
+A macOS app that consolidates your app configs into **one folder of your choice**, with two-way sync · macOS 앱 설정을 **사용자가 지정한 한 폴더**에서 관리하는 양방향 sync 앱
 
 > **macOS only · Python 3.12+**
 
@@ -12,174 +12,45 @@ A CLI that consolidates your macOS app configs into **one folder of your choice*
 
 dotsync consolidates your macOS app configs (Claude Code, Codex CLI, Herdr, agent skills from `npx skills`, Ghostty, BetterTouchTool, zsh) into **one folder of your choice** and keeps it in two-way sync with the apps. That folder can be anywhere — a fresh directory like `~/my-configs`, or a folder you already track in git or sync via iCloud Drive. Tool (dotsync) and data (the folder) are separated, so setting up a new Mac is just a matter of bringing the folder along.
 
+You use it through **dotsync.app**: its 설정 menu syncs the configs, 사용량 switches Claude Code accounts, and 세션 cleans up Claude Code and Codex sessions.
+
 ### Install
 
 ```bash
-brew install changja88/dotsync/dotsync
-dotsync             # bare command prints the help (same as dotsync --help)
-dotsync --version   # print installed version
+brew install --cask changja88/dotsync/dotsync-app   # dotsync.app, and the dotsync engine it runs
 ```
 
-If Python 3.12 or 3.13 already exists at a canonical path
-(`/opt/homebrew/bin/python3.{12,13}`, `/usr/local/bin/python3.{12,13}`,
-or `/Library/Frameworks/Python.framework/Versions/3.{12,13}/...`),
-dotsync reuses it — no duplicate install. Otherwise Homebrew pulls in
-`python@3.12` as a dependency.
-
-> Note: Pythons installed via pyenv / uv are at non-canonical paths and
-> won't be auto-detected — Homebrew will still install its own
-> `python@3.12`. Functionality is unaffected, but the duplicate install
-> is not avoided.
-
-> Always start with **`dotsync init`** — it picks the sync folder. After that, `push` / `pull` work from anywhere.
+- The app is signed but not notarized: the first time, and after each update, open it once via System Settings → Privacy & Security → "Open Anyway".
+- The cask installs the `dotsync` formula too. That command is the app's engine, not a terminal tool: every command answers the app with one JSON object (`--json`), and run without it, it only says so (see [For developers](#for-developers-the-json-contract)).
+- If Python 3.12 or 3.13 already exists at a canonical path (`/opt/homebrew/bin/python3.{12,13}`, `/usr/local/bin/python3.{12,13}`, or `/Library/Frameworks/Python.framework/Versions/3.{12,13}/...`), dotsync reuses it — no duplicate install. Otherwise Homebrew pulls in `python@3.12` as a dependency. Pythons installed via pyenv / uv are at non-canonical paths and won't be auto-detected; functionality is unaffected, but the duplicate install is not avoided.
 
 ### Usage
 
-#### 1. One-time setup — pick a sync folder and the apps to track
+#### 1. Choose the sync folder and the apps
 
-`dotsync init` is a two-step wizard.
+Open 설정 and pick the sync folder with "다른 폴더…".
 
-**Step 1 — Sync folder.** Type the folder path. Bare Enter accepts the default `~/Desktop/dotsync_config`.
+- A folder that already holds a `dotsync.toml` — another Mac's, brought along with git or iCloud — is used as is: its apps and options stay.
+- Any other folder gets a new `dotsync.toml`: it keeps the apps of the folder you used before, or tracks nothing on a Mac that had none.
+- The table below lists every supported app; its switches pick the ones to track. Turning BetterTouchTool on reads the preset names from BTT's own store and tracks them all (`["Master_bt"]` when none can be read).
 
-**Step 2 — Pick apps to track.** An arrow-key picker opens immediately. Apps installed on this machine come pre-checked (`installed` hint); the rest start unchecked (`not installed`). Toggle with the keys, Enter to confirm.
+On a new Mac: bring the folder (`git clone`, iCloud Drive), choose it in 설정, then pull.
 
-```bash
-dotsync init
-# ▶ Step 1 — Sync folder
-# ? sync folder (absolute path) [/Users/you/Desktop/dotsync_config] › ⏎
-# ✔ folder ready → /Users/you/Desktop/dotsync_config
-#
-# ▶ Step 2 — Pick apps to track
-#   Pick apps to track   ↑/↓ move · space toggle · enter submit
-#
-#   ▸ [x] claude              installed
-#     [x] codex               installed
-#     [x] herdr               installed
-#     [x] skills              installed
-#     [x] ghostty             installed
-#     [x] bettertouchtool     installed · 2 presets
-#     [x] zsh                 installed
-#
-# ✔ tracked: claude · codex · herdr · skills · ghostty · bettertouchtool · zsh
-# ✔ BetterTouchTool presets = Master_bt, Mini_bt   (auto-detected)
-# ✔ config saved → /Users/you/Desktop/dotsync_config/dotsync.toml
-```
+**dotsync creates no files or directories on your machine outside the sync folder you chose, with these exceptions:**
 
-Row colors flag misconfigured states at a glance:
+- One marked line in your shell rc, `export DOTSYNC_DIR="…"`, under the comment ``# Added by `dotsync init` — points dotsync at your sync folder.``. It is how dotsync finds the folder: dotsync.app has no shell environment, so dotsync reads that line (it never runs it), as long as the folder holds a `dotsync.toml`. Choosing another folder rewrites it; with no rc file at all, dotsync starts `~/.zshrc` with it.
+- `~/.claude-accounts/` — the Claude Code logins of the 사용량 menu.
+- What the session commands keep: lock files in `~/Library/Application Support/dotsync/locks/` and result logs in `~/Library/Logs/dotsync/` (see [section 5](#5-clean-up-claude-code-and-codex-sessions)).
 
-- `[x] + installed` → default (healthy)
-- `[x] + not installed` → red dim ("cleanup candidate")
-- `[ ] + installed` → yellow dim ("add candidate")
-- `[ ] + not installed` → dim
+All settings live in `<sync folder>/dotsync.toml`.
 
-**BetterTouchTool presets are auto-discovered and all tracked.** dotsync reads BTT's internal SQLite store and writes every registered preset name into `presets` under `[options.bettertouchtool]` (e.g. `["Master_bt", "Mini_bt"]`). No per-preset prompt. `--yes` mode skips discovery in favor of a deterministic default (`["Master_bt"]`) — useful for CI.
+#### 2. Push and pull
 
-Non-interactive (scripts / new-machine bootstrap):
+Push copies the local app configs into the folder; pull copies the folder back onto this Mac. Then commit the folder to git or let iCloud sync it.
 
-```bash
-# Both --dir and --apps can be omitted:
-#   --dir defaults to ~/Desktop/dotsync_config
-#   --apps defaults to all auto-detected apps
-dotsync init --yes
+The app previews every push and pull before it applies one. dotsync keeps no backup copies in either direction: the preview is the safety net, so read it before you apply. Each file-copy entry carries line counts (`+added −removed`) — binary files show a size summary instead (e.g. `binary · 50B → 200B`). JSON/TOML files additionally list their changed top-level keys (e.g. `+113 −1 · model, hooks`), directories list the changed file names, and the preview can show each change's full diff (capped at 200 lines per file).
 
-# Or specify explicitly (BTT presets are comma-separated)
-dotsync init --dir ~/my-configs --apps claude,zsh --btt-presets Master_bt,Mini_bt --yes
-
-# No post-init hints (for first-boot scripts)
-dotsync init --yes --no-hints
-
-# Skip the shell-rc auto-write (e.g. you manage rc files via your dotfiles repo)
-dotsync init --yes --no-shell-init
-```
-
-**dotsync creates no files or directories on your machine outside the sync folder you chose, with these exceptions:** the one-line `export DOTSYNC_DIR="…"` that `init` writes into your shell rc (opt-in; pass `--no-shell-init` to disable), `~/.claude-accounts/` (`dotsync account`), and what the session commands keep: lock files in `~/Library/Application Support/dotsync/locks/` and result logs in `~/Library/Logs/dotsync/` (see [section 7](#7-clean-up-claude-code-and-codex-sessions)). All settings live in `<sync folder>/dotsync.toml`.
-
-#### How does dotsync find the sync folder?
-
-The first of these that works wins:
-
-1. The `DOTSYNC_DIR` environment variable holds an absolute path. `init` automatically appends this line to your shell rc (`~/.zshrc` for zsh, `~/.bash_profile` for bash) on your behalf — interactive mode asks first, `--yes` writes silently. Re-running `init` with a different `--dir` updates the line in place; identical lines are left untouched. Skip the auto-write with `--no-shell-init`. Resulting line:
-   ```bash
-   export DOTSYNC_DIR="/Users/you/my-configs"
-   ```
-2. Or, run `dotsync` from inside the sync folder (or any subdirectory) — it walks upward looking for `dotsync.toml` (git-style).
-3. Otherwise dotsync reads the marked `export DOTSYNC_DIR=…` line that `init` left in your shell rc (read, never run), as long as that folder holds a `dotsync.toml`. This is how dotsync.app, opened from Finder without your shell's environment, finds the folder.
-
-#### Restoring on a new machine
-
-If the folder already contains a `dotsync.toml`, `init` adopts it as-is. Passing `--apps` or `--btt-presets` overrides this and rewrites the file with the new values.
-
-```bash
-git clone git@github.com:you/my-configs.git ~/my-configs
-export DOTSYNC_DIR="$HOME/my-configs"   # once (add to your shell rc)
-dotsync init --dir ~/my-configs --yes   # reuses existing dotsync.toml as-is
-dotsync pull --all
-```
-
-#### 2. Local app configs → folder (take a snapshot)
-
-`dotsync push` previews the sync-folder changes before copying anything. Press `y`
-or type `yes` to apply the plan. Use `--dry-run` to preview only, or `--yes`
-for automation.
-
-```bash
-dotsync push --all --dry-run  # preview folder changes only
-dotsync push --all            # interactive (asks y/N)
-dotsync push --all --yes      # automation (no prompt)
-```
-
-The summary separates apps that changed (`✓ changed`) from apps that were
-already in sync (`· unchanged`).
-
-```
-╭──────────────────────────────────────────────────────────────────╮
-│ dotsync push                                                     │
-│ 5 apps  →  /Users/you/Desktop/dotsync_config                     │
-╰──────────────────────────────────────────────────────────────────╯
-... (per-app sections) ...
-╭──────────────────────────────────────────────────────────────────╮
-│ ✓ changed    ghostty · bettertouchtool                           │
-│ · unchanged  claude · codex · zsh                                │
-│ 5 ok  ·  0 warn  ·  0 error  ·  2.3s                             │
-╰──────────────────────────────────────────────────────────────────╯
-```
-
-Then commit the folder to git or let iCloud sync it.
-
-#### 3. Folder → local apps (restore on another machine)
-
-`dotsync pull` previews local-machine changes before overwriting your local configs.
-Press `y` or type `yes` to apply the plan. Use `--dry-run` to preview only,
-or `--yes` for automation. dotsync keeps no backup copies: the preview and
-the confirmation are the safety net, so read the plan before you confirm.
-
-```bash
-dotsync pull --all --dry-run     # preview only
-dotsync pull --all                # interactive (asks y/N)
-dotsync pull --all --yes          # automation (no prompt)
-```
-
-The summary box separates apps that actually changed (`✓ changed`) from apps that were already in sync (`· unchanged`).
-
-```
-╭──────────────────────────────────────────────────────────────────╮
-│ ✓ changed    ghostty · bettertouchtool                           │
-│ · unchanged  claude · codex · zsh                                │
-│ 5 ok  ·  0 warn  ·  0 error  ·  3.1s                             │
-╰──────────────────────────────────────────────────────────────────╯
-```
-
-The preview annotates each file-copy entry with line counts (`+added −removed`) — binary files show a size summary instead (e.g. `binary · 50B → 200B`). JSON/TOML files additionally list their changed top-level keys (e.g. `+113 −1 · model, hooks`), and directories list the changed file names.
-
-Type `d` at the confirmation prompt to inspect the full diff before
-applying (capped at 200 lines per file; `y`/`n` behave as before):
-
-    ? Apply these changes to the sync folder? [y/N/d] › d
-
-`dotsync status` shows the same per-file summaries under any app that
-differs.
-
-**Claude restoration goes beyond file copy.** dotsync replays the recorded marketplaces (`claude plugin marketplace add`) and runs `claude plugin install --scope user` for every plugin in `installed_plugins.json`, then re-applies the `enabledPlugins` map so disabled plugins stay disabled. If the `claude` CLI isn't installed, plugin replay is skipped (logged as a warning) and the file copy still succeeds. dotsync also mirrors your user-level global rules — `~/.claude/CLAUDE.md` and the `commands/`, `agents/`, `skills/`, `output-styles/` directories — so personal slash commands, subagents, and skills follow you across machines. `skills/synced/` (skills Claude Code syncs from your claude.ai account) and `skills/.trash/` (old versions Claude Code moved aside) are managed by Claude Code itself, so they are never stored (`push` removes any copy already in the sync folder), and `pull` leaves the local copies in place.
+**Claude restoration goes beyond file copy.** dotsync replays the recorded marketplaces (`claude plugin marketplace add`) and runs `claude plugin install --scope user` for every plugin in `installed_plugins.json`, then re-applies the `enabledPlugins` map so disabled plugins stay disabled. If the `claude` CLI isn't installed, plugin replay is skipped (reported as a warning) and the file copy still succeeds. dotsync also mirrors your user-level global rules — `~/.claude/CLAUDE.md` and the `commands/`, `agents/`, `skills/`, `output-styles/` directories — so personal slash commands, subagents, and skills follow you across machines. `skills/synced/` (skills Claude Code syncs from your claude.ai account) and `skills/.trash/` (old versions Claude Code moved aside) are managed by Claude Code itself, so they are never stored (a push removes any copy already in the sync folder), and a pull leaves the local copies in place.
 
 **Skills another tool installs can be left to that tool.** Some tools install their own skill and rewrite it on upgrade. Syncing such a skill fights the tool, so list it in `dotsync.toml`:
 
@@ -191,11 +62,11 @@ skills_ignore = ["my-tool"]
 skills_ignore = ["my-tool"]
 ```
 
-Listed skill directories are treated like `skills/synced/` above: `push` removes the stored copy, `pull` never touches the local one, and `status` ignores them. Reinstall them on a new machine with the tool itself. Each entry must be a top-level directory name under `skills/`; anything else is rejected as a config error.
+Listed skill directories are treated like `skills/synced/` above: a push removes the stored copy, a pull never touches the local one, and the sync state ignores them. Reinstall them on a new machine with the tool itself. Each entry must be a top-level directory name under `skills/`; anything else is rejected as a config error.
 
-**Codex sync mirrors user-authored global settings.** dotsync copies `~/.codex/config.toml`, optional instruction/config files (`AGENTS.md`, `AGENTS.override.md`, `hooks.json`, `requirements.toml`), and the user-managed `rules/` and `skills/` directories. `dotsync push codex` converges the sync folder to the current local managed set: if one of those optional files or managed directories is absent locally, the stored copy is removed from the sync folder. It skips generated or sensitive state such as `auth.json`, history, sessions, logs, sqlite state, caches, system skills, plugin caches, memories, and vendor imports; `skills/.system` is intentionally not synced.
+**Codex sync mirrors user-authored global settings.** dotsync copies `~/.codex/config.toml`, optional instruction/config files (`AGENTS.md`, `AGENTS.override.md`, `hooks.json`, `requirements.toml`), and the user-managed `rules/` and `skills/` directories. A push of codex converges the sync folder to the current local managed set: if one of those optional files or managed directories is absent locally, the stored copy is removed from the sync folder. It skips generated or sensitive state such as `auth.json`, history, sessions, logs, sqlite state, caches, system skills, plugin caches, memories, and vendor imports; `skills/.system` is intentionally not synced.
 
-**Codex plugins are recorded, not copied.** Codex rewrites the `[marketplaces.*]` and `[plugins.*]` tables of `config.toml` by itself (local paths of the marketplaces it bundles, `last_updated` / `last_revision`), so dotsync stores `config.toml` without them. Instead, `push` asks `codex plugin list --json` what is installed and writes `codex/plugins.json`:
+**Codex plugins are recorded, not copied.** Codex rewrites the `[marketplaces.*]` and `[plugins.*]` tables of `config.toml` by itself (local paths of the marketplaces it bundles, `last_updated` / `last_revision`), so dotsync stores `config.toml` without them. Instead, a push asks `codex plugin list --json` what is installed and writes `codex/plugins.json`:
 
 ```json
 {
@@ -209,135 +80,82 @@ Listed skill directories are treated like `skills/synced/` above: `push` removes
 - Recorded: the enabled plugins you installed, and the marketplaces you added (with `ref` and `sparse`).
 - Left to Codex: plugins it installs by default (`INSTALLED_BY_DEFAULT`), plugins from marketplaces it keeps under its own directories (`~/.codex`, `~/.cache/codex-runtimes`, such as `openai-bundled`), and those marketplaces. Disabled plugins are not recorded.
 
-`pull` keeps the local marketplace/plugin tables and replaces the rest of `config.toml` with the stored settings. It then adds each recorded marketplace that is missing (`codex plugin marketplace add <source>`, with `--ref` / repeated `--sparse`) and installs each recorded plugin that is missing (`codex plugin add <plugin@marketplace> --json`). Whatever is already present is left alone, so running `pull` again installs nothing. If a marketplace cannot be added, its plugins are skipped with a warning; on a fresh machine, start Codex once so its own marketplaces exist, then pull again. If the `codex` CLI is missing or prints something unexpected, files still sync, `push` keeps the existing `plugins.json`, and plugin restore is skipped with a warning. `status` and the previews compare `config.toml` without those tables and compare `plugins.json` with what is installed.
+A pull keeps the local marketplace/plugin tables and replaces the rest of `config.toml` with the stored settings. It then adds each recorded marketplace that is missing (`codex plugin marketplace add <source>`, with `--ref` / repeated `--sparse`) and installs each recorded plugin that is missing (`codex plugin add <plugin@marketplace> --json`). Whatever is already present is left alone, so pulling again installs nothing. If a marketplace cannot be added, its plugins are skipped with a warning; on a fresh machine, start Codex once so its own marketplaces exist, then pull again. If the `codex` CLI is missing or prints something unexpected, files still sync, a push keeps the existing `plugins.json`, and plugin restore is skipped with a warning. The sync state and the previews compare `config.toml` without those tables and compare `plugins.json` with what is installed.
 
-**Herdr sync tracks only `~/.config/herdr/config.toml`.** Session and runtime state such as `session*.json`, plugin registry state, logs, sockets, and lock files are intentionally excluded. Existing dotsync users can enable Herdr with `dotsync apps` (or include `herdr` when replacing the list with `dotsync config apps ...`); existing tracked-app selections are never changed automatically.
+**Herdr sync tracks only `~/.config/herdr/config.toml`.** Session and runtime state such as `session*.json`, plugin registry state, logs, sockets, and lock files are intentionally excluded. Turn Herdr on in the 설정 table; the tracked apps are never changed for you.
 
-**Skills sync records what `npx skills add -g` installed, not the files.** `push` reads `~/.agents/.skill-lock.json` and writes `skills/skills.json` with each skill's source and the managed agents (`claude-code`, `codex`) whose `~/.claude/skills/<name>` / `~/.codex/skills/<name>` link points at it — the lock file itself is never copied into the sync folder, since it can hold a GitHub token. `pull` runs `npx -y skills add <source> --global --skill <name> --agent <agent> --yes` for every recorded skill that is missing locally; failures, a missing `npx`, and non-GitHub sources are reported as warnings. Skills installed with `--copy` are plain directories and sync as files through the claude/codex apps instead.
+**Skills sync records what `npx skills add -g` installed, not the files.** A push reads `~/.agents/.skill-lock.json` and writes `skills/skills.json` with each skill's source and the managed agents (`claude-code`, `codex`) whose `~/.claude/skills/<name>` / `~/.codex/skills/<name>` link points at it — the lock file itself is never copied into the sync folder, since it can hold a GitHub token. A pull runs `npx -y skills add <source> --global --skill <name> --agent <agent> --yes` for every recorded skill that is missing locally; failures, a missing `npx`, and non-GitHub sources are reported as warnings. Skills installed with `--copy` are plain directories and sync as files through the claude/codex apps instead.
 
-**BetterTouchTool must be running** for `push` / `pull` / `status` — dotsync drives BTT via `osascript`. If BTT isn't running, `status` reports `unknown` and `push` / `pull` raise an error. Preset names are treated as literal BTT names; empty names, path separators, quotes, and control characters are rejected before any AppleScript is generated.
+**BetterTouchTool must be running** to push, pull or check it — dotsync drives BTT via `osascript`, which needs the Automation permission (설정 opens it for you). If BTT isn't running, its state is `unknown` and a push or pull of it fails. Preset names are treated as literal BTT names; empty names, path separators, quotes, and control characters are rejected before any AppleScript is generated.
 
-#### 4. Check sync state (per-file sha256 diff)
+#### 3. Sync state
 
-Status lines use color + glyph; for 'dirty' rows, the direction hint shows which side is newer.
+설정 shows each tracked app's state (per-file sha256), and for an app that differs, which side is newer and the same per-file summaries as the previews.
 
-```bash
-$ dotsync status
-▸ status                              ~/dotsync_config
+- `clean` — local and stored bytes match (sha256 equal). Claude's `installed_plugins.json` and `known_marketplaces.json` are compared the way the previews compare them, ignoring runtime metadata Claude Code rewrites on its own (install paths, versions, timestamps, commit SHAs)
+- `dirty` — differ; the direction is `local-newer`, `folder-newer`, or `diverged` (mix of both)
+- `missing` — at least one side is absent
+- `unknown` — couldn't determine (e.g., BTT not running)
 
-  ✓ zsh              clean
-  ✓ codex            clean
-  ⚠ ghostty          dirty  local-newer — config.ghostty
-    ⚠ update         config.ghostty  — +2 −1
-  ✗ claude           missing
-  · bettertouchtool  unknown — BTT not running
-```
+#### 4. Claude Code accounts and widgets
 
-Each dirty app gets an indented change-summary line per differing file,
-the same annotation shown in `push`/`pull` previews.
+The 사용량 menu keeps several claude.ai logins and switches the one Claude Code uses — the same effect as `/login`, without the browser each time. Running sessions follow the switch the way they follow a `/login`. It shows each account's 5-hour and weekly usage with reset times, and adds, logs in again, renames and removes accounts.
 
-Legend:
-
-- `✓ clean` — local and stored bytes match (sha256 equal). Claude's `installed_plugins.json` and `known_marketplaces.json` are compared the way `push`/`pull` previews compare them, ignoring runtime metadata Claude Code rewrites on its own (install paths, versions, timestamps, commit SHAs)
-- `⚠ dirty` — differ; direction is `local-newer`, `folder-newer`, or `diverged` (mix of both)
-- `✗ missing` — at least one side is absent
-- `· unknown` — couldn't determine (e.g., BTT not running)
-
-#### 5. Switch Claude Code accounts
-
-Keep several claude.ai logins and switch the one Claude Code uses — the same effect as `/login`, without the browser each time. Running sessions follow the switch the way they follow a `/login`.
-
-```bash
-dotsync account login work      # save the account the browser approves as "work" (once per account)
-dotsync account use work        # make Claude use it
-dotsync account list            # saved accounts; ● marks the one in use
-dotsync account usage           # each account's 5-hour and weekly use and reset time
-dotsync account rename work "Work Max"   # change the name shown for it
-dotsync account remove work     # log it out and delete it
-```
-
-- Claude Code saves each account itself: `login` runs `claude auth login` with `CLAUDE_CONFIG_DIR=~/.claude-accounts/<name>`, so the tokens stay in that folder's Keychain entry.
-- `use` copies that login into Claude's default Keychain entry and the account details into `~/.claude.json`. It first hands the login in use back to its own account, because Claude refreshes tokens as it runs and a used refresh token stops working.
+- Claude Code saves each account itself: adding one runs `claude auth login` with `CLAUDE_CONFIG_DIR=~/.claude-accounts/<name>`, so the tokens stay in that folder's Keychain entry.
+- 사용 copies that login into Claude's default Keychain entry and the account details into `~/.claude.json`. It first hands the login in use back to its own account, because Claude refreshes tokens as it runs and a used refresh token stops working.
 - Tokens reach `security` on stdin, never on a command line.
-- If the login in use isn't saved (the first time, for example), `use` asks before dropping it. Save it first with `dotsync account login <name>`.
-- Once you use `dotsync account`, switch with `use` instead of `/login`: `/login` replaces the login in use without handing it back, and that account then needs `dotsync account login` again.
-- Accounts are separate from syncing: they need no sync folder, and `push`/`pull` never touch them.
-- `usage` asks Claude Code itself (`claude -p` with its `get_usage` request), so it spends no tokens. The account in use is read through Claude's default folder, the others through their own folders, all at once; one slow account (30 s limit) doesn't hold up the rest.
-- Every `account` command takes `--json` and then prints exactly one JSON object — the dotsync app reads these. Errors come back as `{"error": {"code": …, "message": …}}` with exit status 1. Commands that change accounts or run Claude wait for each other (`~/.claude-accounts/.lock`).
+- If the login in use isn't saved (the first time, for example), the app asks before dropping it, and offers to save it first.
+- Once you switch with dotsync, keep switching with it instead of `/login`: `/login` replaces the login in use without handing it back, and that account then needs logging in again.
+- Accounts are separate from syncing: they need no sync folder, and push/pull never touch them.
+- Usage comes from Claude Code itself (`claude -p` with its `get_usage` request), so it spends no tokens. The account in use is read through Claude's default folder, the others through their own folders, all at once; one slow account (30 s limit) doesn't hold up the rest.
 
-#### 6. The dotsync app (macOS)
+Widgets — add one from Edit Widgets, on the desktop or in Notification Center:
 
-A window and widgets for the same accounts: each account's 5-hour and weekly usage with reset times, and one click to switch.
+- "Claude 계정" (large or extra large): the account in use and the other accounts together.
+- "지금 사용 중" (medium): the account in use alone.
+- "Claude 계정 목록" (large): the other accounts, up to seven (with more, six and "외 n개"). Under "지금 사용 중" in Notification Center, the two read as one tall widget.
 
-```bash
-brew install --cask changja88/dotsync/dotsync-app   # installs the dotsync CLI too
-```
+On a widget, ↻ refreshes (about 10 s, no tokens) and "사용" switches Claude. The app runs only while you use it — nothing stays in the background. An install or update stops the widget that was running, so the new one takes over. If a widget still stays blank, open the app once: it reloads the widgets.
 
-- The app is signed but not notarized: the first time, and after each update, open it once via System Settings → Privacy & Security → "Open Anyway".
-- Add a widget from Edit Widgets, on the desktop or in Notification Center:
-  - "Claude 계정" (large or extra large): the account in use and the other accounts together.
-  - "지금 사용 중" (medium): the account in use alone.
-  - "Claude 계정 목록" (large): the other accounts, up to seven (with more, six and "외 n개"). Under "지금 사용 중" in Notification Center, the two read as one tall widget.
-- On a widget, ↻ refreshes (about 10 s, no tokens) and "사용" switches Claude like `dotsync account use`. The app runs only while you use it — nothing stays in the background.
-- The window adds accounts, logs one in again, renames and removes them.
-- An install or update stops the widget that was running, so the new one takes over. If a widget still stays blank, open the app once: it reloads the widgets.
+#### 5. Clean up Claude Code and Codex sessions
 
-#### 7. Clean up Claude Code and Codex sessions
-
-List, delete and recover the sessions Claude Code and Codex keep on disk. These commands need no sync folder, and `push`/`pull` never touch sessions.
-
-```bash
-dotsync sessions list claude|codex                       # one line per project: sessions, size, running
-dotsync sessions delete claude|codex <id> [<id> ...]     # delete after checking again that nothing uses them
-dotsync sessions recover claude <id> --restore|--finish  # undo or finish a delete that stopped halfway
-dotsync sessions cleanup codex --blockers                # what uses ~/.codex right now
-dotsync sessions cleanup codex --dry-run                 # what a cleanup would remove (counts only)
-dotsync sessions cleanup codex --yes [--items a,b] [--vacuum]
-```
+The 세션 menu lists, deletes and recovers the sessions Claude Code and Codex keep on disk. Sessions need no sync folder, and push/pull never touch them.
 
 - A session is not deleted if it is running or if dotsync cannot tell whether it is in use.
-- **Claude Code** — a session written in the last 30 minutes is not deleted either. dotsync checks again right before each delete and skips what changed meanwhile. A delete removes the conversation, subagent transcripts, tool results, MCP task records, file-history, the session environment, debug log, pasted files, and the temp images and task folder. It leaves the prompt history, to-do lists, plans, project memory, settings, and tool results other sessions still use (those files are shared, so they are not picked apart per session). A delete that stops halfway shows as "interrupted": `recover --restore` renames the transcripts back, `recover --finish` deletes what is left. Claude Code deletes the same files itself once 30 days have passed since the last entry.
+- **Claude Code** — a session written in the last 30 minutes is not deleted either. dotsync checks again right before each delete and skips what changed meanwhile. A delete removes the conversation, subagent transcripts, tool results, MCP task records, file-history, the session environment, debug log, pasted files, and the temp images and task folder. It leaves the prompt history, to-do lists, plans, project memory, settings, and tool results other sessions still use (those files are shared, so they are not picked apart per session). A delete that stops halfway shows as "interrupted": it can be undone (the transcripts are renamed back) or finished (what is left is deleted). Claude Code deletes the same files itself once 30 days have passed since the last entry.
 - **Codex** — dotsync checks once per batch, before deleting, which sessions are open. A delete is Codex's own (`codex delete`), so Codex may stay open; it refuses sessions open in another window. It removes the conversation, the thread's rows in the history database, the name-list entry and logs, including the sessions forked below it. dotsync then removes the reference cache files. It leaves the prompt history, attachments, desktop-app state and generated images. The history database does not shrink right away.
-- **Codex cleanup** removes what deleted sessions left in Codex's files (`history_rows`, `history_lines`, `session_index`, `queue`, plus the cache files; `--vacuum` also reclaims the history database's free space). `--items` picks among the four (default: all); `--items ""` picks none, so only the cache files go, and the vacuum with `--vacuum`. It only runs while nothing uses `~/.codex`: the command refuses with `codex_running` while ChatGPT.app, a terminal Codex, or anything else using `~/.codex` runs. It also refuses as a whole when it cannot be sure what to keep: a rollout file cannot be read, `zstd` is missing while compressed rollouts exist, or Codex's database version is not the one dotsync knows. dotsync.app quits ChatGPT.app for the cleanup and relaunches it afterwards; the command line never quits anything, so quit them yourself first. A terminal Codex is never closed for you: the cleanup refuses while one runs.
+- **Codex cleanup** removes what deleted sessions left in Codex's files (`history_rows`, `history_lines`, `session_index`, `queue`, plus the cache files), and can also reclaim the history database's free space (vacuum). It only runs while nothing uses `~/.codex`; dotsync.app quits ChatGPT.app for the cleanup and relaunches it afterwards, but a terminal Codex is never closed for you: the cleanup refuses while one runs. It also refuses as a whole when it cannot be sure what to keep: a rollout file cannot be read, `zstd` is missing while compressed rollouts exist, or Codex's database version is not the one dotsync knows.
 - Codex rollouts compressed as `.zst` are read with the `zstd` command, which the Homebrew formula installs.
-- Every `delete`, `recover` and `cleanup --yes` writes a log, even when it was stopped: `~/Library/Logs/dotsync/sessions-<timestamp>-<pid>.json`. It holds session ids, file paths and outcomes, never conversation contents (no titles, no transcript or history text).
-- `SIGTERM` stops a running delete or cleanup at the next safe point (between sessions, cleanup items or vacuum batches), then reports and logs what was done.
-- Commands that change the same tool wait for each other, shared with the dotsync app, through lock files in `~/Library/Application Support/dotsync/locks/`: `claude-sessions.lock` (`delete claude`, `recover claude`) and `codex.lock` (`delete codex`, `cleanup codex --yes`; `push`/`pull` of `codex` hold it shared). A lock not free within 10 seconds fails with `busy`.
-- `list`, `delete`, `recover` and `cleanup` take `--json` and print exactly one JSON object; long ones write `dotsync-progress <done>/<total>` lines to stderr. Failures are `{"error": {"code": …, "message": …}}` with exit status 1.
+- Every delete, recover and cleanup writes a log, even when it was stopped: `~/Library/Logs/dotsync/sessions-<timestamp>-<pid>.json`. It holds session ids, file paths and outcomes, never conversation contents (no titles, no transcript or history text).
+- Stopping a running delete or cleanup (`SIGTERM`) stops it at the next safe point (between sessions, cleanup items or vacuum batches), then reports and logs what was done.
 
-The same `--json` contract now covers the sync commands, which the dotsync app reads: `dotsync status --json`, `dotsync push|pull [app|--all] --json` with `--dry-run` (preview) or `--yes` (apply; one of the two is required), and `dotsync config show|dir|apps --json`. They print one JSON object on stdout and send everything else to stderr.
+#### 6. `dotsync.toml`
 
-#### Change the folder or app list later
-
-`dotsync apps` opens the same picker as init's Step 2. Toggling BTT on re-runs preset discovery and writes the result back to config — no separate command needed.
-
-```bash
-dotsync apps                              # picker to change the tracked apps (Enter = keep current)
-dotsync config show                       # print current config
-dotsync config dir ~/another-folder       # change sync folder
-dotsync config apps claude,zsh            # replace the tracked-apps list (for automation)
-dotsync config btt-presets MyPreset,Other # replace BTT preset list (comma-separated)
-```
-
-`dotsync config show` includes app-specific options such as BTT presets. `dotsync.toml` holds only `apps` and `[options.<app>]` tables; any other key under `[options]` is rejected as a config error. Top-level managed files and directories that are symlinks are rejected instead of followed. Inside mirrored directories such as Claude `skills/` or Codex `rules/`, symlinked entries (for example the links `npx skills add` creates) are skipped with a warning and never read or written through, and `pull` leaves them in place. When the `skills` app is tracked, the links `npx skills add` made are skipped without a warning, since that app records them. `.DS_Store` files and `*.bak` files (copies some tools keep before rewriting a file) inside mirrored directories are ignored the same way: never stored, never removed.
-
-Picker keys:
-
-- `↑` / `↓` — move
-- `space` — toggle the current row
-- `enter` — confirm
-- `q` / `esc` / `ctrl+c` — cancel (no config change)
-
-In non-TTY environments (CI, piped stdin) it automatically falls back to
-sequential per-app y/n prompts.
+`dotsync.toml` holds only `apps` and `[options.<app>]` tables; any other key under `[options]` is rejected as a config error. Top-level managed files and directories that are symlinks are rejected instead of followed. Inside mirrored directories such as Claude `skills/` or Codex `rules/`, symlinked entries (for example the links `npx skills add` creates) are skipped with a warning and never read or written through, and a pull leaves them in place. When the `skills` app is tracked, the links `npx skills add` made are skipped without a warning, since that app records them. `.DS_Store` files and `*.bak` files (copies some tools keep before rewriting a file) inside mirrored directories are ignored the same way: never stored, never removed.
 
 Supported apps: `claude`, `codex`, `herdr`, `skills`, `ghostty`, `bettertouchtool`, `zsh`
 
+#### For developers: the JSON contract
+
+dotsync.app runs these commands and decodes their answers:
+
+```bash
+dotsync status --json
+dotsync push|pull <app>|--all --dry-run|--yes --json   # preview, or apply
+dotsync config dir --json -- <folder>
+dotsync config apps <app,app,…> --json
+dotsync account login|use [--yes]|rename|remove|usage --json -- <args>
+dotsync sessions list|delete|recover|cleanup … --json
+dotsync --version
+```
+
+- Each prints exactly one JSON object on stdout; anything else goes to stderr. Failures are `{"error": {"code": …, "message": …}}` with exit status 1. Without `--json` a command prints that dotsync is run by dotsync.app and exits 2.
+- Long session commands write `dotsync-progress <done>/<total>` lines to stderr; the app draws its progress from them.
+- Commands that change the same tool wait for each other through lock files in `~/Library/Application Support/dotsync/locks/`: `claude-sessions.lock` (`delete claude`, `recover claude`) and `codex.lock` (`delete codex`, `cleanup codex --yes`; push/pull/status of `codex` hold it shared). Account commands hold `~/.claude-accounts/.lock`. A lock not free within 10 seconds fails with `busy`.
+
 ### Adding a new app
 
-See `docs/adding-an-app.md`. A simple file-based app is one module + one line in `apps/__init__.py`'s `APP_CLASSES`. Complex apps (external processes, custom CLI options) extend in place by overriding `App` hooks.
-
-Help: `dotsync --help`, `dotsync <command> --help`. All output respects `NO_COLOR=1`.
+See `docs/adding-an-app.md`. A simple file-based app is one module + one line in `apps/__init__.py`'s `APP_CLASSES`. Complex apps (external processes, app-specific options) extend in place by overriding `App` hooks.
 
 ---
 
@@ -347,169 +165,45 @@ Help: `dotsync --help`, `dotsync <command> --help`. All output respects `NO_COLO
 
 dotsync는 macOS의 앱 설정(Claude Code, Codex CLI, Herdr, `npx skills`로 설치한 agent skill, Ghostty, BetterTouchTool, zsh)을 **사용자가 지정한 단일 폴더**에 모아서 양방향으로 동기화한다. 그 폴더는 어디든 OK — 새 폴더(`~/my-configs`)일 수도 있고, 이미 git이나 iCloud Drive로 관리 중인 폴더일 수도 있다. 도구(dotsync)와 데이터(폴더)를 분리해서, 새 Mac 셋업도 폴더만 옮겨오면 끝난다.
 
+**dotsync.app**으로 쓴다. 설정 메뉴에서 설정을 동기화하고, 사용량에서 Claude Code 계정을 바꾸고, 세션에서 Claude Code와 Codex 세션을 정리한다.
+
 ### 설치
 
 ```bash
-brew install changja88/dotsync/dotsync
-dotsync             # 인자 없이 실행하면 도움말 출력 (dotsync --help 와 같음)
-dotsync --version   # 설치된 버전 확인
+brew install --cask changja88/dotsync/dotsync-app   # dotsync.app과, 앱이 실행하는 dotsync 엔진
 ```
 
-Python 3.12 또는 3.13 이 canonical 경로 (`/opt/homebrew/bin/python3.{12,13}`,
-`/usr/local/bin/python3.{12,13}`, `/Library/Frameworks/Python.framework/Versions/3.{12,13}/...`)
-에 이미 있으면 그것을 그대로 재사용한다 — 중복 설치하지 않는다. 없을 때만 brew 가
-`python@3.12` 를 함께 설치한다.
-
-> 참고: pyenv / uv 처럼 비-canonical 경로에 깔린 Python 은 자동 감지되지 않아
-> brew 가 자기 `python@3.12` 를 설치한다. 동작은 정상이지만 중복 설치는 발생.
-
-> 첫 단계는 항상 **`dotsync init`** — sync 폴더를 정한다. 그 다음 `push` / `pull`이 동작한다.
+- 앱은 서명했지만 공증은 안 했다. 처음과 업데이트할 때마다 시스템 설정 → 개인정보 보호 및 보안 → "그래도 열기"로 한 번 연다.
+- cask는 `dotsync` formula도 함께 설치한다. 이 명령은 앱의 엔진이지 터미널 도구가 아니다. 모든 명령은 JSON 객체 하나(`--json`)로 앱에 답하고, `--json` 없이 실행하면 그렇다고만 알린다([개발자용](#개발자용-json-규약) 참고).
+- Python 3.12 또는 3.13 이 canonical 경로 (`/opt/homebrew/bin/python3.{12,13}`, `/usr/local/bin/python3.{12,13}`, `/Library/Frameworks/Python.framework/Versions/3.{12,13}/...`)에 이미 있으면 그것을 그대로 재사용한다 — 중복 설치하지 않는다. 없을 때만 brew 가 `python@3.12` 를 함께 설치한다. pyenv / uv 처럼 비-canonical 경로에 깔린 Python 은 자동 감지되지 않아 brew 가 자기 `python@3.12` 를 설치한다. 동작은 정상이지만 중복 설치는 발생.
 
 ### 사용법
 
-#### 1. 처음 한 번 — sync 폴더 정하고 추적할 앱 고르기
+#### 1. sync 폴더와 앱 고르기
 
-`dotsync init` 은 두 단계 wizard 다.
+설정을 열고 "다른 폴더…"로 sync 폴더를 고른다.
 
-**Step 1 — Sync folder.** 폴더 경로를 입력한다. 그냥 Enter면 default `~/Desktop/dotsync_config` 를 사용한다.
+- 이미 `dotsync.toml`이 있는 폴더(git이나 iCloud로 가져온 다른 Mac의 폴더)는 그대로 쓴다. 그 폴더의 앱과 옵션이 유지된다.
+- 그 밖의 폴더에는 새 `dotsync.toml`을 만든다. 전에 쓰던 폴더의 앱을 이어받고, 처음 쓰는 Mac이면 아무 앱도 추적하지 않는다.
+- 아래 표에 지원하는 앱이 모두 나오고, 스위치로 추적할 앱을 고른다. BetterTouchTool을 켜면 BTT 내부 저장소에서 preset 이름을 읽어 모두 추적한다(읽을 수 없으면 `["Master_bt"]`).
 
-**Step 2 — Pick apps to track.** 화살표 키 picker 가 곧바로 뜬다. 이 머신에 설치된 앱들은 미리 체크돼 있고(`installed` 표시), 미설치 앱은 비어 있다(`not installed`). 키로 토글한 뒤 Enter 로 확정.
+새 Mac에서는: 폴더를 가져오고(`git clone`, iCloud Drive), 설정에서 그 폴더를 고른 뒤, 가져오기(pull)를 한다.
 
-```bash
-dotsync init
-# ▶ Step 1 — Sync folder
-# ? sync folder (absolute path) [/Users/you/Desktop/dotsync_config] › ⏎
-# ✔ folder ready → /Users/you/Desktop/dotsync_config
-#
-# ▶ Step 2 — Pick apps to track
-#   Pick apps to track   ↑/↓ move · space toggle · enter submit
-#
-#   ▸ [x] claude              installed
-#     [x] codex               installed
-#     [x] herdr               installed
-#     [x] skills              installed
-#     [x] ghostty             installed
-#     [x] bettertouchtool     installed · 2 presets
-#     [x] zsh                 installed
-#
-# ✔ tracked: claude · codex · herdr · skills · ghostty · bettertouchtool · zsh
-# ✔ BetterTouchTool presets = Master_bt, Mini_bt   (auto-detected)
-# ✔ config saved → /Users/you/Desktop/dotsync_config/dotsync.toml
-```
+**dotsync는 사용자가 지정한 sync 폴더 외에는 컴퓨터 어디에도 파일/디렉토리를 만들지 않는다. 예외는 다음뿐이다.**
 
-picker 의 색상은 행 상태를 한눈에 보여준다.
+- 셸 rc의 표식 붙은 한 줄 `export DOTSYNC_DIR="…"`(표식 주석은 ``# Added by `dotsync init` — points dotsync at your sync folder.``). dotsync는 이 줄로 폴더를 찾는다. dotsync.app에는 셸 환경이 없어서, 그 폴더에 `dotsync.toml`이 있으면 이 줄을 읽는다(실행하지 않고 읽기만 한다). 다른 폴더를 고르면 이 줄을 고쳐 쓰고, rc 파일이 하나도 없으면 `~/.zshrc`를 만들어 이 줄을 넣는다.
+- `~/.claude-accounts/` — 사용량 메뉴의 Claude Code 로그인.
+- 세션 명령이 남기는 것: `~/Library/Application Support/dotsync/locks/`의 락 파일과 `~/Library/Logs/dotsync/`의 결과 로그(아래 [5번](#5-claude-code와-codex-세션-정리) 참고).
 
-- `[x] + installed` → 정상 (기본 색)
-- `[x] + not installed` → 빨강 dim ("정리 후보")
-- `[ ] + installed` → 노랑 dim ("추가 후보")
-- `[ ] + not installed` → 그냥 dim
+모든 설정은 `<sync 폴더>/dotsync.toml`에 저장된다.
 
-**BetterTouchTool 의 preset 은 자동으로 모두 추적된다.** dotsync 가 BTT 내부 SQLite 를 읽어 등록된 preset 이름을 모두 가져와 `[options.bettertouchtool]` 의 `presets` 에 넣는다 (예: `["Master_bt", "Mini_bt"]`). 사용자가 따로 고를 일은 없다. `--yes` 모드는 deterministic 한 결정을 위해 자동 감지를 건너뛰고 default(`["Master_bt"]`)를 쓴다.
+#### 2. 내보내기와 가져오기
 
-비대화형(스크립트/새 머신 셋업용):
+내보내기(push)는 로컬 앱 설정을 폴더로 복사하고, 가져오기(pull)는 폴더를 이 Mac으로 복사한다. 이후 그 폴더를 git에 커밋하거나 iCloud로 동기화해두면 된다.
 
-```bash
-# --dir 생략 시 default ~/Desktop/dotsync_config 사용
-# --apps 생략 시 자동 감지된 전체를 추적
-dotsync init --yes
+앱은 내보내기와 가져오기를 적용하기 전에 항상 미리보기를 보여준다. dotsync 는 어느 쪽으로도 백업 사본을 남기지 않는다. 미리보기가 안전장치이므로 적용 전에 읽어 본다. 파일 복사 항목마다 `+추가 −삭제` 줄 수 요약이 붙는다 — 바이너리 파일은 대신 크기 요약을 보여준다(예: `binary · 50B → 200B`). JSON/TOML은 여기에 바뀐 최상위 키 이름이 덧붙고(예: `+113 −1 · model, hooks`), 디렉토리는 바뀐 파일 이름 목록을 보여주며, 미리보기에서 항목별 전체 diff도 볼 수 있다(파일당 최대 200줄).
 
-# 명시적으로 지정도 가능 (BTT presets 는 콤마 구분)
-dotsync init --dir ~/my-configs --apps claude,zsh --btt-presets Master_bt,Mini_bt --yes
-
-# post-init 힌트 끔 (셋업 스크립트용)
-dotsync init --yes --no-hints
-
-# 셸 rc 자동 쓰기를 끄고 싶을 때 (rc 파일을 dotfiles 리포로 직접 관리하는 경우 등)
-dotsync init --yes --no-shell-init
-```
-
-**dotsync는 사용자가 지정한 sync 폴더 외에는 컴퓨터 어디에도 파일/디렉토리를 만들지 않는다. 예외는 다음뿐이다.** 설계상 opt-in인, `init`이 셸 rc에 추가하는 `export DOTSYNC_DIR="…"` 한 줄(`--no-shell-init`으로 끌 수 있다), `~/.claude-accounts/`(`dotsync account`), 그리고 세션 명령이 남기는 `~/Library/Application Support/dotsync/locks/`의 락 파일과 `~/Library/Logs/dotsync/`의 결과 로그(아래 [7번](#7-claude-code와-codex-세션-정리) 참고). 모든 설정은 `<sync 폴더>/dotsync.toml`에 저장된다.
-
-#### dotsync는 sync 폴더를 어떻게 찾나?
-
-아래 순서대로 먼저 되는 것을 쓴다.
-
-1. 환경변수 `DOTSYNC_DIR`이 절대경로로 설정돼 있으면 그것을 사용한다. `init`이 사용자 셸 rc(zsh 면 `~/.zshrc`, bash 면 `~/.bash_profile`)에 이 한 줄을 자동으로 추가해 준다 — 대화형 모드에서는 한 번 물어보고, `--yes`면 묻지 않고 바로 쓴다. 다른 `--dir`로 다시 `init` 하면 기존 라인이 새 경로로 갱신되고, 동일하면 그대로 둔다. 자동 쓰기를 끄려면 `--no-shell-init`. 결과 라인:
-   ```bash
-   export DOTSYNC_DIR="/Users/you/my-configs"
-   ```
-2. 또는 sync 폴더 안(또는 그 하위 어디)에서 dotsync 명령을 실행하면 자동으로 `dotsync.toml`을 위로 거슬러 올라가며 찾는다 (git 방식).
-3. 둘 다 아니면 `init`이 셸 rc에 남긴 표식이 붙은 `export DOTSYNC_DIR=…` 줄을 읽는다(실행하지 않고 읽기만 한다). 그 폴더에 `dotsync.toml`이 있을 때만 쓴다. Finder에서 연 dotsync.app처럼 셸 환경변수가 없는 프로세스는 이렇게 폴더를 찾는다.
-
-#### 새 머신에서 복원할 때
-
-폴더에 이미 `dotsync.toml`이 있으면 dotsync는 그걸 그대로 채택한다. 단, `--apps` 나 `--btt-presets` 를 함께 주면 채택을 건너뛰고 새 값으로 파일을 덮어쓴다.
-
-```bash
-git clone git@github.com:you/my-configs.git ~/my-configs
-export DOTSYNC_DIR="$HOME/my-configs"   # 한 번만 (.zshrc 등에 추가)
-dotsync init --dir ~/my-configs --yes   # 폴더 안 dotsync.toml 그대로 사용
-dotsync pull --all
-```
-
-#### 2. 로컬 앱 설정 → 폴더 (스냅샷 뜨기)
-
-`dotsync push`는 sync folder에 생길 변경 사항을 먼저 보여준 뒤 복사한다.
-적용하려면 `y` 또는 `yes`를 입력한다. 미리보기만 하려면 `--dry-run`,
-자동화에서는 `--yes`를 사용한다.
-
-```bash
-dotsync push --all --dry-run  # sync folder 변경사항만 preview
-dotsync push --all            # interactive (y/N 확인)
-dotsync push --all --yes      # automation (prompt 없음)
-```
-
-summary box는 실제로 변경된 앱(`✓ changed`)과 이미 같은 상태였던 앱
-(`· unchanged`)을 분리해서 보여준다.
-
-```
-╭──────────────────────────────────────────────────────────────────╮
-│ dotsync push                                                     │
-│ 5 apps  →  /Users/you/Desktop/dotsync_config                     │
-╰──────────────────────────────────────────────────────────────────╯
-... (per-app sections) ...
-╭──────────────────────────────────────────────────────────────────╮
-│ ✓ changed    ghostty · bettertouchtool                           │
-│ · unchanged  claude · codex · zsh                                │
-│ 5 ok  ·  0 warn  ·  0 error  ·  2.3s                             │
-╰──────────────────────────────────────────────────────────────────╯
-```
-
-이후 그 폴더를 git에 커밋하거나 iCloud로 동기화해두면 된다.
-
-#### 3. 폴더 → 로컬 앱 (다른 머신에서 복원하기)
-
-`dotsync pull`은 로컬 설정을 덮어쓰기 전에 local-machine 변경 사항을 먼저
-보여준다. 적용하려면 `y` 또는 `yes`를 입력한다. 미리보기만 하려면
-`--dry-run`, 자동화에서는 `--yes`를 사용한다. dotsync 는 백업 사본을 남기지
-않는다. 미리보기와 확인이 안전장치이므로 확인 전에 계획을 읽어 본다.
-
-```bash
-dotsync pull --all --dry-run     # preview only
-dotsync pull --all                # interactive (y/N 확인)
-dotsync pull --all --yes          # automation (no prompt)
-```
-
-`pull` 의 summary box 는 실제로 변경된 앱(`✓ changed`)과 이미 같은 상태였던 앱(`· unchanged`)을 분리해서 보여준다.
-
-```
-╭──────────────────────────────────────────────────────────────────╮
-│ ✓ changed    ghostty · bettertouchtool                           │
-│ · unchanged  claude · codex · zsh                                │
-│ 5 ok  ·  0 warn  ·  0 error  ·  3.1s                             │
-╰──────────────────────────────────────────────────────────────────╯
-```
-
-프리뷰는 파일 복사 항목마다 `+추가 −삭제` 줄 수 요약을 보여준다 — 바이너리 파일은 대신 크기 요약을 보여준다(예: `binary · 50B → 200B`). JSON/TOML은 여기에 바뀐 최상위 키 이름이 덧붙고(예: `+113 −1 · model, hooks`), 디렉토리는 바뀐 파일 이름 목록을 보여준다.
-
-확인 프롬프트에서 `d`를 입력하면 적용 전에 전체 diff를 볼 수 있다
-(파일당 최대 200줄, `y`/`n`은 그대로 진행/중단):
-
-    ? Apply these changes to the sync folder? [y/N/d] › d
-
-`dotsync status`도 차이가 있는 앱 아래에 같은 요약을 표시한다.
-
-**Claude 복원은 파일 복사 이상이다.** dotsync 가 기록된 marketplace 들을 다시 등록하고 (`claude plugin marketplace add`), `installed_plugins.json` 에 적힌 모든 plugin 을 `claude plugin install --scope user` 로 재설치한 뒤, `enabledPlugins` 맵에 따라 비활성 상태였던 plugin 은 다시 disable 한다. `claude` CLI 가 설치돼 있지 않으면 plugin 복원만 skip되고 (warning 으로 노출) 파일 복사는 정상 진행된다. 사용자 레벨 글로벌 룰 — `~/.claude/CLAUDE.md` 와 `commands/`, `agents/`, `skills/`, `output-styles/` 디렉토리 — 도 mirror 되므로, 개인 슬래시 커맨드·서브에이전트·스킬이 머신 간에 따라온다. `skills/synced/`(Claude Code 가 claude.ai 계정에서 동기화한 스킬)와 `skills/.trash/`(Claude Code 가 치워 둔 옛 버전)는 Claude Code 가 직접 관리하므로 저장하지 않고(`push` 가 sync 폴더에 이미 있는 사본을 지운다), `pull` 때도 로컬 사본을 그대로 둔다.
+**Claude 복원은 파일 복사 이상이다.** dotsync 가 기록된 marketplace 들을 다시 등록하고 (`claude plugin marketplace add`), `installed_plugins.json` 에 적힌 모든 plugin 을 `claude plugin install --scope user` 로 재설치한 뒤, `enabledPlugins` 맵에 따라 비활성 상태였던 plugin 은 다시 disable 한다. `claude` CLI 가 설치돼 있지 않으면 plugin 복원만 skip되고 (warning 으로 알린다) 파일 복사는 정상 진행된다. 사용자 레벨 글로벌 룰 — `~/.claude/CLAUDE.md` 와 `commands/`, `agents/`, `skills/`, `output-styles/` 디렉토리 — 도 mirror 되므로, 개인 슬래시 커맨드·서브에이전트·스킬이 머신 간에 따라온다. `skills/synced/`(Claude Code 가 claude.ai 계정에서 동기화한 스킬)와 `skills/.trash/`(Claude Code 가 치워 둔 옛 버전)는 Claude Code 가 직접 관리하므로 저장하지 않고(내보내기가 sync 폴더에 이미 있는 사본을 지운다), 가져오기 때도 로컬 사본을 그대로 둔다.
 
 **다른 도구가 설치하는 스킬은 그 도구에 맡길 수 있다.** 어떤 도구는 자기 스킬을 직접 설치하고 업그레이드할 때 고쳐 쓴다. 이런 스킬을 동기화하면 도구와 충돌하므로 `dotsync.toml` 에 적어 둔다:
 
@@ -521,11 +215,11 @@ skills_ignore = ["my-tool"]
 skills_ignore = ["my-tool"]
 ```
 
-적어 둔 스킬 디렉터리는 위의 `skills/synced/` 와 같게 다룬다. `push` 는 저장본을 지우고, `pull` 은 로컬 사본을 건드리지 않으며, `status` 는 무시한다. 새 머신에서는 그 도구로 다시 설치한다. 각 항목은 `skills/` 바로 아래 디렉터리 이름이어야 하고, 그 밖의 값은 설정 오류로 거부한다.
+적어 둔 스킬 디렉터리는 위의 `skills/synced/` 와 같게 다룬다. 내보내기는 저장본을 지우고, 가져오기는 로컬 사본을 건드리지 않으며, 동기화 상태는 무시한다. 새 머신에서는 그 도구로 다시 설치한다. 각 항목은 `skills/` 바로 아래 디렉터리 이름이어야 하고, 그 밖의 값은 설정 오류로 거부한다.
 
-**Codex sync 는 사용자가 작성한 글로벌 설정을 mirror 한다.** dotsync 는 `~/.codex/config.toml`, 선택적 instruction/config 파일(`AGENTS.md`, `AGENTS.override.md`, `hooks.json`, `requirements.toml`), 그리고 사용자가 관리하는 `rules/`, `skills/` 디렉토리를 복사한다. `dotsync push codex` 는 sync 폴더를 현재 로컬의 관리 대상 상태로 수렴시킨다. 즉, 위 선택 파일이나 관리 디렉토리가 로컬에 없으면 sync 폴더의 저장본도 삭제된다. `auth.json`, history, sessions, logs, sqlite state, caches, system skills, plugin cache, memories, vendor imports 같은 생성/민감 상태는 복사하지 않고, `skills/.system` 은 의도적으로 동기화하지 않는다.
+**Codex sync 는 사용자가 작성한 글로벌 설정을 mirror 한다.** dotsync 는 `~/.codex/config.toml`, 선택적 instruction/config 파일(`AGENTS.md`, `AGENTS.override.md`, `hooks.json`, `requirements.toml`), 그리고 사용자가 관리하는 `rules/`, `skills/` 디렉토리를 복사한다. codex 내보내기는 sync 폴더를 현재 로컬의 관리 대상 상태로 수렴시킨다. 즉, 위 선택 파일이나 관리 디렉토리가 로컬에 없으면 sync 폴더의 저장본도 삭제된다. `auth.json`, history, sessions, logs, sqlite state, caches, system skills, plugin cache, memories, vendor imports 같은 생성/민감 상태는 복사하지 않고, `skills/.system` 은 의도적으로 동기화하지 않는다.
 
-**Codex plugin 은 파일이 아니라 목록으로 기록한다.** Codex 는 `config.toml` 의 `[marketplaces.*]`, `[plugins.*]` table 을 스스로 고쳐 쓴다 (자기가 번들한 marketplace 의 로컬 경로, `last_updated` / `last_revision`). 그래서 dotsync 는 이 table 들을 뺀 `config.toml` 을 저장하고, 대신 `push` 때 `codex plugin list --json` 으로 설치 상태를 물어 `codex/plugins.json` 을 쓴다:
+**Codex plugin 은 파일이 아니라 목록으로 기록한다.** Codex 는 `config.toml` 의 `[marketplaces.*]`, `[plugins.*]` table 을 스스로 고쳐 쓴다 (자기가 번들한 marketplace 의 로컬 경로, `last_updated` / `last_revision`). 그래서 dotsync 는 이 table 들을 뺀 `config.toml` 을 저장하고, 대신 내보내기 때 `codex plugin list --json` 으로 설치 상태를 물어 `codex/plugins.json` 을 쓴다:
 
 ```json
 {
@@ -539,134 +233,82 @@ skills_ignore = ["my-tool"]
 - 기록하는 것: 사용자가 설치해 켜 둔 plugin, 사용자가 추가한 marketplace (`ref`, `sparse` 포함).
 - Codex 에 맡기는 것: Codex 가 기본 설치하는 plugin (`INSTALLED_BY_DEFAULT`), Codex 가 자기 디렉터리(`~/.codex`, `~/.cache/codex-runtimes`)에 두는 marketplace(예: `openai-bundled`)와 그 plugin. 꺼 둔 plugin 은 기록하지 않는다.
 
-`pull` 은 로컬의 marketplace/plugin table 은 그대로 두고 `config.toml` 의 나머지만 저장본으로 바꾼다. 이어서 기록된 marketplace 중 없는 것만 추가하고 (`codex plugin marketplace add <source>`, `--ref` / 반복 `--sparse` 포함), 기록된 plugin 중 없는 것만 설치한다 (`codex plugin add <plugin@marketplace> --json`). 이미 있는 것은 건드리지 않으므로 `pull` 을 다시 실행해도 새로 설치하지 않는다. marketplace 를 추가하지 못하면 그 plugin 들은 warning 과 함께 건너뛴다. 새 머신에서는 Codex 를 한 번 실행해 Codex 자체 marketplace 가 생긴 뒤 다시 pull 하면 된다. `codex` CLI 가 없거나 출력이 예상과 다르면 파일 동기화는 그대로 진행하고, `push` 는 기존 `plugins.json` 을 유지하며, plugin 복원은 warning 과 함께 건너뛴다. `status` 와 미리보기는 그 table 들을 뺀 `config.toml` 을 비교하고, `plugins.json` 을 실제 설치 상태와 비교한다.
+가져오기는 로컬의 marketplace/plugin table 은 그대로 두고 `config.toml` 의 나머지만 저장본으로 바꾼다. 이어서 기록된 marketplace 중 없는 것만 추가하고 (`codex plugin marketplace add <source>`, `--ref` / 반복 `--sparse` 포함), 기록된 plugin 중 없는 것만 설치한다 (`codex plugin add <plugin@marketplace> --json`). 이미 있는 것은 건드리지 않으므로 다시 가져와도 새로 설치하지 않는다. marketplace 를 추가하지 못하면 그 plugin 들은 warning 과 함께 건너뛴다. 새 머신에서는 Codex 를 한 번 실행해 Codex 자체 marketplace 가 생긴 뒤 다시 가져오면 된다. `codex` CLI 가 없거나 출력이 예상과 다르면 파일 동기화는 그대로 진행하고, 내보내기는 기존 `plugins.json` 을 유지하며, plugin 복원은 warning 과 함께 건너뛴다. 동기화 상태와 미리보기는 그 table 들을 뺀 `config.toml` 을 비교하고, `plugins.json` 을 실제 설치 상태와 비교한다.
 
-**Herdr sync는 `~/.config/herdr/config.toml`만 추적한다.** `session*.json`, plugin registry state, log, socket, lock 파일 같은 session/runtime 상태는 의도적으로 제외한다. 기존 dotsync 사용자는 `dotsync apps`에서 Herdr를 켜거나 `dotsync config apps ...`로 목록을 교체할 때 `herdr`를 포함하면 된다. 기존 추적 앱 선택은 자동으로 바꾸지 않는다.
+**Herdr sync는 `~/.config/herdr/config.toml`만 추적한다.** `session*.json`, plugin registry state, log, socket, lock 파일 같은 session/runtime 상태는 의도적으로 제외한다. 설정 표에서 Herdr를 켜면 된다. 추적 앱 선택은 자동으로 바꾸지 않는다.
 
-**Skills sync는 `npx skills add -g`로 무엇을 설치했는지를 기록하고, 파일은 복사하지 않는다.** `push`는 `~/.agents/.skill-lock.json`을 읽어 각 스킬의 source와, `~/.claude/skills/<name>` / `~/.codex/skills/<name>` 링크가 그 스킬을 가리키는 관리 대상 에이전트(`claude-code`, `codex`)를 `skills/skills.json`에 쓴다. lock 파일에는 GitHub 토큰이 들어갈 수 있어 sync 폴더로는 절대 복사하지 않는다. `pull`은 로컬에 없는 스킬마다 `npx -y skills add <source> --global --skill <name> --agent <agent> --yes`를 실행하고, 실패·`npx` 없음·GitHub가 아닌 source는 warning으로 보고한다. `--copy`로 설치한 스킬은 일반 디렉터리이므로 claude/codex 앱이 파일로 동기화한다.
+**Skills sync는 `npx skills add -g`로 무엇을 설치했는지를 기록하고, 파일은 복사하지 않는다.** 내보내기는 `~/.agents/.skill-lock.json`을 읽어 각 스킬의 source와, `~/.claude/skills/<name>` / `~/.codex/skills/<name>` 링크가 그 스킬을 가리키는 관리 대상 에이전트(`claude-code`, `codex`)를 `skills/skills.json`에 쓴다. lock 파일에는 GitHub 토큰이 들어갈 수 있어 sync 폴더로는 절대 복사하지 않는다. 가져오기는 로컬에 없는 스킬마다 `npx -y skills add <source> --global --skill <name> --agent <agent> --yes`를 실행하고, 실패·`npx` 없음·GitHub가 아닌 source는 warning으로 알린다. `--copy`로 설치한 스킬은 일반 디렉터리이므로 claude/codex 앱이 파일로 동기화한다.
 
-**BetterTouchTool 은 실행 중이어야 한다.** `push` / `pull` / `status` 모두 `osascript` 으로 BTT 를 제어하기 때문. BTT 가 꺼져 있으면 `status` 는 `unknown`, `push` / `pull` 은 에러로 멈춘다. preset 이름은 BTT 이름 그대로 취급되며, 빈 이름, 경로 구분자, 따옴표, 제어문자는 AppleScript 생성 전에 거부된다.
+**BetterTouchTool 은 실행 중이어야 한다.** 내보내기·가져오기·상태 확인 모두 `osascript` 으로 BTT 를 제어하기 때문이고, 자동화 권한이 필요하다(설정이 그 화면을 열어 준다). BTT 가 꺼져 있으면 상태는 `unknown`, 내보내기·가져오기는 에러로 멈춘다. preset 이름은 BTT 이름 그대로 취급되며, 빈 이름, 경로 구분자, 따옴표, 제어문자는 AppleScript 생성 전에 거부된다.
 
-#### 4. 동기화 상태 확인 (파일별 sha256 비교)
+#### 3. 동기화 상태
 
-상태 라인은 색·심볼로 한눈에 구분되며, 'dirty'면 어느 쪽이 더 최신인지(direction)도 함께 표시됩니다.
+설정은 추적 중인 앱마다 상태(파일별 sha256 비교)를 보여주고, 다른 앱은 어느 쪽이 더 최신인지와 미리보기와 같은 파일별 요약을 함께 보여준다.
 
-```bash
-$ dotsync status
-▸ status                              ~/dotsync_config
+- `clean` — local 과 stored 의 sha256 일치. 단 Claude 의 `installed_plugins.json` 과 `known_marketplaces.json` 은 미리보기와 같은 방식으로 비교해서, Claude Code 가 스스로 고쳐 쓰는 실행 기록(설치 경로, 버전, 시각, 커밋 SHA)은 무시한다
+- `dirty` — 다름; 방향은 `local-newer`, `folder-newer`, `diverged` (양쪽 섞임) 중 하나
+- `missing` — 한쪽이라도 파일이 없음
+- `unknown` — 비교 불가 (예: BTT 미실행)
 
-  ✓ zsh              clean
-  ✓ codex            clean
-  ⚠ ghostty          dirty  local-newer — config.ghostty
-    ⚠ update         config.ghostty  — +2 −1
-  ✗ claude           missing
-  · bettertouchtool  unknown — BTT not running
-```
+#### 4. Claude Code 계정과 위젯
 
-dirty 상태인 앱마다 파일별 변경 요약이 들여쓰기된 줄로 붙는다.
-`push`/`pull` 프리뷰와 같은 요약이다.
+사용량 메뉴는 claude.ai 로그인 여러 개를 저장해 두고 Claude Code 가 쓰는 계정을 바꾼다. `/login` 과 같은 효과지만 매번 브라우저를 거치지 않는다. 실행 중인 세션도 `/login` 때처럼 바뀐 계정을 따라간다. 계정별 5시간·주간 사용량과 초기화 시각을 보여주고, 계정 추가, 다시 로그인, 이름 바꾸기, 삭제를 한다.
 
-범례:
-
-- `✓ clean` — local 과 stored 의 sha256 일치. 단 Claude 의 `installed_plugins.json` 과 `known_marketplaces.json` 은 `push`/`pull` 미리보기와 같은 방식으로 비교해서, Claude Code 가 스스로 고쳐 쓰는 실행 기록(설치 경로, 버전, 시각, 커밋 SHA)은 무시한다
-- `⚠ dirty` — 다름; direction 은 `local-newer`, `folder-newer`, `diverged` (양쪽 섞임) 중 하나
-- `✗ missing` — 한쪽이라도 파일이 없음
-- `· unknown` — 비교 불가 (예: BTT 미실행)
-
-#### 5. Claude Code 계정 바꾸기
-
-claude.ai 로그인 여러 개를 저장해 두고 Claude Code 가 쓰는 계정을 바꾼다. `/login` 과 같은 효과지만 매번 브라우저를 거치지 않는다. 실행 중인 세션도 `/login` 때처럼 바뀐 계정을 따라간다.
-
-```bash
-dotsync account login work      # 브라우저가 승인한 계정을 "work" 로 저장 (계정마다 한 번)
-dotsync account use work        # Claude 가 그 계정을 쓰게 함
-dotsync account list            # 저장된 계정 목록, ● 는 지금 쓰는 계정
-dotsync account usage           # 계정별 5시간·주간 사용량과 초기화 시각
-dotsync account rename work "업무용 Max"   # 보이는 이름 바꾸기
-dotsync account remove work     # 로그아웃하고 삭제
-```
-
-- 계정 저장은 Claude Code 가 직접 한다. `login` 은 `CLAUDE_CONFIG_DIR=~/.claude-accounts/<이름>` 으로 `claude auth login` 을 실행하므로 토큰은 그 폴더의 키체인 항목에 남는다.
-- `use` 는 그 로그인을 Claude 의 기본 키체인 항목에, 계정 정보를 `~/.claude.json` 에 복사한다. 그 전에 지금 쓰던 로그인을 원래 계정으로 돌려놓는다. Claude 는 쓰는 동안 토큰을 갱신하고, 한 번 쓴 갱신 토큰은 다시 못 쓰기 때문이다.
+- 계정 저장은 Claude Code 가 직접 한다. 계정을 추가하면 `CLAUDE_CONFIG_DIR=~/.claude-accounts/<이름>` 으로 `claude auth login` 을 실행하므로 토큰은 그 폴더의 키체인 항목에 남는다.
+- 사용은 그 로그인을 Claude 의 기본 키체인 항목에, 계정 정보를 `~/.claude.json` 에 복사한다. 그 전에 지금 쓰던 로그인을 원래 계정으로 돌려놓는다. Claude 는 쓰는 동안 토큰을 갱신하고, 한 번 쓴 갱신 토큰은 다시 못 쓰기 때문이다.
 - 토큰은 명령줄이 아니라 표준 입력으로 `security` 에 넘긴다.
-- 지금 쓰는 로그인이 저장돼 있지 않으면(처음 쓸 때 등) `use` 가 버려도 되는지 묻는다. 먼저 `dotsync account login <이름>` 으로 저장해 두면 된다.
-- `dotsync account` 를 쓰기 시작했으면 `/login` 대신 `use` 로 바꾼다. `/login` 은 쓰던 로그인을 돌려놓지 않고 덮어써서, 그 계정은 `dotsync account login` 을 다시 해야 한다.
-- 계정은 동기화와 별개다. sync 폴더가 필요 없고 `push`/`pull` 은 계정을 건드리지 않는다.
-- `usage` 는 Claude Code 에 직접 묻는다(`claude -p` 의 `get_usage` 요청). 토큰을 쓰지 않는다. 지금 쓰는 계정은 Claude 기본 폴더로, 나머지는 각자 폴더로 동시에 조회하고, 한 계정이 느려도(30초 제한) 나머지는 기다리지 않는다.
-- 모든 `account` 명령은 `--json` 을 받으면 JSON 객체 하나만 출력한다. dotsync 앱이 이걸 읽는다. 오류는 `{"error": {"code": …, "message": …}}` 와 종료 코드 1. 계정을 바꾸거나 Claude 를 실행하는 명령은 서로 기다린다(`~/.claude-accounts/.lock`).
+- 지금 쓰는 로그인이 저장돼 있지 않으면(처음 쓸 때 등) 앱이 버려도 되는지 묻고, 먼저 저장하는 길도 준다.
+- dotsync로 계정을 바꾸기 시작했으면 `/login` 대신 계속 dotsync로 바꾼다. `/login` 은 쓰던 로그인을 돌려놓지 않고 덮어써서, 그 계정은 다시 로그인해야 한다.
+- 계정은 동기화와 별개다. sync 폴더가 필요 없고 내보내기·가져오기는 계정을 건드리지 않는다.
+- 사용량은 Claude Code 에 직접 묻는다(`claude -p` 의 `get_usage` 요청). 토큰을 쓰지 않는다. 지금 쓰는 계정은 Claude 기본 폴더로, 나머지는 각자 폴더로 동시에 조회하고, 한 계정이 느려도(30초 제한) 나머지는 기다리지 않는다.
 
-#### 6. dotsync 앱 (macOS)
+위젯 — 위젯 편집에서 추가한다. 바탕화면과 알림 센터 어디에나 놓을 수 있다.
 
-같은 계정들을 창과 위젯으로 본다. 계정별 5시간·주간 사용량과 초기화 시각, 클릭 한 번으로 교체.
+- "Claude 계정"(큰 크기, 아주 큰 크기): 지금 쓰는 계정과 나머지 계정을 함께 본다.
+- "지금 사용 중"(중간 크기): 지금 쓰는 계정만 본다.
+- "Claude 계정 목록"(큰 크기): 나머지 계정을 일곱 개까지 본다(더 많으면 여섯 개와 "외 n개"). 알림 센터에서 "지금 사용 중" 아래에 두면 둘이 긴 위젯 하나처럼 보인다.
 
-```bash
-brew install --cask changja88/dotsync/dotsync-app   # dotsync 명령어도 함께 설치
-```
+위젯에서 ↻ 는 새로고침(약 10초, 토큰 안 씀), "사용"은 계정을 바꾼다. 앱은 쓸 때만 실행되고 뒤에 남지 않는다. 설치하거나 업데이트하면 실행 중이던 위젯을 끄고 새 위젯이 대신 뜬다. 그래도 위젯이 비어 있으면 앱을 한 번 연다. 앱이 위젯을 다시 그린다.
 
-- 앱은 서명했지만 공증은 안 했다. 처음과 업데이트할 때마다 시스템 설정 → 개인정보 보호 및 보안 → "그래도 열기"로 한 번 연다.
-- 위젯 편집에서 위젯을 추가한다. 바탕화면과 알림 센터 어디에나 놓을 수 있다.
-  - "Claude 계정"(큰 크기, 아주 큰 크기): 지금 쓰는 계정과 나머지 계정을 함께 본다.
-  - "지금 사용 중"(중간 크기): 지금 쓰는 계정만 본다.
-  - "Claude 계정 목록"(큰 크기): 나머지 계정을 일곱 개까지 본다(더 많으면 여섯 개와 "외 n개"). 알림 센터에서 "지금 사용 중" 아래에 두면 둘이 긴 위젯 하나처럼 보인다.
-- 위젯에서 ↻ 는 새로고침(약 10초, 토큰 안 씀), "사용"은 `dotsync account use`처럼 계정을 바꾼다. 앱은 쓸 때만 실행되고 뒤에 남지 않는다.
-- 창에서 계정 추가, 다시 로그인, 이름 바꾸기, 삭제를 한다.
-- 설치하거나 업데이트하면 실행 중이던 위젯을 끄고 새 위젯이 대신 뜬다. 그래도 위젯이 비어 있으면 앱을 한 번 연다. 앱이 위젯을 다시 그린다.
+#### 5. Claude Code와 Codex 세션 정리
 
-#### 7. Claude Code와 Codex 세션 정리
-
-Claude Code와 Codex가 디스크에 쌓아 둔 세션을 보고, 지우고, 되돌린다. 이 명령들은 sync 폴더가 필요 없고, `push`/`pull`은 세션을 건드리지 않는다.
-
-```bash
-dotsync sessions list claude|codex                       # 프로젝트별 한 줄: 세션 수, 크기, 실행 중
-dotsync sessions delete claude|codex <id> [<id> ...]     # 쓰는 곳이 없는지 다시 확인한 뒤 삭제
-dotsync sessions recover claude <id> --restore|--finish  # 지우다 멈춘 삭제를 되돌리거나 마저 지우기
-dotsync sessions cleanup codex --blockers                # 지금 ~/.codex를 쓰는 것
-dotsync sessions cleanup codex --dry-run                 # 정리하면 지워질 것 (개수만)
-dotsync sessions cleanup codex --yes [--items a,b] [--vacuum]
-```
+세션 메뉴는 Claude Code와 Codex가 디스크에 쌓아 둔 세션을 보고, 지우고, 되돌린다. 세션은 sync 폴더가 필요 없고, 내보내기·가져오기는 세션을 건드리지 않는다.
 
 - 실행 중이거나 쓰는 중인지 알 수 없는 세션은 지우지 않는다.
-- **Claude Code** — 최근 30분 안에 기록된 세션도 지우지 않는다. 지우기 직전에 한 번 더 확인하고, 그사이 바뀐 세션은 건너뛴다. 삭제하면 대화 기록, 하위 에이전트 기록, 도구 결과, MCP 작업 기록, 파일 되돌리기 기록, 세션 환경, 디버그 로그, 첨부한 파일, 임시 이미지·작업 폴더가 지워진다. 입력 기록, 할 일 목록, 계획, 프로젝트 기억(memory), 설정, 다른 세션이 쓰는 도구 결과는 남는다(여러 세션이 같이 쓰는 파일이라 세션별로 골라 지우지 않는다). 삭제가 중간에 멈추면 "지우다 멈춤"으로 보이고, `recover --restore`는 대화 기록 이름을 되돌리고 `recover --finish`는 남은 것을 마저 지운다. 그냥 두어도 마지막 기록에서 30일이 지나면 Claude Code가 같은 범위를 지운다.
+- **Claude Code** — 최근 30분 안에 기록된 세션도 지우지 않는다. 지우기 직전에 한 번 더 확인하고, 그사이 바뀐 세션은 건너뛴다. 삭제하면 대화 기록, 하위 에이전트 기록, 도구 결과, MCP 작업 기록, 파일 되돌리기 기록, 세션 환경, 디버그 로그, 첨부한 파일, 임시 이미지·작업 폴더가 지워진다. 입력 기록, 할 일 목록, 계획, 프로젝트 기억(memory), 설정, 다른 세션이 쓰는 도구 결과는 남는다(여러 세션이 같이 쓰는 파일이라 세션별로 골라 지우지 않는다). 삭제가 중간에 멈추면 "지우다 멈춤"으로 보이고, 되돌리거나(대화 기록 이름을 되돌린다) 마저 지울 수 있다(남은 것을 지운다). 그냥 두어도 마지막 기록에서 30일이 지나면 Claude Code가 같은 범위를 지운다.
 - **Codex** — 지우기 전에 열려 있는 세션을 배치마다 한 번 확인한다. 삭제는 Codex 자체의 `codex delete`라서 Codex를 켜 둔 채로 할 수 있고, 다른 창에서 열린 세션은 Codex가 거절한다. 대화 기록, 대화 저장소의 해당 내용, 이름 목록, 로그가 지워지고, 그 세션에서 갈라져 나온 하위 세션도 같이 지워진다. 이어서 dotsync가 참조 캐시 파일을 지운다. 입력 기록, 첨부 파일, 데스크톱 앱 상태, 생성 이미지는 남는다. 대화 저장소의 빈 공간은 바로 줄지 않는다.
-- **Codex 남은 데이터 정리**는 지운 세션이 Codex 파일에 남긴 것(`history_rows`, `history_lines`, `session_index`, `queue`, 그리고 캐시 파일)을 지운다. `--vacuum`을 붙이면 대화 저장소의 빈 공간도 돌려받는다. `--items`로 넷 중에서 고르고(기본은 전부), `--items ""`는 하나도 고르지 않아 캐시 파일만 지운다(`--vacuum`을 붙이면 빈 공간도 돌려받는다). `~/.codex`를 쓰는 것이 없을 때만 실행된다. ChatGPT.app, 터미널 Codex, 그 밖에 `~/.codex`를 쓰는 것이 실행 중이면 `codex_running`으로 거절한다. 무엇을 남겨야 할지 확신할 수 없을 때도 통째로 거절한다: 기록 파일을 읽을 수 없거나, 압축된 기록이 있는데 `zstd`가 없거나, Codex 데이터베이스 버전이 dotsync가 아는 것과 다를 때다. dotsync.app은 정리하는 동안 ChatGPT.app을 끄고 끝나면 다시 켠다. 명령줄은 아무것도 끄지 않으므로 직접 먼저 끄면 된다. 터미널 Codex는 대신 닫아 주지 않으며, 실행 중이면 정리를 거절한다.
+- **Codex 남은 데이터 정리**는 지운 세션이 Codex 파일에 남긴 것(`history_rows`, `history_lines`, `session_index`, `queue`, 그리고 캐시 파일)을 지우고, 대화 저장소의 빈 공간도 돌려받을 수 있다(vacuum). `~/.codex`를 쓰는 것이 없을 때만 실행된다. dotsync.app은 정리하는 동안 ChatGPT.app을 끄고 끝나면 다시 켜지만, 터미널 Codex는 대신 닫아 주지 않으며 실행 중이면 정리를 거절한다. 무엇을 남겨야 할지 확신할 수 없을 때도 통째로 거절한다: 기록 파일을 읽을 수 없거나, 압축된 기록이 있는데 `zstd`가 없거나, Codex 데이터베이스 버전이 dotsync가 아는 것과 다를 때다.
 - `.zst`로 압축된 Codex 기록은 `zstd` 명령으로 읽는다. Homebrew Formula가 설치한다.
-- `delete`, `recover`, `cleanup --yes`는 멈춘 경우에도 로그를 남긴다: `~/Library/Logs/dotsync/sessions-<timestamp>-<pid>.json`. 세션 id, 파일 경로, 결과만 담고 대화 내용(제목, 대화·입력 기록 텍스트)은 담지 않는다.
-- `SIGTERM`을 받으면 실행 중인 삭제나 정리는 다음 안전한 지점(세션 사이, 정리 항목 사이, vacuum 배치 사이)에서 멈추고, 한 일을 알리고 로그에 남긴다.
-- 같은 도구를 바꾸는 명령끼리는 dotsync 앱과도 함께 서로 기다린다. `~/Library/Application Support/dotsync/locks/`의 락 파일을 쓴다: `claude-sessions.lock`(`delete claude`, `recover claude`), `codex.lock`(`delete codex`, `cleanup codex --yes`. `codex`의 `push`/`pull`은 공유로 잡는다). 10초 안에 락이 풀리지 않으면 `busy`로 실패한다.
-- `list`, `delete`, `recover`, `cleanup`은 `--json`을 받아 JSON 객체 하나만 출력하고, 오래 걸리는 명령은 stderr에 `dotsync-progress <done>/<total>` 줄을 쓴다. 실패는 `{"error": {"code": …, "message": …}}`와 종료 코드 1이다.
+- 삭제, 되돌리기, 정리는 멈춘 경우에도 로그를 남긴다: `~/Library/Logs/dotsync/sessions-<timestamp>-<pid>.json`. 세션 id, 파일 경로, 결과만 담고 대화 내용(제목, 대화·입력 기록 텍스트)은 담지 않는다.
+- 실행 중인 삭제나 정리를 멈추면(`SIGTERM`) 다음 안전한 지점(세션 사이, 정리 항목 사이, vacuum 배치 사이)에서 멈추고, 한 일을 알리고 로그에 남긴다.
 
-같은 `--json` 규약이 dotsync 앱이 읽는 동기화 명령에도 적용된다: `dotsync status --json`, `dotsync push|pull [app|--all] --json`(`--dry-run`으로 미리보기, `--yes`로 적용. 둘 중 하나는 필수), `dotsync config show|dir|apps --json`. 객체 하나를 stdout에 출력하고 나머지는 모두 stderr로 보낸다.
+#### 6. `dotsync.toml`
 
-#### 폴더/앱 목록을 나중에 바꾸고 싶으면
-
-`dotsync apps` 가 init Step 2 와 똑같은 picker 를 띄운다. BTT 를 새로 토글하면 등록된 preset 들이 자동 재검색돼 config 에 반영된다.
-
-```bash
-dotsync apps                              # picker 로 추적 앱 변경 (Enter = 그대로)
-dotsync config show                       # 현재 설정 보기
-dotsync config dir ~/another-folder       # sync 폴더 변경
-dotsync config apps claude,zsh            # 추적 앱 일괄 교체 (자동화용)
-dotsync config btt-presets MyPreset,Other # BTT preset 목록 일괄 교체 (콤마 구분)
-```
-
-`dotsync config show` 는 BTT preset 같은 앱별 옵션도 함께 보여준다. `dotsync.toml` 에는 `apps` 와 `[options.<app>]` table 만 둔다. `[options]` 아래의 다른 key 는 설정 오류로 거부한다. 최상위 관리 파일·디렉터리가 symlink 이면 따라가지 않고 거부한다. Claude `skills/` 나 Codex `rules/` 처럼 미러링하는 디렉터리 안의 symlink 항목(예: `npx skills add` 가 만든 링크)은 warning 과 함께 건너뛰며, 읽거나 쓰지 않고 `pull` 때도 그대로 둔다. `skills` 앱을 추적 중이면 `npx skills add` 가 만든 링크는 그 앱이 기록하므로 warning 없이 건너뛴다. 미러링하는 디렉터리 안의 `.DS_Store` 와 `*.bak` 파일(파일을 고쳐 쓰기 전에 사본을 남기는 도구가 만든 것)도 같은 방식으로 무시한다. 저장하지도, 지우지도 않는다.
-
-picker 키 안내:
-
-- `↑` / `↓` — 항목 이동
-- `space` — 현재 항목 체크 토글
-- `enter` — 확정
-- `q` / `esc` / `ctrl+c` — 취소 (설정 변경 없음)
-
-CI나 파이프 같은 비-TTY 환경에서는 자동으로 앱별 y/n 프롬프트로 fallback 한다.
+`dotsync.toml` 에는 `apps` 와 `[options.<app>]` table 만 둔다. `[options]` 아래의 다른 key 는 설정 오류로 거부한다. 최상위 관리 파일·디렉터리가 symlink 이면 따라가지 않고 거부한다. Claude `skills/` 나 Codex `rules/` 처럼 미러링하는 디렉터리 안의 symlink 항목(예: `npx skills add` 가 만든 링크)은 warning 과 함께 건너뛰며, 읽거나 쓰지 않고 가져오기 때도 그대로 둔다. `skills` 앱을 추적 중이면 `npx skills add` 가 만든 링크는 그 앱이 기록하므로 warning 없이 건너뛴다. 미러링하는 디렉터리 안의 `.DS_Store` 와 `*.bak` 파일(파일을 고쳐 쓰기 전에 사본을 남기는 도구가 만든 것)도 같은 방식으로 무시한다. 저장하지도, 지우지도 않는다.
 
 지원 앱: `claude`, `codex`, `herdr`, `skills`, `ghostty`, `bettertouchtool`, `zsh`
 
+#### 개발자용: JSON 규약
+
+dotsync.app은 아래 명령을 실행하고 그 답을 읽는다.
+
+```bash
+dotsync status --json
+dotsync push|pull <app>|--all --dry-run|--yes --json   # 미리보기, 또는 적용
+dotsync config dir --json -- <folder>
+dotsync config apps <app,app,…> --json
+dotsync account login|use [--yes]|rename|remove|usage --json -- <args>
+dotsync sessions list|delete|recover|cleanup … --json
+dotsync --version
+```
+
+- 모두 stdout에 JSON 객체 하나만 출력하고, 나머지는 stderr로 보낸다. 실패는 `{"error": {"code": …, "message": …}}`와 종료 코드 1이다. `--json` 없이 실행하면 dotsync.app이 실행하는 명령이라고 알리고 종료 코드 2로 끝난다.
+- 오래 걸리는 세션 명령은 stderr에 `dotsync-progress <done>/<total>` 줄을 쓰고, 앱이 이걸로 진행 막대를 그린다.
+- 같은 도구를 바꾸는 명령끼리는 `~/Library/Application Support/dotsync/locks/`의 락 파일로 서로 기다린다: `claude-sessions.lock`(`delete claude`, `recover claude`), `codex.lock`(`delete codex`, `cleanup codex --yes`. `codex`의 push/pull/status는 공유로 잡는다). 계정 명령은 `~/.claude-accounts/.lock`을 잡는다. 10초 안에 락이 풀리지 않으면 `busy`로 실패한다.
+
 ### 새 앱 추가
 
-`docs/adding-an-app.md` 참고. 단순 파일 기반 앱은 모듈 1개 + `apps/__init__.py`에 한 줄로 끝난다. 복잡한 앱(외부 프로세스, 자체 CLI 옵션)은 base의 hook을 override해서 같은 자리에서 확장한다.
-
-도움말: `dotsync --help`, `dotsync <command> --help`. 모든 출력은 `NO_COLOR=1` 을 존중한다.
+`docs/adding-an-app.md` 참고. 단순 파일 기반 앱은 모듈 1개 + `apps/__init__.py`에 한 줄로 끝난다. 복잡한 앱(외부 프로세스, 앱별 옵션)은 base의 hook을 override해서 같은 자리에서 확장한다.
 
 ---
 
