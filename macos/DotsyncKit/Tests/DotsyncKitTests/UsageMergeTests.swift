@@ -145,3 +145,16 @@ func account(_ name: String, weekUsed percent: Int, resets: Date?) -> AccountUsa
     #expect(UsageMerge.merge(previous: marked, report: report([account("a")], active: "a")).refreshingSince == nil)
     #expect(UsageMerge.failed(previous: marked, message: "x").refreshingSince == nil)
 }
+
+@Test func liveMatchesActiveFollowsTheWeeklyReset() {
+    let week = after(hours: 72)
+    var file = UsageMerge.merge(previous: nil, report: report([account("a", week: week)], active: "a"))
+    func live(_ reset: Date) -> LiveUsage {
+        LiveUsage(updatedAt: now, fiveHour: nil, sevenDay: UsageWindow(percent: 50, resetsAt: reset))
+    }
+    #expect(UsageMerge.liveMatchesActive(file, live(week.addingTimeInterval(60))))
+    #expect(!UsageMerge.liveMatchesActive(file, live(week.addingTimeInterval(61))))
+    #expect(!UsageMerge.liveMatchesActive(file, nil))
+    file.accounts[0].status = .error
+    #expect(!UsageMerge.liveMatchesActive(file, live(week)))
+}

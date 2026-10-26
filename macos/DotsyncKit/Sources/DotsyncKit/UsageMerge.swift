@@ -37,17 +37,25 @@ public enum UsageMerge {
     /// as the active one's only when their weekly reset is the one its probe
     /// saw. Only for drawing; usage.json keeps what dotsync read.
     public static func withLive(_ file: UsageFile, _ live: LiveUsage?) -> UsageFile {
-        guard let live,
-              let index = file.accounts.firstIndex(where: { $0.name == file.active }),
-              file.accounts[index].status == .ok,
-              let liveWeek = live.sevenDay?.resetsAt,
-              let probedWeek = file.accounts[index].sevenDay?.resetsAt,
-              sameReset(liveWeek, probedWeek)
+        guard let live, liveMatchesActive(file, live),
+              let index = file.accounts.firstIndex(where: { $0.name == file.active })
         else { return file }
         var copy = file
         copy.accounts[index].fiveHour = later(copy.accounts[index].fiveHour, live.fiveHour)
         copy.accounts[index].sevenDay = later(copy.accounts[index].sevenDay, live.sevenDay)
         return copy
+    }
+
+    /// The snapshot is the active account's: the account reads, and the
+    /// snapshot's weekly reset is the one its probe saw.
+    public static func liveMatchesActive(_ file: UsageFile, _ live: LiveUsage?) -> Bool {
+        guard let live,
+              let account = file.activeAccount,
+              account.status == .ok,
+              let liveWeek = live.sevenDay?.resetsAt,
+              let probedWeek = account.sevenDay?.resetsAt
+        else { return false }
+        return sameReset(liveWeek, probedWeek)
     }
 
     /// The later of a probed window and a live one. claude-hud stamps the time
