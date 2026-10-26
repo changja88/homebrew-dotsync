@@ -170,7 +170,7 @@ private actor FakeRunner: CleanupRunner {
     func cleanup(items: [String], vacuum: Bool, progress: SessionService.Progress?) async throws -> CleanupReport {
         cleanupItems = items
         cleanupVacuum = vacuum
-        progress?(1, 2)
+        progress?(1, 2, "read")
         startedContinuation.yield()
         defer { cleanupSawCancel = Task.isCancelled }
         switch behaviour {
@@ -228,7 +228,7 @@ private struct Rig {
 @Test func chatgptIsQuitForTheCleanupAndRelaunched() async {
     let rig = Rig()
     let steps = ProgressLog()
-    let outcome = await rig.run(progress: { steps.add($0, $1) })
+    let outcome = await rig.run(progress: { steps.add($0, $1, $2) })
 
     #expect(outcome == .finished(cleaned, relaunch: .relaunched))
     #expect(rig.control.terminateCalls == 1)
@@ -237,6 +237,7 @@ private struct Rig {
     #expect(await rig.runner.cleanupItems == ["cache_files", "orphan_rollouts"])
     #expect(await rig.runner.cleanupVacuum == true)
     #expect(steps.all == [[1, 2]])
+    #expect(steps.phases == ["read"])
     #expect(rig.control.relaunchCalls == 1)
     #expect(rig.flags.writes == [true, false])
     #expect(rig.sleeps.durations.isEmpty)
@@ -507,7 +508,7 @@ private struct Rig {
     let rig = Rig()
     // The logout begins while the cleanup runs (its progress line says so).
     let poweringOff = OSAllocatedUnfairLock(initialState: false)
-    let outcome = await rig.run(progress: { _, _ in poweringOff.withLock { $0 = true } },
+    let outcome = await rig.run(progress: { _, _, _ in poweringOff.withLock { $0 = true } },
                                 isPoweringOff: { poweringOff.withLock { $0 } })
 
     #expect(outcome == .finished(cleaned, relaunch: .skippedForPowerOff))

@@ -175,3 +175,64 @@ func makeList(_ groups: [SessionGroup]) -> SessionList {
     #expect(SessionRules.item("b", in: l)?.state == "running")
     #expect(SessionRules.item("gone", in: l) == nil)
 }
+
+// MARK: A delete's result applied to the list
+
+private func codexList(_ groups: [SessionGroup]) -> SessionList {
+    var list = makeList(groups)
+    list.tool = .codex
+    list.totals = SessionTotals(
+        sessions: groups.reduce(0) { $0 + $1.sessions }, bytes: groups.reduce(0) { $0 + $1.bytes },
+        running: groups.reduce(0) { $0 + $1.running }, historyDbBytes: 8_600_000_000)
+    return list
+}
+
+private func group(_ key: String, _ items: [SessionItem], folders: Int = 2, deleted: Int = 1) -> SessionGroup {
+    SessionGroup(key: key, name: key, folders: folders, foldersDeleted: deleted, sessions: items.count,
+                 bytes: items.reduce(0) { $0 + $1.bytes }, running: items.filter { $0.state == "running" }.count, items: items)
+}
+
+private func report(_ outcomes: [String: String]) -> DeleteReport {
+    DeleteReport(tool: .codex, results: outcomes.sorted { $0.key < $1.key }.map {
+        DeleteResult(id: $0.key, outcome: $0.value, reason: nil, kept: nil, failed: nil, freedBytes: nil,
+                     children: nil, remaining: nil, unchecked: nil, message: nil)
+    }, stopped: false)
+}
+
+@Test func applyingDropsDeletedItemsAndRecountsTotals() {
+    // A Codex root with children counts once, as the CLI counts it (codex.py
+    // list_sessions: totals.sessions is len(items), one per root thread).
+    var withChildren = makeItem("b", bytes: 300)
+    withChildren.children = 4
+    let list = codexList([
+        group("g1", [makeItem("a", bytes: 100), withChildren, makeItem("r", state: "running", bytes: 50)]),
+        group("g2", [makeItem("c", bytes: 700)]),
+    ])
+    let after = SessionRules.applying(report(["a": "deleted", "c": "deleted"]), to: list)
+    #expect(after.groups.map(\.key) == ["g1"])
+    #expect(after.groups[0].items.map(\.id) == ["b", "r"])
+    #expect(after.groups[0].sessions == 2)
+    #expect(after.groups[0].bytes == 350)
+    #expect(after.groups[0].running == 1)
+    #expect(after.totals == SessionTotals(sessions: 2, bytes: 350, running: 1, historyDbBytes: 8_600_000_000))
+    // What the delete does not change stays.
+    #expect(after.groups[0].folders == 2 && after.groups[0].foldersDeleted == 1)
+    #expect(after.checkedAt == list.checkedAt)
+}
+
+@Test func applyingKeepsSkippedAndPartial() {
+    let list = codexList([group("g1", [makeItem("a"), makeItem("b"), makeItem("c"), makeItem("d")])])
+    let after = SessionRules.applying(
+        report(["a": "skipped", "b": "partial", "c": "restored", "d": "failed", "zz": "deleted"]), to: list)
+    #expect(after == list)
+}
+
+@Test func applyingDropsAnEmptiedGroup() {
+    let list = codexList([group("g1", [makeItem("a")]), group("g2", [makeItem("b")])])
+    let after = SessionRules.applying(report(["a": "deleted"]), to: list)
+    #expect(after.groups.map(\.key) == ["g2"])
+    #expect(after.totals.sessions == 1)
+    let none = SessionRules.applying(report(["a": "deleted", "b": "deleted"]), to: list)
+    #expect(none.groups.isEmpty)
+    #expect(none.totals == SessionTotals(sessions: 0, bytes: 0, running: 0, historyDbBytes: 8_600_000_000))
+}

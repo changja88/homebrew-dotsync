@@ -72,11 +72,11 @@ public struct DotsyncCLI: Sendable {
     /// Runs `dotsync <arguments>` and returns its JSON answer. One that has
     /// not exited by `timeout` is stopped (SIGTERM) and reported as
     /// `timeout`. A `longRun` is registered with `runningCommands` while it
-    /// runs. dotsync's progress lines (`dotsync-progress <done>/<total>` on
+    /// runs. dotsync's progress lines (`dotsync-progress <done>/<total>[ <phase>]` on
     /// stderr) go to `progress` as they arrive; the other stderr lines are
     /// kept for the error message.
     func runJSON(_ arguments: [String], timeout: Duration, stopsOnCancel: Bool = false,
-                 longRun: Bool = false, progress: (@Sendable (Int, Int) -> Void)? = nil) async throws -> Data {
+                 longRun: Bool = false, progress: (@Sendable (Int, Int, String?) -> Void)? = nil) async throws -> Data {
         let output: Output
         do {
             output = try await execute(arguments, stopsOnCancel: stopsOnCancel, timeout: timeout,
@@ -117,7 +117,7 @@ public struct DotsyncCLI: Sendable {
 
     func execute(_ arguments: [String], stopsOnCancel: Bool, timeout: Duration,
                  registersAsLongRun: Bool = false,
-                 progress: (@Sendable (Int, Int) -> Void)? = nil) async throws -> Output {
+                 progress: (@Sendable (Int, Int, String?) -> Void)? = nil) async throws -> Output {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
@@ -164,12 +164,12 @@ public struct DotsyncCLI: Sendable {
 
     /// Reads stderr to its end, reporting progress lines as they arrive.
     /// Returns the other lines.
-    private static func readLines(of handle: FileHandle, progress: (@Sendable (Int, Int) -> Void)?) -> Data {
+    private static func readLines(of handle: FileHandle, progress: (@Sendable (Int, Int, String?) -> Void)?) -> Data {
         var lines = StderrLines()
         while case let chunk = handle.availableData, !chunk.isEmpty {
-            for step in lines.feed(chunk) { progress?(step.done, step.total) }
+            for step in lines.feed(chunk) { progress?(step.done, step.total, step.phase) }
         }
-        for step in lines.finish() { progress?(step.done, step.total) }
+        for step in lines.finish() { progress?(step.done, step.total, step.phase) }
         return lines.kept
     }
 }

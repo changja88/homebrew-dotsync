@@ -34,9 +34,8 @@ private struct ChoosingView: View {
 
     var body: some View {
         let items = state.preview.map { CleanupRules.visibleItems($0.items) } ?? []
-        let selected = state.preview.map { CleanupRules.selectedIds($0.items, selection: state.selection) } ?? []
         let start = state.blockers.map {
-            CleanupRules.startState(blockers: $0, preview: state.preview, selected: selected, vacuum: state.vacuum && (state.preview?.vacuumAvailable ?? false))
+            CleanupRules.startState(blockers: $0, preview: state.preview, selection: state.selection, vacuum: state.vacuum)
         } ?? (allowed: false, note: nil)
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
@@ -56,15 +55,16 @@ private struct ChoosingView: View {
                     .font(.system(size: 12)).padding(.vertical, 5)
                 }
             }
-            if let preview = state.preview, preview.vacuumAvailable {
-                Toggle(isOn: Binding(get: { state.vacuum }, set: { model.cleanup.vacuum = $0 })) {
+            if let preview = state.preview,
+               let box = CleanupRules.vacuumBox(preview: preview, selection: state.selection, ticked: state.vacuum) {
+                Toggle(isOn: Binding(get: { box.ticked }, set: { model.cleanup.vacuum = $0 })) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("정리 뒤 대화 저장소의 빈 공간 돌려받기").font(.system(size: 12.5, weight: .semibold))
-                        Text(CleanupRules.vacuumHint(historyDbBytes: preview.historyDbBytes))
-                            .font(.system(size: 11.5)).foregroundStyle(.secondary)
+                        Text(box.hint).font(.system(size: 11.5)).foregroundStyle(.secondary)
                     }
                 }
                 .toggleStyle(.checkbox)
+                .disabled(!box.enabled)
                 .padding(.horizontal, 2).padding(.top, 2)
             }
             HStack(spacing: 8) {
@@ -131,7 +131,7 @@ private struct ChoosingView: View {
             VStack(alignment: .leading, spacing: 6) {
                 if let progress = state.readProgress {
                     ProgressView(value: Double(min(progress.done, progress.total)), total: Double(progress.total))
-                    Text("남은 데이터를 찾는 중… \(SessionText.progress(done: progress.done, total: progress.total))")
+                    Text(SessionText.progressLine(phase: "read", done: progress.done, total: progress.total))
                         .font(.system(size: 12)).foregroundStyle(.secondary).monospacedDigit()
                 } else {
                     readingLine("남은 데이터를 찾는 중…")
@@ -199,9 +199,10 @@ private struct RunningView: View {
                 Text("ChatGPT 앱이 꺼졌다가 정리가 끝나면 다시 켜져요. 끝나면 결과를 보여 드려요.")
                     .font(.system(size: 12.5)).foregroundStyle(.secondary)
             }
-            if let work, work.total > 0 {
-                ProgressView(value: Double(min(work.done, work.total)), total: Double(work.total))
-                Text(SessionText.progress(done: work.done, total: work.total))
+            if let progress = work?.progress, progress.hasCount {
+                // The vacuum's percent is the line itself; the bar shows it too.
+                ProgressView(value: Double(min(progress.done, progress.total)), total: Double(progress.total))
+                Text(progress.text)
                     .font(.system(size: 12.5, weight: .semibold)).monospacedDigit()
                     .frame(maxWidth: .infinity, alignment: .trailing).padding(.top, -8)
             } else {

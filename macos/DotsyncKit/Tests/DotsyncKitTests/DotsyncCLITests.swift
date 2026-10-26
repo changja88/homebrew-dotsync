@@ -120,13 +120,14 @@ import Testing
 @Test func runJSONReportsProgressLines() async throws {
     let fake = try FakeDotsync(script: """
     echo 'dotsync-progress 1/3' >&2
-    echo 'dotsync-progress 2/3' >&2
+    echo 'dotsync-progress 2/3 delete' >&2
     echo '{"name": "x", "label": "x", "email": null, "logged_in": true}'
     """)
     let log = ProgressLog()
     let data = try await fake.cli.runJSON(["sessions", "x", "--json"], timeout: .seconds(10),
-                                          progress: { log.add($0, $1) })
+                                          progress: { log.add($0, $1, $2) })
     #expect(log.all == [[1, 3], [2, 3]])
+    #expect(log.phases == [nil, "delete"])
     #expect(try fake.cli.decode(AccountInfo.self, data).name == "x")
 }
 
@@ -134,8 +135,16 @@ import Testing
     func progress(_ line: String) -> [Int]? {
         StderrLines.progress(in: line).map { [$0.done, $0.total] }
     }
+    // The bare form (delete, recover) has no phase; cleanup names one.
     #expect(progress("dotsync-progress 0/0") == [0, 0])
     #expect(progress("dotsync-progress 12/345") == [12, 345])
+    #expect(StderrLines.progress(in: "dotsync-progress 12/345")?.phase == nil)
+    #expect(StderrLines.progress(in: "dotsync-progress 12/345 vacuum")?.phase == "vacuum")
+    #expect(progress("dotsync-progress 12/345 read") == [12, 345])
+    // A phase word is lowercase ASCII letters only, and one word.
+    for badPhase in ["Read", "read2", "re-ad", "읽기", "read x", "read ", " read", "1"] {
+        #expect(progress("dotsync-progress 1/3 \(badPhase)") == nil, "\(badPhase.debugDescription)")
+    }
     for other in ["", "dotsync-progress", "dotsync-progress 1/", "dotsync-progress /3", "dotsync-progress 1/3 ",
                   " dotsync-progress 1/3", "dotsync-progress 1/3/4", "dotsync-progress -1/3",
                   "dotsync-progress +1/3", "dotsync-progress 1/x", "dotsync-progress 1.5/3",

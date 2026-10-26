@@ -9,12 +9,17 @@ private let emptyCleanup = #"{"items": [], "vacuum": null, "stopped": false}"#
 final class ProgressLog: @unchecked Sendable {
     private let lock = NSLock()
     private var steps: [[Int]] = []
+    private var named: [String?] = []
 
-    func add(_ done: Int, _ total: Int) {
-        lock.withLock { steps.append([done, total]) }
+    func add(_ done: Int, _ total: Int, _ phase: String? = nil) {
+        lock.withLock {
+            steps.append([done, total])
+            named.append(phase)
+        }
     }
 
     var all: [[Int]] { lock.withLock { steps } }
+    var phases: [String?] { lock.withLock { named } }
 }
 
 @Test func deleteArgvEndsWithIds() async throws {
@@ -88,7 +93,7 @@ final class ProgressLog: @unchecked Sendable {
     """)
     let log = ProgressLog()
     await #expect(throws: CLIError(code: "failed", message: "something went wrong")) {
-        _ = try await SessionService(cli: fake.cli).delete(.codex, ids: ["a", "b"], progress: { log.add($0, $1) })
+        _ = try await SessionService(cli: fake.cli).delete(.codex, ids: ["a", "b"], progress: { log.add($0, $1, $2) })
     }
     #expect(log.all == [[1, 2], [2, 2]])
 }

@@ -18,7 +18,9 @@ struct CleanupState {
     /// Why blockers or the dry-run could not be read.
     var failure: String?
     var selection: Set<String> = []
-    var vacuum = false
+    /// The person's tick of the vacuum box, which starts on. What the box shows
+    /// (and whether the vacuum runs) is `CleanupRules.vacuumBox`.
+    var vacuum = true
     /// The open-session count the sheet last showed: "끄고 정리하기" confirms it.
     var shownOpenThreads = 0
     /// Opened from a delete's result: the list is read again on close.
@@ -54,7 +56,7 @@ extension SessionsModel {
             cleanup.preview = nil
             cleanup.readProgress = nil
         }
-        let progress: SessionService.Progress = { [weak self] done, total in
+        let progress: SessionService.Progress = { [weak self] done, total, _ in
             Task { @MainActor in self?.cleanup.readProgress = (done, max(total, 1)) }
         }
         cleanupReadTask = Task {
@@ -83,7 +85,7 @@ extension SessionsModel {
         cleanup.preview = preview
         accept(blockers: CleanupBlockers(preview))
         cleanup.selection = CleanupRules.initialSelection(preview.items)
-        cleanup.vacuum = preview.vacuumAvailable
+        cleanup.vacuum = true
     }
 
     func toggleCleanupItem(_ id: String) {
@@ -111,8 +113,9 @@ extension SessionsModel {
         guard let service, let queue = queues[.codex], tools[.codex]?.work == nil, cleanupTask == nil,
               case .choosing = cleanup.phase, let blockers = cleanup.blockers, let preview = cleanup.preview else { return }
         let items = CleanupRules.selectedIds(preview.items, selection: cleanup.selection)
-        let vacuum = cleanup.vacuum && preview.vacuumAvailable
-        guard CleanupRules.startState(blockers: blockers, preview: preview, selected: items, vacuum: vacuum).allowed else { return }
+        let vacuum = CleanupRules.reclaims(preview: preview, selection: cleanup.selection, ticked: cleanup.vacuum)
+        guard CleanupRules.startState(blockers: blockers, preview: preview, selection: cleanup.selection,
+                                      vacuum: cleanup.vacuum).allowed else { return }
         cleanupReadTask?.cancel()
         cleanupReadTask = nil
         cleanup.phase = .running
@@ -120,11 +123,11 @@ extension SessionsModel {
         // Before the unit's own CLI runs: a cleanup cut off by a logout or
         // crash shows its logged result on the next launch.
         holdPendingResult()
-        tools[.codex]?.work = SessionWork(label: label, done: 0, total: 0, stoppable: true)
+        tools[.codex]?.work = SessionWork(label: label, stoppable: true)
         let shown = cleanup.shownOpenThreads
 
-        let progress: SessionService.Progress = { [weak self] done, total in
-            Task { @MainActor in self?.advance(.codex, done: done, total: total) }
+        let progress: SessionService.Progress = { [weak self] done, total, phase in
+            Task { @MainActor in self?.advance(.codex, done: done, total: total, phase: phase) }
         }
         let poweringOff: () -> Bool = { [weak self] in self?.isPoweringOff ?? false }
         var outcome: CleanupOutcome?

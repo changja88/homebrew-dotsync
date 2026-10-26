@@ -3,7 +3,8 @@ import Foundation
 /// What the sessions screen runs: `dotsync sessions …` with `--json`.
 /// Failures throw `CLIError`.
 public struct SessionService: Sendable {
-    public typealias Progress = @Sendable (Int, Int) -> Void
+    /// done, total, and the phase word of a cleanup line (nil for delete and recover).
+    public typealias Progress = @Sendable (Int, Int, String?) -> Void
 
     public let cli: DotsyncCLI
 

@@ -58,6 +58,19 @@ extension SessionText {
         return lines
     }
 
+    /// What a running cleanup says, by the phase the CLI names: the numbers
+    /// are files, sessions or pages, so each phase says which. Locale-free.
+    public static func progressLine(phase: String?, done: Int, total: Int) -> String {
+        switch phase {
+        case "read": return "기록 파일 \(grouped(done)) / \(grouped(total))개 읽는 중"
+        case "delete": return "세션 \(grouped(done)) / \(grouped(total))개 지우는 중"
+        case "vacuum":
+            let percent = total > 0 ? min(max(done * 100 / total, 0), 100) : 0
+            return "빈 공간 돌려받는 중 \(percent)%"
+        default: return "\(grouped(done)) / \(grouped(total))"
+        }
+    }
+
     /// The file under the "대화 저장소에 남은 내용" row (the CLI's `HISTORY_DB`).
     public static let historyDbName = "thread_history_1.sqlite"
 

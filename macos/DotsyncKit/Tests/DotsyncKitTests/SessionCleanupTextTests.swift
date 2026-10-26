@@ -57,3 +57,20 @@ import Testing
     #expect(SessionText.cleanupKept.map(\.name) == ["데스크톱 앱 상태", "첨부 파일", "생성 이미지", "로그"])
     #expect(SessionText.cleanupKept[2].reason == "다른 세션이 쓸 수 있어요")
 }
+
+@Test func progressLineNamesThePhase() {
+    #expect(SessionText.progressLine(phase: "read", done: 1291, total: 5596) == "기록 파일 1,291 / 5,596개 읽는 중")
+    #expect(SessionText.progressLine(phase: "delete", done: 1200, total: 2304) == "세션 1,200 / 2,304개 지우는 중")
+    #expect(SessionText.progressLine(phase: nil, done: 1291, total: 5596) == "1,291 / 5,596")
+    #expect(SessionText.progressLine(phase: "later", done: 1, total: 2) == "1 / 2")
+}
+
+@Test func vacuumProgressIsAWholePercentFlooredAndBounded() {
+    func line(_ done: Int, _ total: Int) -> String { SessionText.progressLine(phase: "vacuum", done: done, total: total) }
+    #expect(line(153_600, 825_114) == "빈 공간 돌려받는 중 18%")
+    #expect(line(0, 825_114) == "빈 공간 돌려받는 중 0%")
+    #expect(line(825_114, 825_114) == "빈 공간 돌려받는 중 100%")
+    #expect(line(999, 825_114) == "빈 공간 돌려받는 중 0%")
+    #expect(line(900_000, 825_114) == "빈 공간 돌려받는 중 100%")
+    #expect(line(5, 0) == "빈 공간 돌려받는 중 0%")
+}

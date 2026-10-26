@@ -63,9 +63,9 @@ public enum QuitRules {
     /// The window's bar while quitting waits: the long work's line, then each
     /// session run's progress ("지우는 중… 3/10"), the label alone before the
     /// CLI has counted.
-    public static func notice(_ longWork: String, runs: [(label: String, done: Int, total: Int)]) -> String {
+    public static func notice(_ longWork: String, runs: [(label: String, progress: RunProgress)]) -> String {
         let progress = runs.map { run in
-            run.total > 0 ? "\(run.label) \(SessionText.progress(done: run.done, total: run.total))" : run.label
+            run.progress.hasCount ? "\(run.label) \(run.progress.text)" : run.label
         }
         return ([longWork] + progress).joined(separator: " · ")
     }

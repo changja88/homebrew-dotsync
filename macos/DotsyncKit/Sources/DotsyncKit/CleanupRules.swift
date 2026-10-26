@@ -102,22 +102,58 @@ public enum CleanupRules {
         return item.id == "history_rows" ? "세션 \(count)개" : "\(count)개"
     }
 
-    public static func vacuumHint(historyDbBytes: Int64) -> String {
-        "\(SessionText.bytes(historyDbBytes))에서 지운 만큼 줄어요. 얼마나 줄지는 정리해 봐야 알아요."
+    // MARK: 빈 공간 돌려받기
+
+    /// The vacuum box under the items. It shows only when the CLI can vacuum.
+    public struct VacuumBox: Equatable, Sendable {
+        public var enabled: Bool
+        /// What the person sees; the vacuum runs only when this is on.
+        public var ticked: Bool
+        public var hint: String
+    }
+
+    /// At least one picked item with something in it.
+    private static func isCleaning(_ preview: CleanupPreview, _ selection: Set<String>) -> Bool {
+        !selectedIds(preview.items, selection: selection).isEmpty
+    }
+
+    /// `ticked` is the person's own tick, which starts on. Free space makes
+    /// the box usable; with none, only a cleaning that will make some does.
+    /// With neither, it shows off and disabled, and the person's tick waits
+    /// for the next pick.
+    public static func vacuumBox(preview: CleanupPreview, selection: Set<String>, ticked: Bool) -> VacuumBox? {
+        guard preview.vacuumAvailable else { return nil }
+        let cleaning = isCleaning(preview, selection)
+        let free = preview.vacuumFreeBytes ?? 0
+        if free > 0 {
+            let now = "지금 \(SessionText.bytes(free))를 돌려받을 수 있어요"
+            return VacuumBox(enabled: true, ticked: ticked, hint: cleaning ? now + ". 정리한 만큼 더 줄어요." : now)
+        }
+        if cleaning {
+            return VacuumBox(enabled: true, ticked: ticked, hint: "정리한 만큼 줄어요. 얼마나 줄지는 정리해 봐야 알아요.")
+        }
+        return VacuumBox(enabled: false, ticked: false, hint: "돌려받을 빈 공간이 없어요")
+    }
+
+    /// Whether the vacuum will run: the box shows ticked and enabled.
+    public static func reclaims(preview: CleanupPreview, selection: Set<String>, ticked: Bool) -> Bool {
+        guard let box = vacuumBox(preview: preview, selection: selection, ticked: ticked) else { return false }
+        return box.enabled && box.ticked
     }
 
     // MARK: 끄고 정리하기
 
     /// The blocker gate, then something to clean: an item, or the vacuum
     /// alone when the dry-run found free space for it. With neither, the
-    /// unit would quit ChatGPT for nothing.
-    public static func startState(blockers: CleanupBlockers, preview: CleanupPreview?, selected: [String],
+    /// unit would quit ChatGPT for nothing. `vacuum` is the person's tick.
+    public static func startState(blockers: CleanupBlockers, preview: CleanupPreview?, selection: Set<String>,
                                   vacuum: Bool) -> (allowed: Bool, note: String?) {
         let gate = CleanupGate.canStart(blockers: blockers, preview: preview)
-        guard gate.allowed else { return gate }
-        let reclaims = vacuum && (preview?.vacuumFreeBytes ?? 0) > 0
-        if selected.isEmpty && !reclaims { return (false, "정리할 것을 골라 주세요") }
-        return (true, nil)
+        guard gate.allowed, let preview else { return gate }
+        if isCleaning(preview, selection) || reclaims(preview: preview, selection: selection, ticked: vacuum) { return (true, nil) }
+        let somethingToClean = visibleItems(preview.items).contains { $0.count > 0 }
+        let somethingToReclaim = preview.vacuumAvailable && (preview.vacuumFreeBytes ?? 0) > 0
+        return (false, somethingToClean || somethingToReclaim ? "정리할 것을 골라 주세요" : "지금은 정리할 게 없어요")
     }
 
     // MARK: After the unit

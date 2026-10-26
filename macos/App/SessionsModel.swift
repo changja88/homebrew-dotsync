@@ -17,8 +17,7 @@ enum SessionSheet {
 /// A delete, recover or cleanup run in flight, for quitting and the 설정 rows.
 struct SessionWork: Equatable {
     var label: String
-    var done = 0
-    var total = 0
+    var progress = RunProgress()
     /// 멈추기 is offered; undoing a delete (되돌리기) has no safe point to stop at.
     var stoppable = true
 }
@@ -100,7 +99,7 @@ final class SessionsModel {
         switch pending {
         case .delete(let report):
             tool = report.tool
-            tools[tool]?.sheet = .result(report)
+            showResult(report)
         case .cleanup(let summary):
             tool = .codex
             cleanup.phase = .finished(summary)
@@ -263,11 +262,11 @@ final class SessionsModel {
                      operation: @escaping @Sendable (@escaping SessionService.Progress) async throws -> DeleteReport) async {
         guard let queue = queues[tool], tools[tool]?.work == nil else { return }
         holdPendingResult()
-        tools[tool]?.work = SessionWork(label: label, done: 0, total: total, stoppable: stoppable)
+        tools[tool]?.work = SessionWork(label: label, progress: RunProgress(done: 0, total: total), stoppable: stoppable)
         tools[tool]?.sheet = .running
         await queue.run(label) {
-            let progress: SessionService.Progress = { [weak self] done, total in
-                Task { @MainActor in self?.advance(tool, done: done, total: total) }
+            let progress: SessionService.Progress = { [weak self] done, total, phase in
+                Task { @MainActor in self?.advance(tool, done: done, total: total, phase: phase) }
             }
             // 멈추기 pressed while this waited: nothing was attempted, so the
             // selection stays and no result is shown.
@@ -279,7 +278,7 @@ final class SessionsModel {
             runningTasks[tool] = task
             do {
                 let report = try await task.value
-                tools[tool]?.sheet = .result(previous.map { SessionDeleteRules.merged($0, replacing: report) } ?? report)
+                showResult(previous.map { SessionDeleteRules.merged($0, replacing: report) } ?? report)
             } catch {
                 tools[tool]?.sheet = .failure(SessionText.failureLine(error))
             }
@@ -291,12 +290,18 @@ final class SessionsModel {
         releasePendingResult()
     }
 
-    func advance(_ tool: SessionTool, done: Int, total: Int) {
-        guard var work = tools[tool]?.work else { return }
-        // Updates hop to the main actor one by one and may land out of order.
-        work.done = max(work.done, done)
-        work.total = max(total, 1)
-        tools[tool]?.work = work
+    func advance(_ tool: SessionTool, done: Int, total: Int, phase: String?) {
+        tools[tool]?.work?.progress.advance(done: done, total: total, phase: phase)
+    }
+
+    /// The result sheet, and at once the list without what it deleted, so the
+    /// rows are gone, unchecked, and the totals right while the re-read on 확인
+    /// takes its time.
+    private func showResult(_ report: DeleteReport) {
+        tools[report.tool]?.sheet = .result(report)
+        guard let list = tools[report.tool]?.list else { return }
+        tools[report.tool]?.list = SessionRules.applying(report, to: list)
+        tools[report.tool]?.selection.subtract(report.results.filter { $0.outcome == "deleted" }.map(\.id))
     }
 
     /// 멈추기: the CLI stops at its next safe point and reports.

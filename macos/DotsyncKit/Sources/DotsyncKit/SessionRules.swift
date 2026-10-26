@@ -58,6 +58,30 @@ public enum SessionRules {
         selection.intersection(list.groups.flatMap(\.items).filter(isSelectable).map(\.id))
     }
 
+    /// The list as it stands once `report` has run: the deleted sessions are
+    /// gone and the counts follow, without waiting for a re-read. Counts as
+    /// the CLI does (`list_sessions`, `grouping.groups`): one session per
+    /// listed item, so a Codex root's children are not counted. A session
+    /// that is partial, skipped or restored stays as it was.
+    public static func applying(_ report: DeleteReport, to list: SessionList) -> SessionList {
+        let deleted = Set(report.results.filter { $0.outcome == "deleted" }.map(\.id))
+        var after = list
+        after.groups = list.groups.compactMap { group in
+            guard group.items.contains(where: { deleted.contains($0.id) }) else { return group }
+            var left = group
+            left.items = group.items.filter { !deleted.contains($0.id) }
+            guard !left.items.isEmpty else { return nil }
+            left.sessions = left.items.count
+            left.bytes = left.items.reduce(0) { $0 + $1.bytes }
+            left.running = left.items.filter { $0.state == "running" }.count
+            return left
+        }
+        after.totals.sessions = after.groups.reduce(0) { $0 + $1.sessions }
+        after.totals.bytes = after.groups.reduce(0) { $0 + $1.bytes }
+        after.totals.running = after.groups.reduce(0) { $0 + $1.running }
+        return after
+    }
+
     public enum CheckState: Equatable { case none, some, all }
 
     /// A group checkbox over the ids it can pick; with nothing to pick it

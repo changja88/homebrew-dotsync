@@ -42,14 +42,17 @@ private let cleanupLine = "정리가 끝나면 꺼져요"
 }
 
 @Test func quitNoticeShowsEachRunsProgress() {
-    #expect(QuitRules.notice(cleanupLine, runs: [(label: "지우는 중…", done: 3, total: 10)])
+    #expect(QuitRules.notice(cleanupLine, runs: [(label: "지우는 중…", progress: RunProgress(done: 3, total: 10))])
         == "정리가 끝나면 꺼져요 · 지우는 중… 3/10")
     // Before the CLI's first progress line there is no count to show.
-    #expect(QuitRules.notice(cleanupLine, runs: [(label: "Codex 정리 중…", done: 0, total: 0)])
+    #expect(QuitRules.notice(cleanupLine, runs: [(label: "Codex 정리 중…", progress: RunProgress())])
         == "정리가 끝나면 꺼져요 · Codex 정리 중…")
     #expect(QuitRules.notice("작업이 끝나면 꺼져요", runs: [
-        (label: "되돌리는 중…", done: 0, total: 1), (label: "지우는 중…", done: 2, total: 4),
+        (label: "되돌리는 중…", progress: RunProgress(done: 0, total: 1)),
+        (label: "지우는 중…", progress: RunProgress(done: 2, total: 4)),
     ]) == "작업이 끝나면 꺼져요 · 되돌리는 중… 0/1 · 지우는 중… 2/4")
+    #expect(QuitRules.notice(cleanupLine, runs: [(label: "Codex 정리 중…", progress: RunProgress(done: 2, total: 4, phase: "delete"))])
+        == "정리가 끝나면 꺼져요 · Codex 정리 중… 세션 2 / 4개 지우는 중")
     #expect(QuitRules.notice("작업이 끝나면 꺼져요", runs: []) == "작업이 끝나면 꺼져요")
 }
 

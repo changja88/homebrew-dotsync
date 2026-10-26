@@ -67,7 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The line at the top of the window while quitting waits; nil otherwise.
     var quitNotice: String? {
         guard quitWhenDone, let longWork else { return nil }
-        return QuitRules.notice(longWork, runs: sessions.runningWork.map { ($0.label, $0.done, $0.total) })
+        return QuitRules.notice(longWork, runs: sessions.runningWork.map { ($0.label, $0.progress) })
     }
 
     /// dotsync still at work for the window, a widget button, or a refresh.

@@ -194,11 +194,11 @@ private struct RunningSheet: View {
                 Text(work?.label ?? "지우는 중…").font(.system(size: 17, weight: .bold))
                 Text("끝나면 결과를 보여 드려요.").font(.system(size: 12.5)).foregroundStyle(.secondary)
             }
-            if let work, work.total > 0 {
-                ProgressView(value: Double(min(work.done, work.total)), total: Double(work.total))
+            if let progress = work?.progress, progress.hasCount {
+                ProgressView(value: Double(min(progress.done, progress.total)), total: Double(progress.total))
                 HStack {
                     Spacer()
-                    Text(SessionText.progress(done: work.done, total: work.total))
+                    Text(progress.text)
                         .font(.system(size: 12.5, weight: .semibold)).monospacedDigit()
                 }
                 .padding(.top, -8)
