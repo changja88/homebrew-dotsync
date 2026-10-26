@@ -45,14 +45,10 @@ PLUGIN_RUNTIME_KEYS = {
 }
 
 # Manual verification checklist for Claude global rules sync:
-# 1. Run `PYTHONPATH=lib python3 -m dotsync status` and confirm the Claude row
-#    reports clean or lists CLAUDE.md / global-rule directories naturally.
-# 2. Use an isolated DOTSYNC_DIR under /tmp, run `dotsync init --apps claude`
-#    with `--yes --no-shell-init`, then `dotsync push claude`; confirm stored
-#    `claude/` contains existing CLAUDE.md and global-rule directories.
-# 3. Set HOME to a fake /tmp home and run `dotsync pull claude --yes`; confirm the
-#    same global-rule items are restored under the fake ~/.claude/.
-# 4. Remove the temporary DOTSYNC_DIR and fake HOME directories.
+# 1. Run `PYTHONPATH=lib python3 -m dotsync status --json` and confirm the
+#    claude entry reports clean or lists CLAUDE.md / global-rule directories.
+# 2. In dotsync.app, preview a push of Claude and confirm the stored `claude/`
+#    would hold the existing CLAUDE.md and global-rule directories.
 
 
 class ClaudeApp(App):
@@ -73,10 +69,6 @@ class ClaudeApp(App):
             skills_ignore=read_skills_ignore(cfg, cls.name),
             skills_app_tracked="skills" in cfg.apps,
         )
-
-    @classmethod
-    def is_present_locally(cls) -> bool:
-        return (Path.home() / ".claude" / "settings.json").exists()
 
     def _claude_dir(self) -> Path:
         return Path.home() / ".claude"

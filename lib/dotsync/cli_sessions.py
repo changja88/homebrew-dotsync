@@ -1,5 +1,5 @@
-"""`dotsync sessions …`: the CLI group. Sub-commands are added by the tasks
-that implement them; session commands need no sync folder."""
+"""`dotsync sessions …`: the commands the dotsync app's 세션 menu runs, each
+answering one JSON object. Session commands need no sync folder."""
 
 from __future__ import annotations
 
@@ -8,8 +8,7 @@ import errno
 import sys
 from collections.abc import Callable
 
-from dotsync import cli_json, ui
-from dotsync.cli_json import JSONCommandError
+from dotsync import cli_json
 from dotsync.sessions import claude, claude_delete, codex, codex_blockers, codex_cleanup
 from dotsync.sessions.stop import StopSignal
 
@@ -78,19 +77,7 @@ def run(args: argparse.Namespace) -> int:
 
 
 def _list(args: argparse.Namespace) -> int:
-    if args.json:
-        return cli_json.emit(lambda: _list_payload(args.tool))
-    try:
-        payload = _list_payload(args.tool)
-    except JSONCommandError as e:
-        ui.error(str(e))
-        return 1
-    for group in payload["groups"]:
-        print(
-            f"{group['name']}  {group['sessions']} sessions  "
-            f"{_size(group['bytes'])}  {group['running']} running"
-        )
-    return 0
+    return cli_json.emit(lambda: _list_payload(args.tool))
 
 
 def _list_payload(tool: str) -> dict:
@@ -109,83 +96,25 @@ def _best_effort(other_cwds: Callable[[], list[str]]) -> list[str]:
 
 
 def _delete(args: argparse.Namespace) -> int:
-    if args.json:
-        return cli_json.emit(lambda: _delete_report(args.tool, args.ids, progress))
-    try:
-        report = _delete_report(args.tool, args.ids, lambda done, total: None)
-    except JSONCommandError as e:
-        ui.error(str(e))
-        return 1
-    for result in report["results"]:
-        print(_delete_line(result))
-    return 0
+    return cli_json.emit(lambda: _delete_report(args.tool, args.ids, progress))
 
 
 def _recover(args: argparse.Namespace) -> int:
-    if args.json:
-        return cli_json.emit(lambda: _recover_report(args, progress))
-    try:
-        report = _recover_report(args, lambda done, total: None)
-    except JSONCommandError as e:
-        ui.error(str(e))
-        return 1
-    for result in report["results"]:
-        print(_delete_line(result))
-    return 0
+    return cli_json.emit(lambda: _recover_report(args, progress))
 
 
 def _cleanup(args: argparse.Namespace) -> int:
-    if args.json:
-        return cli_json.emit(lambda: _cleanup_payload(args, progress))
-    try:
-        payload = _cleanup_payload(args, None)
-    except JSONCommandError as e:
-        ui.error(str(e))
-        return 1
-    if args.dry_run:
-        return _print_dry_run(payload)
-    if args.yes:
-        return _print_cleanup(payload)
-    entries = payload["blockers"]
-    for entry in entries:
-        print(f"{entry['pid']}  {entry['kind']}  {entry['name']}  {entry['elapsed']}s")
-    if not entries:
-        print("nothing uses ~/.codex")
-    return 0
+    return cli_json.emit(lambda: _cleanup_payload(args))
 
 
-def _print_dry_run(payload: dict) -> int:
-    """Counts only, never an id."""
-    refusal = payload["refusal"]
-    if refusal:
-        ui.error(f"{refusal['code']}: {refusal['message']}")
-        return 1
-    for item in payload["items"]:
-        print(f"{item['label']}  {item['count']}")
-    return 0
-
-
-def _print_cleanup(report: dict) -> int:
-    """One line per item: its id, outcome and count, never a session id."""
-    for item in report["items"]:
-        parts = [item["id"], item["outcome"], str(item["count"])]
-        parts += [item[key] for key in ("reason", "message") if key in item]
-        print("  ".join(parts))
-    return 0
-
-
-def _cleanup_payload(
-    args: argparse.Namespace, on_progress: Callable[[int, int, str], None] | None
-) -> dict:
+def _cleanup_payload(args: argparse.Namespace) -> dict:
     if args.blockers:
         return codex_blockers.detect()
     if args.dry_run:
-        return codex_cleanup.dry_run_payload(on_progress)
+        return codex_cleanup.dry_run_payload(progress)
     items = _cleanup_items(args.items)
     with StopSignal() as stop:
-        return codex_cleanup.run_cleanup(
-            items, args.vacuum, stop=stop, progress=on_progress or (lambda done, total, phase: None)
-        )
+        return codex_cleanup.run_cleanup(items, args.vacuum, stop=stop, progress=progress)
 
 
 def _cleanup_items(arg: str | None) -> list[str]:
@@ -209,30 +138,6 @@ def _delete_report(tool: str, ids: list[str], on_progress: Callable[[int, int], 
     sessions = claude_delete if tool == "claude" else codex
     with StopSignal() as stop:
         return sessions.delete(ids, stop=stop, progress=on_progress)
-
-
-def _delete_line(result: dict) -> str:
-    """One line per id, never a title."""
-    parts = [result["id"], result["outcome"]]
-    if "reason" in result:
-        parts.append(result["reason"])
-    if "freed_bytes" in result and result["outcome"] != "skipped":
-        parts.append(f"{_size(result['freed_bytes'])} freed")
-    if result.get("remaining"):
-        parts.append("left " + ", ".join(result["remaining"]))
-    if result.get("kept"):
-        parts.append("kept " + ", ".join(result["kept"]))
-    if result.get("failed"):
-        parts.append(f"{len(result['failed'])} failed")
-    return "  ".join(parts)
-
-
-def _size(n: float) -> str:
-    for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024 or unit == "GB":
-            return f"{int(n)} B" if unit == "B" else f"{n:.1f} {unit}"
-        n /= 1024
-    raise AssertionError("unreachable")
 
 
 # Set once a progress line finds stderr's reader gone.

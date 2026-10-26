@@ -77,13 +77,6 @@ def test_list_json_reports_agents_error(world, capsys):
     assert json.loads(out.out)["agents_error"] == "process_scan_failed"
 
 
-def test_list_text_has_no_titles(world, capsys):
-    code, out = run_list(capsys)
-    assert code == 0
-    assert TITLE not in out.out
-    assert "proj" in out.out and grouping.UNKNOWN_NAME in out.out
-
-
 def test_symlink_loop_at_a_session_dir_is_unsafe_not_a_crash(world, capsys):
     loop = roots.claude_home() / "projects" / "p1" / IDLE
     loop.symlink_to(loop)

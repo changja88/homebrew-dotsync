@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 from dotsync.apps.base import App, FilePair
@@ -11,10 +10,6 @@ from dotsync.apps.base import App, FilePair
 class HerdrApp(App):
     name = "herdr"
     description = "Herdr terminal workspace config (config.toml)"
-
-    @classmethod
-    def is_present_locally(cls) -> bool:
-        return cls._local_path().exists() or shutil.which("herdr") is not None
 
     @classmethod
     def _local_path(cls) -> Path:

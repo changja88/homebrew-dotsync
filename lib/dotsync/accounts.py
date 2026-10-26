@@ -199,17 +199,6 @@ def account_info(name: str) -> dict:
     }
 
 
-def snapshot() -> dict:
-    """Saved accounts, the one in use, and the login Claude uses now."""
-    email = seat_email()
-    active = active_account()
-    return {
-        "active": active,
-        "seat": None if email is None else {"email": email, "saved": active is not None},
-        "accounts": [account_info(name) for name in saved_accounts()],
-    }
-
-
 def usage() -> dict:
     """Every saved account's usage, probed at the same time. The account in
     use is probed through Claude's default folder: its own folder holds an

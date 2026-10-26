@@ -33,13 +33,6 @@ class SkillsApp(App):
     description = "Agent skills installed with npx skills (~/.agents)"
 
     @classmethod
-    def is_present_locally(cls) -> bool:
-        try:
-            return cls._lock_path().is_file()
-        except OSError:
-            return False
-
-    @classmethod
     def _agents_dir(cls) -> Path:
         return Path.home() / ".agents"
 

@@ -150,16 +150,6 @@ def tree_diff_text(change: Change) -> str:
     return "\n\n".join(blocks)
 
 
-def config_json(cfg: Config) -> dict:
-    """`config show --json`."""
-    return {
-        "dir": str(cfg.dir),
-        "dir_source": cfg.dir_source,
-        "apps": list(cfg.apps),
-        "app_options": cfg.app_options,
-    }
-
-
 def config_dir_json(new_dir: Path, rc: ShellRcResult) -> dict:
     """`config dir --json`. `dir_source` is how the next command will find
     new_dir, or "" when it will not by itself — $DOTSYNC_DIR or the cwd

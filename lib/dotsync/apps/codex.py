@@ -73,10 +73,6 @@ class CodexApp(App):
         )
 
     @classmethod
-    def is_present_locally(cls) -> bool:
-        return cls._config_path().exists()
-
-    @classmethod
     def _codex_dir(cls) -> Path:
         return Path.home() / ".codex"
 

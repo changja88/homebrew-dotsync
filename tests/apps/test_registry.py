@@ -11,12 +11,6 @@ def test_app_names_derive_from_app_classes():
     assert APP_NAMES == frozenset(c.name for c in APP_CLASSES)
 
 
-def test_app_descriptions_derive_from_app_classes():
-    from dotsync.apps import app_descriptions, APP_CLASSES
-
-    assert app_descriptions() == {c.name: c.description for c in APP_CLASSES}
-
-
 def test_build_app_returns_instance(tmp_path):
     cfg = Config(dir=tmp_path, apps=["zsh"])
     app = build_app("zsh", cfg)
@@ -46,38 +40,6 @@ def test_build_app_bettertouchtool_uses_config_presets(tmp_path):
     )
     app = build_app("bettertouchtool", cfg)
     assert app.presets == ["MyPreset", "Other"]
-
-
-def test_detect_present_returns_only_locally_installed(fake_home, monkeypatch):
-    """detect_present() asks each app's is_present_locally() classmethod."""
-    from dotsync.apps import detect_present
-
-    # zsh: present
-    (fake_home / ".zshrc").write_text("X")
-    # claude: present
-    (fake_home / ".claude").mkdir()
-    (fake_home / ".claude" / "settings.json").write_text("{}")
-    # codex: present
-    (fake_home / ".codex").mkdir()
-    (fake_home / ".codex" / "config.toml").write_text("model = 'x'\n")
-    # herdr: present
-    (fake_home / ".config" / "herdr").mkdir(parents=True)
-    (fake_home / ".config" / "herdr" / "config.toml").write_text(
-        "onboarding = false\n"
-    )
-    # ghostty: absent (no config dir)
-    # bettertouchtool: absent (point APP_PATH to nowhere)
-    monkeypatch.setattr(
-        "dotsync.apps.bettertouchtool.BetterTouchToolApp.APP_PATH",
-        fake_home / "no-btt-here.app",
-    )
-    detected = detect_present()
-    assert "zsh" in detected
-    assert "claude" in detected
-    assert "codex" in detected
-    assert "herdr" in detected
-    assert "ghostty" not in detected
-    assert "bettertouchtool" not in detected
 
 
 def test_build_app_uses_from_config_polymorphism(tmp_path, monkeypatch):

@@ -153,7 +153,6 @@ class BetterTouchToolApp(App):
     name = "bettertouchtool"
     description = "BetterTouchTool presets (.bttpreset, names configurable)"
 
-    APP_PATH = Path("/Applications/BetterTouchTool.app")
     DATA_DIR = Path.home() / "Library" / "Application Support" / "BetterTouchTool"
 
     @classmethod
@@ -191,10 +190,6 @@ class BetterTouchToolApp(App):
         except Exception:
             return []
 
-    @classmethod
-    def is_present_locally(cls) -> bool:
-        return Path(cls.APP_PATH).exists()
-
     DEFAULT_PRESETS: tuple[str, ...] = ("Master_bt",)
 
     @staticmethod
@@ -216,81 +211,10 @@ class BetterTouchToolApp(App):
         return [cls._validate_preset_name(preset) for preset in presets]
 
     @classmethod
-    def extra_init_args(cls, parser) -> None:
-        parser.add_argument(
-            "--btt-presets",
-            default=None,
-            help=f"BetterTouchTool preset names, comma-separated (default: {','.join(cls.DEFAULT_PRESETS)})",
-        )
-
-    @classmethod
-    def picker_annotation(cls, *, detected: bool) -> str | None:
-        if not detected:
-            return None
-        count = len(cls.discover_preset_names())
-        if count <= 0:
-            return None
-        return f"{count} preset" if count == 1 else f"{count} presets"
-
-    @classmethod
-    def resolve_options(
-        cls,
-        args,
-        *,
-        prev_apps: list[str],
-        new_apps: list[str],
-        interactive: bool,
-    ) -> dict | None:
-        # Not tracking BTT? leave options alone.
-        if cls.name not in new_apps:
-            return None
-        # Explicit flag wins.
-        flag_value = getattr(args, "btt_presets", None)
-        if flag_value:
-            presets = [p.strip() for p in flag_value.split(",") if p.strip()]
-            return {"presets": cls._validated_presets(presets)}
-        # Already tracked → keep what dotsync.toml says.
-        if cls.name in prev_apps:
-            return None
-        # Newly tracked: discover interactively, else record the default.
-        if interactive:
-            discovered = cls.discover_preset_names()
-            if discovered:
-                return {"presets": discovered}
-        return {"presets": list(DEFAULT_PRESETS)}
-
-    @classmethod
-    def extra_config_subcommands(cls, subparser) -> None:
-        p = subparser.add_parser(
-            "btt-presets",
-            help="set BetterTouchTool preset names (comma-separated)",
-        )
-        p.add_argument("presets", help="comma-separated names")
-
-    @classmethod
-    def handle_config_subcommand(cls, args, cfg) -> int | None:
-        from dotsync import ui
-        from dotsync.config import save_config
-
-        if getattr(args, "cfg_cmd", None) != "btt-presets":
-            return None
-        raw_presets = [p.strip() for p in args.presets.split(",") if p.strip()]
-        if not raw_presets:
-            import sys
-
-            print("provide at least one preset name", file=sys.stderr)
-            return 2
-        try:
-            new_presets = cls._validated_presets(raw_presets)
-        except ValueError as exc:
-            import sys
-
-            print(str(exc), file=sys.stderr)
-            return 2
-        cfg.app_options.setdefault(cls.name, {})["presets"] = new_presets
-        save_config(cfg)
-        ui.done(f"bettertouchtool presets = {new_presets}")
-        return 0
+    def options_when_turned_on(cls) -> dict:
+        """The preset names BTT has, or the default ones when they cannot be
+        read."""
+        return {"presets": cls.discover_preset_names() or list(DEFAULT_PRESETS)}
 
     def __init__(self, presets: list[str] | None = None):
         super().__init__()

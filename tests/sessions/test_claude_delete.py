@@ -477,12 +477,3 @@ def test_json_delete_runs_to_its_end_after_the_app_is_gone(
     assert gone_stderr.writes == 1
 
 
-def test_text_mode_prints_one_line_per_id(agents, session, capsys):
-    code = cli.main(["sessions", "delete", "claude", SID, SID2])
-    out = capsys.readouterr().out
-    assert code == 0
-    lines = out.splitlines()
-    assert len(lines) == 2
-    assert lines[0].startswith(f"{SID}  deleted")
-    assert lines[1] == f"{SID2}  skipped  not_found"
-    assert TITLE not in out

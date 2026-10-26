@@ -28,6 +28,19 @@ def _app(payload, name):
     return next(a for a in payload["apps"] if a["name"] == name)
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [[], ["status"], ["push", "--all", "--yes"], ["config", "apps", "zsh"],
+     ["account", "usage"], ["sessions", "list", "claude"]],
+)
+def test_a_command_without_json_says_dotsync_is_for_the_app(argv, capsys):
+    assert main(argv) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "dotsync.app" in captured.err
+
+
 def test_status_json_shape(fake_home, monkeypatch, tmp_path, capsys):
     target = _folder(monkeypatch, tmp_path, ["zsh"])
     (fake_home / ".zshrc").write_text("NEW\n")
@@ -123,6 +136,41 @@ def test_status_json_keeps_going_when_one_app_raises(fake_home, monkeypatch, tmp
     assert (ghostty["state"], ghostty["reason"]) == ("unknown", "error")
     assert "settings unreadable" in ghostty["details"]
     assert _app(payload, "zsh")["state"] == "clean"
+
+
+def test_status_json_does_not_plan_a_clean_app(fake_home, monkeypatch, tmp_path, capsys):
+    # BetterTouchTool's plan_from runs osascript: a clean app must not pay it.
+    from dotsync.apps.zsh import ZshApp
+
+    target = _folder(monkeypatch, tmp_path, ["zsh"])
+    _zsh_pair(fake_home, target, local="SAME\n", stored="SAME\n")
+
+    def must_not_be_called(self, target_dir):
+        raise AssertionError("must not be called")
+
+    monkeypatch.setattr(ZshApp, "plan_from", must_not_be_called)
+
+    rc, payload, _ = _run(capsys, ["status", "--json"])
+
+    assert rc == 0
+    assert _app(payload, "zsh")["state"] == "clean"
+
+
+def test_status_json_keeps_a_dirty_app_when_its_plan_fails(fake_home, monkeypatch, tmp_path, capsys):
+    from dotsync.apps.zsh import ZshApp
+
+    target = _folder(monkeypatch, tmp_path, ["zsh"])
+    _zsh_pair(fake_home, target, local="LOCAL\n", stored="STORED\n")
+
+    def boom(self, target_dir):
+        raise RuntimeError("plan exploded")
+
+    monkeypatch.setattr(ZshApp, "plan_from", boom)
+
+    rc, payload, _ = _run(capsys, ["status", "--json"])
+
+    assert rc == 0
+    assert (_app(payload, "zsh")["state"], _app(payload, "zsh")["changes"]) == ("dirty", [])
 
 
 def test_status_json_error_without_folder(fake_home, monkeypatch, tmp_path, capsys):
@@ -231,6 +279,64 @@ def test_pull_yes_json_reports_a_failed_app(fake_home, monkeypatch, tmp_path, ca
     result = payload["results"][0]
     assert result["outcome"] == "failed"
     assert "zsh/.zshrc" in result["error"]
+
+
+def test_push_yes_json_goes_on_after_a_failed_app(fake_home, monkeypatch, tmp_path, capsys):
+    target = _folder(monkeypatch, tmp_path, ["ghostty", "zsh"])
+    (fake_home / ".zshrc").write_text("Z")  # ghostty has no local config to push
+
+    rc, payload, _ = _run(capsys, ["push", "--all", "--yes", "--json"])
+
+    assert rc == 0
+    assert [(r["app"], r["outcome"]) for r in payload["results"]] == [
+        ("ghostty", "failed"), ("zsh", "changed")
+    ]
+    assert (target / "zsh" / ".zshrc").read_text() == "Z"
+
+
+def test_push_yes_json_applies_an_app_whose_plan_lists_nothing(fake_home, monkeypatch, tmp_path, capsys):
+    # An empty plan says nothing about what will change, so it is applied.
+    from dotsync.plan import AppPlan
+
+    _folder(monkeypatch, tmp_path, ["claude"])
+    calls = []
+
+    class Custom:
+        warnings: list = []
+
+        def plan_from(self, target_dir):
+            return AppPlan(app="claude", direction="from", changes=[])
+
+        def sync_from(self, target_dir):
+            calls.append(target_dir)
+
+    monkeypatch.setattr("dotsync.apps.build_app", lambda name, cfg: Custom())
+
+    rc, payload, _ = _run(capsys, ["push", "claude", "--yes", "--json"])
+
+    assert rc == 0
+    assert payload["results"][0]["outcome"] == "changed"
+    assert len(calls) == 1
+
+
+def test_pull_yes_json_carries_an_apps_warnings(fake_home, monkeypatch, tmp_path, capsys):
+    from dotsync.apps import build_app as real_build
+
+    target = _folder(monkeypatch, tmp_path, ["zsh"])
+    (target / "zsh").mkdir()
+    (target / "zsh" / ".zshrc").write_text("X")
+
+    def build(name, cfg):
+        app = real_build(name, cfg)
+        app.warnings.append("zsh: simulated network blip")
+        return app
+
+    monkeypatch.setattr("dotsync.apps.build_app", build)
+
+    rc, payload, _ = _run(capsys, ["pull", "--all", "--yes", "--json"])
+
+    assert rc == 0
+    assert payload["results"][0]["warnings"] == ["zsh: simulated network blip"]
 
 
 def test_push_json_needs_yes_or_dry_run(fake_home, monkeypatch, tmp_path, capsys):

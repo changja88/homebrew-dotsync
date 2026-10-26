@@ -458,18 +458,6 @@ def test_status_missing_when_config_absent(fake_home, tmp_path):
     assert _codex_app().status(target).state == "missing"
 
 
-def test_is_present_locally_true_when_config_exists(fake_home):
-    cdir = _codex_dir(fake_home)
-    cdir.mkdir()
-    (cdir / "config.toml").write_text('model = \"x\"\n')
-
-    assert type(_codex_app()).is_present_locally() is True
-
-
-def test_is_present_locally_false_when_no_config(fake_home):
-    assert type(_codex_app()).is_present_locally() is False
-
-
 def test_plan_from_reports_codex_directory_mirror_removals(fake_home, tmp_path):
     app = _codex_app()
     target = tmp_path / "sync"

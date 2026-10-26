@@ -10,10 +10,6 @@ class GhosttyApp(App):
     description = "Ghostty terminal config (config.ghostty)"
 
     @classmethod
-    def is_present_locally(cls) -> bool:
-        return cls._local_path().exists()
-
-    @classmethod
     def _local_path(cls) -> Path:
         return (
             Path.home()

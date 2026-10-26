@@ -4,61 +4,6 @@ from dotsync.cli import main
 from dotsync.config import Config, load_config, save_config
 
 
-def test_config_show(fake_home, monkeypatch, tmp_path, capsys):
-    target = tmp_path / "configs"
-    target.mkdir()
-    save_config(Config(dir=target, apps=["zsh"]))
-    monkeypatch.setenv("DOTSYNC_DIR", str(target))
-    rc = main(["config", "show"])
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert str(target) in out
-    assert "zsh" in out
-
-
-def test_config_show_prints_app_options(fake_home, monkeypatch, tmp_path, capsys):
-    target = tmp_path / "configs"
-    target.mkdir()
-    save_config(
-        Config(
-            dir=target,
-            apps=["bettertouchtool"],
-            app_options={"bettertouchtool": {"presets": ["Foo", "Bar"]}},
-        )
-    )
-    monkeypatch.setenv("DOTSYNC_DIR", str(target))
-
-    rc = main(["config", "show"])
-
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "app_options" in out
-    assert "Foo" in out
-    assert "Bar" in out
-
-
-def test_config_btt_presets_rejects_unsafe_names(
-    fake_home, monkeypatch, tmp_path, capsys
-):
-    target = tmp_path / "configs"
-    target.mkdir()
-    save_config(
-        Config(
-            dir=target,
-            apps=["bettertouchtool"],
-            app_options={"bettertouchtool": {"presets": ["Safe"]}},
-        )
-    )
-    monkeypatch.setenv("DOTSYNC_DIR", str(target))
-
-    rc = main(["config", "btt-presets", 'Bad"Name'])
-
-    assert rc == 2
-    err = capsys.readouterr().err
-    assert "preset" in err
-    assert load_config().app_options["bettertouchtool"]["presets"] == ["Safe"]
-
-
 def _write_rc(home, folder):
     from dotsync.shellrc import MARKER, export_line
 
@@ -83,11 +28,10 @@ def test_config_dir_updates_marked_rc_line(fake_home, monkeypatch, capsys):
     rc = _write_rc(fake_home, old)
     _app_context(monkeypatch, fake_home)
 
-    assert main(["config", "dir", str(new)]) == 0
+    assert main(["config", "dir", "--json", "--", str(new)]) == 0
 
     assert marked_dir(rc) == new.resolve()
     assert (new / "dotsync.toml").exists()
-    assert "updated" in capsys.readouterr().out
     assert load_config().dir == new.resolve()
 
 
@@ -253,27 +197,6 @@ def test_config_apps_json_rejects_unknown(fake_home, monkeypatch, capsys):
     assert error["code"] == "unknown_apps"
     assert "nope" in error["message"]
     assert load_config().apps == ["zsh"]
-
-
-def test_config_show_json(fake_home, monkeypatch, capsys):
-    target = fake_home / "configs"
-    save_config(
-        Config(
-            dir=target,
-            apps=["bettertouchtool"],
-            app_options={"bettertouchtool": {"presets": ["Foo"]}},
-        )
-    )
-    monkeypatch.setenv("DOTSYNC_DIR", str(target))
-
-    assert main(["config", "show", "--json"]) == 0
-
-    assert json.loads(capsys.readouterr().out) == {
-        "dir": str(target),
-        "dir_source": "env",
-        "apps": ["bettertouchtool"],
-        "app_options": {"bettertouchtool": {"presets": ["Foo"]}},
-    }
 
 
 def test_config_apps_json_keeps_the_existing_order(fake_home, monkeypatch, capsys):

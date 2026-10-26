@@ -1,8 +1,6 @@
-"""Shell rc helpers — detect the user's rc file and idempotently insert the
-`export DOTSYNC_DIR=...` line that lets dotsync run from any cwd.
-
-Pure functions only — the caller (cli.py) decides *when* to call us based on
-user consent (interactive prompt or `--yes`).
+"""Shell rc helpers — find the user's rc file and keep the marked
+`export DOTSYNC_DIR=...` line in it, which is how dotsync finds the sync
+folder (`config dir` writes it, config.locate_sync_folder reads it).
 """
 
 from __future__ import annotations
@@ -18,7 +16,8 @@ from typing import Literal, NamedTuple, Optional
 ENV_VAR = "DOTSYNC_DIR"
 
 # Comment we drop one line above the export so future runs can recognize and
-# (if the path changed) replace cleanly.
+# (if the path changed) replace cleanly. Kept word for word: rc files written
+# by older dotsync carry it.
 MARKER = "# Added by `dotsync init` — points dotsync at your sync folder."
 
 
@@ -190,7 +189,7 @@ def strip_marked_block(text: str) -> str:
 
 def with_local_marked_block(stored_text: str, local_text: str) -> str:
     """stored_text with its marked block replaced by local_text's (the last
-    one), appended at the end after a blank line, where `dotsync init` puts
+    one), appended at the end after a blank line, where update_shell_rc puts
     it: a line index from this Mac's file could fall inside an `if` or a
     quoted string in the other Mac's. With no local block, the stored block
     is simply dropped."""

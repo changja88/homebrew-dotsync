@@ -983,14 +983,3 @@ def test_yes_json_is_one_object_with_progress_on_stderr(db, capsys):
     ]
 
 
-def test_yes_text_prints_one_line_per_item(db, capsys):
-    full_home(db)
-    assert cli.main(["sessions", "cleanup", "codex", "--yes"]) == 0
-    out = capsys.readouterr().out
-    assert out.splitlines() == [
-        "history_rows  done  1",
-        "history_lines  done  1",
-        "session_index  done  1",
-        "queue  done  3",
-        "cache_files  done  1",
-    ]

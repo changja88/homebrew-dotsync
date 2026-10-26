@@ -28,117 +28,6 @@ def _saved(home: Path, cli, name: str, account: dict, secret: str) -> Path:
     return folder
 
 
-def test_account_login_saves_the_browser_account(fake_home, fake_accounts_cli, capsys):
-    fake_accounts_cli.browser = {"oauthAccount": BOB, "secret": "b1"}
-
-    assert main(["account", "login", "bob"]) == 0
-
-    out = capsys.readouterr().out
-    assert "bob" in out and "bob@example.com" in out
-    assert "dotsync account use bob" in out
-
-
-def test_account_use_switches_claude_to_the_account(fake_home, fake_accounts_cli, capsys):
-    cli = fake_accounts_cli
-    _saved(fake_home, cli, "alice", ALICE, "a1")
-    _saved(fake_home, cli, "bob", BOB, "b1")
-    _seat(fake_home, cli, ALICE, "a2")
-
-    assert main(["account", "use", "bob"]) == 0
-
-    assert cli.keychain[SEAT] == "b1"
-    assert "bob@example.com" in capsys.readouterr().out
-
-
-def test_account_use_reports_an_account_already_in_use(fake_home, fake_accounts_cli, capsys):
-    cli = fake_accounts_cli
-    _saved(fake_home, cli, "bob", BOB, "b1")
-    _seat(fake_home, cli, BOB, "b2")
-
-    assert main(["account", "use", "bob"]) == 0
-    assert "already" in capsys.readouterr().out
-
-
-def test_account_use_asks_before_dropping_an_unsaved_login(fake_home, fake_accounts_cli, monkeypatch, capsys):
-    cli = fake_accounts_cli
-    _saved(fake_home, cli, "bob", BOB, "b1")
-    _seat(fake_home, cli, {"accountUuid": "u", "emailAddress": "u@example.com"}, "u1")
-    prompts = []
-    monkeypatch.setattr("builtins.input", lambda prompt="": prompts.append(prompt) or "n")
-
-    assert main(["account", "use", "bob"]) == 1
-
-    assert cli.keychain[SEAT] == "u1"
-    assert "u@example.com" in prompts[0]
-
-
-def test_account_use_drops_an_unsaved_login_when_confirmed(fake_home, fake_accounts_cli, monkeypatch):
-    cli = fake_accounts_cli
-    _saved(fake_home, cli, "bob", BOB, "b1")
-    _seat(fake_home, cli, {"accountUuid": "u", "emailAddress": "u@example.com"}, "u1")
-    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
-
-    assert main(["account", "use", "bob"]) == 0
-    assert cli.keychain[SEAT] == "b1"
-
-
-def test_account_use_yes_skips_the_question(fake_home, fake_accounts_cli, monkeypatch):
-    cli = fake_accounts_cli
-    _saved(fake_home, cli, "bob", BOB, "b1")
-    _seat(fake_home, cli, {"accountUuid": "u", "emailAddress": "u@example.com"}, "u1")
-    monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("asked"))
-
-    assert main(["account", "use", "bob", "--yes"]) == 0
-    assert cli.keychain[SEAT] == "b1"
-
-
-def test_account_list_marks_the_account_in_use(fake_home, fake_accounts_cli, capsys):
-    cli = fake_accounts_cli
-    _saved(fake_home, cli, "alice", ALICE, "a1")
-    _saved(fake_home, cli, "bob", BOB, "b1")
-    (fake_home / ".claude-accounts" / "carol").mkdir()
-    _seat(fake_home, cli, BOB, "b2")
-
-    assert main(["account", "list"]) == 0
-
-    lines = capsys.readouterr().out.splitlines()
-    bob = next(line for line in lines if "bob@example.com" in line)
-    alice = next(line for line in lines if "alice@example.com" in line)
-    carol = next(line for line in lines if "carol" in line)
-    assert "●" in bob and "●" not in alice
-    assert "not logged in" in carol
-
-
-def test_account_list_shows_an_unsaved_login_in_use(fake_home, fake_accounts_cli, capsys):
-    cli = fake_accounts_cli
-    _saved(fake_home, cli, "bob", BOB, "b1")
-    _seat(fake_home, cli, {"accountUuid": "u", "emailAddress": "u@example.com"}, "u1")
-
-    assert main(["account", "list"]) == 0
-
-    out = capsys.readouterr().out
-    assert "u@example.com" in out and "not saved" in out
-
-
-def test_account_list_without_accounts_explains_how_to_add_one(fake_home, fake_accounts_cli, capsys):
-    assert main(["account", "list"]) == 0
-    assert "dotsync account login" in capsys.readouterr().out
-
-
-def test_account_remove_deletes_the_account(fake_home, fake_accounts_cli):
-    cli = fake_accounts_cli
-    bob = _saved(fake_home, cli, "bob", BOB, "b1")
-    _seat(fake_home, cli, ALICE, "a1")
-
-    assert main(["account", "remove", "bob"]) == 0
-    assert not bob.exists()
-
-
-def test_account_errors_exit_nonzero_with_the_reason(fake_home, fake_accounts_cli, capsys):
-    assert main(["account", "use", "ghost"]) == 5
-    assert "dotsync account login ghost" in capsys.readouterr().err
-
-
 def test_account_needs_a_subcommand(fake_home, fake_accounts_cli):
     with pytest.raises(SystemExit) as exc:
         main(["account"])
@@ -146,8 +35,9 @@ def test_account_needs_a_subcommand(fake_home, fake_accounts_cli):
 
 
 def test_account_commands_do_not_need_a_sync_folder(fake_home, fake_accounts_cli):
-    # No dotsync.toml / DOTSYNC_DIR anywhere: accounts are separate from sync.
-    assert main(["account", "list"]) == 0
+    # No dotsync.toml anywhere: accounts are separate from sync.
+    _saved(fake_home, fake_accounts_cli, "bob", BOB, "b1")
+    assert main(["account", "rename", "bob", "밥", "--json"]) == 0
 
 
 UNSAVED = {"accountUuid": "uuid-u", "emailAddress": "unsaved@example.com"}
@@ -155,53 +45,6 @@ UNSAVED = {"accountUuid": "uuid-u", "emailAddress": "unsaved@example.com"}
 
 def _json_out(capsys) -> dict:
     return json.loads(capsys.readouterr().out)
-
-
-def test_account_list_json(fake_home, fake_accounts_cli, capsys):
-    cli = fake_accounts_cli
-    _saved(fake_home, cli, "alice", ALICE, "a1")
-    _saved(fake_home, cli, "bob", BOB, "b1")
-    _seat(fake_home, cli, ALICE, "a2")
-
-    assert main(["account", "list", "--json"]) == 0
-
-    assert _json_out(capsys) == {
-        "active": "alice",
-        "seat": {"email": "alice@example.com", "saved": True},
-        "accounts": [
-            {"name": "alice", "label": "alice", "email": "alice@example.com", "logged_in": True},
-            {"name": "bob", "label": "bob", "email": "bob@example.com", "logged_in": True},
-        ],
-    }
-
-
-def test_account_list_json_with_an_unsaved_login_and_a_lost_one(fake_home, fake_accounts_cli, capsys):
-    cli = fake_accounts_cli
-    (fake_home / ".claude-accounts" / "bob").mkdir(parents=True)
-    _seat(fake_home, cli, UNSAVED, "u1")
-
-    assert main(["account", "list", "--json"]) == 0
-
-    out = _json_out(capsys)
-    assert out["active"] is None
-    assert out["seat"] == {"email": "unsaved@example.com", "saved": False}
-    assert out["accounts"] == [{"name": "bob", "label": "bob", "email": None, "logged_in": False}]
-
-
-def test_account_list_json_without_any_login(fake_home, fake_accounts_cli, capsys):
-    assert main(["account", "list", "--json"]) == 0
-    assert _json_out(capsys) == {"active": None, "seat": None, "accounts": []}
-
-
-def test_account_list_json_with_a_corrupt_claude_json(fake_home, fake_accounts_cli, capsys):
-    cli = fake_accounts_cli
-    folder = _saved(fake_home, cli, "bob", BOB, "b1")
-    (folder / ".claude.json").write_text("{")
-
-    assert main(["account", "list", "--json"]) == 0
-    assert _json_out(capsys)["accounts"] == [
-        {"name": "bob", "label": "bob", "email": None, "logged_in": True}
-    ]
 
 
 def test_account_login_json_keeps_claudes_output_off_stdout(fake_home, fake_accounts_cli, capsys):
@@ -275,8 +118,8 @@ def test_account_json_unexpected_errors_are_failed(fake_home, fake_accounts_cli,
     def boom():
         raise OSError("disk on fire")
 
-    monkeypatch.setattr(accounts, "snapshot", boom)
-    assert main(["account", "list", "--json"]) == 1
+    monkeypatch.setattr(accounts, "usage", boom)
+    assert main(["account", "usage", "--json"]) == 1
     assert _json_out(capsys) == {"error": {"code": "failed", "message": "disk on fire"}}
 
 
@@ -296,24 +139,6 @@ def test_account_use_json_is_busy_while_another_command_runs(fake_home, fake_acc
     assert cli.keychain[SEAT] == "a2"
 
 
-def test_account_use_text_is_busy_while_another_command_runs(fake_home, fake_accounts_cli, monkeypatch, capsys):
-    from dotsync import accounts
-
-    monkeypatch.setattr(accounts, "LOCK_WAIT_SECONDS", 0.2)
-    _saved(fake_home, fake_accounts_cli, "bob", BOB, "b1")
-    with accounts.locked():
-        assert main(["account", "use", "bob"]) == 5
-    assert "another dotsync account command" in capsys.readouterr().err
-
-
-def test_account_list_does_not_wait_for_the_lock(fake_home, fake_accounts_cli, monkeypatch):
-    from dotsync import accounts
-
-    monkeypatch.setattr(accounts, "LOCK_WAIT_SECONDS", 0.2)
-    with accounts.locked():
-        assert main(["account", "list", "--json"]) == 0
-
-
 def test_account_rename_json(fake_home, fake_accounts_cli, capsys):
     _saved(fake_home, fake_accounts_cli, "bob", BOB, "b1")
 
@@ -322,36 +147,6 @@ def test_account_rename_json(fake_home, fake_accounts_cli, capsys):
     assert _json_out(capsys) == {
         "name": "bob", "label": "밥", "email": "bob@example.com", "logged_in": True,
     }
-
-
-def test_account_rename_text(fake_home, fake_accounts_cli, capsys):
-    _saved(fake_home, fake_accounts_cli, "bob", BOB, "b1")
-    assert main(["account", "rename", "bob", "밥"]) == 0
-    assert "밥" in capsys.readouterr().out
-
-
-def test_account_list_text_shows_a_label_and_its_name(fake_home, fake_accounts_cli, capsys):
-    _saved(fake_home, fake_accounts_cli, "bob", BOB, "b1")
-    main(["account", "rename", "bob", "밥"])
-    capsys.readouterr()
-
-    assert main(["account", "list"]) == 0
-
-    out = capsys.readouterr().out
-    assert "밥" in out and "(bob)" in out
-
-
-def test_account_login_again_for_the_account_in_use_says_claude_keeps_going(fake_home, fake_accounts_cli, capsys):
-    cli = fake_accounts_cli
-    _saved(fake_home, cli, "alice", ALICE, "a1")
-    _seat(fake_home, cli, ALICE, "a2")
-    cli.browser = {"oauthAccount": ALICE, "secret": "a3"}
-
-    assert main(["account", "login", "alice"]) == 0
-
-    out = capsys.readouterr().out
-    assert "already uses" in out
-    assert "dotsync account use" not in out
 
 
 def test_account_login_turns_sigterm_into_a_cancel(fake_home, fake_accounts_cli, monkeypatch, capsys):
@@ -373,7 +168,7 @@ def test_other_account_commands_keep_the_default_sigterm(fake_home, fake_account
 
     installed = {}
     monkeypatch.setattr(signal, "signal", lambda sig, handler: installed.__setitem__(sig, handler))
-    main(["account", "list", "--json"])
+    main(["account", "remove", "ghost", "--json"])
     assert installed == {}
 
 
@@ -394,22 +189,6 @@ def test_account_usage_json(fake_home, fake_accounts_cli, capsys):
     assert out["accounts"][0]["five_hour"] == {"percent": 31, "resets_at": "2026-10-04T15:39:00Z"}
 
 
-def test_account_usage_text(fake_home, fake_accounts_cli, capsys):
-    cli = fake_accounts_cli
-    _saved(fake_home, cli, "alice", ALICE, "a1")
-    (fake_home / ".claude-accounts" / "bob").mkdir(parents=True)
-    _seat(fake_home, cli, ALICE, "a2")
-    cli.reply_usage("seat", FIVE, (15, None))
-
-    assert main(["account", "usage"]) == 0
-
-    out = capsys.readouterr().out
-    assert "● alice" in out
-    assert "31% (resets" in out
-    assert " 15%" in out
-    assert "dotsync account login bob" in out
-
-
 @pytest.fixture
 def utc_local_time():
     import os
@@ -424,20 +203,6 @@ def utc_local_time():
     else:
         os.environ["TZ"] = saved
     time.tzset()
-
-
-def test_account_usage_text_rounds_resets_to_the_nearest_minute(
-    fake_home, fake_accounts_cli, utc_local_time, capsys
-):
-    # Claude reports resets like 05:59:59.85; people read that as 06:00.
-    cli = fake_accounts_cli
-    _saved(fake_home, cli, "alice", ALICE, "a1")
-    _seat(fake_home, cli, ALICE, "a2")
-    cli.reply_usage("seat", FIVE, (15, "2026-10-09T05:59:59.850000+00:00"))
-
-    assert main(["account", "usage"]) == 0
-
-    assert "15% (resets 10-09 06:00)" in capsys.readouterr().out
 
 
 def test_account_usage_json_without_claude(fake_home, fake_accounts_cli, monkeypatch, capsys):
