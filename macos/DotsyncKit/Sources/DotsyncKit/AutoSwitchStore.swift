@@ -46,6 +46,14 @@ public struct AutoSwitchStore: Sendable {
         loadSettings().enabled ? AutoSwitchText.manualBlocked : nil
     }
 
+    /// Calls back on `queue` when the settings or the log change on disk,
+    /// written by this app, the checker or anyone else; nil when their
+    /// folder can't be watched. Keep the watch: it ends when released.
+    public func watch(queue: DispatchQueue = .main, _ onChange: @escaping @Sendable () -> Void) -> FolderWatch? {
+        FolderWatch(folder: settingsURL.deletingLastPathComponent(), files: [settingsURL, logURL], queue: queue,
+                    onChange: onChange)
+    }
+
     /// Newest first.
     public func loadLog() -> [AutoSwitchLogEntry] {
         guard let data = try? Data(contentsOf: logURL) else { return [] }

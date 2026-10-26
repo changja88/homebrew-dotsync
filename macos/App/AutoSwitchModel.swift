@@ -21,6 +21,9 @@ final class AutoSwitchModel {
     var message: String?
     private let queue: CommandQueue
     private let store: AutoSwitchStore?
+    /// What the menu shows follows the files, whoever changed them: a list
+    /// left stale there turns a click into the wrong account's flip.
+    @ObservationIgnored private var watch: FolderWatch?
 
     init(queue: CommandQueue, store: AutoSwitchStore? = .shared()) {
         self.queue = queue
@@ -29,6 +32,9 @@ final class AutoSwitchModel {
         self.settings = settings
         log = store?.loadLog() ?? []
         agent = AgentRegistration.state(enabled: settings.enabled)
+        watch = store?.watch { [weak self] in
+            MainActor.assumeIsolated { self?.reload() }
+        }
     }
 
     func reload() {
