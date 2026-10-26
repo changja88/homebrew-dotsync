@@ -31,29 +31,42 @@ public enum UsageMerge {
             unsavedSeat: report.unsavedSeat, accounts: accounts)
     }
 
-    /// `file` with the active account's windows from Claude's status line, when
-    /// those came after its last probe. The snapshot names no account: right
-    /// after a switch Claude may still hand over the previous account's numbers,
-    /// so they count as the active one's only when their weekly reset is the one
-    /// its probe saw. Only for drawing; usage.json keeps what dotsync read.
+    /// `file` with the active account's windows from Claude's status line where
+    /// those are later. The snapshot names no account: right after a switch
+    /// Claude may still hand over the previous account's numbers, so they count
+    /// as the active one's only when their weekly reset is the one its probe
+    /// saw. Only for drawing; usage.json keeps what dotsync read.
     public static func withLive(_ file: UsageFile, _ live: LiveUsage?) -> UsageFile {
         guard let live,
               let index = file.accounts.firstIndex(where: { $0.name == file.active }),
               file.accounts[index].status == .ok,
-              live.updatedAt > file.accounts[index].fetchedAt ?? .distantPast,
               let liveWeek = live.sevenDay?.resetsAt,
               let probedWeek = file.accounts[index].sevenDay?.resetsAt,
-              abs(liveWeek.timeIntervalSince(probedWeek)) <= sameResetSlack
+              sameReset(liveWeek, probedWeek)
         else { return file }
         var copy = file
-        if let window = live.fiveHour { copy.accounts[index].fiveHour = window }
-        if let window = live.sevenDay { copy.accounts[index].sevenDay = window }
-        copy.accounts[index].fetchedAt = live.updatedAt
+        copy.accounts[index].fiveHour = later(copy.accounts[index].fiveHour, live.fiveHour)
+        copy.accounts[index].sevenDay = later(copy.accounts[index].sevenDay, live.sevenDay)
         return copy
     }
 
+    /// The later of a probed window and a live one. claude-hud stamps the time
+    /// it writes, not when Claude counted, so an idle session can rewrite its
+    /// old numbers as new; within one window usage only goes up, so the larger
+    /// percent is the later. A later window wins and an earlier one is stale.
+    private static func later(_ probed: UsageWindow?, _ live: UsageWindow?) -> UsageWindow? {
+        guard let live, let liveReset = live.resetsAt else { return probed }
+        guard let probed, let probedReset = probed.resetsAt else { return live }
+        if sameReset(liveReset, probedReset) {
+            return live.percent > probed.percent ? live : probed
+        }
+        return liveReset > probedReset ? live : probed
+    }
+
     /// Claude says 09:00:00 where dotsync's probe says 08:59:59.
-    static let sameResetSlack: TimeInterval = 60
+    private static func sameReset(_ one: Date, _ other: Date) -> Bool {
+        abs(one.timeIntervalSince(other)) <= 60
+    }
 
     /// The whole refresh failed: keep what was shown and say why.
     public static func failed(previous: UsageFile?, message: String) -> UsageFile {

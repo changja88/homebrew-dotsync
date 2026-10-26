@@ -66,6 +66,8 @@ struct AccountsWindow: View {
                     .padding(.horizontal, 18).padding(.top, 8).padding(.bottom, 18)
                 }
             }
+            // Each redraw shows the account in use with Claude's latest numbers.
+            .onChange(of: context.date) { if model.running == nil { model.reload() } }
         }
         .sheet(item: $model.sheet) { sheet in
             AccountSheet(sheet: sheet, model: model)

@@ -86,8 +86,10 @@ between local app locations and one user-chosen sync folder.
   its buttons are `AudioPlaybackIntent`s so they run in the app process.
   Beside usage.json, claude-hud's `display.externalUsageWritePath` may write
   live-usage.json: the status line's `rate_limits` after each Claude answer.
-  The widget and the window draw the active account with those numbers when
-  they are newer and their weekly reset matches (`UsageMerge.withLive`);
+  When their weekly reset matches the active account's, the widget and the
+  window draw it with whichever is later per window: the larger percent in the
+  same window (claude-hud's `updated_at` is when it wrote, so an idle session
+  rewrites old numbers), or the later window (`UsageMerge.withLive`).
   usage.json itself keeps only what dotsync probed.
   `macos/project.yml` is XcodeGen (the `.xcodeproj` is generated, not
   committed). `make app` builds, signs (Developer ID, hardened runtime, no

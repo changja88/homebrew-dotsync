@@ -23,11 +23,15 @@ extension LiveUsage {
         var sevenDay: Window?
     }
 
+    /// claude-hud writes both windows; one Claude dropped after its reset has
+    /// a null percent.
     private struct Window: Decodable {
-        var usedPercentage: Double
+        var usedPercentage: Double?
         var resetsAt: Date?
 
-        var window: UsageWindow { UsageWindow(percent: Int(usedPercentage.rounded()), resetsAt: resetsAt) }
+        var window: UsageWindow? {
+            usedPercentage.map { UsageWindow(percent: Int($0.rounded()), resetsAt: resetsAt) }
+        }
     }
 
     /// claude-hud writes JavaScript's toISOString(), with milliseconds, which
