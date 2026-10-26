@@ -152,7 +152,8 @@ private func report(_ outcomes: [String]) -> DeleteReport {
 
 @Test func skippedLinesMatchTheBriefAndRulings() {
     let expected: [String: String] = [
-        "in_use": "Codex가 거절했어요. 그사이 다른 창에서 열렸어요",
+        // dotsync's own check skips it too, before Codex runs: the line must hold for both.
+        "in_use": "다른 창에서 열려 있어서 지우지 않았어요",
         "referenced": "이 세션에서 갈라져 나온 세션이 아직 이 기록을 써서 지울 수 없어요",
         "stopped": "멈춰서 지우지 않았어요",
         "running": "그사이 다시 열려서 건너뛰었어요",

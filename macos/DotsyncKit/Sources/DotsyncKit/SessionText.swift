@@ -225,8 +225,10 @@ public enum SessionText {
 
     /// Why a session was skipped, by the reason the CLI gives. A reason with a
     /// `unknown:` prefix is one the liveness check could not settle.
+    /// `in_use` comes from Codex's refusal or from dotsync's own check before
+    /// Codex runs, so its line names neither.
     static let skippedLines: [String: String] = [
-        "in_use": "Codex가 거절했어요. 그사이 다른 창에서 열렸어요",
+        "in_use": "다른 창에서 열려 있어서 지우지 않았어요",
         "referenced": "이 세션에서 갈라져 나온 세션이 아직 이 기록을 써서 지울 수 없어요",
         "stopped": "멈춰서 지우지 않았어요",
         "running": "그사이 다시 열려서 건너뛰었어요",
