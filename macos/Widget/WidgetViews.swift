@@ -57,7 +57,10 @@ struct InUseWidgetContent: View {
         let loading = entry.file.isRefreshing(at: entry.date)
         VStack(alignment: .leading, spacing: 7) {
             WidgetHeader(file: entry.file, live: entry.live, now: entry.date, loading: loading)
+            // From a press of ↻ until the widget is drawn again, the system
+            // shows the numbers as loading.
             InUseCard(layout: layout, now: entry.date, loading: loading, stacked: false, fills: true)
+                .invalidatableContent()
         }
         .padding(14)
     }
