@@ -28,6 +28,7 @@ struct RootView: View {
                     case .usage: AccountsWindow(model: accounts)
                     case .settings: SettingsView(model: settings, codexSessionWork: sessions[.codex].work != nil)
                     case .sessions: SessionsView(model: sessions)
+                    case .autoSwitch: AutoSwitchView(model: autoSwitch, accounts: accounts)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

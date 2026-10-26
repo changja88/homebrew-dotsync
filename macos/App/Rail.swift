@@ -5,6 +5,7 @@ enum RailItem: String, CaseIterable, Identifiable {
     case usage
     case settings
     case sessions
+    case autoSwitch
 
     var id: String { rawValue }
 
@@ -13,6 +14,7 @@ enum RailItem: String, CaseIterable, Identifiable {
         case .usage: "사용량"
         case .settings: "설정"
         case .sessions: "세션"
+        case .autoSwitch: "자동 교체"
         }
     }
 }
@@ -128,6 +130,23 @@ struct RailIcon: Shape {
             path.addLine(to: point(16, 9))
             path.move(to: point(8, 12))
             path.addLine(to: point(13, 12))
+        case .autoSwitch:
+            // Two arrows taking turns: "m17 2 4 4-4 4", "M3 11v-1a4 4 0 0 1 4-4h14",
+            // "m7 22-4-4 4-4", "M21 13v1a4 4 0 0 1-4 4H3".
+            path.move(to: point(17, 2))
+            path.addLine(to: point(21, 6))
+            path.addLine(to: point(17, 10))
+            path.move(to: point(3, 11))
+            path.addLine(to: point(3, 10))
+            path.addArc(tangent1End: point(3, 6), tangent2End: point(7, 6), radius: 4 * scale)
+            path.addLine(to: point(21, 6))
+            path.move(to: point(7, 22))
+            path.addLine(to: point(3, 18))
+            path.addLine(to: point(7, 14))
+            path.move(to: point(21, 13))
+            path.addLine(to: point(21, 14))
+            path.addArc(tangent1End: point(21, 18), tangent2End: point(17, 18), radius: 4 * scale)
+            path.addLine(to: point(3, 18))
         }
         return path
     }
