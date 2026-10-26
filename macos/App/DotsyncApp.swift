@@ -41,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let sessions: SessionsModel
     /// Its runs take `accountQueue`.
     let autoSwitch: AutoSwitchModel
+    @ObservationIgnored private var wasActive = false
     /// Set when quitting starts to wait unseen for work in flight.
     @ObservationIgnored private var quitBy: ContinuousClock.Instant?
     /// Quitting waits in the window for long work, then quits.
@@ -94,6 +95,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.isAutoSwitchOn = { [autoSwitch] in autoSwitch.settings.enabled }
     }
 
+    /// The person has used the app since it launched: one the checker opened
+    /// hidden never becomes active.
+    func applicationDidBecomeActive(_ notification: Notification) {
+        wasActive = true
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppHooks.open = { url in _ = NSWorkspace.shared.open(url) }
         offerRelaunchIfNeeded()
@@ -107,7 +114,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try? await Task.sleep(for: .milliseconds(500))
                 }
                 try? await Task.sleep(for: .seconds(2))
-                guard let self, !self.isWorking, !NSApp.windows.contains(where: \.isVisible) else { return }
+                guard let self, !self.isWorking,
+                      QuitRules.leavesAfterBackgroundWork(
+                          windowShown: NSApp.windows.contains(where: \.isVisible),
+                          windowMinimized: NSApp.windows.contains(where: \.isMiniaturized),
+                          appHidden: NSApp.isHidden, wasActive: self.wasActive)
+                else { return }
                 NSApp.terminate(nil)
             }
         }

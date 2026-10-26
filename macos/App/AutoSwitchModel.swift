@@ -14,6 +14,9 @@ final class AutoSwitchModel {
     private(set) var log: [AutoSwitchLogEntry]
     private(set) var agent: AgentState
     private(set) var isRunning = false
+    /// What the switch is turning to, while that takes (the notification
+    /// prompt, launchctl): the switch shows it and can't be pressed again.
+    private(set) var turning: Bool?
     /// Why turning auto switch on failed.
     var message: String?
     private let queue: CommandQueue
@@ -37,7 +40,9 @@ final class AutoSwitchModel {
     /// Turning it on asks for notifications the first time (refused, auto
     /// switch still works) and puts the agent into launchd.
     func setEnabled(_ on: Bool) async {
-        guard let store else { return }
+        guard let store, turning == nil else { return }
+        turning = on
+        defer { turning = nil }
         message = nil
         if on {
             guard let wanted = AgentRegistration.wanted(),

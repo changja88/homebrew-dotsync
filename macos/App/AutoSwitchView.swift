@@ -39,16 +39,18 @@ struct AutoSwitchView: View {
     }
 
     private var enabledSwitch: some View {
-        HStack(spacing: 10) {
-            Text(model.settings.enabled ? "켜짐" : "꺼짐")
+        let shown = model.turning ?? model.settings.enabled
+        return HStack(spacing: 10) {
+            Text(model.turning.map { $0 ? "켜는 중…" : "끄는 중…" } ?? (shown ? "켜짐" : "꺼짐"))
                 .font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
             Toggle("자동 교체", isOn: Binding(
-                get: { model.settings.enabled },
+                get: { shown },
                 set: { on in Task { await model.setEnabled(on) } }
             ))
             .labelsHidden()
             .toggleStyle(.switch).controlSize(.small)
             .tint(Color(red: 47 / 255, green: 140 / 255, blue: 1))
+            .disabled(model.turning != nil)
         }
         .padding(.horizontal, 12).frame(height: 34)
         .background(GlassPanel(cornerRadius: 17))
