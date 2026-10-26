@@ -9,7 +9,7 @@ private func app(_ name: String = "zsh", tracked: Bool = true, state: String?, d
 }
 
 private func report(_ apps: [AppSyncStatus]) -> StatusReport {
-    StatusReport(dir: "/x", dirSource: "rc", checkedAt: Date(timeIntervalSince1970: 0), apps: apps)
+    StatusReport(dir: "/x", checkedAt: Date(timeIntervalSince1970: 0), apps: apps)
 }
 
 @Test func aCleanAppIsTheSame() {
@@ -99,7 +99,7 @@ private func report(_ apps: [AppSyncStatus]) -> StatusReport {
 }
 
 private func change(_ label: String, _ details: String = "", kind: String = "update") -> SyncChange {
-    SyncChange(label: label, kind: kind, details: details, fileChanges: [], diffable: true, diff: nil)
+    SyncChange(label: label, kind: kind, details: details, diff: nil)
 }
 
 @Test func changedFilesPutEachLabelWithItsLineCounts() {

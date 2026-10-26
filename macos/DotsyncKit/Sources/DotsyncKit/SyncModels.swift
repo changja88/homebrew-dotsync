@@ -3,8 +3,6 @@ import Foundation
 /// `dotsync status --json`: every supported app, tracked or not.
 public struct StatusReport: Codable, Equatable, Sendable {
     public var dir: String
-    /// How dotsync found the folder: "env", "cwd" or "rc".
-    public var dirSource: String
     public var checkedAt: Date
     public var apps: [AppSyncStatus]
 }
@@ -39,8 +37,6 @@ public struct SyncChange: Codable, Equatable, Sendable {
     /// "create", "update", "remove" or "unchanged".
     public var kind: String
     public var details: String
-    public var fileChanges: [String]
-    public var diffable: Bool
     /// Only in a preview.
     public var diff: String?
 }

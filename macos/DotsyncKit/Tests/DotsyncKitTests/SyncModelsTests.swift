@@ -47,7 +47,6 @@ private func decoded<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
 
 @Test func statusDecodesTrackedAndUntrackedApps() throws {
     let report = try decoded(StatusReport.self, sampleStatus)
-    #expect(report.dirSource == "rc")
     #expect(report.checkedAt == Date(timeIntervalSince1970: 1_792_897_445))
     #expect(report.apps.map(\.name) == ["claude", "bettertouchtool", "herdr"])
     let claude = report.apps[0]
@@ -69,7 +68,6 @@ private func decoded<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
     #expect(preview.direction == "to")
     #expect(preview.plans.map(\.app) == ["claude", "zsh"])
     let change = preview.plans[0].changes[0]
-    #expect(change.fileChanges == ["~ a.json", "+ b.json"])
     #expect(change.diff == "◦ a.json\n-old\n+new")
     #expect(preview.plans[0].pluginActions == PluginActions(install: ["a@m", "b@m"], disable: ["c@m"]))
     #expect(preview.plans[1].pluginActions == nil)

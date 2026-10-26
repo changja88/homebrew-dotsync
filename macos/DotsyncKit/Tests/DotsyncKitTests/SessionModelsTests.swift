@@ -19,7 +19,6 @@ func decodeSession<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
     #expect(claude.tool == .claude)
     #expect((claude.totals.sessions, claude.totals.running) == (3, 1))
     #expect(claude.totals.historyDbBytes == nil)
-    #expect(claude.agentsError == nil)
     let items = claude.groups.flatMap(\.items)
     #expect(Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0.state) }) == [
         "11111111-1111-4111-8111-111111111111": "idle",
@@ -166,7 +165,6 @@ func decodeSession<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
                  "last_activity": "2026-10-25T03:04:05Z", "bytes": 5, "state": "paused", "reason": "new_reason",
                  "place_reason": "new_place", "surprise": 1}]}]}
     """)
-    #expect(list.agentsError == "process_scan_failed")
     #expect(list.groups[0].items[0].state == "paused")
     #expect(list.groups[0].items[0].placeReason == "new_place")
 }

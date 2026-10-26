@@ -84,7 +84,6 @@ public struct AccountInfo: Codable, Equatable, Sendable {
     public var name: String
     public var label: String
     public var email: String?
-    public var loggedIn: Bool
 }
 
 /// dotsync's `--json` failure: `{"error": {"code", "message", "email"?}}`.

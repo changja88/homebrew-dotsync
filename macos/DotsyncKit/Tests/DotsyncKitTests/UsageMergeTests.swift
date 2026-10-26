@@ -131,7 +131,7 @@ func account(_ name: String, weekUsed percent: Int, resets: Date?) -> AccountUsa
 @Test func renamedAndRemovedEditOneAccount() {
     var file = UsageFile.empty
     file.accounts = [account("a"), account("b")]
-    let renamed = UsageMerge.renamed(file, AccountInfo(name: "b", label: "밥", email: nil, loggedIn: true))
+    let renamed = UsageMerge.renamed(file, AccountInfo(name: "b", label: "밥", email: nil))
     #expect(renamed.accounts.map(\.label) == ["a", "밥"])
     #expect(UsageMerge.removed(file, "a").accounts.map(\.name) == ["b"])
 }

@@ -17,8 +17,6 @@ public struct SessionList: Decodable, Sendable, Equatable {
     public var checkedAt: Date
     public var totals: SessionTotals
     public var groups: [SessionGroup]
-    /// Why `claude agents` could not say what runs (Claude only).
-    public var agentsError: String?
 }
 
 public struct SessionTotals: Decodable, Sendable, Equatable {

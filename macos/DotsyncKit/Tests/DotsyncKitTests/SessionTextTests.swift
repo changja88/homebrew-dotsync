@@ -21,7 +21,7 @@ private func result(
 
 @Test func totalsMatchTheBoards() {
     let totals = SessionTotals(sessions: 244, bytes: 33_400_000_000, running: 11, historyDbBytes: nil)
-    let claude = SessionList(tool: .claude, checkedAt: sessionNow, totals: totals, groups: [], agentsError: nil)
+    let claude = SessionList(tool: .claude, checkedAt: sessionNow, totals: totals, groups: [])
     #expect(SessionText.totals(claude) == "244개 · 33.4 GB · 실행 중 11")
     var codex = claude
     codex.totals = SessionTotals(sessions: 1725, bytes: 5_300_000_000, running: 3, historyDbBytes: nil)
@@ -202,7 +202,7 @@ private func report(_ outcomes: [String]) -> DeleteReport {
 }
 
 /// Every reason lib/dotsync/sessions/{claude,claude_delete,codex}.py can put
-/// on a skipped or partial result. Add a new one here when the CLI gains it.
+/// on a skipped result. Add a new one here when the CLI gains it.
 private let cliSkippedReasons = [
     // claude_delete.py: _delete_one, delete (stop), _not_deletable, restore
     "not_found", "rename_failed", "stopped", "running", "background", "desktop", "unknown:new_transcript",
@@ -215,17 +215,12 @@ private let cliSkippedReasons = [
     // the reasons the brief and rulings also name
     "recent",
 ]
-private let cliPartialReasons = ["failed", "timeout", "no_rollout"]  // codex._judge
 
 @Test func noCLIReasonFallsToTheFallback() {
     for reason in cliSkippedReasons {
         let line = SessionText.resultLine(result("skipped", reason: reason), tool: .codex)
         #expect(line != SessionText.skippedFallback, "skipped \(reason)")
     }
-    for reason in cliPartialReasons {
-        #expect(SessionText.partialReasons.contains(reason), "partial \(reason)")
-    }
-    #expect(Set(cliPartialReasons) == SessionText.partialReasons)
 }
 
 @Test func failedRestoreHasItsOwnLine() {

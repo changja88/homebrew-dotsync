@@ -66,7 +66,7 @@ let sampleReport = """
     let info = try UsageJSON.decoder().decode(
         AccountInfo.self,
         from: Data(#"{"name": "bob", "label": "밥", "email": "b@x", "logged_in": true}"#.utf8))
-    #expect(info == AccountInfo(name: "bob", label: "밥", email: "b@x", loggedIn: true))
+    #expect(info == AccountInfo(name: "bob", label: "밥", email: "b@x"))
     let envelope = try UsageJSON.decoder().decode(
         CLIErrorEnvelope.self,
         from: Data(#"{"error": {"code": "unsaved_login", "message": "m", "email": "u@x"}}"#.utf8))

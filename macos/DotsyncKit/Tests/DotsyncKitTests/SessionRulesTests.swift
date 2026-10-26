@@ -20,7 +20,7 @@ func makeGroup(_ name: String, gb: Double, key: String? = nil, items: [SessionIt
 func makeList(_ groups: [SessionGroup]) -> SessionList {
     SessionList(
         tool: .claude, checkedAt: sessionNow, totals: SessionTotals(sessions: 0, bytes: 0, running: 0, historyDbBytes: nil),
-        groups: groups, agentsError: nil)
+        groups: groups)
 }
 
 @Test func onlyIdleCanBeSelected() {

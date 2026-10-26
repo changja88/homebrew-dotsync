@@ -267,10 +267,6 @@ public enum SessionText {
     static let unknownFallback = "실행 여부를 확인하지 못해서 건너뛰었어요"
     static let restoreFailedLine = "되돌리지 못했어요. 지우다 멈춘 상태로 남아 있어요"
     static let skippedFallback = "건너뛰었어요"
-
-    /// The partial reasons the CLI emits; they share one line, and
-    /// `no_rollout` adds a pointer to the cleanup.
-    static let partialReasons: Set<String> = ["failed", "timeout", "no_rollout"]
     static let partialFallback = "일부만 지웠을 수 있어요"
 
     /// One sentence group for one result, without its size.
