@@ -16,10 +16,12 @@ public struct AutoSwitchService: Sendable {
     }
 
     /// The entry written to the log, or nil when there is nothing to note:
-    /// auto switch is off, or a refetch found the account in use below its
-    /// limits.
+    /// auto switch is off or resting, or a refetch found the account in use
+    /// below its limits. The checker never wakes the app in a rest; a link
+    /// opened some other way waits it out too.
     public func run(_ request: AutoSwitchRequest, now: Date = Date()) async -> AutoSwitchLogEntry? {
-        guard store.loadSettings().enabled else { return nil }
+        let settings = store.loadSettings()
+        guard settings.enabled, !(settings.restUntil.map { $0 > now } ?? false) else { return nil }
         guard let outcome = await outcome(of: request, now: now) else { return nil }
         // Only the fields a run owns: the person may have changed the rest
         // while dotsync worked.
