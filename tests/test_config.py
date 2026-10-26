@@ -4,7 +4,7 @@ from dotsync.config import (
     ConfigError,
     load_config,
     save_config,
-    find_sync_folder,
+    locate_sync_folder,
     folder_config_path,
 )
 
@@ -13,15 +13,15 @@ def test_folder_config_path_is_dotsync_toml(tmp_path):
     assert folder_config_path(tmp_path) == tmp_path / "dotsync.toml"
 
 
-# ----- find_sync_folder ------------------------------------------------------
+# ----- locate_sync_folder ----------------------------------------------------
 
 
-def test_find_sync_folder_uses_env_var(monkeypatch, tmp_path):
+def test_locate_sync_folder_uses_env_var(monkeypatch, tmp_path):
     monkeypatch.setenv("DOTSYNC_DIR", str(tmp_path))
-    assert find_sync_folder() == tmp_path
+    assert locate_sync_folder() == (tmp_path, "env")
 
 
-def test_find_sync_folder_ascends_cwd(monkeypatch, tmp_path):
+def test_locate_sync_folder_ascends_cwd(monkeypatch, tmp_path):
     folder = tmp_path / "myfolder"
     folder.mkdir()
     (folder / "dotsync.toml").write_text("apps = []\n")
@@ -29,17 +29,17 @@ def test_find_sync_folder_ascends_cwd(monkeypatch, tmp_path):
     deep.mkdir(parents=True)
     monkeypatch.delenv("DOTSYNC_DIR", raising=False)
     monkeypatch.chdir(deep)
-    assert find_sync_folder() == folder
+    assert locate_sync_folder() == (folder, "cwd")
 
 
-def test_find_sync_folder_returns_none_when_nothing_found(fake_home, monkeypatch, tmp_path):
+def test_locate_sync_folder_returns_none_when_nothing_found(fake_home, monkeypatch, tmp_path):
     # fake_home: the rc fallback must not read the real ~/.zshrc.
     monkeypatch.delenv("DOTSYNC_DIR", raising=False)
     monkeypatch.chdir(tmp_path)
-    assert find_sync_folder() is None
+    assert locate_sync_folder() == (None, "")
 
 
-def test_find_sync_folder_env_takes_precedence_over_cwd(monkeypatch, tmp_path):
+def test_locate_sync_folder_env_takes_precedence_over_cwd(monkeypatch, tmp_path):
     env_folder = tmp_path / "env"
     env_folder.mkdir()
     cwd_folder = tmp_path / "cwd"
@@ -47,7 +47,7 @@ def test_find_sync_folder_env_takes_precedence_over_cwd(monkeypatch, tmp_path):
     (cwd_folder / "dotsync.toml").write_text("apps = []\n")
     monkeypatch.setenv("DOTSYNC_DIR", str(env_folder))
     monkeypatch.chdir(cwd_folder)
-    assert find_sync_folder() == env_folder
+    assert locate_sync_folder() == (env_folder, "env")
 
 
 # ----- load_config -----------------------------------------------------------

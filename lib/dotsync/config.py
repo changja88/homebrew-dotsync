@@ -86,11 +86,6 @@ def locate_sync_folder() -> tuple[Optional[Path], str]:
     return None, ""
 
 
-def find_sync_folder() -> Optional[Path]:
-    """The sync folder from locate_sync_folder(), or None."""
-    return locate_sync_folder()[0]
-
-
 def load_config() -> Config:
     folder, source = locate_sync_folder()
     if folder is None:

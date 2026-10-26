@@ -89,15 +89,6 @@ def _owned(
     return paths, unsafe
 
 
-def owned_paths(sid: str, project_dirs: list[Path], cwds: list[str]) -> list[Path]:
-    """The session's files and directories, existing or not. Raises
-    safety.UnsafePath when any of them is not directly inside its root."""
-    paths, unsafe = _owned(sid, project_dirs, cwds)
-    if unsafe:
-        raise safety.UnsafePath(f"session {sid} has a path outside its root")
-    return paths
-
-
 def _listdir(directory: Path) -> list[str]:
     try:
         return os.listdir(directory)

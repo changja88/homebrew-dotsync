@@ -221,7 +221,7 @@ def test_app_plan_changed_excludes_unchanged_but_includes_missing_source(tmp_pat
     )
 
     assert plan.has_changes
-    assert plan.changed_labels() == ["missing"]
+    assert [c.is_change for c in plan.changes] == [False, True]
 
 
 def test_change_defaults_to_empty_file_changes():

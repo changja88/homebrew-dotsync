@@ -58,9 +58,6 @@ class AppPlan:
     def has_changes(self) -> bool:
         return any(c.is_change for c in self.changes)
 
-    def changed_labels(self) -> list[str]:
-        return [c.label for c in self.changes if c.is_change]
-
 
 def _hash(path: Path) -> str:
     h = hashlib.sha256()

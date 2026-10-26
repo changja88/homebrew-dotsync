@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from dotsync.sessions import claude, roots, safety
+from dotsync.sessions import claude, roots
 from tests.sessions.claude_fixtures import make_session, user, write_jsonl
 
 SID = "11111111-1111-4111-8111-111111111111"
@@ -182,7 +182,6 @@ def test_no_temp_paths_when_temp_root_is_none(home, tmp_path, monkeypatch):
     monkeypatch.setattr(roots, "claude_temp_root", lambda: None)
     [s] = claude.scan()
     assert not any("claude-tmp" in str(p) for p in s.paths)
-    assert not any("claude-tmp" in str(p) for p in claude.owned_paths(SID, s.project_dirs, ["/work/p"]))
 
 
 def test_symlinks_and_invalid_names_are_ignored(home, tmp_path):
@@ -202,8 +201,6 @@ def test_symlinked_session_dir_marks_unsafe(home, tmp_path):
     assert s.unsafe is True
     assert not any(p.name in ("subagents", "tool-results", "mcp-tasks") for p in s.paths)
     assert s.subagents == 0
-    with pytest.raises(safety.UnsafePath):
-        claude.owned_paths(SID, [home / "projects/-p"], [])
 
 
 def test_safe_session_is_not_unsafe(home):
