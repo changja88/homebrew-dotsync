@@ -62,7 +62,7 @@ def test_config_dir_json_takes_over_a_hand_written_export_line(fake_home, monkey
     assert load_config().dir == new.resolve()
 
 
-def test_config_dir_json_starts_a_zshrc_when_there_is_no_rc_file(fake_home, monkeypatch, capsys):
+def test_config_dir_json_starts_a_bash_profile_when_there_is_no_rc_file(fake_home, monkeypatch, capsys):
     # The rc line is the only way the next command finds the folder.
     from dotsync.shellrc import marked_dir
 
@@ -71,10 +71,28 @@ def test_config_dir_json_starts_a_zshrc_when_there_is_no_rc_file(fake_home, monk
 
     assert main(["config", "dir", "--json", "--", str(new)]) == 0
 
-    rc = fake_home / ".zshrc"
+    rc = fake_home / ".bash_profile"
     assert json.loads(capsys.readouterr().out)["rc"] == {"action": "added", "path": str(rc)}
     assert marked_dir(rc) == new.resolve()
+    assert not (fake_home / ".zshrc").exists()
     assert load_config().dir == new.resolve()
+
+
+def test_config_dir_on_a_mac_without_rc_files_leaves_the_shared_zshrc_to_pull(fake_home, monkeypatch, capsys):
+    # A ~/.zshrc holding only this Mac's line would look newer than the
+    # shared one, and a push would empty it.
+    shared = fake_home / "shared"
+    save_config(Config(dir=shared, apps=["zsh"]))
+    (shared / "zsh").mkdir()
+    (shared / "zsh" / ".zshrc").write_text("alias ll='ls -l'\n")
+    _app_context(monkeypatch, fake_home)
+
+    assert main(["config", "dir", "--json", "--", str(shared)]) == 0
+    capsys.readouterr()
+    assert main(["status", "--json"]) == 0
+
+    apps = json.loads(capsys.readouterr().out)["apps"]
+    assert next(a for a in apps if a["name"] == "zsh")["state"] == "missing"
 
 
 def test_config_dir_keeps_the_folders_own_dotsync_toml(fake_home, monkeypatch, capsys):

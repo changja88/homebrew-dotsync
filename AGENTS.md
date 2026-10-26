@@ -69,7 +69,8 @@ app with one JSON object; without `--json` it says so and exits 2.
     (`depends_on "zstd"` in the Formula).
 - `lib/dotsync/shellrc.py` owns the marked `DOTSYNC_DIR` line: finding it
   (`rc_candidates`, `marked_dir`) and keeping it (`update_shell_rc`, which
-  `config dir` calls; with no rc file it starts `~/.zshrc`). The marker text
+  `config dir` calls; with no rc file it starts `~/.bash_profile`, never the
+  `~/.zshrc` the zsh app syncs). The marker text
   stays word for word: existing rc files carry it.
 - `lib/dotsync/accounts.py` owns Claude Code account switching
   (`dotsync account`). Saved logins are Claude Code config folders under

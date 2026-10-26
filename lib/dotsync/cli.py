@@ -117,10 +117,11 @@ def _set_dir(path: str) -> "tuple[Path, ShellRcResult]":
 
 
 def _point_rc_at(new_dir: Path) -> ShellRcResult:
-    """Update the first existing rc file, or start ~/.zshrc (the macOS
-    shell's) when there is none: the line is the only way the next command
-    finds the folder."""
-    rc_path = next((p for p in rc_candidates() if p.exists()), Path.home() / ".zshrc")
+    """Update the first existing rc file, or start ~/.bash_profile when there
+    is none: the line is the only way the next command finds the folder. Not
+    ~/.zshrc, which the zsh app syncs: one holding only this Mac's line would
+    look newer than the shared one."""
+    rc_path = next((p for p in rc_candidates() if p.exists()), Path.home() / ".bash_profile")
     if not rc_path.exists():
         rc_path.touch()
     return update_shell_rc(rc_path, new_dir)

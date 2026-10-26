@@ -38,7 +38,7 @@ On a new Mac: bring the folder (`git clone`, iCloud Drive), choose it in 설정,
 
 **dotsync creates no files or directories on your machine outside the sync folder you chose, with these exceptions:**
 
-- One marked line in your shell rc, `export DOTSYNC_DIR="…"`, under the comment ``# Added by `dotsync init` — points dotsync at your sync folder.``. It is how dotsync finds the folder: dotsync.app has no shell environment, so dotsync reads that line (it never runs it), as long as the folder holds a `dotsync.toml`. Choosing another folder rewrites it; with no rc file at all, dotsync starts `~/.zshrc` with it.
+- One marked line in your shell rc, `export DOTSYNC_DIR="…"`, under the comment ``# Added by `dotsync init` — points dotsync at your sync folder.``. It is how dotsync finds the folder: dotsync.app has no shell environment, so dotsync reads that line (it never runs it), as long as the folder holds a `dotsync.toml`. Choosing another folder rewrites it (a line you added by hand gets the comment); with no rc file at all, dotsync starts `~/.bash_profile` with it, so a `~/.zshrc` from your other Mac can still come down.
 - `~/.claude-accounts/` — the Claude Code logins of the 사용량 menu.
 - What the session commands keep: lock files in `~/Library/Application Support/dotsync/locks/` and result logs in `~/Library/Logs/dotsync/` (see [section 5](#5-clean-up-claude-code-and-codex-sessions)).
 
@@ -191,7 +191,7 @@ brew install --cask changja88/dotsync/dotsync-app   # dotsync.app과, 앱이 실
 
 **dotsync는 사용자가 지정한 sync 폴더 외에는 컴퓨터 어디에도 파일/디렉토리를 만들지 않는다. 예외는 다음뿐이다.**
 
-- 셸 rc의 표식 붙은 한 줄 `export DOTSYNC_DIR="…"`(표식 주석은 ``# Added by `dotsync init` — points dotsync at your sync folder.``). dotsync는 이 줄로 폴더를 찾는다. dotsync.app에는 셸 환경이 없어서, 그 폴더에 `dotsync.toml`이 있으면 이 줄을 읽는다(실행하지 않고 읽기만 한다). 다른 폴더를 고르면 이 줄을 고쳐 쓰고, rc 파일이 하나도 없으면 `~/.zshrc`를 만들어 이 줄을 넣는다.
+- 셸 rc의 표식 붙은 한 줄 `export DOTSYNC_DIR="…"`(표식 주석은 ``# Added by `dotsync init` — points dotsync at your sync folder.``). dotsync는 이 줄로 폴더를 찾는다. dotsync.app에는 셸 환경이 없어서, 그 폴더에 `dotsync.toml`이 있으면 이 줄을 읽는다(실행하지 않고 읽기만 한다). 다른 폴더를 고르면 이 줄을 고쳐 쓰고(손으로 넣은 줄이면 표식 주석도 붙인다), rc 파일이 하나도 없으면 `~/.bash_profile`을 만들어 이 줄을 넣는다. 그래야 다른 맥의 `~/.zshrc`를 그대로 받아올 수 있다.
 - `~/.claude-accounts/` — 사용량 메뉴의 Claude Code 로그인.
 - 세션 명령이 남기는 것: `~/Library/Application Support/dotsync/locks/`의 락 파일과 `~/Library/Logs/dotsync/`의 결과 로그(아래 [5번](#5-claude-code와-codex-세션-정리) 참고).
 
