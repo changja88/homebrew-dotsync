@@ -58,6 +58,11 @@ def test_progress_line_goes_to_stderr(capsys):
     assert captured.err == "dotsync-progress 3/10\n"
 
 
+def test_progress_line_names_its_phase_when_given(capsys):
+    cli_sessions.progress(3, 10, "vacuum")
+    assert capsys.readouterr().err == "dotsync-progress 3/10 vacuum\n"
+
+
 def test_progress_stops_writing_once_stderr_is_gone(gone_stderr, monkeypatch):
     monkeypatch.setattr(sys, "stderr", gone_stderr)
     cli_sessions.progress(1, 3)

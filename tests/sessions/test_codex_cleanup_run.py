@@ -57,7 +57,7 @@ def db():
 
 def run(items=ALL, *, stop=None, progress=None):
     return codex_cleanup.run_cleanup(
-        list(items), False, stop=stop or StopSignal(), progress=progress or (lambda done, total: None)
+        list(items), False, stop=stop or StopSignal(), progress=progress or (lambda done, total, phase: None)
     )
 
 
@@ -280,8 +280,23 @@ def test_unknown_item_is_bad_items_before_any_lock(db, capsys, items):
 
 def run_vacuum(items=ALL, *, stop=None):
     return codex_cleanup.run_cleanup(
-        list(items), True, stop=stop or StopSignal(), progress=lambda done, total: None
+        list(items), True, stop=stop or StopSignal(), progress=lambda done, total, phase: None
     )
+
+
+def test_vacuum_pages_are_reported_in_the_vacuum_phase(db, monkeypatch):
+    full_home(db)
+
+    def fake_reclaim(path, *, progress, **kwargs):
+        progress(25600, 825114)
+        return {"stopped_because": "freelist_empty", "bytes_before": 2, "bytes_after": 1}
+
+    monkeypatch.setattr(codex_cleanup, "reclaim", fake_reclaim)
+    seen = []
+    codex_cleanup.run_cleanup(
+        list(ALL), True, stop=StopSignal(), progress=lambda d, t, phase: seen.append((d, t, phase))
+    )
+    assert seen[-1] == (25600, 825114, "vacuum")
 
 
 def test_vacuum_runs_after_the_items_under_both_locks(db, monkeypatch):
@@ -523,8 +538,8 @@ def test_sigterm_during_history_rows_finishes_that_id_then_stops(db):
         add_history(db, key)
     jsonl("history.jsonl", line("session_id", GONE))
 
-    def progress(done, total):
-        if (done, total) == (1, 3):  # the history ids; the walk has 2 rollouts
+    def progress(done, total, phase):
+        if (done, total, phase) == (1, 3, "delete"):  # the history ids; the walk has 2 rollouts
             os.kill(os.getpid(), signal.SIGTERM)
 
     with StopSignal() as stop:
@@ -547,8 +562,8 @@ def test_progress_follows_the_walk_then_the_history_ids(db):
     for key in (GONE, GONE2, GONE3):
         add_history(db, key)
     seen = []
-    run(progress=lambda done, total: seen.append((done, total)))
-    assert seen == [(1, 2), (2, 2), (1, 3), (2, 3), (3, 3)]
+    run(progress=lambda done, total, phase: seen.append((done, total, phase)))
+    assert seen == [(1, 2, "read"), (2, 2, "read"), (1, 3, "delete"), (2, 3, "delete"), (3, 3, "delete")]
 
 
 # history.jsonl and session_index.jsonl
@@ -961,7 +976,11 @@ def test_yes_json_is_one_object_with_progress_on_stderr(db, capsys):
     assert out.count("\n") == 1
     report = json.loads(out)
     assert [r["id"] for r in report["items"]] == ORDER
-    assert err.splitlines() == ["dotsync-progress 1/2", "dotsync-progress 2/2", "dotsync-progress 1/1"]
+    assert err.splitlines() == [
+        "dotsync-progress 1/2 read",
+        "dotsync-progress 2/2 read",
+        "dotsync-progress 1/1 delete",
+    ]
 
 
 def test_yes_text_prints_one_line_per_item(db, capsys):

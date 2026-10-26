@@ -137,7 +137,17 @@ def _cache_names() -> Iterator[str]:
             continue
 
 
-def dry_run_payload(progress: Callable[[int, int], None] | None = None) -> dict:
+# (done, total, phase): `read` the rollout files of the keep-set walk,
+# `delete` the history rows, `vacuum` the pages. One callback, so a reader of
+# the stream can tell the counts apart.
+PhaseProgress = Callable[[int, int, str], None]
+
+
+def _in_phase(progress: PhaseProgress | None, phase: str) -> Callable[[int, int], None] | None:
+    return None if progress is None else lambda done, total: progress(done, total, phase)
+
+
+def dry_run_payload(progress: PhaseProgress | None = None) -> dict:
     """`detect()`'s fields plus the four items in spec order, what the history
     database weighs, whether it can be vacuumed, and what a vacuum could give
     back now. Blockers are reported, not a refusal: nothing is changed. A
@@ -147,7 +157,7 @@ def dry_run_payload(progress: Callable[[int, int], None] | None = None) -> dict:
     refusal, vacuum_available = codex_keepset.support_check()
     found: Orphans | None = None
     if refusal is None:
-        keep = codex_keepset.keep_set(progress)
+        keep = codex_keepset.keep_set(_in_phase(progress, "read"))
         refusal = codex_keepset.scan_refusal(keep)
         if refusal is None:
             try:
@@ -211,7 +221,7 @@ def run_cleanup(
     vacuum: bool,
     *,
     stop: StopSignal,
-    progress: Callable[[int, int], None],
+    progress: PhaseProgress,
 ) -> dict:
     """Remove what deleted Codex sessions left behind: the chosen `items`, in
     spec order whatever order they come in, then the cache files.
@@ -251,7 +261,7 @@ def run_cleanup(
     return report
 
 
-def _vacuum(report: dict, stop: StopSignal, progress: Callable[[int, int], None]) -> dict:
+def _vacuum(report: dict, stop: StopSignal, progress: PhaseProgress) -> dict:
     """The `--vacuum` result, run while both locks are still held. It starts
     only when the items ended normally; a stop or a Codex that started leaves
     the database as it is, and the result says so."""
@@ -272,7 +282,7 @@ def _vacuum(report: dict, stop: StopSignal, progress: Callable[[int, int], None]
         if not available:
             why = "unavailable"
         else:
-            return reclaim(path, stop=stop, detect=codex_blockers.detect, progress=progress)
+            return reclaim(path, stop=stop, detect=codex_blockers.detect, progress=_in_phase(progress, "vacuum"))
     return {"stopped_because": why, "bytes_before": before, "bytes_after": before}
 
 
@@ -338,12 +348,12 @@ def _flock(fd: int, wait: float) -> bool:
             time.sleep(0.1)
 
 
-def _orphans_to_clean(progress: Callable[[int, int], None]) -> Orphans:
+def _orphans_to_clean(progress: PhaseProgress) -> Orphans:
     """The support check, then the keep-set walk; either refusal raises."""
     refusal, _vacuum_available = codex_keepset.support_check()
     if refusal is not None:
         raise refusal
-    keep = codex_keepset.keep_set(progress)
+    keep = codex_keepset.keep_set(_in_phase(progress, "read"))
     refusal = codex_keepset.scan_refusal(keep)
     if refusal is not None:
         raise refusal
@@ -356,7 +366,7 @@ def _run_items(
     report: dict,
     removed: dict[str, object],
     stop: StopSignal,
-    progress: Callable[[int, int], None],
+    progress: PhaseProgress,
 ) -> None:
     results: list[dict] = report["items"]
     for position, item in enumerate(order):
@@ -376,13 +386,13 @@ def _run_items(
 
 
 def _clean(
-    item: str, found: Orphans, stop: StopSignal, progress: Callable[[int, int], None]
+    item: str, found: Orphans, stop: StopSignal, progress: PhaseProgress
 ) -> tuple[dict, object]:
     """One item's result, and the ids it removed. An item that raises is
     `failed` with its message."""
     try:
         if item == "history_rows":
-            return _delete_history_rows(sorted(found.history_ids), stop, progress)
+            return _delete_history_rows(sorted(found.history_ids), stop, _in_phase(progress, "delete"))
         if item == "history_lines":
             return _drop_lines(item, HISTORY_JSONL, "session_id", set(found.history_lines))
         if item == "session_index":

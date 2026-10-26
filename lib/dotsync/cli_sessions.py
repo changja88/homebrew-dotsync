@@ -175,7 +175,7 @@ def _print_cleanup(report: dict) -> int:
 
 
 def _cleanup_payload(
-    args: argparse.Namespace, on_progress: Callable[[int, int], None] | None
+    args: argparse.Namespace, on_progress: Callable[[int, int, str], None] | None
 ) -> dict:
     if args.blockers:
         return codex_blockers.detect()
@@ -184,7 +184,7 @@ def _cleanup_payload(
     items = _cleanup_items(args.items)
     with StopSignal() as stop:
         return codex_cleanup.run_cleanup(
-            items, args.vacuum, stop=stop, progress=on_progress or (lambda done, total: None)
+            items, args.vacuum, stop=stop, progress=on_progress or (lambda done, total, phase: None)
         )
 
 
@@ -239,15 +239,18 @@ def _size(n: float) -> str:
 _stderr_gone = False
 
 
-def progress(done: int, total: int) -> None:
-    """One progress line on stderr; stdout keeps the one JSON object. Once
+def progress(done: int, total: int, phase: str | None = None) -> None:
+    """One progress line on stderr; stdout keeps the one JSON object. Cleanup
+    names its phase (`read`, `delete`, `vacuum`) after the counts; delete and
+    recover leave it out. Once
     the reader has gone (the app quit while a logout outlived its wait), the
     lines stop and the run goes on to its end and its log."""
     global _stderr_gone
     if _stderr_gone:
         return
     try:
-        print(f"dotsync-progress {done}/{total}", file=sys.stderr, flush=True)
+        line = f"dotsync-progress {done}/{total}" + (f" {phase}" if phase else "")
+        print(line, file=sys.stderr, flush=True)
     except OSError as e:  # BrokenPipeError is the EPIPE one
         if e.errno != errno.EPIPE:
             raise

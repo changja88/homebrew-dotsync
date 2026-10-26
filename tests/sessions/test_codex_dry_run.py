@@ -267,7 +267,7 @@ def test_dry_run_json_is_one_object_with_progress_on_stderr(home, capsys):
     assert cli.main(["sessions", "cleanup", "codex", "--dry-run", "--json"]) == 0
     out, err = capsys.readouterr()
     assert items(json.loads(out))["history_rows"]["count"] == 1
-    assert err.splitlines() == ["dotsync-progress 1/1"]
+    assert err.splitlines() == ["dotsync-progress 1/1 read"]
 
 
 def test_dry_run_refusal_json(home, capsys):
