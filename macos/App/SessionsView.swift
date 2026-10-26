@@ -99,13 +99,14 @@ struct ToolTabs: View {
     }
 }
 
-/// The mockup's grid: 22, 18, flexible, 96, 72 and 96 pt, 12 apart.
+/// The mockup's grid: 22, 18, flexible, 96, 72 pt and the status column
+/// (`SessionText.statusColumnWidth`, wide enough for the longest chip), 12 apart.
 private enum Grid {
     static let chevron: CGFloat = 22
     static let check: CGFloat = 18
     static let count: CGFloat = 96
     static let size: CGFloat = 72
-    static let status: CGFloat = 96
+    static let status = SessionText.statusColumnWidth
     static let gap: CGFloat = 12
 }
 

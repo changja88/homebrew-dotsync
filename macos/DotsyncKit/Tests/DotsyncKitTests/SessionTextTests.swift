@@ -30,6 +30,21 @@ private func result(
     #expect(SessionText.totals(codex) == "1,725개 · 5.3 GB")
 }
 
+@Test func bytesUseTheBoardsForm() {
+    // Decimal units, a space, "." as the point: the same under any locale
+    // (the function takes none and reads none).
+    let cases: [(Int64, String)] = [
+        (25_200_000_000, "25.2 GB"), (1_180_000_000, "1.2 GB"), (11_540_000_000, "11.5 GB"),
+        (302_000_000, "302 MB"), (1_112_913, "1 MB"), (24_000, "24 KB"), (300, "1 KB"), (0, "0 KB"),
+        // A value that rounds to 1,000 of a unit shows as 1 of the next.
+        (999_600_000, "1.0 GB"), (999_500, "1 MB"), (999_999, "1 MB"),
+        (999_499_999, "999 MB"), (1_000_000_000, "1.0 GB"), (1_000, "1 KB"),
+    ]
+    for (count, text) in cases {
+        #expect(SessionText.bytes(count) == text, "\(count)")
+    }
+}
+
 @Test func bytesUseFileStyle() {
     #expect(SessionText.bytes(24_000_000) == "24 MB")
     #expect(SessionText.bytes(8_600_000_000) == "8.6 GB")

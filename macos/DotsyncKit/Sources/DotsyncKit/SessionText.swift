@@ -3,12 +3,18 @@ import Foundation
 /// The Korean copy of the session screen: chips, sub lines, totals and the
 /// lines after a delete. The wording is fixed by the F boards and the spec.
 public enum SessionText {
+    /// The boards' form, whatever the locale: decimal units, a space before
+    /// the unit, "." as the point. GB has one decimal, MB and KB are whole
+    /// (a size above 0 is at least "1 KB"). A value that rounds to 1,000 of a
+    /// unit shows as 1 of the next. Integer arithmetic keeps it locale-free.
     public static func bytes(_ count: Int64) -> String {
-        // "Zero KB" is the default for 0; a column of sizes wants the number.
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
-        formatter.allowsNonnumericFormatting = false
-        return formatter.string(fromByteCount: count)
+        let n = max(count, 0)
+        let gigaTenths = (n + 50_000_000) / 100_000_000
+        let megas = (n + 500_000) / 1_000_000
+        let kilos = n == 0 ? 0 : max((n + 500) / 1_000, 1)
+        if n >= 1_000_000_000 || megas >= 1_000 { return "\(gigaTenths / 10).\(gigaTenths % 10) GB" }
+        if n >= 1_000_000 || kilos >= 1_000 { return "\(megas) MB" }
+        return "\(kilos) KB"
     }
 
     /// "244개 · 33.4 GB · 실행 중 11"; "실행 중" is left out when nothing runs.
@@ -23,7 +29,7 @@ public enum SessionText {
         count == 0 ? "0개 선택" : "\(count)개 선택 · \(bytes(size))"
     }
 
-    private static func grouped(_ count: Int) -> String {
+    static func grouped(_ count: Int) -> String {
         count.formatted(.number.locale(Locale(identifier: "en_US")))
     }
 
@@ -47,6 +53,11 @@ public enum SessionText {
         default: return nil
         }
     }
+
+    /// The width of the status column, header and rows alike: the widest chip
+    /// (11 pt bold, 8 pt padding either side, whole) and no more. The board's
+    /// 96 pt was measured with a web font; the copy wins over the column.
+    public static let statusColumnWidth: CGFloat = 108
 
     /// The folder, then what else is worth knowing about the session.
     public static func subLine(_ item: SessionItem, tool: SessionTool) -> String {
