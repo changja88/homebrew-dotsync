@@ -7,7 +7,6 @@ import subprocess  # noqa: F401 - tests patch this shared module object.
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
-from dotsync import ui
 from dotsync.apps.base import (
     App,
     AppStatus,
@@ -202,12 +201,10 @@ class ClaudeApp(App):
             copy_file_safely(
                 src_md, stored / "CLAUDE.md", "CLAUDE.md", dest_root=target_dir
             )
-            ui.ok("CLAUDE.md")
         else:
             stale_md = stored / "CLAUDE.md"
             if stale_md.exists() or stale_md.is_symlink():
                 self._remove_managed_path(stale_md, "CLAUDE.md", root=target_dir)
-                ui.ok("CLAUDE.md removed")
 
         for name in GLOBAL_RULE_DIRECTORIES:
             src_dir = cdir / name
@@ -222,12 +219,10 @@ class ClaudeApp(App):
                     purge_ignored_dst=bool(ignored),
                     dest_root=target_dir,
                 )
-                ui.ok(f"{name}/")
             else:
                 stale_dir = stored / name
                 if stale_dir.exists() or stale_dir.is_symlink():
                     self._remove_managed_path(stale_dir, f"{name}/", root=target_dir)
-                    ui.ok(f"{name}/ removed")
 
     def _sync_to_global_rules(self, target_dir: Path) -> None:
         """Restore present stored user-level Claude global rules to local."""
@@ -240,7 +235,6 @@ class ClaudeApp(App):
             ensure_directory(cdir, "~/.claude/")
             cdir.mkdir(parents=True, exist_ok=True)
             copy_file_safely(stored_md, local_md, "CLAUDE.md", source_root=target_dir)
-            ui.ok("CLAUDE.md")
 
         for name in GLOBAL_RULE_DIRECTORIES:
             stored_dir = stored / name
@@ -253,7 +247,6 @@ class ClaudeApp(App):
                     self._ignored_top_dirs(name),
                     source_root=target_dir,
                 )
-                ui.ok(f"{name}/")
 
     def _diff_global_rules(self, target_dir: Path) -> AppStatus:
         """Compare user-level Claude global rules."""
@@ -907,8 +900,6 @@ class ClaudeApp(App):
         return AppPlan(self.name, "to", changes, self.description)
 
     def sync_from(self, target_dir: Path) -> None:
-        ui.dim(f"source → {self._claude_dir()}")
-
         cdir = self._claude_dir()
         stored = self._stored(target_dir)
         mcp_servers = self._validate_sync_from_sources()
@@ -922,7 +913,6 @@ class ClaudeApp(App):
             "settings.json",
             dest_root=target_dir,
         )
-        ui.ok("settings.json")
 
         for fname in ("installed_plugins.json", "known_marketplaces.json"):
             copy_file_safely(
@@ -931,7 +921,6 @@ class ClaudeApp(App):
                 f"plugins/{fname}",
                 dest_root=target_dir,
             )
-            ui.ok(f"plugins/{fname}")
 
         write_text_safely(
             stored / "mcp-servers.json",
@@ -939,7 +928,6 @@ class ClaudeApp(App):
             "mcp-servers.json",
             dest_root=target_dir,
         )
-        ui.ok("mcp-servers.json")
 
         for plugin_name in self._installed_plugin_names(
             stored / "plugins" / "installed_plugins.json"
@@ -955,7 +943,6 @@ class ClaudeApp(App):
                     f"plugins/{plugin_name}/config.json",
                     dest_root=target_dir,
                 )
-                ui.ok(f"plugins/{plugin_name}/config.json")
 
         self._sync_from_global_rules(target_dir)
 
@@ -972,28 +959,24 @@ class ClaudeApp(App):
         ensure_directory(cdir / "plugins", "~/.claude/plugins/")
         (cdir / "plugins").mkdir(parents=True, exist_ok=True)
 
-
         copy_file_safely(
             stored / "settings.json",
             cdir / "settings.json",
             "settings.json",
             source_root=target_dir,
         )
-        ui.ok("settings.json")
         copy_file_safely(
             stored / "plugins" / "installed_plugins.json",
             cdir / "plugins" / "installed_plugins.json",
             "plugins/installed_plugins.json",
             source_root=target_dir,
         )
-        ui.ok("plugins/installed_plugins.json")
         copy_file_safely(
             stored / "plugins" / "known_marketplaces.json",
             cdir / "plugins" / "known_marketplaces.json",
             "plugins/known_marketplaces.json",
             source_root=target_dir,
         )
-        ui.ok("plugins/known_marketplaces.json")
 
         claude_json_path = self._claude_json()
         try:
@@ -1010,7 +993,6 @@ class ClaudeApp(App):
             json.dumps(cj, indent=2, ensure_ascii=False),
             "~/.claude.json",
         )
-        ui.ok("mcp-servers.json → ~/.claude.json")
 
         for plugin_name in self._installed_plugin_names(
             stored / "plugins" / "installed_plugins.json"
@@ -1028,16 +1010,12 @@ class ClaudeApp(App):
                 f"plugins/{plugin_name}/config.json",
                 source_root=target_dir,
             )
-            ui.ok(f"plugins/{plugin_name}/config.json")
 
-        ui.divider("restore marketplaces · plugins")
         self._restore_plugins(stored)
 
         self._enforce_disabled(stored / "settings.json")
 
         self._sync_to_global_rules(target_dir)
-
-        ui.dim("hint: restart Claude Code to pick up new plugins")
 
     def _validate_stored_global_rules(self, stored: Path, target_dir: Path) -> None:
         stored_md = stored / "CLAUDE.md"
@@ -1223,7 +1201,7 @@ class ClaudeApp(App):
             source = mp_meta.get("source") or {}
             spec = self._marketplace_spec(source)
             if not spec:
-                ui.warn(f"marketplace `{mp_name}` source unknown — skipping")
+                self.warnings.append(f"marketplace `{mp_name}` source unknown — skipped")
                 continue
             self._run_claude_cli(
                 ["plugin", "marketplace", "add", "--scope", "user", spec],
@@ -1233,7 +1211,6 @@ class ClaudeApp(App):
         for plugin_id, entries in plugins.items():
             entries = entries if isinstance(entries, list) else []
             if any(Path(e.get("installPath", "")).is_dir() for e in entries):
-                ui.sub(f"plugin install {plugin_id} (cache present, skipped)")
                 continue
             self._run_claude_cli(
                 ["plugin", "install", "--scope", "user", plugin_id],
@@ -1304,23 +1281,14 @@ class ClaudeApp(App):
             result = self._run_external(["claude", *args], desc=desc, fail_mode="warn")
         except FileNotFoundError:
             self.warnings.append(f"{desc} skipped: `claude` CLI not installed")
-            ui.warn(f"{desc} skipped: `claude` CLI not installed")
             return
         if result.returncode == 0:
-            combined = ((result.stdout or "") + (result.stderr or "")).lower()
-            if tolerate_already and "already" in combined:
-                ui.sub(f"{desc} (already present)")
-            else:
-                ui.ok(desc)
             return
         stderr = (result.stderr or "").strip()
         if tolerate_already and "already" in stderr.lower():
-            ui.sub(f"{desc} (already present)")
             # Drop the auto-appended warning since "already" is success-equivalent.
             if self.warnings and desc in self.warnings[-1]:
                 self.warnings.pop()
-        else:
-            ui.warn(f"{desc} failed: {stderr or 'unknown'}")
 
 
 def _enabled_plugins(settings_json_path: Path) -> dict[str, Any]:

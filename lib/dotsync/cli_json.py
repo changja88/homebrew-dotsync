@@ -1,7 +1,7 @@
 """`--json` output of the sync commands, for the dotsync app.
 
 The contract is the one `dotsync account --json` follows: exactly one JSON
-object on stdout and nothing else — `ui` and app output go to stderr — exit 0
+object on stdout and nothing else — anything an app prints goes to stderr — exit 0
 with the command's object, or exit 1 with
 ``{"error": {"code": "<code>", "message": "<text>"}}``.
 """

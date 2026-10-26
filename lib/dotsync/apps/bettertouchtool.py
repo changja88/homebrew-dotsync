@@ -13,7 +13,6 @@ import sqlite3
 import subprocess
 import time
 from pathlib import Path
-from dotsync import ui
 from dotsync.apps.base import (
     App,
     AppStatus,
@@ -343,7 +342,6 @@ class BetterTouchToolApp(App):
 
     def sync_from(self, target_dir: Path) -> None:
         for preset in self.presets:
-            ui.dim(f"preset: {preset}")
             dst = self._stored(target_dir, preset)
             self._ensure_stored_path(dst, target_dir, f"presets/{preset}.bttpreset")
             dst.parent.mkdir(parents=True, exist_ok=True)
@@ -358,7 +356,6 @@ class BetterTouchToolApp(App):
             self._osascript(script, auto_launch=True)
             if not self._wait_for_export(dst):
                 raise RuntimeError(f"BTT export file was not created: {dst}")
-            ui.sub(f"presets/{preset}.bttpreset")
 
     def sync_to(self, target_dir: Path) -> None:
         # First pass: verify every preset has a stored .bttpreset before
@@ -377,15 +374,12 @@ class BetterTouchToolApp(App):
             )
 
         for preset in self.presets:
-            ui.dim(f"preset: {preset}")
             src = self._ensure_stored_preset(target_dir, preset)
             import_script = (
                 f'tell application "BetterTouchTool" to import_preset '
                 f"{self._applescript_string(src)}"
             )
             self._osascript(import_script, auto_launch=True)
-            ui.sub(f"presets/{preset}.bttpreset → BTT")
-        ui.dim("hint: check BetterTouchTool to confirm the presets are active")
 
     def status(self, target_dir: Path) -> AppStatus:
         import tempfile

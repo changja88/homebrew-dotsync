@@ -55,7 +55,7 @@ class FilePair:
     """One (local, stored) pair an app tracks for sync.
 
     `local` is the canonical on-machine path; `stored` is the path inside
-    target_dir/<app.name>/. `label` is what shows up in ui.sub() output.
+    target_dir/<app.name>/. `label` names the pair in errors and warnings.
     """
 
     local: Path
@@ -209,13 +209,11 @@ class App(ABC):
 
     def _note_skipped_symlink(self, label: str) -> None:
         """Record (once) that a symlinked entry was left alone, and say so."""
-        from dotsync import ui
 
         msg = f"{label} is a symlink; skipped"
         if msg in self.warnings:
             return
         self.warnings.append(msg)
-        ui.warn(msg)
 
     def _run_external(
         self,
@@ -301,7 +299,6 @@ class App(ABC):
         Default: walk tracked_files(), copy each .local → .stored. Apps that
         need extra behavior (network calls, file transformation) override this.
         """
-        from dotsync import ui
 
         pairs = self.tracked_files(target_dir)
         if not pairs:
@@ -317,7 +314,6 @@ class App(ABC):
             ensure_path_within_root(pair.stored, target_dir, pair.label)
             pair.stored.parent.mkdir(parents=True, exist_ok=True)
             copy_file_safely(pair.local, pair.stored, pair.label, dest_root=target_dir)
-            ui.sub(pair.label)
 
     def sync_to(self, target_dir: Path) -> None:
         """target_dir/<self.name>/ → local app config.
@@ -325,7 +321,6 @@ class App(ABC):
         Default: walk tracked_files(), verify every .stored exists, then copy
         each .stored over its .local.
         """
-        from dotsync import ui
 
         pairs = self.tracked_files(target_dir)
         if not pairs:
@@ -347,7 +342,6 @@ class App(ABC):
             copy_file_safely(
                 pair.stored, pair.local, pair.label, source_root=target_dir
             )
-            ui.sub(pair.label)
 
     def status(self, target_dir: Path) -> AppStatus:
         """Default: diff_files over tracked_files. Apps with non-file state

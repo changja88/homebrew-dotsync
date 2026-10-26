@@ -6,7 +6,6 @@ import json
 import shutil
 from pathlib import Path
 from typing import Callable
-from dotsync import ui
 from dotsync.apps.base import (
     App,
     AppStatus,
@@ -90,7 +89,6 @@ class CodexApp(App):
 
     def _warn(self, message: str) -> None:
         self.warnings.append(message)
-        ui.warn(message)
 
     def _ignored_top_dirs(self, name: str) -> tuple[str, ...]:
         if name != "skills":
@@ -390,20 +388,15 @@ class CodexApp(App):
             return AppStatus(state="dirty", details=", ".join(optional_file_changes))
         return None
 
-    def _run_codex_cli(self, args: list[str], desc: str, *, quiet: bool = False):
+    def _run_codex_cli(self, args: list[str], desc: str):
         try:
-            result = self._run_external(["codex", *args], desc=desc, fail_mode="warn")
+            return self._run_external(["codex", *args], desc=desc, fail_mode="warn")
         except FileNotFoundError:
             self._warn(f"{desc} skipped: `codex` CLI not installed")
             return None
-        if result.returncode == 0 and not quiet:
-            ui.ok(desc)
-        elif result.returncode != 0:
-            ui.warn(f"{desc} failed: {(result.stderr or '').strip() or 'unknown'}")
-        return result
 
     def _codex_json(self, args: list[str], desc: str) -> dict | None:
-        result = self._run_codex_cli(args, desc, quiet=True)
+        result = self._run_codex_cli(args, desc)
         if result is None or result.returncode != 0:
             return None
         try:
@@ -585,9 +578,6 @@ class CodexApp(App):
             return
         marketplaces, plugins = missing
         failed = {mp["name"] for mp in marketplaces if not self._add_marketplace(mp)}
-        for plugin in manifest["plugins"]:
-            if plugin not in plugins:
-                ui.sub(f"plugin add {plugin} (already installed)")
         for plugin in plugins:
             marketplace = plugin.split("@", 1)[1]
             if marketplace in failed:
@@ -705,7 +695,6 @@ class CodexApp(App):
             "config.toml",
             dest_root=target_dir,
         )
-        ui.sub("config.toml")
 
         manifest = self._local_manifest()
         if manifest is None:
@@ -714,18 +703,15 @@ class CodexApp(App):
             write_text_safely(
                 stored / MANIFEST, manifest_text(manifest), MANIFEST, dest_root=target_dir
             )
-            ui.sub(MANIFEST)
 
         for name in OPTIONAL_FILES:
             local_file = self._codex_dir() / name
             if local_file.exists():
                 copy_file_safely(local_file, stored / name, name, dest_root=target_dir)
-                ui.sub(name)
             else:
                 stale_file = stored / name
                 if stale_file.exists() or stale_file.is_symlink():
                     self._remove_managed_path(stale_file, name, root=target_dir)
-                    ui.sub(f"{name} removed")
 
         for name in OPTIONAL_DIRECTORIES:
             local_dir = self._codex_dir() / name
@@ -738,12 +724,10 @@ class CodexApp(App):
                     purge_ignored_dst=bool(ignored),
                     dest_root=target_dir,
                 )
-                ui.sub(f"{name}/")
             else:
                 stale_dir = stored / name
                 if stale_dir.exists() or stale_dir.is_symlink():
                     self._remove_managed_path(stale_dir, f"{name}/", root=target_dir)
-                    ui.sub(f"{name}/ removed")
 
     def sync_to(self, target_dir: Path) -> None:
         stored = self._stored(target_dir)
@@ -756,7 +740,6 @@ class CodexApp(App):
         local_config = self._config_path()
         applied = self._applied_config(stored_config)
         write_text_safely(local_config, applied, "config.toml")
-        ui.sub("config.toml")
 
         for name in OPTIONAL_FILES:
             stored_file = stored / name
@@ -764,7 +747,6 @@ class CodexApp(App):
                 continue
             local_file = local_dir / name
             copy_file_safely(stored_file, local_file, name, source_root=target_dir)
-            ui.sub(name)
 
         for name in OPTIONAL_DIRECTORIES:
             stored_dir = stored / name
@@ -778,7 +760,6 @@ class CodexApp(App):
                 self._ignored_top_dirs(name),
                 source_root=target_dir,
             )
-            ui.sub(f"{name}/")
 
         self._restore_plugins(stored)
 

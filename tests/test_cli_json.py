@@ -183,13 +183,11 @@ def test_status_json_error_without_folder(fake_home, monkeypatch, tmp_path, caps
 
 
 def test_status_json_stdout_is_one_object(fake_home, monkeypatch, tmp_path, capsys):
-    from dotsync import ui
     from dotsync.apps.zsh import ZshApp
 
     _folder(monkeypatch, tmp_path, ["zsh"])
 
     def chatty(self, target_dir):
-        ui.sub("talking on stdout")
         print("raw print")
         return AppStatus("clean")
 
@@ -199,7 +197,6 @@ def test_status_json_stdout_is_one_object(fake_home, monkeypatch, tmp_path, caps
 
     assert rc == 0
     assert _app(payload, "zsh")["state"] == "clean"
-    assert "talking on stdout" in captured.err
     assert "raw print" in captured.err
 
 
@@ -357,15 +354,24 @@ def test_push_json_bad_app(fake_home, monkeypatch, tmp_path, capsys):
     assert payload["error"]["code"] == "bad_app"
 
 
-def test_apply_json_stdout_is_one_object_when_apps_print(fake_home, monkeypatch, tmp_path, capsys):
+def test_apply_json_stdout_is_one_object_when_an_app_prints(fake_home, monkeypatch, tmp_path, capsys):
+    from dotsync.apps.zsh import ZshApp
+
     target = _folder(monkeypatch, tmp_path, ["zsh"])
     _zsh_pair(fake_home, target, local="OLD\n", stored="NEW\n")
+    real_sync_to = ZshApp.sync_to
+
+    def chatty(self, target_dir):
+        print("raw print")
+        real_sync_to(self, target_dir)
+
+    monkeypatch.setattr(ZshApp, "sync_to", chatty)
 
     rc, payload, captured = _run(capsys, ["pull", "zsh", "--yes", "--json"])
 
     assert rc == 0
     assert payload["results"][0]["outcome"] == "changed"
-    assert ".zshrc" in captured.err  # ui.sub from the zsh pull
+    assert "raw print" in captured.err
 
 
 def test_pull_json_busy_when_accounts_locked(fake_home, monkeypatch, tmp_path, capsys):

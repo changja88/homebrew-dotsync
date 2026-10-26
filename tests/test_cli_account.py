@@ -10,11 +10,6 @@ ALICE = {"accountUuid": "uuid-a", "emailAddress": "alice@example.com"}
 BOB = {"accountUuid": "uuid-b", "emailAddress": "bob@example.com"}
 
 
-@pytest.fixture(autouse=True)
-def no_color(monkeypatch):
-    monkeypatch.setenv("NO_COLOR", "1")
-
-
 def _seat(home: Path, cli, account: dict, secret: str) -> None:
     cli.keychain[SEAT] = secret
     (home / ".claude.json").write_text(json.dumps({"oauthAccount": account}, indent=2))

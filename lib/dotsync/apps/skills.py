@@ -12,7 +12,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-from dotsync import ui
 from dotsync.apps.base import (
     App,
     AppStatus,
@@ -188,12 +187,6 @@ class SkillsApp(App):
             MANIFEST,
             dest_root=target_dir,
         )
-        ui.ok(MANIFEST)
-        for name, entry in sorted(manifest.items()):
-            agents = ", ".join(entry["agents"]) or "no managed agent link"
-            ui.sub(f"{name} ← {entry['source']} ({agents})")
-        if not manifest:
-            ui.dim("no skills recorded")
 
     # ----- status ---------------------------------------------------------
 
@@ -293,7 +286,6 @@ class SkillsApp(App):
         manifest = self._read_stored_manifest(target_dir)
         managed = self._managed_agent_dirs()
 
-
         npx_missing = False
         for name, entry in sorted(manifest.items()):
             desc = f"skills add {name}"
@@ -303,25 +295,17 @@ class SkillsApp(App):
                     f"{desc} skipped: {entry['sourceType']} source cannot be reinstalled"
                 )
                 self.warnings.append(msg)
-                ui.warn(msg)
                 continue
             if not agents:
-                ui.sub(f"{desc} (no managed agent link, skipped)")
                 continue
             if self._is_installed(name, agents):
-                ui.sub(f"{desc} (already present)")
                 continue
             if npx_missing:
                 continue
             argv = self._reinstall_argv(name, entry["source"], agents)
             try:
-                result = self._run_external(argv, desc=desc, fail_mode="warn")
+                self._run_external(argv, desc=desc, fail_mode="warn")
             except FileNotFoundError:
                 npx_missing = True
                 msg = "skills add skipped: npx not installed"
                 self.warnings.append(msg)
-                ui.warn(msg)
-                continue
-            if result.returncode == 0:
-                ui.ok(desc)
-        ui.dim("hint: restart Claude Code / Codex to pick up new skills")
