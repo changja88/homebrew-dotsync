@@ -97,6 +97,19 @@ app with one JSON object; without `--json` it says so and exits 2.
   same window (claude-hud's `updated_at` is when it wrote, so an idle session
   rewrites old numbers), or the later window (`UsageMerge.withLive`).
   usage.json itself keeps only what dotsync probed.
+  Auto switch (the 자동 교체 menu): DotsyncKit's `AutoSwitchRules` decides
+  from live-usage.json (only numbers newer than usage.json's `fetched_at`)
+  and picks the next account; `AutoSwitchService` is one wake-up (probe,
+  pick, `use`, rest, log), judged on the probe alone. Settings and the log are
+  auto-switch.json and auto-switch-log.json beside usage.json; a run changes
+  only its own fields (`updateSettings`). The app writes
+  `~/Library/LaunchAgents/com.changja88.dotsync.autoswitch.plist` (WatchPaths
+  = the app group folder) and `launchctl bootstrap`s it; launchd runs the
+  app's own executable with `--auto-switch-check` (`App/Entry.swift`,
+  `CheckMode`), which never writes the folder and opens
+  `dotsync://auto-switch?why=…` in the app without a window. The Cask boots
+  the agent out on uninstall and upgrade (no sudo); the app puts it back at
+  launch (`AutoSwitchModel.reconcileAgent`).
   `macos/project.yml` is XcodeGen (the `.xcodeproj` is generated, not
   committed). `make app` builds, signs (Developer ID, hardened runtime, no
   notarization) and zips; `make release` ships the Formula and the Cask

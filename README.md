@@ -115,7 +115,16 @@ Widgets — add one from Edit Widgets, on the desktop or in Notification Center:
 - "지금 사용 중" (medium): the account in use alone.
 - "Claude 계정 목록" (large): the other accounts, up to seven (with more, six and "외 n개"). Under "지금 사용 중" in Notification Center, the two read as one tall widget.
 
-On a widget, ↻ refreshes (about 10 s, no tokens) and "사용" switches Claude. The app runs only while you use it — nothing stays in the background. An install or update stops the widget that was running, so the new one takes over. If a widget still stays blank, open the app once: it reloads the widgets.
+On a widget, ↻ refreshes (about 10 s, no tokens) and "사용" switches Claude. The app runs only while you use it; with auto switch on, only a short check runs in the background (below). An install or update stops the widget that was running, so the new one takes over. If a widget still stays blank, open the app once: it reloads the widgets.
+
+Auto switch — the 자동 교체 menu, off until you turn it on:
+
+- When the account in use reaches 90% of its 5-hour window or 98% of its week, dotsync switches Claude to another saved account: the one with the least weekly use (균등 사용), or the one whose week resets soonest (주간 초기화 가까운 순). Any account below both limits qualifies, except the ones you exclude.
+- It needs the live usage claude-hud writes: set claude-hud's `display.externalUsageWritePath` to `~/Library/Group Containers/GR53VV7ZD2.dotsync/live-usage.json` (as an absolute path).
+- Nothing stays running. A LaunchAgent (`com.changja88.dotsync.autoswitch`) runs the app's executable for a moment whenever that folder changes. When it's time to switch, it opens the app without a window; the app probes every account, switches, notes it in the menu's log, sends a notification and quits. macOS asks you to allow the background item the first time.
+- When no account can take over, or a switch fails, it rests 15 minutes; when the probe shows the account was below the limits after all, 5 minutes.
+- While it's on, "사용" is gone from the window and the widgets: turn it off to switch by hand. Claude's own `/login` can't be stopped; on a login dotsync hasn't saved, auto switch waits until you save it.
+- An update removes the background item until you open the new app (after "Open Anyway"), which puts it back.
 
 #### 5. Clean up Claude Code and Codex sessions
 
@@ -268,7 +277,16 @@ skills_ignore = ["my-tool"]
 - "지금 사용 중"(중간 크기): 지금 쓰는 계정만 본다.
 - "Claude 계정 목록"(큰 크기): 나머지 계정을 일곱 개까지 본다(더 많으면 여섯 개와 "외 n개"). 알림 센터에서 "지금 사용 중" 아래에 두면 둘이 긴 위젯 하나처럼 보인다.
 
-위젯에서 ↻ 는 새로고침(약 10초, 토큰 안 씀), "사용"은 계정을 바꾼다. 앱은 쓸 때만 실행되고 뒤에 남지 않는다. 설치하거나 업데이트하면 실행 중이던 위젯을 끄고 새 위젯이 대신 뜬다. 그래도 위젯이 비어 있으면 앱을 한 번 연다. 앱이 위젯을 다시 그린다.
+위젯에서 ↻ 는 새로고침(약 10초, 토큰 안 씀), "사용"은 계정을 바꾼다. 앱은 쓸 때만 실행된다. 자동 교체를 켜면 짧은 검사만 뒤에서 돈다(아래). 설치하거나 업데이트하면 실행 중이던 위젯을 끄고 새 위젯이 대신 뜬다. 그래도 위젯이 비어 있으면 앱을 한 번 연다. 앱이 위젯을 다시 그린다.
+
+자동 교체 — 자동 교체 메뉴. 켜기 전에는 꺼져 있다.
+
+- 지금 쓰는 계정이 5시간 90% 또는 주간 98%에 닿으면 저장된 다른 계정으로 바꾼다. 주간 사용률이 가장 낮은 계정(균등 사용)이나 주간 초기화가 가장 가까운 계정(주간 초기화 가까운 순)을 고른다. 두 기준 아래인 계정은 모두 후보다. 제외한 계정은 고르지 않는다.
+- claude-hud 가 쓰는 실시간 사용량이 필요하다. claude-hud 설정의 `display.externalUsageWritePath` 를 `~/Library/Group Containers/GR53VV7ZD2.dotsync/live-usage.json` (절대 경로)로 둔다.
+- 뒤에 계속 떠 있는 것은 없다. 그 폴더가 바뀔 때마다 LaunchAgent(`com.changja88.dotsync.autoswitch`)가 앱 실행 파일을 잠깐 돌린다. 바꿀 때가 되면 앱을 창 없이 연다. 앱은 모든 계정을 조회하고, 바꾸고, 메뉴의 기록에 남기고, 알림을 보내고 꺼진다. 처음 켤 때 macOS 가 백그라운드 항목을 허용할지 묻는다.
+- 바꿀 계정이 없거나 교체가 실패하면 15분, 조회해 보니 기준 아래였으면 5분 쉰다.
+- 켜져 있는 동안은 앱 창과 위젯에서 "사용"이 사라진다. 손으로 바꾸려면 끄고 바꾼다. Claude 의 `/login` 은 막을 수 없다. dotsync 에 저장 안 된 로그인이면 저장할 때까지 기다린다.
+- 업데이트하면 백그라운드 항목이 지워진다. 새 앱을 열면("Open Anyway" 뒤) 다시 올라간다.
 
 #### 5. Claude Code와 Codex 세션 정리
 
