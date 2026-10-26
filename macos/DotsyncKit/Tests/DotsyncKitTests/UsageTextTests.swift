@@ -110,3 +110,25 @@ func after(days: Int = 0, hours: Int = 0, minutes: Int = 0, seconds: Int = 0) ->
     #expect(!AccountRules.isValidLabel("   "))
     #expect(!AccountRules.isValidLabel(""))
 }
+
+@Test func theInUseHeaderSaysWhenClaudeLastReportedTheNumbersItShows() {
+    let week = after(days: 3)
+    var file = UsageMerge.merge(previous: nil, report: report([account("a", week: week)], active: "a",
+                                                              at: after(minutes: -58)))
+    func live(at time: Date, week reset: Date = week) -> LiveUsage {
+        LiveUsage(updatedAt: time, fiveHour: nil, sevenDay: UsageWindow(percent: 50, resetsAt: reset))
+    }
+    #expect(UsageText.updateStatus(file, live: live(at: after(seconds: -10)), now: now)
+            == .fetched(after(seconds: -10)))
+    // Another account's numbers, or older than the last refresh: the refresh's time.
+    #expect(UsageText.updateStatus(file, live: live(at: after(seconds: -10), week: after(days: 5)), now: now)
+            == .fetched(after(minutes: -58)))
+    #expect(UsageText.updateStatus(file, live: live(at: after(hours: -2)), now: now)
+            == .fetched(after(minutes: -58)))
+    // A failed refresh leaves the live numbers shown, and they are fresh.
+    file.lastError = "dotsync를 찾을 수 없어요"
+    #expect(UsageText.updateStatus(file, live: live(at: after(seconds: -10)), now: now)
+            == .fetched(after(seconds: -10)))
+    file.refreshingSince = after(seconds: -5)
+    #expect(UsageText.updateStatus(file, live: live(at: after(seconds: -10)), now: now) == .refreshing)
+}

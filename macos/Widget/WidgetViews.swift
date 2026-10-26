@@ -56,7 +56,7 @@ struct InUseWidgetContent: View {
         let layout = WidgetLayout(file: entry.file, now: entry.date)
         let loading = entry.file.isRefreshing(at: entry.date)
         VStack(alignment: .leading, spacing: 7) {
-            WidgetHeader(file: entry.file, now: entry.date, loading: loading)
+            WidgetHeader(file: entry.file, live: entry.live, now: entry.date, loading: loading)
             InUseCard(layout: layout, now: entry.date, loading: loading, stacked: false, fills: true)
         }
         .padding(14)
@@ -120,6 +120,9 @@ struct AccountsWidgetContent: View {
 struct WidgetHeader: View {
     var title = "Claude 사용량"
     let file: UsageFile
+    /// Over the in-use card alone: Claude's status line, whose time the header
+    /// shows and which ↻ only reads again while it is the active account's.
+    var live: LiveUsage? = nil
     let now: Date
     let loading: Bool
 
@@ -128,7 +131,7 @@ struct WidgetHeader: View {
             Text(title).font(.system(size: 13, weight: .bold))
             // A live time takes all the width it might need, so it is
             // right-aligned in it to sit next to ↻.
-            UpdateStatusText(status: UsageText.updateStatus(file, now: now))
+            UpdateStatusText(status: UsageText.updateStatus(file, live: live, now: now))
                 .font(.system(size: 11)).foregroundStyle(.secondary)
                 .multilineTextAlignment(.trailing)
                 .frame(maxWidth: .infinity, alignment: .trailing)
@@ -136,6 +139,11 @@ struct WidgetHeader: View {
                 // 조회 중 already: another press would only wait on this one,
                 // so there is nothing to press.
                 refreshIcon.opacity(0.4)
+            } else if UsageMerge.liveMatchesActive(file, live) {
+                // Claude's numbers are on disk already: drawn again at once,
+                // without waking the app to read every account.
+                Button(intent: ShowLiveIntent()) { refreshIcon }
+                    .buttonStyle(.plain)
             } else {
                 Button(intent: RefreshIntent()) { refreshIcon }
                     .buttonStyle(.plain)
