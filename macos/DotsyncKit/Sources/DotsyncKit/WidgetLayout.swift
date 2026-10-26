@@ -24,11 +24,14 @@ public struct WidgetLayout: Equatable, Sendable {
     /// Claude is on a login no saved account holds: switching from the
     /// widget would drop it, so "사용" opens the app's confirm sheet instead.
     public var switchNeedsConfirmation: Bool
+    /// No "사용" while auto switch is on: it alone switches (spec 5.8).
+    public var showsUseButtons: Bool
 
     /// `moreTakesARow`: "외 n개" sits under the rows and has no room of its
     /// own (the list-only widget), so when accounts are left over it takes
     /// the last row's place.
-    public init(file: UsageFile, now: Date, maxRows: Int = WidgetLayout.maxRows, moreTakesARow: Bool = false) {
+    public init(file: UsageFile, now: Date, maxRows: Int = WidgetLayout.maxRows, moreTakesARow: Bool = false,
+                autoSwitchOn: Bool = false) {
         current = file.activeAccount
         unsavedSeat = current == nil ? file.unsavedSeat : nil
         let others = UsageOrder.sorted(file.accounts.filter { $0.name != file.active }, now: now)
@@ -36,6 +39,7 @@ public struct WidgetLayout: Equatable, Sendable {
         rows = Array(others.prefix(shown))
         hidden = others.count - rows.count
         switchNeedsConfirmation = unsavedSeat != nil
+        showsUseButtons = !autoSwitchOn
     }
 
     public static func kind(of account: AccountUsage, now: Date) -> RowKind {

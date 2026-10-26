@@ -39,3 +39,13 @@ func temporaryDirectory() throws -> URL {
     #expect(AppLink(url: URL(string: "dotsync://use")!) == nil)
     #expect(AppLink(url: URL(string: "dotsync://nope")!) == nil)
 }
+
+@Test func theAutoSwitchLinkRoundTrips() {
+    #expect(AppLink.autoSwitch(.switchNow).url.absoluteString == "dotsync://auto-switch?why=switch")
+    #expect(AppLink.autoSwitch(.refetch).url.absoluteString == "dotsync://auto-switch?why=refetch")
+    for link in [AppLink.autoSwitch(.switchNow), .autoSwitch(.refetch)] {
+        #expect(AppLink(url: link.url) == link)
+    }
+    #expect(AppLink(url: URL(string: "dotsync://auto-switch?why=x")!) == nil)
+    #expect(AppLink(url: URL(string: "dotsync://auto-switch")!) == nil)
+}

@@ -89,3 +89,18 @@ private let cleanupLine = "정리가 끝나면 꺼져요"
     // The bounded wait in the quit reply ends well inside it.
     #expect(QuitRules.powerOffStop < QuitRules.powerOffCancelledAfter)
 }
+
+@Test func backgroundWorkLeavesOnlyAnAppNobodyHasInView() {
+    // A widget button or the auto-switch checker started it unseen: it goes.
+    #expect(QuitRules.leavesAfterBackgroundWork(windowShown: false, windowMinimized: false, appHidden: false,
+                                                wasActive: false))
+    #expect(QuitRules.leavesAfterBackgroundWork(windowShown: false, windowMinimized: false, appHidden: true,
+                                                wasActive: false))
+    // The person has it: on screen, in the Dock minimized, or hidden with ⌘H.
+    #expect(!QuitRules.leavesAfterBackgroundWork(windowShown: true, windowMinimized: false, appHidden: false,
+                                                 wasActive: true))
+    #expect(!QuitRules.leavesAfterBackgroundWork(windowShown: false, windowMinimized: true, appHidden: false,
+                                                 wasActive: true))
+    #expect(!QuitRules.leavesAfterBackgroundWork(windowShown: false, windowMinimized: false, appHidden: true,
+                                                 wasActive: true))
+}

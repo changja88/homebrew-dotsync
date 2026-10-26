@@ -1,8 +1,9 @@
 import AppKit
 import DotsyncKit
 import SwiftUI
+import UserNotifications
 
-@main
+/// Started by `Entry`, unless launchd runs the executable in check mode.
 struct DotsyncApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
@@ -11,7 +12,7 @@ struct DotsyncApp: App {
         // and a dotsync:// link opens it again (scene routing for external events).
         Window("dotsync", id: "main") {
             RootView(accounts: delegate.model, settings: delegate.settings, sessions: delegate.sessions,
-                     quitting: delegate)
+                     autoSwitch: delegate.autoSwitch, quitting: delegate)
         }
         .windowStyle(.hiddenTitleBar)
         // With no title bar left, the window moves by its background.
@@ -38,6 +39,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let claudeSessionQueue: CommandQueue
     let codexSessionQueue: CommandQueue
     let sessions: SessionsModel
+    /// Its runs take `accountQueue`.
+    let autoSwitch: AutoSwitchModel
+    @ObservationIgnored private var wasActive = false
     /// Set when quitting starts to wait unseen for work in flight.
     @ObservationIgnored private var quitBy: ContinuousClock.Instant?
     /// Quitting waits in the window for long work, then quits.
@@ -70,10 +74,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return QuitRules.notice(longWork, runs: sessions.runningWork.map { ($0.label, $0.progress) })
     }
 
-    /// dotsync still at work for the window, a widget button, or a refresh.
+    /// dotsync still at work for the window, a widget button, a refresh, or
+    /// an auto switch.
     private var isWorking: Bool {
         accountQueue.running != nil || syncQueue.running != nil || IntentWork.running > 0
-            || RefreshGate.shared.isRunning || longWork != nil
+            || RefreshGate.shared.isRunning || longWork != nil || autoSwitch.isRunning
             || claudeSessionQueue.running != nil || codexSessionQueue.running != nil
     }
 
@@ -85,21 +90,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         claudeSessionQueue = CommandQueue()
         codexSessionQueue = CommandQueue()
         sessions = SessionsModel(claudeQueue: claudeSessionQueue, codexQueue: codexSessionQueue)
+        autoSwitch = AutoSwitchModel(queue: accountQueue)
         super.init()
+        model.isAutoSwitchOn = { [autoSwitch] in autoSwitch.settings.enabled }
+    }
+
+    /// The person has used the app since it launched: one the checker opened
+    /// hidden never becomes active.
+    func applicationDidBecomeActive(_ notification: Notification) {
+        wasActive = true
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppHooks.open = { url in _ = NSWorkspace.shared.open(url) }
         offerRelaunchIfNeeded()
-        // A widget button may launch the app with no window (spike Q1). Once
-        // every button's work is done, and nothing else runs, don't stay behind.
+        // A widget button or the auto-switch checker may launch the app with
+        // no window (spikes Q1, 1c). Once all the work is done — including
+        // the hidden window's own refresh, which can queue behind it — and
+        // nothing else runs, don't stay behind.
         AppHooks.afterIntent = { [weak self] in
             Task { @MainActor in
+                while self?.isWorking == true {
+                    try? await Task.sleep(for: .milliseconds(500))
+                }
                 try? await Task.sleep(for: .seconds(2))
-                guard let self, !self.isWorking, !NSApp.windows.contains(where: \.isVisible) else { return }
+                guard let self, !self.isWorking,
+                      QuitRules.leavesAfterBackgroundWork(
+                          windowShown: NSApp.windows.contains(where: \.isVisible),
+                          windowMinimized: NSApp.windows.contains(where: \.isMiniaturized),
+                          appHidden: NSApp.isHidden, wasActive: self.wasActive)
+                else { return }
                 NSApp.terminate(nil)
             }
         }
+        // Banners also while the window is in front.
+        UNUserNotificationCenter.current().delegate = self
+        autoSwitch.reconcileAgent()
         // Only NSWorkspace's own center posts it.
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.willPowerOffNotification, object: nil, queue: .main
@@ -229,5 +255,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             _ = RunningCommands.shared.terminateAll(waitingUpTo: limit)
             stop.leave()
         }
+    }
+}
+
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    /// macOS shows nothing for an app in front unless asked; an auto switch
+    /// is worth a banner even then.
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification)
+        async -> UNNotificationPresentationOptions {
+        [.banner, .list]
     }
 }

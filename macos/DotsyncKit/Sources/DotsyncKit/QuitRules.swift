@@ -69,6 +69,15 @@ public enum QuitRules {
         }
         return ([longWork] + progress).joined(separator: " · ")
     }
+
+    /// After a widget button's or the auto-switch checker's work: the app
+    /// quits unless the person has it — its window on screen or minimized in
+    /// the Dock, or the app hidden with ⌘H after they used it. One launched
+    /// hidden for the work was never active.
+    public static func leavesAfterBackgroundWork(windowShown: Bool, windowMinimized: Bool, appHidden: Bool,
+                                                 wasActive: Bool) -> Bool {
+        !windowShown && !windowMinimized && !(appHidden && wasActive)
+    }
 }
 
 public enum QuitDecision: Equatable, Sendable {

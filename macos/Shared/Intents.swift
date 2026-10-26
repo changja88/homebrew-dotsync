@@ -35,7 +35,12 @@ struct UseAccountIntent: AudioPlaybackIntent {
 
     func perform() async throws -> some IntentResult {
         await IntentWork.begin()
-        if let service = await IntentWork.service() {
+        if let block = AutoSwitchStore.shared()?.manualSwitchBlock() {
+            // A widget drawn before auto switch was turned on still has the
+            // button: nothing switches, `finish` redraws the widget without
+            // it, and a notification says why.
+            await AutoSwitchNotices.post(AutoSwitchNotice(title: "자동 교체", body: block))
+        } else if let service = await IntentWork.service() {
             switch await service.use(name) {
             case .switched:
                 break

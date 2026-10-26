@@ -71,7 +71,7 @@ struct AccountListWidgetContent: View {
 
     var body: some View {
         let layout = WidgetLayout(file: entry.file, now: entry.date, maxRows: WidgetLayout.extraLargeRows,
-                                  moreTakesARow: true)
+                                  moreTakesARow: true, autoSwitchOn: entry.autoSwitchOn)
         let loading = entry.file.isRefreshing(at: entry.date)
         VStack(alignment: .leading, spacing: 7) {
             WidgetHeader(title: "다른 계정", file: entry.file, now: entry.date, loading: loading)
@@ -88,7 +88,8 @@ struct AccountsWidgetContent: View {
 
     var body: some View {
         let layout = WidgetLayout(file: entry.file, now: entry.date,
-                                  maxRows: wide ? WidgetLayout.extraLargeRows : WidgetLayout.maxRows)
+                                  maxRows: wide ? WidgetLayout.extraLargeRows : WidgetLayout.maxRows,
+                                  autoSwitchOn: entry.autoSwitchOn)
         // While a refresh runs, the numbers show as skeleton blocks.
         let loading = entry.file.isRefreshing(at: entry.date)
         Group {
@@ -163,7 +164,7 @@ struct AccountRows: View {
         VStack(spacing: spacing) {
             ForEach(layout.rows) { account in
                 AccountBox(account: account, now: now, confirmFirst: layout.switchNeedsConfirmation,
-                           loading: loading, nameWidth: nameWidth)
+                           showsUse: layout.showsUseButtons, loading: loading, nameWidth: nameWidth)
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
@@ -318,11 +319,13 @@ struct RingMetric: View {
     }
 }
 
-/// One other account: a glass row, 36 to 50 pt — name, two metrics, "사용".
+/// One other account: a glass row, 36 to 50 pt — name, two metrics, "사용"
+/// (none while auto switch is on).
 struct AccountBox: View {
     let account: AccountUsage
     let now: Date
     let confirmFirst: Bool
+    var showsUse = true
     let loading: Bool
     let nameWidth: CGFloat
 
@@ -344,7 +347,7 @@ struct AccountBox: View {
                     RowMetric(window: account.sevenDay, now: now)
                 }
                 .redacted(reason: loading ? .placeholder : [])
-                useButton
+                if showsUse { useButton }
             case .fullWeek(let reset):
                 Text("\(Text(UsageText.resetDate(reset)).bold()) 초기화")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
