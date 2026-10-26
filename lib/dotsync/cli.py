@@ -131,7 +131,8 @@ def _apps_payload(names: str) -> dict:
     """`config apps --json` sets which apps are tracked. The dotsync app sends
     them in its table's order, so the ones already tracked keep their order
     in dotsync.toml and new ones go at the end. An app turned on gets its
-    options (BetterTouchTool's preset names)."""
+    options (BetterTouchTool's preset names) unless it kept them when it was
+    turned off."""
     cfg = load_config()
     new_apps = [a.strip() for a in names.split(",") if a.strip()]
     bad = [a for a in new_apps if a not in APP_NAMES]
@@ -139,7 +140,11 @@ def _apps_payload(names: str) -> dict:
         raise cli_json.JSONCommandError("unknown_apps", f"unknown apps: {bad}")
     new_apps = [a for a in cfg.apps if a in new_apps] + [a for a in new_apps if a not in cfg.apps]
     for app_cls in APP_CLASSES:
-        if app_cls.name in new_apps and app_cls.name not in cfg.apps:
+        if (
+            app_cls.name in new_apps
+            and app_cls.name not in cfg.apps
+            and app_cls.name not in cfg.app_options
+        ):
             options = app_cls.options_when_turned_on()
             if options is not None:
                 cfg.app_options[app_cls.name] = options

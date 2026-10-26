@@ -209,6 +209,21 @@ def test_config_apps_json_keeps_the_presets_of_bettertouchtool_left_on(fake_home
     assert load_config().app_options == {"bettertouchtool": {"presets": ["Mine"]}}
 
 
+def test_config_apps_json_keeps_the_presets_of_bettertouchtool_turned_back_on(fake_home, monkeypatch, capsys):
+    # Turning an app off keeps its options: names chosen by hand in
+    # dotsync.toml stay when BetterTouchTool comes back on.
+    target = fake_home / "configs"
+    save_config(Config(dir=target, apps=["zsh"],
+                       app_options={"bettertouchtool": {"presets": ["Mine"]}}))
+    _write_rc(fake_home, target)
+    _app_context(monkeypatch, fake_home)
+    _discover_presets(monkeypatch, ["Mine", "Other"])
+
+    assert main(["config", "apps", "zsh,bettertouchtool", "--json"]) == 0
+
+    assert load_config().app_options == {"bettertouchtool": {"presets": ["Mine"]}}
+
+
 def test_config_apps_json_rejects_unknown(point_at, fake_home, monkeypatch, capsys):
     target = fake_home / "configs"
     save_config(Config(dir=target, apps=["zsh"]))
