@@ -51,6 +51,17 @@ def test_config_dir_json(fake_home, monkeypatch, capsys):
     }
 
 
+def test_config_dir_json_takes_over_a_hand_written_export_line(fake_home, monkeypatch, capsys):
+    # The line older READMEs had people add, without dotsync's marker.
+    (fake_home / ".zshrc").write_text('export DOTSYNC_DIR="$HOME/my-configs"\n')
+    _app_context(monkeypatch, fake_home)
+    new = fake_home / "new"
+
+    assert main(["config", "dir", "--json", "--", str(new)]) == 0
+
+    assert load_config().dir == new.resolve()
+
+
 def test_config_dir_json_starts_a_zshrc_when_there_is_no_rc_file(fake_home, monkeypatch, capsys):
     # The rc line is the only way the next command finds the folder.
     from dotsync.shellrc import marked_dir

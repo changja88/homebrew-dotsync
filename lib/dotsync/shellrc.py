@@ -114,13 +114,15 @@ def update_shell_rc(rc_path: Path, dotsync_dir: Path) -> ShellRcResult:
     """Idempotently ensure rc_path contains the export line for dotsync_dir.
 
     The line to keep is the one right after MARKER (the last such, as in the
-    shell); without a marked line, the first unmarked export line.
+    shell); without a marked line, the first unmarked export line, which gets
+    the marker: the folder is found only through a marked line.
 
     Outcomes:
-      - rc file missing       → "rc_missing" (we never create rc files)
-      - exact line present    → "already_set"
+      - rc file missing       → "rc_missing" (this function never creates one)
+      - exact marked line     → "already_set"
       - existing export with
-        a different path      → "updated" (replace in place)
+        a different path, or
+        without the marker    → "updated" (replace in place, marked)
       - otherwise             → "added"   (append marker + line at EOF)
 
     Every write goes through _write_atomic: other shells may source the file
@@ -134,16 +136,17 @@ def update_shell_rc(rc_path: Path, dotsync_dir: Path) -> ShellRcResult:
     lines = text.splitlines()
 
     target_idx = _marked_export_index(lines)
-    if target_idx is None:
+    marked = target_idx is not None
+    if not marked:
         for i, rc_line in enumerate(lines):
             if rc_line.strip().startswith(f"export {ENV_VAR}="):
                 target_idx = i
                 break
 
     if target_idx is not None:
-        if lines[target_idx].strip() == export:
+        if marked and lines[target_idx].strip() == export:
             return ShellRcResult("already_set", rc_path, export)
-        lines[target_idx] = export
+        lines[target_idx : target_idx + 1] = [export] if marked else [MARKER, export]
         new_text = "\n".join(lines)
         if text.endswith("\n"):
             new_text += "\n"

@@ -9,6 +9,7 @@ from dotsync.shellrc import (
     ShellRcResult,
     detect_rc_path,
     export_line,
+    marked_dir,
     update_shell_rc,
 )
 
@@ -123,18 +124,30 @@ def test_update_shell_rc_existing_content_appends_at_eof(tmp_path):
     assert lines[idx_marker + 1].startswith("export DOTSYNC_DIR=")
 
 
-def test_update_shell_rc_idempotent_when_exact_line_present(tmp_path):
+def test_update_marks_an_unmarked_line_that_already_names_the_folder(tmp_path):
+    # The folder is found only through a marked line (locate_sync_folder).
     rc = tmp_path / ".zshrc"
     sync = tmp_path / "sync"
     line = export_line(sync)
     rc.write_text(f"alias ll='ls -la'\n{line}\n")
 
     result = update_shell_rc(rc, sync)
-    assert result.action == "already_set"
-    # file untouched (exactly one occurrence, no marker added)
-    text = rc.read_text()
-    assert text.count(line) == 1
-    assert MARKER not in text
+
+    assert result.action == "updated"
+    assert rc.read_text() == f"alias ll='ls -la'\n{MARKER}\n{line}\n"
+    assert marked_dir(rc) == sync
+
+
+def test_update_marks_the_unmarked_line_it_replaces(tmp_path):
+    # A line people added by hand, as older READMEs said to.
+    rc = tmp_path / ".zshrc"
+    rc.write_text("alias ll='ls -la'\nexport DOTSYNC_DIR=\"$HOME/my-configs\"\n# tail\n")
+
+    result = update_shell_rc(rc, tmp_path / "new")
+
+    assert result.action == "updated"
+    assert rc.read_text() == f"alias ll='ls -la'\n{MARKER}\n{export_line(tmp_path / 'new')}\n# tail\n"
+    assert marked_dir(rc) == tmp_path / "new"
 
 
 def test_update_shell_rc_calling_twice_is_safe(tmp_path):
