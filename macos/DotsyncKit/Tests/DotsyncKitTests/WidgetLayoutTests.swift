@@ -59,6 +59,12 @@ func file(_ accounts: [AccountUsage], active: String?) -> UsageFile {
     #expect(layout.switchNeedsConfirmation)
 }
 
+@Test func useButtonsHideWhileAutoSwitchIsOn() {
+    let accounts = file([account("a"), account("b")], active: "a")
+    #expect(WidgetLayout(file: accounts, now: now).showsUseButtons)
+    #expect(!WidgetLayout(file: accounts, now: now, autoSwitchOn: true).showsUseButtons)
+}
+
 @Test func theEmptyFileShowsNothing() {
     let layout = WidgetLayout(file: .empty, now: now)
     #expect(layout.current == nil && layout.unsavedSeat == nil && layout.rows.isEmpty && layout.hidden == 0)

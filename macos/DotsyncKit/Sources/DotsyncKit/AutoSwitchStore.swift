@@ -39,6 +39,13 @@ public struct AutoSwitchStore: Sendable {
         try save(settings)
     }
 
+    /// Why "사용" must not switch now, or nil: while auto switch is on it
+    /// alone switches (spec 5.8). The window, its links and the widget's
+    /// buttons all ask here.
+    public func manualSwitchBlock() -> String? {
+        loadSettings().enabled ? AutoSwitchText.manualBlocked : nil
+    }
+
     /// Newest first.
     public func loadLog() -> [AutoSwitchLogEntry] {
         guard let data = try? Data(contentsOf: logURL) else { return [] }

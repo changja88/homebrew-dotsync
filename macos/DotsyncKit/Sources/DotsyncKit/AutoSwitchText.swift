@@ -13,6 +13,10 @@ public struct AutoSwitchNotice: Equatable, Sendable {
 
 /// What auto switch says, in the notifications and the 자동 교체 menu.
 public enum AutoSwitchText {
+    public static let manualBlocked = "자동 교체가 켜져 있어서 손으로 바꿀 수 없어요"
+    /// Beside 사용량's title while auto switch is on.
+    public static let onChip = "자동 교체 켜짐"
+
     /// A switch, or the first time no account can take over (spec 5.6).
     /// `previous` is the log entry before `entry`: a full house repeats every
     /// 15 minutes, and one notification is enough. Names show as labels.

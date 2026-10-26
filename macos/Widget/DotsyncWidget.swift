@@ -5,6 +5,8 @@ import WidgetKit
 struct UsageEntry: TimelineEntry {
     let date: Date
     let file: UsageFile
+    /// No "사용" buttons while it is on (spec 5.8).
+    var autoSwitchOn = false
 }
 
 /// Reads usage.json once and adds an entry only where the widget changes;
@@ -15,14 +17,23 @@ struct UsageProvider: TimelineProvider {
     }
 
     func getSnapshot(in context: Context, completion: @escaping (UsageEntry) -> Void) {
-        completion(UsageEntry(date: .now, file: load()))
+        completion(UsageEntry(date: .now, file: load(), autoSwitchOn: autoSwitchOn()))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<UsageEntry>) -> Void) {
         let file = load()
+        let autoSwitchOn = autoSwitchOn()
         let now = Date.now
-        let entries = WidgetLayout.timelineDates(for: file, now: now).map { UsageEntry(date: $0, file: file) }
+        let entries = WidgetLayout.timelineDates(for: file, now: now).map {
+            UsageEntry(date: $0, file: file, autoSwitchOn: autoSwitchOn)
+        }
         completion(Timeline(entries: entries, policy: .after(now.addingTimeInterval(WidgetLayout.timelineSpan))))
+    }
+
+    /// auto-switch.json beside usage.json; the app redraws the widget when it
+    /// turns auto switch on or off.
+    private func autoSwitchOn() -> Bool {
+        AutoSwitchStore.shared()?.loadSettings().enabled ?? false
     }
 
     /// usage.json, with the active account's numbers from Claude's status line

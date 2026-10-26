@@ -91,6 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sessions = SessionsModel(claudeQueue: claudeSessionQueue, codexQueue: codexSessionQueue)
         autoSwitch = AutoSwitchModel(queue: accountQueue)
         super.init()
+        model.isAutoSwitchOn = { [autoSwitch] in autoSwitch.settings.enabled }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {

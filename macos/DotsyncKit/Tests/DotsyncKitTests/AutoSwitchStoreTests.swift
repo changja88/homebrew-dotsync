@@ -62,3 +62,12 @@ import Testing
     #expect(log.last?.at == Date(timeIntervalSince1970: 6))
     #expect(store.logURL.lastPathComponent == "auto-switch-log.json")
 }
+
+@Test func manualSwitchingIsBlockedOnlyWhileAutoSwitchIsOn() throws {
+    let store = AutoSwitchStore(directory: try temporaryDirectory())
+    #expect(store.manualSwitchBlock() == nil)
+    try store.save(.off)
+    #expect(store.manualSwitchBlock() == nil)
+    try store.save(AutoSwitchSettings(enabled: true, rule: .even, excluded: []))
+    #expect(store.manualSwitchBlock() == "자동 교체가 켜져 있어서 손으로 바꿀 수 없어요")
+}

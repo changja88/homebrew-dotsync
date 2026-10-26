@@ -100,7 +100,8 @@ struct StaleNote: View {
     }
 }
 
-/// "사용" or "다시 로그인", then the round "⋯" with rename, re-login and remove.
+/// "사용" (none while auto switch is on) or "다시 로그인", then the round "⋯"
+/// with rename, re-login and remove.
 struct AccountActions: View {
     let account: AccountUsage
     let isActive: Bool
@@ -114,7 +115,7 @@ struct AccountActions: View {
             case .loginLost:
                 Button("다시 로그인") { model.sheet = .relogin(account) }
                     .buttonStyle(PillButtonStyle())
-            case .metrics where !isActive:
+            case .metrics where !isActive && !model.isAutoSwitchOn():
                 Button("사용") { Task { await model.use(account.name) } }
                     .buttonStyle(PillButtonStyle(prominent: true))
             default:

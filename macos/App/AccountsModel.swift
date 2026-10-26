@@ -30,6 +30,9 @@ final class AccountsModel {
     var sheet: Sheet?
     var pendingRemoval: AccountUsage?
     let service: AccountService?
+    /// Whether auto switch is on; the app sets it. While on, rows have no
+    /// "사용" and 사용량's title says so.
+    @ObservationIgnored var isAutoSwitchOn: @MainActor () -> Bool = { false }
     private var loginTask: Task<Result<AccountInfo, CLIError>, Never>?
 
     init(queue: CommandQueue,
@@ -66,6 +69,10 @@ final class AccountsModel {
     }
 
     func use(_ name: String, overwriteUnsaved: Bool = false) async {
+        if let block = AutoSwitchStore.shared()?.manualSwitchBlock() {
+            message = block
+            return
+        }
         await perform("교체 중") { service in
             switch await service.use(name, overwriteUnsaved: overwriteUnsaved) {
             case .switched(let file):
@@ -130,6 +137,11 @@ final class AccountsModel {
     func handle(_ url: URL) {
         switch AppLink(url: url) {
         case .use(let name)?:
+            // A widget drawn before auto switch was turned on.
+            if let block = AutoSwitchStore.shared()?.manualSwitchBlock() {
+                message = block
+                return
+            }
             sheet = .confirmSwitch(name: name, email: file.unsavedSeat?.email)
         case .relogin(let name)?:
             if let account = file.accounts.first(where: { $0.name == name }) {

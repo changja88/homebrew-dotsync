@@ -11,6 +11,13 @@ struct AccountsWindow: View {
             VStack(spacing: 0) {
                 ContentHeader(title: "Claude 계정") {
                     HStack(spacing: 12) {
+                        // Why the rows have no "사용": auto switch alone switches.
+                        if model.isAutoSwitchOn() {
+                            Label(AutoSwitchText.onChip, systemImage: "arrow.triangle.2.circlepath")
+                                .font(.system(size: 12, weight: .semibold)).foregroundStyle(.tint)
+                                .padding(.horizontal, 12).frame(height: 34)
+                                .background(GlassPanel(cornerRadius: 17))
+                        }
                         HStack(spacing: 8) {
                             Text(model.running ?? "\(UsageText.ago(model.file.fetchedAt, now: context.date)) 갱신")
                                 .font(.system(size: 12)).foregroundStyle(.secondary)
