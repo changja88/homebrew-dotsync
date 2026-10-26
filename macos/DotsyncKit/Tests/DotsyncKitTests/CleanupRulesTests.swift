@@ -23,6 +23,14 @@ private func done(_ id: String, count: Int, lines: Int? = nil) -> CleanupItemRes
     CleanupItemResult(id: id, outcome: "done", count: count, lines: lines, reason: nil, message: nil)
 }
 
+private func skipped(_ id: String, _ reason: String) -> CleanupItemResult {
+    CleanupItemResult(id: id, outcome: "skipped", count: 0, lines: nil, reason: reason, message: nil)
+}
+
+private func vacuum(_ before: Int64, _ after: Int64, _ why: String) -> VacuumResult {
+    VacuumResult(bytesBefore: before, bytesAfter: after, stoppedBecause: why, message: nil)
+}
+
 // MARK: Rows before the start
 
 @Test func chatgptRowIsNeutralWithNoOpenSessionsAndWarnsWithSome() {
@@ -145,8 +153,22 @@ private func done(_ id: String, count: Int, lines: Int? = nil) -> CleanupItemRes
     #expect(summary?.title == "정리했어요")
     #expect(summary?.rows.map(\.label) == ["대화 저장소에 남은 내용", "입력 기록에서 지운 세션의 줄"])
     #expect(summary?.rows.map(\.text) == ["4개 정리했어요", "2개 정리했어요 · 37줄"])
+    #expect(summary?.rows.map(\.mark) == [.done, .done])
     #expect(summary?.vacuumLines == ["대화 저장소가 8.6 GB에서 6.1 GB로 줄었어요"])
     #expect(summary?.relaunchFailed == false)
+}
+
+@Test func onlyARowThatRanGetsTheCheckmark() {
+    let report = CleanupReport(
+        items: [done("history_rows", count: 4), skipped("history_lines", "codex_started"),
+                CleanupItemResult(id: "session_index", outcome: "failed", count: 0, lines: nil, reason: nil, message: "disk full"),
+                CleanupItemResult(id: "queue", outcome: "brand_new", count: 2, lines: nil, reason: nil, message: nil),
+                skipped("cache_files", "codex_started")],
+        vacuum: nil, stopped: false)
+    let summary = CleanupRules.summary(of: .finished(report, relaunch: .relaunched))
+    #expect(summary?.rows.map(\.mark) == [.done, .skipped, .failed, .skipped])
+    // The rows are not all cleaned ones, so their heading does not say they are.
+    #expect(CleanupRules.resultsHeading == "항목별 결과")
 }
 
 @Test func summaryTitlesFollowWhatHappened() {
@@ -156,6 +178,42 @@ private func done(_ id: String, count: Int, lines: Int? = nil) -> CleanupItemRes
     #expect(CleanupRules.summary(of: .finished(partial, relaunch: .notNeeded))?.rows.map(\.text) == ["하지 못했어요 · disk full"])
     let stopped = CleanupReport(items: [], vacuum: nil, stopped: true)
     #expect(CleanupRules.summary(of: .finished(stopped, relaunch: .notNeeded))?.title == "정리를 멈췄어요")
+}
+
+private func title(_ items: [CleanupItemResult], vacuum: VacuumResult? = nil, stopped: Bool = false) -> String? {
+    CleanupRules.summary(of: .finished(CleanupReport(items: items, vacuum: vacuum, stopped: stopped), relaunch: .relaunched))?.title
+}
+
+@Test func aCodexThatStartedMidRunIsInTheTitle() {
+    let report = CleanupReport(
+        items: [done("history_rows", count: 4), skipped("history_lines", "codex_started"), skipped("cache_files", "codex_started")],
+        vacuum: vacuum(10, 10, "blocker"), stopped: false)
+    #expect(CleanupRules.summary(of: .finished(report, relaunch: .relaunched))?.title == "Codex가 켜져서 정리를 멈췄어요")
+    // A Codex that started during the vacuum stops the run as well.
+    #expect(title([done("history_rows", count: 4), done("cache_files", count: 1)], vacuum: vacuum(10, 8, "blocker"))
+        == "Codex가 켜져서 정리를 멈췄어요")
+}
+
+@Test func aStopIsNotACodexThatStarted() {
+    // SIGTERM (멈추기, or a logout) between items, or during the vacuum.
+    #expect(title([done("history_rows", count: 4), skipped("cache_files", "stopped")], stopped: true) == "정리를 멈췄어요")
+    #expect(title([done("history_rows", count: 4), done("cache_files", count: 0)], vacuum: vacuum(10, 9, "stopped"))
+        == "정리를 멈췄어요")
+}
+
+@Test func aRunThatRemovedNothingDoesNotSayItCleaned() {
+    let nothing = CleanupReport(items: [done("history_rows", count: 0), done("cache_files", count: 0)],
+                                vacuum: vacuum(10, 10, "freelist_empty"), stopped: false)
+    #expect(CleanupRules.summary(of: .finished(nothing, relaunch: .relaunched))?.title == "정리할 게 없었어요")
+    #expect(title([done("cache_files", count: 0)]) == "정리할 게 없었어요")
+}
+
+@Test func cleanedNeedsSomethingRemovedOrFreed() {
+    // The cache files are not a row, but removing them is cleaning.
+    #expect(title([done("history_rows", count: 0), done("cache_files", count: 2)]) == "정리했어요")
+    // The vacuum-only run: no items, the cache files, then the vacuum.
+    #expect(title([done("cache_files", count: 0)], vacuum: vacuum(10, 4, "freelist_empty")) == "정리했어요")
+    #expect(title([done("cache_files", count: 0)], vacuum: vacuum(10, 10, "error")) == "일부는 정리하지 못했어요")
 }
 
 @Test func relaunchFailureOffersTheButton() {

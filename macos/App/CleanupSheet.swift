@@ -234,11 +234,11 @@ private struct FinishedView: View {
                 }
             }
             if !summary.rows.isEmpty {
-                CleanupBox(title: "정리한 것") {
+                CleanupBox(title: CleanupRules.resultsHeading) {
                     ForEach(Array(summary.rows.enumerated()), id: \.offset) { index, row in
                         if index > 0 { RowDivider() }
                         HStack(spacing: 10) {
-                            ResultMark(failed: row.failed)
+                            ResultMark(mark: row.mark)
                             Text(row.label).frame(maxWidth: .infinity, alignment: .leading)
                             Text(row.text).foregroundStyle(.secondary)
                         }
@@ -277,14 +277,20 @@ private struct FinishedView: View {
     }
 }
 
+/// ✓ in green for an item that ran, a grey dash for one that was skipped, ! in
+/// orange for one that failed.
 private struct ResultMark: View {
-    let failed: Bool
+    let mark: CleanupRules.ResultRow.Mark
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        let style: ChipStyle = failed ? .different : .same
+        let (style, symbol): (ChipStyle, String) = switch mark {
+        case .done: (.same, "checkmark")
+        case .skipped: (.unknown, "minus")
+        case .failed: (.different, "exclamationmark")
+        }
         let dark = colorScheme == .dark
-        Image(systemName: failed ? "exclamationmark" : "checkmark")
+        Image(systemName: symbol)
             .font(.system(size: 9, weight: .heavy))
             .foregroundStyle(style.foreground(dark: dark))
             .frame(width: 18, height: 18)

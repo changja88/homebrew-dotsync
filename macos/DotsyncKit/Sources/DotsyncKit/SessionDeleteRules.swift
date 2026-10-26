@@ -71,14 +71,16 @@ public enum SessionDeleteRules {
     }
 
     /// What to show after a relaunch: what a delete, recover or cleanup
-    /// logged. Nil when there is no log or the run left no report (refused
-    /// or busy).
+    /// logged. A cleanup that ended with an error says why, as the sheet did
+    /// when it saw that answer. Nil when there is no log or it holds no report.
     public static func pendingResult(_ log: SessionLogEntry?) -> PendingResult? {
         switch log?.result {
         case .delete(let report)?:
             return .delete(report)
         case .cleanup(let report)?:
             return CleanupRules.summary(of: .finished(report, relaunch: .notNeeded)).map(PendingResult.cleanup)
+        case .cleanupFailed(let error)?:
+            return CleanupRules.summary(of: .failed(error, relaunch: .notNeeded)).map(PendingResult.cleanup)
         case nil:
             return nil
         }

@@ -1,0 +1,16 @@
+{
+  "command": "cleanup",
+  "tool": "codex",
+  "started_at": "2026-10-26T00:07:09Z",
+  "finished_at": "2026-10-26T00:07:09Z",
+  "result": {
+    "items": [],
+    "vacuum": null,
+    "stopped": false,
+    "ids": {},
+    "error": {
+      "code": "codex_running",
+      "message": "quit what uses ~/.codex first: codex"
+    }
+  }
+}

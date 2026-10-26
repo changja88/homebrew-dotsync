@@ -53,12 +53,12 @@ def fake_world():
         yield mp
 
 
-def run_cli(*argv: str) -> tuple[str, str]:
-    """(stdout, stderr) of `dotsync <argv>`; exits 0 or the fixture is wrong."""
+def run_cli(*argv: str, exits: int = 0) -> tuple[str, str]:
+    """(stdout, stderr) of `dotsync <argv>`; exits `exits` or the fixture is wrong."""
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
         code = cli.main(list(argv))
-    assert code == 0, (argv, out.getvalue())
+    assert code == exits, (argv, out.getvalue())
     assert out.getvalue().count("\n") == 1
     return out.getvalue(), err.getvalue()
 
@@ -200,6 +200,20 @@ def cleanup_yes() -> tuple[str, str]:
         return out, only_log()
 
 
+def cleanup_refused() -> str:
+    """A cleanup refused once it held the lock: a terminal Codex started
+    after the app's own check. Returns the log, which holds the error."""
+    with fake_world(), nothing_runs() as mp:
+        mp.setattr(procs, "ps_table", lambda: {500: procs.Proc(500, 1, 60, "/x/codex")})
+        mp.setattr(procs, "lsof_scan", lambda fds=None: {500: procs.OpenFiles("codex", txt=["/x/codex"])})
+        db = make_codex_home(roots.codex_home())
+        add_thread(db, cr.KEPT)
+        write_rollout(roots.codex_home(), cr.KEPT)
+        out, _ = run_cli("sessions", "cleanup", "codex", "--yes", "--json", "--items", ",".join(cr.ALL), exits=1)
+        assert json.loads(out)["error"]["code"] == "codex_running"
+        return only_log()
+
+
 def only_log() -> str:
     [path] = sorted(roots.log_dir().iterdir())
     return path.read_text(encoding="utf-8")
@@ -220,6 +234,7 @@ def main() -> None:
         "cleanup-yes-report.json": cleanup_report,
         "session-log-delete.json": claude_log,
         "session-log-cleanup.json": cleanup_log,
+        "session-log-cleanup-refused.json": cleanup_refused(),
     }
     for name, text in files.items():
         json.loads(text)

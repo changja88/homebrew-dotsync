@@ -15,16 +15,26 @@ import Testing
 }
 
 @Test func cleanupItemResultLines() {
-    func result(_ outcome: String, reason: String? = nil, message: String? = nil, lines: Int? = nil) -> CleanupItemResult {
-        CleanupItemResult(id: "history_lines", outcome: outcome, count: 5, lines: lines, reason: reason, message: message)
+    func result(_ outcome: String, count: Int = 5, reason: String? = nil, message: String? = nil,
+                lines: Int? = nil) -> CleanupItemResult {
+        CleanupItemResult(id: "history_lines", outcome: outcome, count: count, lines: lines, reason: reason, message: message)
     }
     #expect(SessionText.cleanupResultLine(result("done")) == "5개 정리했어요")
     #expect(SessionText.cleanupResultLine(result("done", lines: 12)) == "5개 정리했어요 · 12줄")
-    #expect(SessionText.cleanupResultLine(result("skipped", reason: "codex_started")) == "그사이 Codex가 켜져서 멈췄어요")
-    #expect(SessionText.cleanupResultLine(result("skipped", reason: "stopped")) == "멈춰서 하지 않았어요")
-    #expect(SessionText.cleanupResultLine(result("failed", message: "disk full")) == "하지 못했어요 · disk full")
-    #expect(SessionText.cleanupResultLine(result("failed")) == "하지 못했어요")
-    #expect(SessionText.cleanupResultLine(result("skipped", reason: "other")) == "하지 않았어요")
+    #expect(SessionText.cleanupResultLine(result("skipped", count: 0, reason: "codex_started")) == "그사이 Codex가 켜져서 멈췄어요")
+    #expect(SessionText.cleanupResultLine(result("skipped", count: 0, reason: "stopped")) == "멈춰서 하지 않았어요")
+    #expect(SessionText.cleanupResultLine(result("failed", count: 0, message: "disk full")) == "하지 못했어요 · disk full")
+    #expect(SessionText.cleanupResultLine(result("failed", count: 0)) == "하지 못했어요")
+    #expect(SessionText.cleanupResultLine(result("skipped", count: 0, reason: "other")) == "하지 않았어요")
+}
+
+@Test func anItemThatStoppedPartwaySaysWhatItRemoved() {
+    // history_rows goes one session at a time; its count is the sessions it finished.
+    func rows(_ outcome: String, count: Int, reason: String? = nil, message: String? = nil) -> CleanupItemResult {
+        CleanupItemResult(id: "history_rows", outcome: outcome, count: count, lines: nil, reason: reason, message: message)
+    }
+    #expect(SessionText.cleanupResultLine(rows("skipped", count: 3, reason: "stopped")) == "3개만 정리하고 멈췄어요")
+    #expect(SessionText.cleanupResultLine(rows("failed", count: 3, message: "database is locked")) == "3개만 정리했어요 · database is locked")
 }
 
 @Test func vacuumLinesByStopReason() {

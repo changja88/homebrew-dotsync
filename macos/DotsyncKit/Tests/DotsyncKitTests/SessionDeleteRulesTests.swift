@@ -97,10 +97,20 @@ private func logEntry(_ command: String, result: String) throws -> SessionLogEnt
     }
 
     #expect(SessionDeleteRules.pendingResult(nil) == nil)
-    // Busy or refused: the log holds an error, not a report.
+    // A delete log that holds no report shows nothing.
     let refused = #""error": {"code": "busy", "message": "x"}"#
     #expect(SessionDeleteRules.pendingResult(try logEntry("delete", result: refused)) == nil)
-    #expect(SessionDeleteRules.pendingResult(try logEntry("cleanup", result: refused)) == nil)
+}
+
+@Test func aReplayedRefusedCleanupSaysWhyItDidNotClean() throws {
+    // The CLI's own log of a run refused once it held the lock (scripts/make-session-fixtures.py).
+    let entry = try UsageJSON.decoder().decode(SessionLogEntry.self, from: fixture("session-log-cleanup-refused"))
+    guard case .cleanup(let summary)? = SessionDeleteRules.pendingResult(entry) else {
+        Issue.record("a refused cleanup shows why it did not clean")
+        return
+    }
+    #expect(summary.title == "정리하지 못했어요")
+    #expect(summary.notes == ["Codex가 실행 중이라 정리하지 않았어요"])
 }
 
 @Test func aPendingCleanupShowsAsTheCleanupSheetsSummary() throws {
@@ -117,12 +127,14 @@ private func logEntry(_ command: String, result: String) throws -> SessionLogEnt
     #expect(summary.title == "정리를 멈췄어요")
     #expect(summary.rows.map(\.label) == ["대화 저장소에 남은 내용", "큐 기록"])
     #expect(summary.rows.map(\.text) == ["3개 정리했어요", "멈춰서 하지 않았어요"])
+    #expect(summary.rows.map(\.mark) == [.done, .skipped])
     // ChatGPT is the launch alert's question, not the summary's.
     #expect(summary.notes.isEmpty)
     #expect(!summary.relaunchFailed)
 
-    let clean = #""result": {"items": [], "vacuum": null, "stopped": false}"#
-    guard case .cleanup(let finished)? = SessionDeleteRules.pendingResult(try logEntry("cleanup", result: clean)) else {
+    // The CLI's own log of a full run (scripts/make-session-fixtures.py).
+    let entry = try UsageJSON.decoder().decode(SessionLogEntry.self, from: fixture("session-log-cleanup"))
+    guard case .cleanup(let finished)? = SessionDeleteRules.pendingResult(entry) else {
         Issue.record("a logged cleanup shows its summary")
         return
     }

@@ -191,14 +191,14 @@ func decodeSession<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
     #expect(deleted.results.count == 4)
 }
 
-@Test func aLogEntryWithoutAReportStillDecodes() throws {
-    let refused = try decodeSession(SessionLogEntry.self, """
-    {"command": "cleanup", "tool": "codex", "started_at": "2026-10-25T03:04:05Z",
-     "finished_at": "2026-10-25T03:04:06Z",
-     "result": {"stopped": false, "ids": {}, "error": {"code": "codex_running", "message": "quit it"}}}
-    """)
-    #expect(refused.result == nil)
+@Test func aLoggedCleanupErrorIsAFailureNotAnEmptyReport() throws {
+    // The CLI logs `items: []` beside the error of a refused run.
+    let refused = try UsageJSON.decoder().decode(SessionLogEntry.self, from: fixture("session-log-cleanup-refused"))
     #expect(refused.command == "cleanup")
+    #expect(refused.result == .cleanupFailed(CLIError(code: "codex_running", message: "quit what uses ~/.codex first: codex")))
+}
+
+@Test func aLogEntryWithoutAReportStillDecodes() throws {
     let busy = try decodeSession(SessionLogEntry.self, """
     {"command": "recover", "tool": "claude", "started_at": "2026-10-25T03:04:05Z",
      "finished_at": "2026-10-25T03:04:06Z", "result": {"error": {"code": "busy", "message": "x"}}}

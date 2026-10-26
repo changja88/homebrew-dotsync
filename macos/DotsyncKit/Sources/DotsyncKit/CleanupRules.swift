@@ -123,10 +123,17 @@ public enum CleanupRules {
     // MARK: After the unit
 
     public struct ResultRow: Equatable, Sendable {
+        /// ✓ for an item that ran, ! for one that failed, and a mark of its
+        /// own for one that was skipped (stopped, or a Codex started).
+        public enum Mark: Sendable { case done, skipped, failed }
         public var label: String
         public var text: String
-        public var failed: Bool
+        public var mark: Mark
     }
+
+    /// The heading over the result rows. It names no outcome: skipped and
+    /// failed items are listed too, each with its own mark.
+    public static let resultsHeading = "항목별 결과"
 
     public struct Summary: Equatable, Sendable {
         public var title: String
@@ -163,10 +170,35 @@ public enum CleanupRules {
         case .finished(let report, let relaunch):
             let rows = report.items.filter { $0.id != "cache_files" }.map {
                 ResultRow(label: SessionText.cleanupItemLabels[$0.id] ?? $0.id, text: SessionText.cleanupResultLine($0),
-                          failed: $0.outcome == "failed")
+                          mark: mark($0))
             }
-            let title = report.stopped ? "정리를 멈췄어요" : rows.contains(where: \.failed) ? "일부는 정리하지 못했어요" : "정리했어요"
-            return finish(Summary(title: title, rows: rows, vacuumLines: report.vacuum.map(SessionText.vacuumLines) ?? []), relaunch)
+            return finish(Summary(title: title(report), rows: rows,
+                                  vacuumLines: report.vacuum.map(SessionText.vacuumLines) ?? []), relaunch)
+        }
+    }
+
+    /// From the outcomes, items and vacuum alike: a stop (SIGTERM) and a
+    /// Codex that started are told apart, then a failure; "정리했어요" needs
+    /// an item that removed something (the cache files count) or a vacuum
+    /// that freed space.
+    private static func title(_ report: CleanupReport) -> String {
+        let vacuum = report.vacuum?.stoppedBecause
+        if report.stopped || vacuum == "stopped" { return "정리를 멈췄어요" }
+        if report.items.contains(where: { $0.reason == "codex_started" }) || vacuum == "blocker" {
+            return "Codex가 켜져서 정리를 멈췄어요"
+        }
+        if report.items.contains(where: { $0.outcome == "failed" }) || vacuum == "error" { return "일부는 정리하지 못했어요" }
+        let removed = report.items.contains { $0.outcome == "done" && $0.count > 0 }
+        let freed = report.vacuum.map { $0.bytesAfter < $0.bytesBefore } ?? false
+        return removed || freed ? "정리했어요" : "정리할 게 없었어요"
+    }
+
+    /// An outcome the app does not know is never shown as done.
+    private static func mark(_ item: CleanupItemResult) -> ResultRow.Mark {
+        switch item.outcome {
+        case "done": return .done
+        case "failed": return .failed
+        default: return .skipped
         }
     }
 

@@ -17,7 +17,9 @@ extension SessionText {
     }
 
     /// One item of the report: "5개 정리했어요", with the lines of
-    /// `history_lines`, or why it did not run.
+    /// `history_lines`, or why it did not run. `history_rows` goes one
+    /// session at a time, so one that stopped or failed partway says what it
+    /// had already removed (its count).
     public static func cleanupResultLine(_ result: CleanupItemResult) -> String {
         switch result.outcome {
         case "done":
@@ -26,11 +28,12 @@ extension SessionText {
         case "skipped":
             switch result.reason {
             case "codex_started": return "그사이 Codex가 켜져서 멈췄어요"
-            case "stopped": return "멈춰서 하지 않았어요"
+            case "stopped": return result.count > 0 ? "\(result.count)개만 정리하고 멈췄어요" : "멈춰서 하지 않았어요"
             default: return "하지 않았어요"
             }
         case "failed":
-            return result.message.map { "하지 못했어요 · \($0)" } ?? "하지 못했어요"
+            let line = result.count > 0 ? "\(result.count)개만 정리했어요" : "하지 못했어요"
+            return result.message.map { "\(line) · \($0)" } ?? line
         default:
             return "하지 않았어요"
         }

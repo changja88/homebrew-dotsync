@@ -164,6 +164,9 @@ public struct SessionLogEntry: Decodable, Sendable, Equatable {
     public enum Result: Sendable, Equatable {
         case delete(DeleteReport)
         case cleanup(CleanupReport)
+        /// A cleanup that ended with the error the CLI answered: refused once
+        /// it held the lock, or failed in the run. Its `items` are not a report.
+        case cleanupFailed(CLIError)
     }
 
     /// `delete`, `recover` or `cleanup`.
@@ -171,8 +174,9 @@ public struct SessionLogEntry: Decodable, Sendable, Equatable {
     public var tool: String
     public var startedAt: Date
     public var finishedAt: Date
-    /// nil when the run left no report: refused or busy runs log an error
-    /// instead of `results`/`items`.
+    /// nil when the log holds no report the app can read and no cleanup
+    /// error. A delete or recover never logs an error: claude_delete.py and
+    /// codex.py log the report as it stood when the run ended.
     public var result: Result?
 
     private enum CodingKeys: String, CodingKey {
@@ -186,7 +190,12 @@ public struct SessionLogEntry: Decodable, Sendable, Equatable {
         startedAt = try container.decode(Date.self, forKey: .startedAt)
         finishedAt = try container.decode(Date.self, forKey: .finishedAt)
         if command == "cleanup" {
-            result = (try? container.decode(CleanupReport.self, forKey: .result)).map(Result.cleanup)
+            // A refused run logs `items: []` beside its error: that is not a run that cleaned nothing.
+            if let failed = try? container.decode(CLIErrorEnvelope.self, forKey: .result) {
+                result = .cleanupFailed(failed.error)
+            } else {
+                result = (try? container.decode(CleanupReport.self, forKey: .result)).map(Result.cleanup)
+            }
         } else {
             result = (try? container.decode(DeleteReport.self, forKey: .result)).map(Result.delete)
         }
