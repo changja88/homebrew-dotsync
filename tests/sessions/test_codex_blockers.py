@@ -228,19 +228,11 @@ def test_output_has_no_arguments_or_paths(monkeypatch):
     assert "secret" not in text and "/Users" not in text
 
 
-def test_cli_blockers_json_and_text(monkeypatch, capsys):
+def test_cli_blockers_json(monkeypatch, capsys):
     fake(monkeypatch, {500: (1, "/x/codex")}, {500: opened("codex", txt=["/x/codex"])})
     assert cli.main(["sessions", "cleanup", "codex", "--blockers", "--json"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["blockers"][0]["name"] == "codex"
-    assert cli.main(["sessions", "cleanup", "codex", "--blockers"]) == 0
-    assert capsys.readouterr().out.strip() == "500  terminal_codex  codex  60s"
-
-
-def test_cli_blockers_text_when_nothing_runs(monkeypatch, capsys):
-    fake(monkeypatch, {}, {})
-    assert cli.main(["sessions", "cleanup", "codex", "--blockers"]) == 0
-    assert "nothing" in capsys.readouterr().out
 
 
 def test_yes_refuses_while_a_blocker_runs(monkeypatch, capsys):

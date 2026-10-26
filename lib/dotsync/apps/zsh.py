@@ -9,7 +9,6 @@ different sync folder.
 from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
-from dotsync import ui
 from dotsync.apps.base import (
     App,
     AppStatus,
@@ -25,10 +24,6 @@ from dotsync.shellrc import _write_atomic, strip_marked_block, with_local_marked
 class ZshApp(App):
     name = "zsh"
     description = "Zsh shell config (~/.zshrc)"
-
-    @classmethod
-    def is_present_locally(cls) -> bool:
-        return (Path.home() / ".zshrc").exists()
 
     def tracked_files(self, target_dir: Path) -> list[FilePair]:
         return [
@@ -96,5 +91,3 @@ class ZshApp(App):
         ensure_not_symlink(pair.local, pair.label)
         local_text = pair.local.read_text() if pair.local.exists() else ""
         _write_atomic(pair.local, with_local_marked_block(pair.stored.read_text(), local_text))
-        ui.sub(pair.label)
-        ui.dim("hint: open a new shell or `source ~/.zshrc`")

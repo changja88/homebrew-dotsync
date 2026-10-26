@@ -55,7 +55,7 @@ class FilePair:
     """One (local, stored) pair an app tracks for sync.
 
     `local` is the canonical on-machine path; `stored` is the path inside
-    target_dir/<app.name>/. `label` is what shows up in ui.sub() output.
+    target_dir/<app.name>/. `label` names the pair in errors and warnings.
     """
 
     local: Path
@@ -201,30 +201,19 @@ class App(ABC):
         """
         return cls()
 
-    @classmethod
-    def is_present_locally(cls) -> bool:
-        """Return True if this app is detected as installed on this machine.
-
-        Default: False. Concrete apps override; init's auto-detection skips
-        any app that returns False here.
-        """
-        return False
-
     def __init__(self) -> None:
         # Per-instance accumulator for non-fatal warnings (failed external
-        # process calls in fail_mode="warn", etc.). cli's summary surface
-        # reads this after each sync so partial failures aren't silenced.
+        # process calls in fail_mode="warn", etc.). Each push/pull --json
+        # result carries them so partial failures aren't silenced.
         self.warnings: list[str] = []
 
     def _note_skipped_symlink(self, label: str) -> None:
         """Record (once) that a symlinked entry was left alone, and say so."""
-        from dotsync import ui
 
         msg = f"{label} is a symlink; skipped"
         if msg in self.warnings:
             return
         self.warnings.append(msg)
-        ui.warn(msg)
 
     def _run_external(
         self,
@@ -310,7 +299,6 @@ class App(ABC):
         Default: walk tracked_files(), copy each .local → .stored. Apps that
         need extra behavior (network calls, file transformation) override this.
         """
-        from dotsync import ui
 
         pairs = self.tracked_files(target_dir)
         if not pairs:
@@ -326,7 +314,6 @@ class App(ABC):
             ensure_path_within_root(pair.stored, target_dir, pair.label)
             pair.stored.parent.mkdir(parents=True, exist_ok=True)
             copy_file_safely(pair.local, pair.stored, pair.label, dest_root=target_dir)
-            ui.sub(pair.label)
 
     def sync_to(self, target_dir: Path) -> None:
         """target_dir/<self.name>/ → local app config.
@@ -334,7 +321,6 @@ class App(ABC):
         Default: walk tracked_files(), verify every .stored exists, then copy
         each .stored over its .local.
         """
-        from dotsync import ui
 
         pairs = self.tracked_files(target_dir)
         if not pairs:
@@ -356,7 +342,6 @@ class App(ABC):
             copy_file_safely(
                 pair.stored, pair.local, pair.label, source_root=target_dir
             )
-            ui.sub(pair.label)
 
     def status(self, target_dir: Path) -> AppStatus:
         """Default: diff_files over tracked_files. Apps with non-file state
@@ -371,69 +356,10 @@ class App(ABC):
                 return AppStatus(state="unknown", details=str(exc))
         return diff_files((p.local, p.stored) for p in pairs)
 
-    # ----- CLI extension hooks --------------------------------------------
-    # An App that needs CLI customization (extra flags on `init`, picker
-    # annotations, config subcommands) overrides these. Defaults are no-ops
-    # so apps without customization stay free of CLI plumbing.
+    # ----- options when tracked -------------------------------------------
 
     @classmethod
-    def extra_init_args(cls, parser) -> None:
-        """Optionally add app-specific argparse args to `dotsync init`.
-        E.g. BetterTouchTool adds --btt-presets here."""
+    def options_when_turned_on(cls) -> dict | None:
+        """The [options.<app>] table for this app when `config apps` turns it
+        on (BetterTouchTool finds its preset names), or None for none."""
         return None
-
-    @classmethod
-    def picker_annotation(cls, *, detected: bool) -> str | None:
-        """Right-side annotation shown next to this app's row in the picker.
-        Return None for no annotation."""
-        return None
-
-    @classmethod
-    def resolve_options(
-        cls,
-        args,
-        *,
-        prev_apps: list[str],
-        new_apps: list[str],
-        interactive: bool,
-    ) -> dict | None:
-        """Compute this app's options dict (the value stored under
-        cfg.app_options[cls.name]) given init-time inputs.
-
-        - args: argparse Namespace (may carry app-specific flags).
-        - prev_apps / new_apps: tracked apps before/after the picker, for
-          apps that re-discover state when toggled on (BTT does this).
-        - interactive: True for interactive init, False for --yes / scripted.
-
-        Return None to leave app_options[cls.name] unchanged.
-        """
-        return None
-
-    @classmethod
-    def extra_config_subcommands(cls, subparser) -> None:
-        """Optionally register `dotsync config <name>-...` subcommands."""
-        return None
-
-    @classmethod
-    def handle_config_subcommand(cls, args, cfg) -> int | None:
-        """If the dispatch matched a subcommand registered above, mutate cfg
-        and return an exit code. Return None if not a match."""
-        return None
-
-    # ----- per-app section finishers --------------------------------------
-    # Both finishers exist so per-app sections close with a uniform line —
-    # the cli's per-app loop never has to special-case which marker to draw.
-
-    def _finish_ok(self) -> None:
-        """Close a per-app sync section with a green ✓ done line."""
-        from dotsync import ui
-
-        ui.ok("done")
-
-    def _finish_unchanged(self) -> None:
-        """Close a per-app sync section with a dim 'unchanged' line — used
-        by `dotsync pull` when local already matches stored, so the user can
-        see at a glance which apps did vs. didn't move."""
-        from dotsync import ui
-
-        ui.dim("unchanged")

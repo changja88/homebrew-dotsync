@@ -50,36 +50,6 @@ def test_sync_to_creates_local_config_directory(fake_home, tmp_path):
     assert (_herdr_dir(fake_home) / "config.toml").read_text() == "NEW\n"
 
 
-def test_is_present_locally_true_when_config_exists(fake_home):
-    local_dir = _herdr_dir(fake_home)
-    local_dir.mkdir(parents=True)
-    (local_dir / "config.toml").write_text("onboarding = false\n")
-
-    assert HerdrApp.is_present_locally() is True
-
-
-def test_is_present_locally_true_when_executable_is_on_path(fake_home, monkeypatch):
-    bin_dir = fake_home / "bin"
-    bin_dir.mkdir()
-    executable = bin_dir / "herdr"
-    executable.write_text("#!/bin/sh\n")
-    executable.chmod(0o755)
-    monkeypatch.setenv("PATH", str(bin_dir))
-
-    assert HerdrApp.is_present_locally() is True
-
-
-def test_is_present_locally_false_when_only_runtime_state_exists(
-    fake_home, monkeypatch
-):
-    local_dir = _herdr_dir(fake_home)
-    local_dir.mkdir(parents=True)
-    (local_dir / "session.json").write_text("{}\n")
-    monkeypatch.setenv("PATH", "")
-
-    assert HerdrApp.is_present_locally() is False
-
-
 def test_status_clean_when_config_matches(fake_home, tmp_path):
     local_dir = _herdr_dir(fake_home)
     local_dir.mkdir(parents=True)

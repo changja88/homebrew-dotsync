@@ -44,12 +44,6 @@ def _install(home: Path, name: str, agents: tuple[str, ...] = ("claude-code",)) 
         (dirs[agent] / name).symlink_to(canonical, target_is_directory=True)
 
 
-def test_is_present_locally_requires_lock_file(fake_home):
-    assert SkillsApp.is_present_locally() is False
-    _write_lock(fake_home, {})
-    assert SkillsApp.is_present_locally() is True
-
-
 def test_sync_from_records_sources_and_linked_agents_without_the_lock(
     fake_home, tmp_path
 ):

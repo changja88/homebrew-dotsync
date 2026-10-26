@@ -4,7 +4,7 @@ import Testing
 
 // Shapes of `dotsync status/push/pull/config … --json` (lib/dotsync/cli_json.py).
 let sampleStatus = """
-{"dir": "/Users/x/Desktop/dotsync_config", "dir_source": "rc", "checked_at": "2026-10-25T03:04:05Z", "apps": [
+{"dir": "/Users/x/Desktop/dotsync_config", "checked_at": "2026-10-25T03:04:05Z", "apps": [
  {"name": "claude", "description": "Claude Code (settings + plugins + MCP servers + global rules)", "tracked": true,
   "state": "dirty", "details": "1 file differs", "direction": "local-newer", "reason": "",
   "changes": [{"label": "settings.json", "kind": "update", "details": "+2 −1", "file_changes": [], "diffable": true}]},
@@ -16,7 +16,7 @@ let sampleStatus = """
 """
 
 let samplePreview = """
-{"dir": "/x", "dir_source": "env", "direction": "to", "plans": [
+{"dir": "/x", "direction": "to", "plans": [
  {"app": "claude", "description": "Claude Code", "changes": [
    {"label": "plugins", "kind": "update", "details": "", "file_changes": ["~ a.json", "+ b.json"], "diffable": true,
     "diff": "◦ a.json\\n-old\\n+new"}],
@@ -27,18 +27,18 @@ let samplePreview = """
 """
 
 let sampleApply = """
-{"dir": "/x", "dir_source": "env", "direction": "from", "results": [
+{"dir": "/x", "direction": "from", "results": [
  {"app": "zsh", "outcome": "changed", "warnings": []},
  {"app": "codex", "outcome": "failed", "error": "codex plugin list timed out after 120 s", "warnings": ["skipped x"]}
 ]}
 """
 
 let sampleConfigDir = """
-{"dir": "/Users/x/new", "dir_source": "rc", "rc": {"action": "updated", "path": "/Users/x/.zshrc"}}
+{"dir": "/Users/x/new", "rc": {"action": "updated", "path": "/Users/x/.zshrc"}}
 """
 
 let sampleConfigApps = """
-{"dir": "/x", "dir_source": "env", "apps": ["zsh", "claude"]}
+{"dir": "/x", "apps": ["zsh", "claude"]}
 """
 
 private func decoded<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
@@ -84,8 +84,6 @@ private func decoded<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
 @Test func configAnswersDecode() throws {
     let dir = try decoded(ConfigDirResult.self, sampleConfigDir)
     #expect(dir.rc == RcResult(action: "updated", path: "/Users/x/.zshrc"))
-    let missing = try decoded(ConfigDirResult.self, #"{"dir": "/n", "dir_source": "", "rc": {"action": "rc_missing", "path": null}}"#)
-    #expect(missing.rc.path == nil)
     #expect(try decoded(ConfigApps.self, sampleConfigApps).apps == ["zsh", "claude"])
 }
 

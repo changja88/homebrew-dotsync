@@ -18,10 +18,6 @@ class YourApp(App):
     name = "yourapp"
     description = "One-line human-readable purpose"
 
-    @classmethod
-    def is_present_locally(cls) -> bool:
-        return (Path.home() / ".yourapprc").exists()
-
     def tracked_files(self, target_dir: Path) -> list[FilePair]:
         return [FilePair(
             local=Path.home() / ".yourapprc",
@@ -49,8 +45,8 @@ APP_CLASSES = (
 )
 ```
 
-`APP_NAMES`, `app_descriptions()`, `build_app()`, `detect_present()`, and
-`config.supported_apps()` all derive from `APP_CLASSES`. No other site requires
+`APP_NAMES`, `build_app()`, `config.supported_apps()` and the app list
+dotsync.app shows all derive from `APP_CLASSES`. No other site requires
 changes.
 
 ## 3. Write tests
@@ -70,7 +66,7 @@ def test_sync_from_copies(fake_home, tmp_path):
 ```
 
 The default sync impls are already covered by `tests/apps/test_base.py`, so you
-only need to test `is_present_locally()` and the actual file paths.
+only need to test the actual file paths.
 
 For round-trip safety, append to `tests/integration/test_roundtrip.py`:
 
@@ -92,12 +88,11 @@ lists. Both sections must stay in parity per `CLAUDE.md`.
 
 | Need | Approach |
 |---|---|
-| App-specific options (preset names, theme) | Override `from_config(cls, cfg)` to read `cfg.app_options[cls.name]`; add `extra_init_args(parser)` for CLI flags; add `resolve_options(args, *, prev_apps, new_apps, interactive)` for init-time discovery. See `BetterTouchToolApp` for a worked example. |
-| External process (CLI/AppleScript) | Use `self._run_external(cmd, desc=..., fail_mode="warn"\|"raise")` from `App`. fail_mode="warn" auto-collects failures into `self.warnings` which the cli summary surfaces. |
+| App-specific options (preset names, theme) | Override `from_config(cls, cfg)` to read `cfg.app_options[cls.name]`; override `options_when_turned_on()` for the options it gets when dotsync.app turns it on. See `BetterTouchToolApp` for a worked example. |
+| External process (CLI/AppleScript) | Use `self._run_external(cmd, desc=..., fail_mode="warn"\|"raise")` from `App`. fail_mode="warn" auto-collects failures into `self.warnings`, which each push/pull result carries. |
 | Multi-file or directory tree | Return multiple `FilePair`s. The default impls already iterate them. |
-| Custom import flow | Override `sync_to(target_dir)` directly; you can still call `super().sync_to()` for the file-copy half if your custom logic is post-hoc (see `ZshApp.sync_to` for the pattern — calls `super()` then adds a hint message). |
+| Custom import flow | Override `sync_to(target_dir)` directly; you can still call `super().sync_to()` for the file-copy half if your custom logic is post-hoc (`ZshApp.sync_to` overrides it whole: it writes the stored `.zshrc` but keeps this Mac's marked `DOTSYNC_DIR` line). |
 | Status that compares non-files (live exports) | Override `status()`; reuse `diff_files` for any file portion. See `BetterTouchToolApp.status` for a worked example with `osascript` live diff. |
-| Custom CLI subcommand (`dotsync config <name>-...`) | Implement `extra_config_subcommands(subparser)` to register, and `handle_config_subcommand(args, cfg)` to handle. Return `int` (exit code) on match, `None` if not your subcommand. |
 
 ## Cross-cutting rules (carried over from CLAUDE.md)
 
@@ -106,7 +101,7 @@ lists. Both sections must stay in parity per `CLAUDE.md`.
 - **No network calls** from dotsync itself. External processes that hit the network (claude plugin install, BTT) are OK if invoked via the user's existing CLI.
 - **`push` = local→folder, `pull` = folder→local.** Internally, app
   plugins still implement `sync_from` and `sync_to`. Neither keeps backup
-  copies; the preview and the y/N confirmation are the safety net.
+  copies; the preview dotsync.app shows before applying is the safety net.
 
 ## Checklist
 
@@ -117,4 +112,3 @@ Before opening a PR:
 - [ ] Round-trip test added to `tests/integration/test_roundtrip.py`
 - [ ] README KR + EN both list the app
 - [ ] No new top-level dependency (stdlib only — see CLAUDE.md)
-- [ ] `is_present_locally()` does not raise (returns False on any error so init's auto-detection isn't broken by missing app state)

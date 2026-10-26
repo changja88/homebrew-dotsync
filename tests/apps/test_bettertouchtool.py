@@ -408,24 +408,6 @@ def test_sync_from_escapes_quote_in_export_path(tmp_path, monkeypatch):
     assert 'configs "quoted"' not in scripts[0]
 
 
-def test_is_present_locally_true_when_btt_app_exists(monkeypatch, tmp_path):
-    fake_apps = tmp_path / "Applications"
-    (fake_apps / "BetterTouchTool.app").mkdir(parents=True)
-    monkeypatch.setattr(
-        "dotsync.apps.bettertouchtool.BetterTouchToolApp.APP_PATH",
-        fake_apps / "BetterTouchTool.app",
-    )
-    assert BetterTouchToolApp.is_present_locally() is True
-
-
-def test_is_present_locally_false_when_btt_app_missing(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        "dotsync.apps.bettertouchtool.BetterTouchToolApp.APP_PATH",
-        tmp_path / "nope" / "BetterTouchTool.app",
-    )
-    assert BetterTouchToolApp.is_present_locally() is False
-
-
 def test_status_clean_when_export_matches_stored(tmp_path):
     """If the live BTT export matches the stored .bttpreset byte-for-byte,
     status() returns clean."""
@@ -1174,21 +1156,25 @@ def _make_btt_db(path: Path, preset_names: list[str]) -> None:
     conn.close()
 
 
-def test_discover_preset_names_returns_sorted_list(tmp_path, monkeypatch):
-    btt_dir = tmp_path / "btt"
-    btt_dir.mkdir()
+@pytest.fixture
+def btt_dir():
+    """BetterTouchTool's data folder in the test's own home, where
+    discover_preset_names looks."""
+    path = Path.home() / "Library" / "Application Support" / "BetterTouchTool"
+    path.mkdir(parents=True)
+    return path
+
+
+def test_discover_preset_names_returns_sorted_list(btt_dir):
     db = btt_dir / "btt_data_store.version_6_306_build_2026032508"
     _make_btt_db(db, ["Work", "Master_bt", "Travel"])
-    monkeypatch.setattr(BetterTouchToolApp, "DATA_DIR", btt_dir)
 
     names = BetterTouchToolApp.discover_preset_names()
     assert names == ["Master_bt", "Travel", "Work"]
 
 
-def test_discover_preset_names_picks_most_recent_db(tmp_path, monkeypatch):
+def test_discover_preset_names_picks_most_recent_db(btt_dir):
     """User has stale DB files from prior BTT versions; we use the latest."""
-    btt_dir = tmp_path / "btt"
-    btt_dir.mkdir()
     old_db = btt_dir / "btt_data_store.version_6_011_build_2026010801"
     new_db = btt_dir / "btt_data_store.version_6_306_build_2026032508"
     _make_btt_db(old_db, ["OldPreset"])
@@ -1198,14 +1184,11 @@ def test_discover_preset_names_picks_most_recent_db(tmp_path, monkeypatch):
 
     os.utime(old_db, (1_700_000_000, 1_700_000_000))
     os.utime(new_db, (1_800_000_000, 1_800_000_000))
-    monkeypatch.setattr(BetterTouchToolApp, "DATA_DIR", btt_dir)
 
     assert BetterTouchToolApp.discover_preset_names() == ["CurrentPreset"]
 
 
-def test_discover_preset_names_ignores_wal_and_shm_siblings(tmp_path, monkeypatch):
-    btt_dir = tmp_path / "btt"
-    btt_dir.mkdir()
+def test_discover_preset_names_ignores_wal_and_shm_siblings(btt_dir):
     db = btt_dir / "btt_data_store.version_6_306_build_2026032508"
     _make_btt_db(db, ["MyPreset"])
     # SQLite write-ahead log siblings — must not be picked as the DB
@@ -1216,50 +1199,36 @@ def test_discover_preset_names_ignores_wal_and_shm_siblings(tmp_path, monkeypatc
         b"\x00" * 32
     )
 
-    monkeypatch.setattr(BetterTouchToolApp, "DATA_DIR", btt_dir)
     assert BetterTouchToolApp.discover_preset_names() == ["MyPreset"]
 
 
-def test_discover_preset_names_returns_empty_when_dir_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr(BetterTouchToolApp, "DATA_DIR", tmp_path / "does_not_exist")
+def test_discover_preset_names_returns_empty_when_dir_missing():
     assert BetterTouchToolApp.discover_preset_names() == []
 
 
-def test_discover_preset_names_returns_empty_when_no_db_files(tmp_path, monkeypatch):
-    btt_dir = tmp_path / "btt"
-    btt_dir.mkdir()  # exists but empty
-    monkeypatch.setattr(BetterTouchToolApp, "DATA_DIR", btt_dir)
+def test_discover_preset_names_returns_empty_when_no_db_files(btt_dir):
+    # btt_dir exists but is empty
     assert BetterTouchToolApp.discover_preset_names() == []
 
 
-def test_discover_preset_names_returns_empty_on_corrupt_db(tmp_path, monkeypatch):
-    btt_dir = tmp_path / "btt"
-    btt_dir.mkdir()
+def test_discover_preset_names_returns_empty_on_corrupt_db(btt_dir):
     bad = btt_dir / "btt_data_store.version_6_306_build_2026032508"
     bad.write_bytes(b"this is not a sqlite database")
-    monkeypatch.setattr(BetterTouchToolApp, "DATA_DIR", btt_dir)
     assert BetterTouchToolApp.discover_preset_names() == []
 
 
-def test_discover_preset_names_returns_empty_on_unexpected_schema(
-    tmp_path, monkeypatch
-):
+def test_discover_preset_names_returns_empty_on_unexpected_schema(btt_dir):
     """If the schema lacks Z_PRIMARYKEY or ZBTTBASEENTITY, we don't crash."""
-    btt_dir = tmp_path / "btt"
-    btt_dir.mkdir()
     db = btt_dir / "btt_data_store.version_6_306_build_2026032508"
     conn = sqlite3.connect(str(db))
     conn.execute("CREATE TABLE Foo (bar TEXT)")
     conn.commit()
     conn.close()
-    monkeypatch.setattr(BetterTouchToolApp, "DATA_DIR", btt_dir)
     assert BetterTouchToolApp.discover_preset_names() == []
 
 
-def test_discover_preset_names_filters_null_and_empty(tmp_path, monkeypatch):
+def test_discover_preset_names_filters_null_and_empty(btt_dir):
     """ZNAME3 values that are NULL or empty string are not real preset names."""
-    btt_dir = tmp_path / "btt"
-    btt_dir.mkdir()
     db = btt_dir / "btt_data_store.version_6_306_build_2026032508"
     conn = sqlite3.connect(str(db))
     cur = conn.cursor()
@@ -1275,7 +1244,6 @@ def test_discover_preset_names_filters_null_and_empty(tmp_path, monkeypatch):
     cur.execute("INSERT INTO ZBTTBASEENTITY VALUES (3, 12, 'Real')")
     conn.commit()
     conn.close()
-    monkeypatch.setattr(BetterTouchToolApp, "DATA_DIR", btt_dir)
     assert BetterTouchToolApp.discover_preset_names() == ["Real"]
 
 
@@ -1337,70 +1305,6 @@ def test_btt_from_config_rejects_unsafe_preset_names(tmp_path):
         BetterTouchToolApp.from_config(cfg)
 
 
-def test_btt_extra_init_args_registers_presets_flag():
-    import argparse
-    from dotsync.apps.bettertouchtool import BetterTouchToolApp
-
-    parser = argparse.ArgumentParser()
-    BetterTouchToolApp.extra_init_args(parser)
-    args = parser.parse_args(["--btt-presets", "Foo,Bar"])
-    assert args.btt_presets == "Foo,Bar"
-
-
-def test_btt_picker_annotation_when_detected(monkeypatch):
-    from dotsync.apps.bettertouchtool import BetterTouchToolApp
-
-    monkeypatch.setattr(
-        BetterTouchToolApp,
-        "discover_preset_names",
-        classmethod(lambda cls: ["A", "B", "C"]),
-    )
-    assert BetterTouchToolApp.picker_annotation(detected=True) == "3 presets"
-
-
-def test_btt_picker_annotation_one_preset_singular(monkeypatch):
-    from dotsync.apps.bettertouchtool import BetterTouchToolApp
-
-    monkeypatch.setattr(
-        BetterTouchToolApp, "discover_preset_names", classmethod(lambda cls: ["Only"])
-    )
-    assert BetterTouchToolApp.picker_annotation(detected=True) == "1 preset"
-
-
-def test_btt_picker_annotation_none_when_not_detected():
-    from dotsync.apps.bettertouchtool import BetterTouchToolApp
-
-    assert BetterTouchToolApp.picker_annotation(detected=False) is None
-
-
-def test_btt_resolve_options_explicit_flag(tmp_path, monkeypatch):
-    import argparse
-    from dotsync.apps.bettertouchtool import BetterTouchToolApp
-
-    args = argparse.Namespace(btt_presets="X,Y", yes=False)
-    opts = BetterTouchToolApp.resolve_options(
-        args,
-        prev_apps=[],
-        new_apps=["bettertouchtool"],
-        interactive=False,
-    )
-    assert opts == {"presets": ["X", "Y"]}
-
-
-def test_btt_resolve_options_returns_none_when_btt_not_in_new_apps():
-    import argparse
-    from dotsync.apps.bettertouchtool import BetterTouchToolApp
-
-    args = argparse.Namespace(btt_presets=None, yes=False)
-    opts = BetterTouchToolApp.resolve_options(
-        args,
-        prev_apps=[],
-        new_apps=["zsh"],
-        interactive=False,
-    )
-    assert opts is None  # don't touch app_options if BTT isn't tracked
-
-
 @pytest.mark.parametrize("rc,stdout,stderr,reason", [
     (1, "", "execution error: Not authorized to send Apple events to BetterTouchTool. (-1743)", "btt_permission"),
     (0, "missing value", "", "btt_not_running"),
@@ -1448,3 +1352,15 @@ def test_status_reason_error_when_export_writes_no_file(tmp_path, monkeypatch):
         status = app.status(target)
 
     assert (status.state, status.reason) == ("unknown", "error")
+
+
+def test_btt_turned_on_gets_the_presets_btt_has(monkeypatch):
+    monkeypatch.setattr(BetterTouchToolApp, "discover_preset_names", classmethod(lambda cls: ["A", "B"]))
+
+    assert BetterTouchToolApp.options_when_turned_on() == {"presets": ["A", "B"]}
+
+
+def test_btt_turned_on_gets_the_default_preset_when_none_can_be_read(monkeypatch):
+    monkeypatch.setattr(BetterTouchToolApp, "discover_preset_names", classmethod(lambda cls: []))
+
+    assert BetterTouchToolApp.options_when_turned_on() == {"presets": ["Master_bt"]}

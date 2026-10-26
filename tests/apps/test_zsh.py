@@ -59,15 +59,6 @@ def test_status_missing_when_either_absent(fake_home, tmp_path):
     assert ZshApp().status(target).state == "missing"
 
 
-def test_is_present_locally_true_when_zshrc_exists(fake_home):
-    (fake_home / ".zshrc").write_text("X")
-    assert ZshApp.is_present_locally() is True
-
-
-def test_is_present_locally_false_when_no_zshrc(fake_home):
-    assert ZshApp.is_present_locally() is False
-
-
 # ----- the marked DOTSYNC_DIR lines belong to this Mac --------------------
 
 
@@ -112,7 +103,7 @@ def test_pull_keeps_local_dotsync_dir_lines(fake_home, tmp_path):
 
     ZshApp().sync_to(target)
 
-    # This Mac's block goes at the end, where `dotsync init` puts it.
+    # This Mac's block goes at the end, where update_shell_rc puts it.
     assert (fake_home / ".zshrc").read_text() == (
         "export NEW=1\n# stored tail\n\n" + _block("/Users/me/B")
     )

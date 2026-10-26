@@ -1,7 +1,7 @@
 """`--json` output of the sync commands, for the dotsync app.
 
 The contract is the one `dotsync account --json` follows: exactly one JSON
-object on stdout and nothing else — `ui` and app output go to stderr — exit 0
+object on stdout and nothing else — anything an app prints goes to stderr — exit 0
 with the command's object, or exit 1 with
 ``{"error": {"code": "<code>", "message": "<text>"}}``.
 """
@@ -84,7 +84,7 @@ def status_json(cfg: Config) -> dict:
             entry.update(_tracked_status(build_app, cls.name, cfg))
             entry["options"] = cfg.app_options.get(cls.name, {})
         apps.append(entry)
-    return {"dir": str(cfg.dir), "dir_source": cfg.dir_source, "checked_at": now_iso(), "apps": apps}
+    return {"dir": str(cfg.dir), "checked_at": now_iso(), "apps": apps}
 
 
 def _tracked_status(build_app, name: str, cfg: Config) -> dict:
@@ -150,28 +150,10 @@ def tree_diff_text(change: Change) -> str:
     return "\n\n".join(blocks)
 
 
-def config_json(cfg: Config) -> dict:
-    """`config show --json`."""
-    return {
-        "dir": str(cfg.dir),
-        "dir_source": cfg.dir_source,
-        "apps": list(cfg.apps),
-        "app_options": cfg.app_options,
-    }
-
-
 def config_dir_json(new_dir: Path, rc: ShellRcResult) -> dict:
-    """`config dir --json`. `dir_source` is how the next command will find
-    new_dir, or "" when it will not by itself — $DOTSYNC_DIR or the cwd
-    still names another folder, or no rc file holds the line."""
-    from dotsync.config import locate_sync_folder
-
-    found, source = locate_sync_folder()
-    if found is None or found.resolve() != new_dir:
-        source = ""
+    """`config dir --json`: the folder and the rc line that now names it."""
     return {
         "dir": str(new_dir),
-        "dir_source": source,
         "rc": {"action": rc.action, "path": str(rc.rc_path) if rc.rc_path else None},
     }
 
@@ -187,7 +169,7 @@ class JSONCommandError(Exception):
 
 def sync_apps(cfg: Config, app: "str | None", all_apps: bool) -> list[str]:
     """The apps a push/pull --json covers: every tracked one with --all, or
-    the one named (tracked or not, like the text command)."""
+    the one named, tracked or not."""
     from dotsync.apps import APP_NAMES
 
     if all_apps:
@@ -218,7 +200,7 @@ def preview_json(cfg: Config, apps: list[str], direction: str) -> dict:
         if name == "claude" and direction == "to":
             entry["plugin_actions"] = app.plugin_actions_to(cfg.dir)
         plans.append(entry)
-    return {"dir": str(cfg.dir), "dir_source": cfg.dir_source, "direction": direction, "plans": plans}
+    return {"dir": str(cfg.dir), "direction": direction, "plans": plans}
 
 
 def _apply_one(name: str, cfg: Config, direction: str, unchanged: bool) -> dict:
@@ -242,7 +224,7 @@ def _apply_one(name: str, cfg: Config, direction: str, unchanged: bool) -> dict:
 
 
 def apply_json(cfg: Config, apps: list[str], direction: str) -> dict:
-    """push/pull with the text command's rules: an app whose plan has
+    """push/pull: an app whose plan has
     changes but none that change anything is "unchanged"; one whose sync
     raises is "failed" and the rest still run."""
     from dotsync.apps import build_app
@@ -261,4 +243,4 @@ def apply_json(cfg: Config, apps: list[str], direction: str) -> dict:
                 )
                 continue
             results.append(_apply_one(name, cfg, direction, unchanged[name]))
-    return {"dir": str(cfg.dir), "dir_source": cfg.dir_source, "direction": direction, "results": results}
+    return {"dir": str(cfg.dir), "direction": direction, "results": results}

@@ -105,12 +105,6 @@ def test_recover_restore_cli(agents, session, capsys):
     assert session.exists()
 
 
-def test_recover_text_mode(agents, session, capsys):
-    interrupt(session)
-    assert cli.main(["sessions", "recover", "claude", SID, "--restore"]) == 0
-    assert capsys.readouterr().out.splitlines() == [f"{SID}  restored"]
-
-
 @pytest.mark.parametrize("flags", [[], ["--restore", "--finish"]])
 def test_recover_needs_restore_or_finish(flags, capsys):
     with pytest.raises(SystemExit) as e:

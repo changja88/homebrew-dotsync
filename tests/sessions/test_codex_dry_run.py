@@ -277,8 +277,3 @@ def test_dry_run_refusal_json(home, capsys):
     assert payload["items"] == [] and payload["refusal"]["code"] == "codex_db_failed"
 
 
-def test_dry_run_text_prints_counts_only(home, capsys):
-    add_history(home, GONE)
-    assert cli.main(["sessions", "cleanup", "codex", "--dry-run"]) == 0
-    out = capsys.readouterr().out
-    assert "대화 저장소에 남은 내용  1" in out and GONE not in out

@@ -724,16 +724,3 @@ def test_json_progress_lines_on_stderr(fake, db, capsys):
     assert out.err.splitlines() == ["dotsync-progress 1/2", "dotsync-progress 2/2"]
 
 
-def test_text_mode_prints_one_line_per_id(fake, db, capsys):
-    family(db)
-    fake.parts = {"rollout"}
-    fake.answer = (1, GENERIC)
-    code = cli.main(["sessions", "delete", "codex", ROOT, OTHER])
-    out = capsys.readouterr().out
-    assert code == 0
-    lines = out.splitlines()
-    assert len(lines) == 2
-    assert lines[0].startswith(f"{ROOT}  partial  failed  ")
-    assert lines[0].endswith("left state, history")
-    assert lines[1] == f"{OTHER}  skipped  not_found"
-    assert TITLE not in out

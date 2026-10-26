@@ -35,7 +35,7 @@ struct SyncSheetView: View {
             if isPull, changedPlans.contains(where: { $0.app == "claude" }) {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Image(systemName: "info.circle")
-                    Text("플러그인은 dotsync가 claude plugin 명령으로 설치하고 꺼요. 터미널에서 dotsync pull claude를 한 것과 같아요.")
+                    Text("플러그인은 dotsync가 claude plugin 명령으로 설치하고 꺼요.")
                         .lineSpacing(2).fixedSize(horizontal: false, vertical: true)
                 }
                 .font(.system(size: 11.5)).foregroundStyle(.secondary)

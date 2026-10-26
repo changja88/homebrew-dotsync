@@ -3,14 +3,17 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def isolate_env(monkeypatch):
-    """Auto-applied: scrub env vars that affect dotsync's behavior.
+def isolate_env(monkeypatch, tmp_path_factory):
+    """Auto-applied: dotsync finds the sync folder through the marked line in
+    the shell rc, so every test gets an empty home of its own (fake_home
+    swaps in tmp_path) and none reads or writes the real ~/.zshrc.
 
-    SHELL is also blanked by default so the new shell-rc auto-init step
-    short-circuits unless a test explicitly opts in via monkeypatch.setenv.
-    Tests that need to exercise rc auto-write must set SHELL themselves.
+    SHELL is blanked so rc_candidates starts at ~/.zshrc; a test that cares
+    sets it.
     """
-    monkeypatch.delenv("DOTSYNC_DIR", raising=False)
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: home)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.delenv("SHELL", raising=False)
 
@@ -21,6 +24,21 @@ def fake_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     return tmp_path
+
+
+@pytest.fixture
+def point_at(fake_home):
+    """Point dotsync at a sync folder as dotsync.app's folder pick does: the
+    marked line in a shell rc. It goes in ~/.bash_profile, which no app
+    syncs, so a test that writes ~/.zshrc for the zsh app keeps it."""
+    from dotsync.shellrc import update_shell_rc
+
+    def point(folder: Path) -> None:
+        rc = fake_home / ".bash_profile"
+        rc.touch()
+        update_shell_rc(rc, folder)
+
+    return point
 
 
 @pytest.fixture(autouse=True)
