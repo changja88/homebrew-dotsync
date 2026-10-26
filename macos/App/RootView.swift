@@ -1,3 +1,4 @@
+import DotsyncKit
 import SwiftUI
 
 /// The one dotsync window: the rail, and the chosen menu beside it. The title
@@ -6,6 +7,7 @@ struct RootView: View {
     let accounts: AccountsModel
     let settings: SettingsModel
     let sessions: SessionsModel
+    let autoSwitch: AutoSwitchModel
     /// Quitting that waits here for long work to end.
     let quitting: AppDelegate
     /// Remembered across launches.
@@ -38,8 +40,13 @@ struct RootView: View {
         .environment(\.appearsActive, true)
         // The desktop shows through, behind the glass panels.
         .containerBackground(for: .window) { WindowBackdrop() }
-        // Every dotsync:// link comes from a usage widget.
+        // The auto-switch checker's link works unseen; every other dotsync://
+        // link comes from a usage widget.
         .onOpenURL { url in
+            if case .autoSwitch(let request)? = AppLink(url: url) {
+                Task { await autoSwitch.handle(request) }
+                return
+            }
             selection = .usage
             accounts.handle(url)
         }
