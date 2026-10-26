@@ -108,12 +108,15 @@ public enum CleanupRules {
 
     // MARK: 끄고 정리하기
 
-    /// The blocker gate, then something to clean: an item or the vacuum.
+    /// The blocker gate, then something to clean: an item, or the vacuum
+    /// alone when the dry-run found free space for it. With neither, the
+    /// unit would quit ChatGPT for nothing.
     public static func startState(blockers: CleanupBlockers, preview: CleanupPreview?, selected: [String],
                                   vacuum: Bool) -> (allowed: Bool, note: String?) {
         let gate = CleanupGate.canStart(blockers: blockers, preview: preview)
         guard gate.allowed else { return gate }
-        if selected.isEmpty && !vacuum { return (false, "정리할 것을 골라 주세요") }
+        let reclaims = vacuum && (preview?.vacuumFreeBytes ?? 0) > 0
+        if selected.isEmpty && !reclaims { return (false, "정리할 것을 골라 주세요") }
         return (true, nil)
     }
 

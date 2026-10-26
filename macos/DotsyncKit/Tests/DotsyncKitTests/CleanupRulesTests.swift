@@ -14,9 +14,9 @@ private func item(_ id: String, count: Int, lines: Int? = nil, checked: Bool = t
     CleanupItem(id: id, label: id, count: count, lines: lines, bytes: nil, checked: checked)
 }
 
-private func plan(items: [CleanupItem] = [], refusal: CLIError? = nil) -> CleanupPreview {
+private func plan(items: [CleanupItem] = [], freeBytes: Int64? = nil, refusal: CLIError? = nil) -> CleanupPreview {
     CleanupPreview(blockers: [], chatgptHelpers: [], chatgptOpenThreads: 0, items: items,
-                   historyDbBytes: 8_600_000_000, vacuumAvailable: true, refusal: refusal)
+                   historyDbBytes: 8_600_000_000, vacuumAvailable: true, vacuumFreeBytes: freeBytes, refusal: refusal)
 }
 
 private func done(_ id: String, count: Int, lines: Int? = nil) -> CleanupItemResult {
@@ -102,11 +102,25 @@ private func done(_ id: String, count: Int, lines: Int? = nil) -> CleanupItemRes
     let nothing = CleanupRules.startState(blockers: seen([]), preview: ready, selected: [], vacuum: false)
     #expect(!nothing.allowed)
     #expect(nothing.note == "정리할 것을 골라 주세요")
-    // The vacuum alone is something to do.
-    #expect(CleanupRules.startState(blockers: seen([]), preview: ready, selected: [], vacuum: true).allowed)
     let terminal = CleanupRules.startState(blockers: seen([proc("terminal_codex", "codex")]), preview: ready, selected: ["queue"], vacuum: false)
     #expect(!terminal.allowed)
     #expect(terminal.note == "터미널 Codex가 끝나면 이 버튼이 켜져요")
+}
+
+@Test func theVacuumAloneNeedsSpaceToGiveBack() {
+    // Nothing picked and nothing to reclaim: ChatGPT would be quit for nothing.
+    for freeBytes in [nil, 0] as [Int64?] {
+        let ready = plan(items: [item("queue", count: 1)], freeBytes: freeBytes)
+        let nothing = CleanupRules.startState(blockers: seen([]), preview: ready, selected: [], vacuum: true)
+        #expect(!nothing.allowed, "\(String(describing: freeBytes))")
+        #expect(nothing.note == "정리할 것을 골라 주세요")
+        // Picked items free pages of their own, so the vacuum goes along.
+        #expect(CleanupRules.startState(blockers: seen([]), preview: ready, selected: ["queue"], vacuum: true).allowed)
+    }
+    let reclaimable = plan(items: [item("queue", count: 0)], freeBytes: 4096)
+    #expect(CleanupRules.startState(blockers: seen([]), preview: reclaimable, selected: [], vacuum: true) == (true, nil))
+    // Unticked, the free space is no reason to start.
+    #expect(!CleanupRules.startState(blockers: seen([]), preview: reclaimable, selected: [], vacuum: false).allowed)
 }
 
 @Test func aRefusedDryRunShowsTheRefusalCopy() {

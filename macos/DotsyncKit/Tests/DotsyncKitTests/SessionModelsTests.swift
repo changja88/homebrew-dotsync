@@ -104,6 +104,16 @@ func decodeSession<T: Decodable>(_ type: T.Type, _ json: String) throws -> T {
     #expect(preview.items[0].label == "대화 저장소에 남은 내용")
     #expect(preview.vacuumAvailable)
     #expect(preview.historyDbBytes > 0)
+    // Nothing was deleted in that fake history database, so nothing is free.
+    #expect(preview.vacuumFreeBytes == 0)
+}
+
+@Test func aDryRunFromAnOlderCLIHasNoFreeBytes() throws {
+    let preview = try decodeSession(CleanupPreview.self, """
+    {"blockers": [], "chatgpt_helpers": [], "chatgpt_open_threads": 0, "items": [], "history_db_bytes": 0,
+     "vacuum_available": true, "refusal": null}
+    """)
+    #expect(preview.vacuumFreeBytes == nil)
 }
 
 @Test func cleanupPreviewDecodesARefusal() throws {

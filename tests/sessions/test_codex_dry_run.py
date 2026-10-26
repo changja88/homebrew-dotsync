@@ -202,6 +202,54 @@ def test_unreadable_history_db_refuses_instead_of_counting_zero(home, monkeypatc
     assert payload["refusal"]["code"] == "codex_db_failed"
 
 
+def free_pages(db_dir):
+    """Rows written and deleted again: with incremental auto_vacuum their
+    pages stay on the freelist until a vacuum gives them back."""
+    con = sqlite3.connect(db_dir / "thread_history_1.sqlite")
+    con.executemany(
+        "INSERT INTO thread_items (thread_id, turn_id, item_id, rollout_ordinal, created_at_ms, item_json)"
+        " VALUES (?, 't', ?, ?, 0, ?)",
+        [(GONE, f"i{n}", n, "x" * 4000) for n in range(40)],
+    )
+    con.commit()
+    con.execute("DELETE FROM thread_items")
+    con.commit()
+    (pages,) = con.execute("PRAGMA freelist_count").fetchone()
+    (size,) = con.execute("PRAGMA page_size").fetchone()
+    con.close()
+    return pages * size
+
+
+def test_vacuum_free_bytes_is_what_the_history_db_could_give_back(home):
+    freed = free_pages(home)
+    assert freed > 0
+    assert codex_cleanup.dry_run_payload()["vacuum_free_bytes"] == freed
+
+
+def test_vacuum_free_bytes_reads_two_pragmas_read_only(home, monkeypatch):
+    free_pages(home)
+    real = codex.open_ro
+    opened, statements = [], []
+
+    def spying(path):
+        con = real(path)
+        opened.append(path)
+        con.set_trace_callback(statements.append)
+        return con
+
+    monkeypatch.setattr(codex, "open_ro", spying)
+    assert codex_cleanup.vacuum_free_bytes() > 0
+    assert opened == [home / "thread_history_1.sqlite"]
+    assert statements == ["PRAGMA freelist_count", "PRAGMA page_size"]
+
+
+def test_vacuum_free_bytes_is_null_when_the_history_db_cannot_be_read(home):
+    (home / "thread_history_1.sqlite").unlink()
+    payload = codex_cleanup.dry_run_payload()
+    assert payload["vacuum_free_bytes"] is None
+    assert not (home / "thread_history_1.sqlite").exists()  # never made
+
+
 def test_blockers_are_reported_but_do_not_refuse(home, monkeypatch):
     monkeypatch.setattr(procs, "ps_table", lambda: {500: procs.Proc(500, 1, 60, "/x/codex")})
     monkeypatch.setattr(

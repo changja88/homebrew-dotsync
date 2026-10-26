@@ -62,6 +62,13 @@ final class ProgressLog: @unchecked Sendable {
     ])
 }
 
+@Test func aVacuumOnlyCleanupSendsAnEmptyItemsList() async throws {
+    // `--items ""` picks none of the four; leaving `--items` out would pick all of them.
+    let fake = try FakeDotsync(script: "echo '\(emptyCleanup)'")
+    _ = try await SessionService(cli: fake.cli).cleanup(items: [], vacuum: true)
+    #expect(fake.calls() == [["sessions", "cleanup", "codex", "--yes", "--json", "--items", "", "--vacuum"]])
+}
+
 @Test func anErrorAnswerThrowsTheCLIError() async throws {
     let fake = try FakeDotsync(script: """
     echo '{"error": {"code": "busy", "message": "another delete is running"}}'

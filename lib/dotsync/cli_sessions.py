@@ -54,7 +54,8 @@ def add_parser(sub) -> None:
     cleanup_cmd.add_argument(
         "--items",
         metavar="a,b",
-        help="with --yes: what to clean, among " + ", ".join(codex_cleanup.ITEMS) + " (default: all)",
+        help="with --yes: what to clean, among " + ", ".join(codex_cleanup.ITEMS)
+        + ' (default: all; "" picks none, and the cache files still go)',
     )
     cleanup_cmd.add_argument(
         "--vacuum", action="store_true", help="with --yes: also reclaim the history database's free space"
@@ -180,11 +181,21 @@ def _cleanup_payload(
         return codex_blockers.detect()
     if args.dry_run:
         return codex_cleanup.dry_run_payload(on_progress)
-    items = args.items.split(",") if args.items is not None else list(codex_cleanup.ITEMS)
+    items = _cleanup_items(args.items)
     with StopSignal() as stop:
         return codex_cleanup.run_cleanup(
             items, args.vacuum, stop=stop, progress=on_progress or (lambda done, total: None)
         )
+
+
+def _cleanup_items(arg: str | None) -> list[str]:
+    """No `--items` is all four; `--items ""` is none of them, so only the
+    cache files run, and the vacuum when asked (the app's vacuum-only run).
+    An empty name among others is left for `run_cleanup` to refuse as
+    `bad_items`."""
+    if arg is None:
+        return list(codex_cleanup.ITEMS)
+    return arg.split(",") if arg else []
 
 
 def _recover_report(args: argparse.Namespace, on_progress: Callable[[int, int], None]) -> dict:

@@ -139,9 +139,10 @@ def _cache_names() -> Iterator[str]:
 
 def dry_run_payload(progress: Callable[[int, int], None] | None = None) -> dict:
     """`detect()`'s fields plus the four items in spec order, what the history
-    database weighs, and whether it can be vacuumed. Blockers are reported, not
-    a refusal: nothing is changed. A refusal gives `items: []`, and the
-    keep-set walk is skipped when the support check already refuses."""
+    database weighs, whether it can be vacuumed, and what a vacuum could give
+    back now. Blockers are reported, not a refusal: nothing is changed. A
+    refusal gives `items: []`, and the keep-set walk is skipped when the
+    support check already refuses."""
     payload = codex_blockers.detect()
     refusal, vacuum_available = codex_keepset.support_check()
     found: Orphans | None = None
@@ -156,8 +157,23 @@ def dry_run_payload(progress: Callable[[int, int], None] | None = None) -> dict:
     payload["items"] = _items(found) if found is not None else []
     payload["history_db_bytes"] = codex.history_bytes()
     payload["vacuum_available"] = vacuum_available
+    payload["vacuum_free_bytes"] = vacuum_free_bytes()
     payload["refusal"] = {"code": refusal.code, "message": refusal.message} if refusal else None
     return payload
+
+
+def vacuum_free_bytes() -> int | None:
+    """The history database's free pages in bytes (`freelist_count` ×
+    `page_size`), read-only: what a vacuum alone could give back. None when
+    the database cannot be read, since an unknown amount is no reason to quit
+    ChatGPT for a vacuum."""
+    try:
+        with contextlib.closing(codex.open_ro(roots.codex_sqlite_home() / codex.HISTORY_DB)) as con:
+            (pages,) = con.execute("PRAGMA freelist_count").fetchone()
+            (size,) = con.execute("PRAGMA page_size").fetchone()
+    except sqlite3.Error:
+        return None
+    return pages * size
 
 
 def _items(found: Orphans) -> list[dict]:

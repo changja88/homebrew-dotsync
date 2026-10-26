@@ -1,1 +1,1 @@
-{"blockers": [], "chatgpt_helpers": [], "chatgpt_open_threads": 0, "items": [], "history_db_bytes": 90112, "vacuum_available": false, "refusal": {"code": "codex_version", "message": "Codex is migrating rollouts"}}
+{"blockers": [], "chatgpt_helpers": [], "chatgpt_open_threads": 0, "items": [], "history_db_bytes": 90112, "vacuum_available": false, "vacuum_free_bytes": 0, "refusal": {"code": "codex_version", "message": "Codex is migrating rollouts"}}

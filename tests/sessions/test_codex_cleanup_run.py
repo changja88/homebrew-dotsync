@@ -267,7 +267,7 @@ def test_coordination_lock_held_by_a_codex_is_codex_running(db, monkeypatch):
     assert logs()[0]["result"]["error"]["code"] == "codex_running"
 
 
-@pytest.mark.parametrize("items", ["history_rows,nope", "", "queue,,history_rows"])
+@pytest.mark.parametrize("items", ["history_rows,nope", ",", "queue,,history_rows"])
 def test_unknown_item_is_bad_items_before_any_lock(db, capsys, items):
     full_home(db)
     before = snapshot()
@@ -872,6 +872,29 @@ def test_items_flag_limits_the_run(db, capsys):
     assert keyed(db / "thread_history_1.sqlite", "thread_turns", GONE) != []
     assert (roots.codex_home() / "session_index.jsonl").read_bytes().count(GONE.encode()) == 1
     assert not cache(GONE).exists()  # the cache files always run
+
+
+@pytest.mark.parametrize("vacuum", [True, False])
+def test_empty_items_runs_only_the_cache_files_and_the_vacuum(db, capsys, vacuum):
+    # The app sends `--items ""` when only the vacuum is picked; no --items means all four.
+    full_home(db)
+    history = roots.codex_home() / "history.jsonl"
+    lines_before = history.read_bytes()
+    argv = ["sessions", "cleanup", "codex", "--yes", "--json", "--items", ""] + (["--vacuum"] if vacuum else [])
+    assert cli.main(argv) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert outcomes(report) == [("cache_files", "done", None)]
+    if vacuum:
+        assert report["vacuum"]["stopped_because"] in ("freelist_empty", "no_progress")
+    else:
+        assert report["vacuum"] is None
+    assert keyed(db / "thread_history_1.sqlite", "thread_turns", GONE) != []
+    assert keyed(db / "queue_1.sqlite", "queued_items", GONE) != []
+    assert history.read_bytes() == lines_before
+    assert (roots.codex_home() / "session_index.jsonl").read_bytes().count(GONE.encode()) == 1
+    assert not cache(GONE).exists() and cache(KEPT).exists()
+    [doc] = logs()
+    assert doc["result"]["items"] == report["items"] and "error" not in doc["result"]
 
 
 def test_blocker_appearing_mid_run_stops_the_rest(db, monkeypatch):

@@ -114,6 +114,9 @@ public struct CleanupPreview: Decodable, Sendable, Equatable {
     public var items: [CleanupItem]
     public var historyDbBytes: Int64
     public var vacuumAvailable: Bool
+    /// What a vacuum alone could give back now (the history database's free
+    /// pages); nil when the CLI could not read it.
+    public var vacuumFreeBytes: Int64?
     public var refusal: CLIError?
 }
 
