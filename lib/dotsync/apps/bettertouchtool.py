@@ -152,8 +152,6 @@ class BetterTouchToolApp(App):
     name = "bettertouchtool"
     description = "BetterTouchTool presets (.bttpreset, names configurable)"
 
-    DATA_DIR = Path.home() / "Library" / "Application Support" / "BetterTouchTool"
-
     @classmethod
     def from_config(cls, cfg) -> "BetterTouchToolApp":
         opts = cfg.app_options.get(cls.name, {}) if hasattr(cfg, "app_options") else {}
@@ -166,7 +164,7 @@ class BetterTouchToolApp(App):
         DB missing, schema drift, db locked, etc.) so callers can fall back
         gracefully."""
         try:
-            data_dir = Path(cls.DATA_DIR)
+            data_dir = Path.home() / "Library" / "Application Support" / "BetterTouchTool"
             if not data_dir.is_dir():
                 return []
             candidates = [
