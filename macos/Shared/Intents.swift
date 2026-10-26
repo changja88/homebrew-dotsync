@@ -65,7 +65,11 @@ struct ShowLiveIntent: AppIntent {
     static let title: LocalizedStringResource = "실시간 사용량 보기"
 
     func perform() async throws -> some IntentResult {
-        .result()
+        // The card shows as loading until the widget is drawn again, which
+        // takes a blink: held for a moment so a press shows even when the
+        // numbers have not moved.
+        try await Task.sleep(for: .milliseconds(600))
+        return .result()
     }
 }
 
