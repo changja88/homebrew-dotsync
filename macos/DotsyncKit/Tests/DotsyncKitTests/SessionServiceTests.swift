@@ -103,11 +103,12 @@ final class ProgressLog: @unchecked Sendable {
     sleep 30 >/dev/null 2>&1 &
     child=$!
     trap 'kill $child; echo "{\\"tool\\": \\"claude\\", \\"results\\": [{\\"id\\": \\"a\\", \\"outcome\\": \\"deleted\\"}], \\"stopped\\": true}"; exit 0' TERM
+    \(FakeDotsync.ready)
     wait $child
     """)
     let service = SessionService(cli: fake.cli)
     let task = Task { try await service.delete(.claude, ids: ["a", "b"]) }
-    while fake.calls().isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+    try await fake.waitUntilReady()
     task.cancel()
     let report = try await task.value
     #expect(report.stopped)

@@ -74,14 +74,18 @@ import Testing
     // The app asks this when it is about to quit, without waiting on the actor.
     let paths = try FakeDotsync(script: "")
     let report = try paths.file("usage.json", sampleReport)
-    let fake = try FakeDotsync(script: "sleep 0.3; cat '\(report)'")
+    let fake = try FakeDotsync(script: """
+    \(FakeDotsync.readyThenWait())
+    cat '\(report)'
+    """)
     let service = AccountService(cli: fake.cli, store: UsageStore(directory: try temporaryDirectory()))
     let gate = RefreshGate()
     #expect(!gate.isRunning)
 
     let refresh = Task { await gate.refresh(service) }
-    while fake.calls().isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+    try await fake.waitUntilReady()
     #expect(gate.isRunning)
+    fake.letGo()
     _ = await refresh.value
     #expect(!gate.isRunning)
 }
