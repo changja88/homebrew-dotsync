@@ -86,10 +86,10 @@ public struct ConfigDirResult: Codable, Equatable, Sendable {
 }
 
 /// What `config dir` did to the shell rc's DOTSYNC_DIR line: "added",
-/// "updated", "already_set" or "rc_missing" (then `path` is nil).
+/// "updated" or "already_set".
 public struct RcResult: Codable, Equatable, Sendable {
     public var action: String
-    public var path: String?
+    public var path: String
 }
 
 /// `config apps --json`.

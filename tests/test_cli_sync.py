@@ -148,15 +148,15 @@ def _stub_app(name, held, seen):
     return Stub()
 
 
-def _sync_setup(monkeypatch, tmp_path, app):
+def _sync_setup(point_at, tmp_path, app):
     target = tmp_path / "configs"
     target.mkdir()
     save_config(Config(dir=target, apps=[app]))
-    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+    point_at(target)
 
 
-def test_pull_claude_holds_accounts_lock(fake_home, monkeypatch, tmp_path):
-    _sync_setup(monkeypatch, tmp_path, "claude")
+def test_pull_claude_holds_accounts_lock(point_at, fake_home, monkeypatch, tmp_path):
+    _sync_setup(point_at, tmp_path, "claude")
     held, seen = _lock_recorders(monkeypatch)
     monkeypatch.setattr("dotsync.apps.build_app", lambda name, cfg: _stub_app(name, held, seen))
 
@@ -165,8 +165,8 @@ def test_pull_claude_holds_accounts_lock(fake_home, monkeypatch, tmp_path):
     assert held == []
 
 
-def test_push_codex_holds_shared_codex_lock(fake_home, monkeypatch, tmp_path):
-    _sync_setup(monkeypatch, tmp_path, "codex")
+def test_push_codex_holds_shared_codex_lock(point_at, fake_home, monkeypatch, tmp_path):
+    _sync_setup(point_at, tmp_path, "codex")
     held, seen = _lock_recorders(monkeypatch)
     monkeypatch.setattr("dotsync.apps.build_app", lambda name, cfg: _stub_app(name, held, seen))
 
@@ -174,8 +174,8 @@ def test_push_codex_holds_shared_codex_lock(fake_home, monkeypatch, tmp_path):
     assert seen["sync_from"] == ["codex:shared"]
 
 
-def test_pull_zsh_takes_no_lock(fake_home, monkeypatch, tmp_path):
-    _sync_setup(monkeypatch, tmp_path, "zsh")
+def test_pull_zsh_takes_no_lock(point_at, fake_home, monkeypatch, tmp_path):
+    _sync_setup(point_at, tmp_path, "zsh")
     held, seen = _lock_recorders(monkeypatch)
     monkeypatch.setattr("dotsync.apps.build_app", lambda name, cfg: _stub_app(name, held, seen))
 
@@ -183,10 +183,10 @@ def test_pull_zsh_takes_no_lock(fake_home, monkeypatch, tmp_path):
     assert seen["sync_to"] == []
 
 
-def test_status_codex_holds_shared_codex_lock(fake_home, monkeypatch, tmp_path):
+def test_status_codex_holds_shared_codex_lock(point_at, fake_home, monkeypatch, tmp_path):
     from dotsync.apps.base import AppStatus
 
-    _sync_setup(monkeypatch, tmp_path, "codex")
+    _sync_setup(point_at, tmp_path, "codex")
     held, seen = _lock_recorders(monkeypatch)
 
     class StatusStub:

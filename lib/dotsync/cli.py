@@ -19,12 +19,7 @@ from dotsync.config import (
     read_folder_config,
     save_config,
 )
-from dotsync.shellrc import (
-    ShellRcResult,
-    export_line,
-    rc_candidates,
-    update_shell_rc,
-)
+from dotsync.shellrc import ShellRcResult, rc_candidates, update_shell_rc
 
 _JSON_HELP = "print one JSON object (for the dotsync app)"
 
@@ -104,8 +99,7 @@ def cmd_config(args) -> int:
 
 def _set_dir(path: str) -> "tuple[Path, ShellRcResult]":
     """Point dotsync at the folder at `path` (files are not moved) through the
-    marked DOTSYNC_DIR line, so the next command — from a new shell or the
-    dotsync app — finds it. A folder that already has a dotsync.toml keeps
+    marked DOTSYNC_DIR line, which is how the next command finds it. A folder that already has a dotsync.toml keeps
     its own apps and options (a broken one is refused); any other gets this
     folder's config, or one that tracks nothing when there is none to read."""
     new_dir = Path(path).expanduser().resolve()
@@ -123,11 +117,13 @@ def _set_dir(path: str) -> "tuple[Path, ShellRcResult]":
 
 
 def _point_rc_at(new_dir: Path) -> ShellRcResult:
-    """Update the first existing rc file; never create one."""
-    for rc_path in rc_candidates():
-        if rc_path.exists():
-            return update_shell_rc(rc_path, new_dir)
-    return ShellRcResult("rc_missing", None, export_line(new_dir))
+    """Update the first existing rc file, or start ~/.zshrc (the macOS
+    shell's) when there is none: the line is the only way the next command
+    finds the folder."""
+    rc_path = next((p for p in rc_candidates() if p.exists()), Path.home() / ".zshrc")
+    if not rc_path.exists():
+        rc_path.touch()
+    return update_shell_rc(rc_path, new_dir)
 
 
 def _apps_payload(names: str) -> dict:
@@ -148,7 +144,7 @@ def _apps_payload(names: str) -> dict:
                 cfg.app_options[app_cls.name] = options
     cfg.apps = new_apps
     save_config(cfg)
-    return {"dir": str(cfg.dir), "dir_source": cfg.dir_source, "apps": new_apps}
+    return {"dir": str(cfg.dir), "apps": new_apps}
 
 
 def _sync_locks(apps: list[str], *, writes: bool) -> contextlib.ExitStack:

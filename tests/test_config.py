@@ -3,6 +3,7 @@ from dotsync.config import (
     Config,
     ConfigError,
     load_config,
+    read_folder_config,
     save_config,
     locate_sync_folder,
     folder_config_path,
@@ -16,137 +17,115 @@ def test_folder_config_path_is_dotsync_toml(tmp_path):
 # ----- locate_sync_folder ----------------------------------------------------
 
 
-def test_locate_sync_folder_uses_env_var(monkeypatch, tmp_path):
-    monkeypatch.setenv("DOTSYNC_DIR", str(tmp_path))
-    assert locate_sync_folder() == (tmp_path, "env")
+def test_locate_sync_folder_reads_the_marked_rc_line(point_at, tmp_path):
+    folder = tmp_path / "sync"
+    save_config(Config(dir=folder, apps=[]))
+    point_at(folder)
+
+    assert locate_sync_folder() == folder
 
 
-def test_locate_sync_folder_ascends_cwd(monkeypatch, tmp_path):
-    folder = tmp_path / "myfolder"
-    folder.mkdir()
-    (folder / "dotsync.toml").write_text("apps = []\n")
-    deep = folder / "a" / "b" / "c"
-    deep.mkdir(parents=True)
-    monkeypatch.delenv("DOTSYNC_DIR", raising=False)
-    monkeypatch.chdir(deep)
-    assert locate_sync_folder() == (folder, "cwd")
+def test_locate_sync_folder_returns_none_when_nothing_found(fake_home):
+    assert locate_sync_folder() is None
 
 
-def test_locate_sync_folder_returns_none_when_nothing_found(fake_home, monkeypatch, tmp_path):
-    # fake_home: the rc fallback must not read the real ~/.zshrc.
-    monkeypatch.delenv("DOTSYNC_DIR", raising=False)
-    monkeypatch.chdir(tmp_path)
-    assert locate_sync_folder() == (None, "")
+def test_locate_sync_folder_ignores_dotsync_dir_and_the_cwd(point_at, monkeypatch, tmp_path):
+    # Only the rc line counts: it is what dotsync.app's folder pick writes.
+    folders = {}
+    for name in ("rc", "env", "cwd"):
+        folders[name] = tmp_path / name
+        save_config(Config(dir=folders[name], apps=[]))
+    monkeypatch.setenv("DOTSYNC_DIR", str(folders["env"]))
+    monkeypatch.chdir(folders["cwd"])
 
-
-def test_locate_sync_folder_env_takes_precedence_over_cwd(monkeypatch, tmp_path):
-    env_folder = tmp_path / "env"
-    env_folder.mkdir()
-    cwd_folder = tmp_path / "cwd"
-    cwd_folder.mkdir()
-    (cwd_folder / "dotsync.toml").write_text("apps = []\n")
-    monkeypatch.setenv("DOTSYNC_DIR", str(env_folder))
-    monkeypatch.chdir(cwd_folder)
-    assert locate_sync_folder() == (env_folder, "env")
+    assert locate_sync_folder() is None
+    point_at(folders["rc"])
+    assert locate_sync_folder() == folders["rc"]
 
 
 # ----- load_config -----------------------------------------------------------
 
 
-def test_load_no_env_no_cwd_raises_with_helpful_msg(fake_home, monkeypatch, tmp_path):
-    monkeypatch.delenv("DOTSYNC_DIR", raising=False)
-    monkeypatch.chdir(tmp_path)
-    with pytest.raises(ConfigError) as exc:
+def test_load_without_a_sync_folder_points_at_the_app(fake_home):
+    with pytest.raises(ConfigError, match="dotsync.app"):
         load_config()
-    msg = str(exc.value)
-    assert "DOTSYNC_DIR" in msg or "dotsync init" in msg
 
 
-def test_load_env_pointing_to_missing_folder_raises(monkeypatch, tmp_path):
-    monkeypatch.setenv("DOTSYNC_DIR", str(tmp_path / "does-not-exist"))
+def test_read_folder_config_of_a_missing_folder_raises(tmp_path):
     with pytest.raises(ConfigError, match="not found"):
-        load_config()
+        read_folder_config(tmp_path / "does-not-exist")
 
 
-def test_load_env_pointing_to_folder_without_dotsync_toml_raises(monkeypatch, tmp_path):
-    folder = tmp_path / "empty"
-    folder.mkdir()
-    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
+def test_read_folder_config_without_dotsync_toml_raises(tmp_path):
     with pytest.raises(ConfigError, match="dotsync.toml"):
-        load_config()
+        read_folder_config(tmp_path)
 
 
-def test_load_via_env(monkeypatch, tmp_path):
+def test_load_through_the_rc_line(point_at, tmp_path):
     folder = tmp_path / "x"
     folder.mkdir()
     (folder / "dotsync.toml").write_text(
         'apps = ["zsh", "claude"]\n'
     )
-    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
+    point_at(folder)
     cfg = load_config()
     assert cfg.dir == folder
     assert cfg.apps == ["zsh", "claude"]
 
 
-def test_load_via_cwd_ascending(monkeypatch, tmp_path):
-    folder = tmp_path / "x"
-    folder.mkdir()
-    (folder / "dotsync.toml").write_text('apps = ["zsh"]\n')
-    monkeypatch.delenv("DOTSYNC_DIR", raising=False)
-    monkeypatch.chdir(folder / "any" if (folder / "any").exists() else folder)
-    cfg = load_config()
-    assert cfg.dir == folder
+def test_load_ignores_a_relative_rc_line(fake_home, monkeypatch, tmp_path):
+    from dotsync.shellrc import MARKER
 
-
-def test_load_rejects_relative_env_var(monkeypatch, tmp_path):
-    monkeypatch.setenv("DOTSYNC_DIR", "relative/path")
-    with pytest.raises(ConfigError, match="absolute"):
+    monkeypatch.chdir(tmp_path)
+    save_config(Config(dir=tmp_path / "relative", apps=[]))
+    (fake_home / ".zshrc").write_text(f"{MARKER}\nexport DOTSYNC_DIR=relative\n")
+    with pytest.raises(ConfigError):
         load_config()
 
 
-def test_load_rejects_unknown_app(monkeypatch, tmp_path):
+def test_load_rejects_unknown_app(point_at, monkeypatch, tmp_path):
     folder = tmp_path / "x"
     folder.mkdir()
     (folder / "dotsync.toml").write_text('apps = ["nonsense"]\n')
-    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
+    point_at(folder)
     with pytest.raises(ConfigError, match="unknown app"):
         load_config()
 
 
 @pytest.mark.parametrize("value", ["false", "0", '""'])
-def test_load_rejects_falsey_apps_when_not_list(monkeypatch, tmp_path, value):
+def test_load_rejects_falsey_apps_when_not_list(point_at, monkeypatch, tmp_path, value):
     folder = tmp_path / "x"
     folder.mkdir()
     (folder / "dotsync.toml").write_text(f"apps = {value}\n")
-    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
+    point_at(folder)
     with pytest.raises(ConfigError, match="apps"):
         load_config()
 
 
-def test_load_rejects_non_string_app_name(monkeypatch, tmp_path):
+def test_load_rejects_non_string_app_name(point_at, monkeypatch, tmp_path):
     folder = tmp_path / "x"
     folder.mkdir()
     (folder / "dotsync.toml").write_text("apps = [1]\n")
-    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
+    point_at(folder)
     with pytest.raises(ConfigError, match="apps"):
         load_config()
 
 
-def test_load_rejects_options_when_not_table(monkeypatch, tmp_path):
+def test_load_rejects_options_when_not_table(point_at, monkeypatch, tmp_path):
     folder = tmp_path / "x"
     folder.mkdir()
     (folder / "dotsync.toml").write_text('apps = ["zsh"]\noptions = "bad"\n')
-    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
+    point_at(folder)
     with pytest.raises(ConfigError, match="options"):
         load_config()
 
 
 @pytest.mark.parametrize("value", ["false", "0", "[]"])
-def test_load_rejects_falsey_options_when_not_table(monkeypatch, tmp_path, value):
+def test_load_rejects_falsey_options_when_not_table(point_at, monkeypatch, tmp_path, value):
     folder = tmp_path / "x"
     folder.mkdir()
     (folder / "dotsync.toml").write_text(f'apps = ["zsh"]\noptions = {value}\n')
-    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
+    point_at(folder)
     with pytest.raises(ConfigError, match="options"):
         load_config()
 
@@ -154,9 +133,8 @@ def test_load_rejects_falsey_options_when_not_table(monkeypatch, tmp_path, value
 # ----- save_config -----------------------------------------------------------
 
 
-def test_save_writes_only_dotsync_toml_no_other_files(fake_home, monkeypatch, tmp_path):
+def test_save_writes_only_dotsync_toml_no_other_files(fake_home, tmp_path):
     """save_config must NOT create any file outside the sync folder."""
-    monkeypatch.delenv("DOTSYNC_DIR", raising=False)
     folder = tmp_path / "myfolder"
     folder.mkdir()
     cfg = Config(dir=folder, apps=["zsh"])
@@ -170,13 +148,13 @@ def test_save_writes_only_dotsync_toml_no_other_files(fake_home, monkeypatch, tm
     assert not (fake_home / ".config" / "dotsync").exists()
 
 
-def test_save_then_load_roundtrip(monkeypatch, tmp_path):
+def test_save_then_load_roundtrip(point_at, monkeypatch, tmp_path):
     folder = tmp_path / "configs"
     folder.mkdir()
     cfg = Config(dir=folder, apps=["claude", "zsh"])
     save_config(cfg)
 
-    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
+    point_at(folder)
     loaded = load_config()
     assert loaded.dir == folder
     assert loaded.apps == ["claude", "zsh"]
@@ -190,13 +168,13 @@ def test_save_creates_folder_if_missing(tmp_path):
     assert (folder / "dotsync.toml").exists()
 
 
-def test_load_corrupted_toml_raises_config_error(monkeypatch, tmp_path):
+def test_load_corrupted_toml_raises_config_error(point_at, monkeypatch, tmp_path):
     """A hand-mangled dotsync.toml must surface as ConfigError, not raw
     TOMLDecodeError, so cli.py's friendly handler catches it."""
     folder = tmp_path / "broken"
     folder.mkdir()
     (folder / "dotsync.toml").write_text('apps = ["zsh"\n[options\nbroken = ')
-    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
+    point_at(folder)
     with pytest.raises(ConfigError, match="dotsync.toml"):
         load_config()
 
@@ -206,7 +184,7 @@ def test_config_app_options_default_is_empty_dict(tmp_path):
     assert cfg.app_options == {}
 
 
-def test_load_reads_app_options_subtables(monkeypatch, tmp_path):
+def test_load_reads_app_options_subtables(point_at, monkeypatch, tmp_path):
     folder = tmp_path / "x"
     folder.mkdir()
     (folder / "dotsync.toml").write_text(
@@ -214,7 +192,7 @@ def test_load_reads_app_options_subtables(monkeypatch, tmp_path):
         "[options.bettertouchtool]\n"
         'presets = ["A", "B"]\n'
     )
-    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
+    point_at(folder)
     cfg = load_config()
     assert cfg.app_options.get("bettertouchtool") == {"presets": ["A", "B"]}
 
@@ -233,7 +211,7 @@ def test_save_persists_app_options_as_subtables(tmp_path):
     assert 'presets = ["X", "Y"]' in text
 
 
-def test_save_escapes_strings_for_toml(monkeypatch, tmp_path):
+def test_save_escapes_strings_for_toml(point_at, monkeypatch, tmp_path):
     folder = tmp_path / "quoted"
     folder.mkdir()
     cfg = Config(
@@ -243,7 +221,7 @@ def test_save_escapes_strings_for_toml(monkeypatch, tmp_path):
     )
     save_config(cfg)
 
-    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
+    point_at(folder)
     loaded = load_config()
 
     assert loaded.app_options["bettertouchtool"]["presets"] == [
@@ -261,11 +239,11 @@ def test_save_escapes_strings_for_toml(monkeypatch, tmp_path):
         ('bettertouchtool_preset = "A"', "bettertouchtool_preset"),
     ],
 )
-def test_load_rejects_options_that_are_not_app_tables(monkeypatch, tmp_path, line, key):
+def test_load_rejects_options_that_are_not_app_tables(point_at, monkeypatch, tmp_path, line, key):
     folder = tmp_path / "x"
     folder.mkdir()
     (folder / "dotsync.toml").write_text(f'apps = ["zsh"]\n\n[options]\n{line}\n')
-    monkeypatch.setenv("DOTSYNC_DIR", str(folder))
+    point_at(folder)
 
     with pytest.raises(ConfigError, match=key):
         load_config()
@@ -285,7 +263,7 @@ def test_save_writes_only_apps_and_app_option_tables(tmp_path):
     )
 
 
-# ----- the marked DOTSYNC_DIR line in the shell rc (Finder-launched app) -----
+# ----- the marked DOTSYNC_DIR line in the shell rc ---------------------------
 
 
 def _marked_rc(home, folder, name=".zshrc"):
@@ -296,60 +274,24 @@ def _marked_rc(home, folder, name=".zshrc"):
     return rc
 
 
-def test_rc_marked_line_is_the_last_fallback(fake_home, monkeypatch, tmp_path):
-    folder = tmp_path / "sync"
-    folder.mkdir()
-    save_config(Config(dir=folder, apps=[]))
-    _marked_rc(fake_home, folder)
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    monkeypatch.chdir(elsewhere)
-
-    cfg = load_config()
-
-    assert cfg.dir == folder
-    assert cfg.dir_source == "rc"
-
-
-def test_rc_line_ignored_without_dotsync_toml(fake_home, monkeypatch, tmp_path):
+def test_rc_line_ignored_without_dotsync_toml(fake_home, tmp_path):
     folder = tmp_path / "sync"
     folder.mkdir()
     _marked_rc(fake_home, folder)
-    monkeypatch.chdir(tmp_path)
 
     with pytest.raises(ConfigError):
         load_config()
 
 
-def test_unmarked_export_line_is_ignored(fake_home, monkeypatch, tmp_path):
+def test_unmarked_export_line_is_ignored(fake_home, tmp_path):
     from dotsync.shellrc import export_line
 
     folder = tmp_path / "sync"
-    folder.mkdir()
     save_config(Config(dir=folder, apps=[]))
     (fake_home / ".zshrc").write_text(export_line(folder) + "\n")
-    monkeypatch.chdir(tmp_path)
 
     with pytest.raises(ConfigError):
         load_config()
-
-
-def test_env_and_cwd_win_over_rc(fake_home, monkeypatch, tmp_path):
-    rc_folder = tmp_path / "rc-sync"
-    rc_folder.mkdir()
-    save_config(Config(dir=rc_folder, apps=[]))
-    _marked_rc(fake_home, rc_folder)
-    cwd_folder = tmp_path / "cwd-sync"
-    cwd_folder.mkdir()
-    save_config(Config(dir=cwd_folder, apps=[]))
-    env_folder = tmp_path / "env-sync"
-    env_folder.mkdir()
-    save_config(Config(dir=env_folder, apps=[]))
-    monkeypatch.chdir(cwd_folder)
-
-    assert (load_config().dir, load_config().dir_source) == (cwd_folder, "cwd")
-    monkeypatch.setenv("DOTSYNC_DIR", str(env_folder))
-    assert (load_config().dir, load_config().dir_source) == (env_folder, "env")
 
 
 def test_rc_path_with_spaces_and_korean_round_trips(tmp_path):
@@ -374,10 +316,8 @@ def test_marked_dir_missing_file_or_line(tmp_path):
 def test_rc_found_when_shell_unset(fake_home, monkeypatch, tmp_path):
     monkeypatch.delenv("SHELL", raising=False)
     folder = tmp_path / "sync"
-    folder.mkdir()
     save_config(Config(dir=folder, apps=[]))
     _marked_rc(fake_home, folder, ".zshrc")
-    monkeypatch.chdir(tmp_path)
 
     assert load_config().dir == folder
 

@@ -13,9 +13,8 @@ def _write_rc(home, folder):
 
 
 def _app_context(monkeypatch, home):
-    """What a process started from Finder sees: no $DOTSYNC_DIR, a cwd
-    outside the sync folder, and the folder named only by the rc line."""
-    monkeypatch.delenv("DOTSYNC_DIR", raising=False)
+    """What a process started from Finder sees: a cwd outside the sync
+    folder, and the folder named only by the rc line."""
     monkeypatch.setenv("SHELL", "/bin/zsh")
     monkeypatch.chdir(home)
 
@@ -48,27 +47,23 @@ def test_config_dir_json(fake_home, monkeypatch, capsys):
     assert out.count("\n") == 1
     assert json.loads(out) == {
         "dir": str(new.resolve()),
-        "dir_source": "rc",
         "rc": {"action": "updated", "path": str(rc)},
     }
 
 
-def test_config_dir_without_rc_file(fake_home, monkeypatch, capsys):
-    old, new = fake_home / "old", fake_home / "new"
-    save_config(Config(dir=old, apps=["zsh"]))
-    monkeypatch.setenv("DOTSYNC_DIR", str(old))
-    monkeypatch.setenv("SHELL", "/bin/zsh")
+def test_config_dir_json_starts_a_zshrc_when_there_is_no_rc_file(fake_home, monkeypatch, capsys):
+    # The rc line is the only way the next command finds the folder.
+    from dotsync.shellrc import marked_dir
 
-    assert main(["config", "dir", str(new), "--json"]) == 0
+    new = fake_home / "new"
+    _app_context(monkeypatch, fake_home)
 
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["dir"] == str(new.resolve())
-    assert payload["rc"] == {"action": "rc_missing", "path": None}
-    # $DOTSYNC_DIR still names the old folder, so the next command will not
-    # find the new one by itself.
-    assert payload["dir_source"] == ""
-    assert (new / "dotsync.toml").exists()
-    assert not (fake_home / ".zshrc").exists()
+    assert main(["config", "dir", "--json", "--", str(new)]) == 0
+
+    rc = fake_home / ".zshrc"
+    assert json.loads(capsys.readouterr().out)["rc"] == {"action": "added", "path": str(rc)}
+    assert marked_dir(rc) == new.resolve()
+    assert load_config().dir == new.resolve()
 
 
 def test_config_dir_keeps_the_folders_own_dotsync_toml(fake_home, monkeypatch, capsys):
@@ -139,16 +134,15 @@ def test_config_dir_refuses_a_folder_with_a_broken_dotsync_toml(fake_home, monke
     assert marked_dir(rc) == old.resolve()
 
 
-def test_config_apps_json_saves_apps(fake_home, monkeypatch, capsys):
+def test_config_apps_json_saves_apps(point_at, fake_home, monkeypatch, capsys):
     target = fake_home / "configs"
     save_config(Config(dir=target, apps=["zsh"]))
-    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+    point_at(target)
 
     assert main(["config", "apps", "zsh,claude", "--json"]) == 0
 
     assert json.loads(capsys.readouterr().out) == {
         "dir": str(target),
-        "dir_source": "env",
         "apps": ["zsh", "claude"],
     }
     assert load_config().apps == ["zsh", "claude"]
@@ -186,10 +180,10 @@ def test_config_apps_json_keeps_the_presets_of_bettertouchtool_left_on(fake_home
     assert load_config().app_options == {"bettertouchtool": {"presets": ["Mine"]}}
 
 
-def test_config_apps_json_rejects_unknown(fake_home, monkeypatch, capsys):
+def test_config_apps_json_rejects_unknown(point_at, fake_home, monkeypatch, capsys):
     target = fake_home / "configs"
     save_config(Config(dir=target, apps=["zsh"]))
-    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+    point_at(target)
 
     assert main(["config", "apps", "zsh,nope", "--json"]) == 1
 
@@ -199,12 +193,12 @@ def test_config_apps_json_rejects_unknown(fake_home, monkeypatch, capsys):
     assert load_config().apps == ["zsh"]
 
 
-def test_config_apps_json_keeps_the_existing_order(fake_home, monkeypatch, capsys):
+def test_config_apps_json_keeps_the_existing_order(point_at, fake_home, monkeypatch, capsys):
     # The dotsync app sends every tracked app in its table's order when one
     # switch flips; the order in dotsync.toml stays the person's.
     target = fake_home / "configs"
     save_config(Config(dir=target, apps=["zsh", "bettertouchtool", "claude"]))
-    monkeypatch.setenv("DOTSYNC_DIR", str(target))
+    point_at(target)
 
     assert main(["config", "apps", "claude,codex,bettertouchtool,zsh", "--json"]) == 0
 

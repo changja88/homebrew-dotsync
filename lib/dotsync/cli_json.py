@@ -84,7 +84,7 @@ def status_json(cfg: Config) -> dict:
             entry.update(_tracked_status(build_app, cls.name, cfg))
             entry["options"] = cfg.app_options.get(cls.name, {})
         apps.append(entry)
-    return {"dir": str(cfg.dir), "dir_source": cfg.dir_source, "checked_at": now_iso(), "apps": apps}
+    return {"dir": str(cfg.dir), "checked_at": now_iso(), "apps": apps}
 
 
 def _tracked_status(build_app, name: str, cfg: Config) -> dict:
@@ -151,17 +151,9 @@ def tree_diff_text(change: Change) -> str:
 
 
 def config_dir_json(new_dir: Path, rc: ShellRcResult) -> dict:
-    """`config dir --json`. `dir_source` is how the next command will find
-    new_dir, or "" when it will not by itself — $DOTSYNC_DIR or the cwd
-    still names another folder, or no rc file holds the line."""
-    from dotsync.config import locate_sync_folder
-
-    found, source = locate_sync_folder()
-    if found is None or found.resolve() != new_dir:
-        source = ""
+    """`config dir --json`: the folder and the rc line that now names it."""
     return {
         "dir": str(new_dir),
-        "dir_source": source,
         "rc": {"action": rc.action, "path": str(rc.rc_path) if rc.rc_path else None},
     }
 
@@ -208,7 +200,7 @@ def preview_json(cfg: Config, apps: list[str], direction: str) -> dict:
         if name == "claude" and direction == "to":
             entry["plugin_actions"] = app.plugin_actions_to(cfg.dir)
         plans.append(entry)
-    return {"dir": str(cfg.dir), "dir_source": cfg.dir_source, "direction": direction, "plans": plans}
+    return {"dir": str(cfg.dir), "direction": direction, "plans": plans}
 
 
 def _apply_one(name: str, cfg: Config, direction: str, unchanged: bool) -> dict:
@@ -251,4 +243,4 @@ def apply_json(cfg: Config, apps: list[str], direction: str) -> dict:
                 )
                 continue
             results.append(_apply_one(name, cfg, direction, unchanged[name]))
-    return {"dir": str(cfg.dir), "dir_source": cfg.dir_source, "direction": direction, "results": results}
+    return {"dir": str(cfg.dir), "direction": direction, "results": results}

@@ -141,11 +141,8 @@ final class SettingsModel {
         var changed = false
         await queue.run("폴더 바꾸는 중…") {
             do {
-                let result = try await service.setDir(url.path)
+                _ = try await service.setDir(url.path)
                 changed = true
-                if result.rc.action == "rc_missing" {
-                    self.message = "터미널의 DOTSYNC_DIR은 직접 바꿔 주세요"
-                }
             } catch {
                 self.message = Self.describe(error)
             }
