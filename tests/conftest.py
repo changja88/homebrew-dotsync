@@ -142,6 +142,7 @@ class FakeAccountsCli:
         self.probes: list[str] = []
         self.probe_hook = None
         self.probe_cwds: dict = {}
+        self.usage_requests: list[dict] = []
         self.ignore_writes = False
         self.calls: list[list[str]] = []
         self.stdin: list[str] = []
@@ -268,9 +269,9 @@ class FakeAccountsCli:
         import json
         import subprocess
 
-        assert json.loads(kwargs["input"]) == {
-            "type": "control_request", "request_id": "u1", "request": {"subtype": "get_usage"}
-        }
+        message = json.loads(kwargs["input"])
+        assert (message["type"], message["request_id"]) == ("control_request", "u1")
+        self.usage_requests.append(message["request"])
         assert kwargs.get("timeout") == 30
         key = Path(env["CLAUDE_CONFIG_DIR"]).name if "CLAUDE_CONFIG_DIR" in env else "seat"
         self.probes.append(key)

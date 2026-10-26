@@ -99,6 +99,16 @@ def test_probe_that_crashes_without_an_answer_is_an_error(fake_home, fake_accoun
     assert out["error"] == "claude exited with 139"
 
 
+def test_probe_asks_without_the_transcript_scan(fake_home, fake_accounts_cli):
+    # The answer's behaviors section reads every transcript touched in the
+    # last seven days; in a busy default folder that took minutes.
+    fake_accounts_cli.reply_usage("seat", FIVE, WEEK)
+
+    claude_usage.probe("/fake/bin/claude", None, cwd=fake_home)
+
+    assert fake_accounts_cli.usage_requests == [{"subtype": "get_usage", "skip_behaviors": True}]
+
+
 def test_probe_runs_in_the_folder_it_is_given(fake_home, fake_accounts_cli):
     neutral = fake_home / "neutral"
     neutral.mkdir()

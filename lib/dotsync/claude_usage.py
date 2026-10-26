@@ -4,6 +4,12 @@ Claude Code answers an undocumented `get_usage` control request on its
 stream-json input without sending a prompt, so a probe costs no tokens. A
 config folder that never logged in answers (recorded 2026-10-04) with a
 success whose `subscription_type` and `rate_limits` are null.
+
+The request sets `skip_behaviors`: without it Claude first reads every
+transcript touched in the last seven days for the answer's behaviors section,
+which took 2-3 minutes in a busy default folder (measured 2026-10-26, Claude
+Code 2.1.310) and ran past the timeout. Claude's own schema for the request
+describes the flag as being for usage meters that need only the rate limits.
 """
 
 from __future__ import annotations
@@ -16,7 +22,11 @@ from pathlib import Path
 
 TIMEOUT_SECONDS = 30
 _REQUEST = json.dumps(
-    {"type": "control_request", "request_id": "u1", "request": {"subtype": "get_usage"}}
+    {
+        "type": "control_request",
+        "request_id": "u1",
+        "request": {"subtype": "get_usage", "skip_behaviors": True},
+    }
 ) + "\n"
 
 
