@@ -31,6 +31,30 @@ public enum UsageMerge {
             unsavedSeat: report.unsavedSeat, accounts: accounts)
     }
 
+    /// `file` with the active account's windows from Claude's status line, when
+    /// those came after its last probe. The snapshot names no account: right
+    /// after a switch Claude may still hand over the previous account's numbers,
+    /// so they count as the active one's only when their weekly reset is the one
+    /// its probe saw. Only for drawing; usage.json keeps what dotsync read.
+    public static func withLive(_ file: UsageFile, _ live: LiveUsage?) -> UsageFile {
+        guard let live,
+              let index = file.accounts.firstIndex(where: { $0.name == file.active }),
+              file.accounts[index].status == .ok,
+              live.updatedAt > file.accounts[index].fetchedAt ?? .distantPast,
+              let liveWeek = live.sevenDay?.resetsAt,
+              let probedWeek = file.accounts[index].sevenDay?.resetsAt,
+              abs(liveWeek.timeIntervalSince(probedWeek)) <= sameResetSlack
+        else { return file }
+        var copy = file
+        if let window = live.fiveHour { copy.accounts[index].fiveHour = window }
+        if let window = live.sevenDay { copy.accounts[index].sevenDay = window }
+        copy.accounts[index].fetchedAt = live.updatedAt
+        return copy
+    }
+
+    /// Claude says 09:00:00 where dotsync's probe says 08:59:59.
+    static let sameResetSlack: TimeInterval = 60
+
     /// The whole refresh failed: keep what was shown and say why.
     public static func failed(previous: UsageFile?, message: String) -> UsageFile {
         var file = previous ?? .empty

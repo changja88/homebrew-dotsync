@@ -31,6 +31,11 @@ public struct AccountService: Sendable {
         store.load() ?? .empty
     }
 
+    /// What to draw: `file` with the active account's live numbers, if any.
+    public func shown(_ file: UsageFile) -> UsageFile {
+        UsageMerge.withLive(file, store.loadLive())
+    }
+
     /// Notes that a refresh is starting, so the widget says 조회 중….
     public func markRefreshing() {
         save(UsageMerge.refreshing(store.load(), since: Date()))

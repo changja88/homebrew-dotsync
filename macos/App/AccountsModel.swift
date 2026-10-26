@@ -36,7 +36,7 @@ final class AccountsModel {
          service: AccountService? = AccountService.standard(didSave: { WidgetCenter.shared.reloadAllTimelines() })) {
         self.queue = queue
         self.service = service
-        file = service?.current() ?? .empty
+        file = service.map { $0.shown($0.current()) } ?? .empty
         if service == nil {
             message = DotsyncCLI.locate() == nil
                 ? "dotsync를 찾을 수 없어요 — brew install changja88/dotsync/dotsync"
@@ -55,12 +55,12 @@ final class AccountsModel {
     var accounts: [AccountUsage] { UsageOrder.sorted(file.accounts, now: Date()) }
 
     func reload() {
-        if let service { file = service.current() }
+        if let service { file = service.shown(service.current()) }
     }
 
     func refresh() async {
         await perform("조회 중") { service in
-            self.file = await RefreshGate.shared.refresh(service)
+            self.file = service.shown(await RefreshGate.shared.refresh(service))
             self.message = self.file.lastError
         }
     }
@@ -69,7 +69,7 @@ final class AccountsModel {
         await perform("교체 중") { service in
             switch await service.use(name, overwriteUnsaved: overwriteUnsaved) {
             case .switched(let file):
-                self.file = file
+                self.file = service.shown(file)
                 self.message = file.lastError
             case .needsConfirmation(let email):
                 self.sheet = .confirmSwitch(name: name, email: email)
@@ -100,7 +100,7 @@ final class AccountsModel {
         var failure: String?
         await perform("이름 바꾸는 중") { service in
             switch await service.rename(name, to: label) {
-            case .success(let file): self.file = file
+            case .success(let file): self.file = service.shown(file)
             case .failure(let error): failure = Self.describe(error)
             }
         }
@@ -112,7 +112,7 @@ final class AccountsModel {
         await perform("삭제 중") { service in
             switch await service.remove(name) {
             case .success(let file):
-                self.file = file
+                self.file = service.shown(file)
                 removed = true
             case .failure(let error):
                 self.message = Self.describe(error)

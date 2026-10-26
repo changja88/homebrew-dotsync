@@ -25,8 +25,11 @@ struct UsageProvider: TimelineProvider {
         completion(Timeline(entries: entries, policy: .after(now.addingTimeInterval(WidgetLayout.timelineSpan))))
     }
 
+    /// usage.json, with the active account's numbers from Claude's status line
+    /// when those are newer: the widget shows them whenever it is drawn.
     private func load() -> UsageFile {
-        UsageStore.shared()?.load() ?? .empty
+        guard let store = UsageStore.shared() else { return .empty }
+        return UsageMerge.withLive(store.load() ?? .empty, store.loadLive())
     }
 }
 
