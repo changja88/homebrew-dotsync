@@ -111,3 +111,9 @@ func file(_ accounts: [AccountUsage], active: String?) -> UsageFile {
     refreshing.refreshingSince = after(seconds: -30)
     #expect(WidgetLayout.timelineDates(for: refreshing, now: now) == [now, after(seconds: 90)])
 }
+
+@Test func widgetsWithTheInUseCardReloadEveryFifteenMinutes() {
+    #expect(WidgetLayout.nextReload(after: now, showsInUse: true) == after(minutes: 15))
+    // The other accounts change only at their resets, which have entries.
+    #expect(WidgetLayout.nextReload(after: now, showsInUse: false) == after(days: 1))
+}

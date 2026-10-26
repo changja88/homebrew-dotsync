@@ -53,6 +53,18 @@ public struct WidgetLayout: Equatable, Sendable {
     /// A timeline covers a day; WidgetKit asks for the next one after it.
     public static let timelineSpan: TimeInterval = 86_400
 
+    /// How often a widget showing the account in use reads Claude's status
+    /// line again: the system draws a widget only from its timeline, and keeps
+    /// reloads to 40–70 a day, "every 15 to 60 minutes" (WidgetKit, "Keeping
+    /// a widget up to date").
+    public static let liveReload: TimeInterval = 15 * 60
+
+    /// When WidgetKit should ask for the next timeline. The other accounts
+    /// change only at their resets, which the timeline already has entries for.
+    public static func nextReload(after now: Date, showsInUse: Bool) -> Date {
+        now.addingTimeInterval(showsInUse ? liveReload : timelineSpan)
+    }
+
     /// When the widget looks different without new data: now, each reset in
     /// the coming day (its countdown turns into 초기화됨) and the end of a 조회 중
     /// mark an app left behind. Remaining times count down by themselves, so a

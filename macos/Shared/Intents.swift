@@ -56,6 +56,19 @@ struct UseAccountIntent: AudioPlaybackIntent {
     }
 }
 
+/// ↻ on "지금 사용 중" while it shows Claude's own numbers for the account in
+/// use: they are in live-usage.json already, so it only returns. A plain
+/// AppIntent runs in the widget extension, and the system reloads the
+/// widget's timeline once perform() returns, outside its daily budget
+/// (WidgetKit, "Adding interactivity to widgets and Live Activities").
+struct ShowLiveIntent: AppIntent {
+    static let title: LocalizedStringResource = "실시간 사용량 보기"
+
+    func perform() async throws -> some IntentResult {
+        .result()
+    }
+}
+
 @MainActor
 enum IntentWork {
     /// Intents still at work; the app keeps running until this is 0.

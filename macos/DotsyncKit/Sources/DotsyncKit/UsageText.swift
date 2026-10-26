@@ -48,8 +48,14 @@ public enum UsageText {
         case fetched(Date)
     }
 
-    public static func updateStatus(_ file: UsageFile, now: Date) -> UpdateStatus {
+    /// `live`: given where the header sits over the in-use card alone, whose
+    /// numbers then come from Claude's status line when that is newer than
+    /// the last refresh, failed or not.
+    public static func updateStatus(_ file: UsageFile, live: LiveUsage? = nil, now: Date) -> UpdateStatus {
         if file.isRefreshing(at: now) { return .refreshing }
+        if let live, UsageMerge.liveMatchesActive(file, live), live.updatedAt > file.fetchedAt ?? .distantPast {
+            return .fetched(live.updatedAt)
+        }
         if file.lastError != nil { return .failed }
         guard let fetchedAt = file.fetchedAt else { return .never }
         return .fetched(fetchedAt)
