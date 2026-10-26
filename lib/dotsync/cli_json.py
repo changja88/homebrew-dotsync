@@ -169,7 +169,7 @@ class JSONCommandError(Exception):
 
 def sync_apps(cfg: Config, app: "str | None", all_apps: bool) -> list[str]:
     """The apps a push/pull --json covers: every tracked one with --all, or
-    the one named (tracked or not, like the text command)."""
+    the one named, tracked or not."""
     from dotsync.apps import APP_NAMES
 
     if all_apps:
@@ -224,7 +224,7 @@ def _apply_one(name: str, cfg: Config, direction: str, unchanged: bool) -> dict:
 
 
 def apply_json(cfg: Config, apps: list[str], direction: str) -> dict:
-    """push/pull with the text command's rules: an app whose plan has
+    """push/pull: an app whose plan has
     changes but none that change anything is "unchanged"; one whose sync
     raises is "failed" and the rest still run."""
     from dotsync.apps import build_app

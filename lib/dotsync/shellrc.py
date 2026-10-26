@@ -44,8 +44,7 @@ def detect_rc_path(
 
     Bash on macOS reads `~/.bash_profile` for login shells, so we prefer it
     when it exists. Otherwise fall back to `~/.bashrc`. If neither exists,
-    default to `~/.bash_profile` (the macOS convention) — the caller will see
-    `rc_missing` and back off rather than create the file silently.
+    default to `~/.bash_profile` (the macOS convention); it may not exist.
     """
     home = home or Path.home()
     if shell is None:
