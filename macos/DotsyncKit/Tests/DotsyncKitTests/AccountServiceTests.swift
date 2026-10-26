@@ -43,14 +43,18 @@ func makeService(usage: String = sampleReport, use: String? = nil, useStatus: In
     // The widget says 조회 중… from the press until the answer is saved.
     let paths = try FakeDotsync(script: "")
     let answer = try paths.file("usage.json", sampleReport)
-    let fake = try FakeDotsync(script: "sleep 0.5; cat '\(answer)'")
+    let fake = try FakeDotsync(script: """
+    \(FakeDotsync.readyThenWait())
+    cat '\(answer)'
+    """)
     let saves = Counter()
     let service = AccountService(cli: fake.cli, store: UsageStore(directory: try temporaryDirectory()),
                                  didSave: { saves.add() })
 
     let refresh = Task { await service.refresh() }
-    while fake.calls().isEmpty { try await Task.sleep(for: .milliseconds(20)) }
+    try await fake.waitUntilReady()
     #expect(service.store.load()?.refreshingSince != nil)
+    fake.letGo()
     let file = await refresh.value
 
     #expect(file.refreshingSince == nil)
