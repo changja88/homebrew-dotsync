@@ -69,6 +69,38 @@ private func useCalls(_ fake: FakeDotsync) -> [[String]] {
     #expect(store.loadSettings().restReason == .failed)
 }
 
+@Test func runCountsAFailedProbeOfTheActiveAccountAsAFailure() async throws {
+    // The probe answers, but not for the account in use: usage.json keeps its
+    // last good numbers (an hour old here), which are no reading either.
+    let report = """
+    {"fetched_at": "2026-10-26T11:59:00Z", "active": "a", "unsaved_seat": null, "accounts": [
+     {"name": "a", "label": "a", "email": null, "status": "error", "error": "timeout",
+      "five_hour": {"percent": 0, "resets_at": null}, "seven_day": null},
+     {"name": "b", "label": "b", "email": null, "status": "ok",
+      "five_hour": {"percent": 10, "resets_at": "2026-10-26T13:00:00Z"},
+      "seven_day": {"percent": 10, "resets_at": "2026-10-29T12:00:00Z"}}]}
+    """
+    for request in [AutoSwitchRequest.switchNow, .refetch] {
+        let (service, store, fake) = try autoSwitch(usage: report)
+        var before = UsageFile.empty
+        before.fetchedAt = t0.addingTimeInterval(-3_600)
+        before.active = "a"
+        before.accounts = [AccountUsage(name: "a", label: "a", email: nil, status: .ok, error: nil,
+                                        fiveHour: UsageWindow(percent: 60, resetsAt: t0.addingTimeInterval(3_600)),
+                                        sevenDay: UsageWindow(percent: 20, resetsAt: t0.addingTimeInterval(259_200)),
+                                        fetchedAt: t0.addingTimeInterval(-3_600))]
+        try service.accounts.store.save(before)
+
+        let entry = await service.run(request, now: t0)
+
+        #expect(useCalls(fake).isEmpty)
+        #expect(entry?.result == .failed)
+        #expect(entry?.message == "timeout")
+        #expect(store.loadSettings().restUntil == t0.addingTimeInterval(900))
+        #expect(store.loadSettings().restReason == .failed)
+    }
+}
+
 @Test func runJudgesByTheProbeNotTheLiveValue() async throws {
     let (service, store, fake) = try autoSwitch(usage: usageReport([("a", 80, 20), ("b", 10, 10)]))
     try Data("""

@@ -79,6 +79,13 @@ public struct AutoSwitchService: Sendable {
         guard let active = file.activeAccount, file.unsavedSeat == nil else {
             return Outcome(entry: request == .switchNow ? entry(.unsavedLogin) : nil)
         }
+        // So does one that failed only for the account in use (merge keeps
+        // its last good numbers): nothing new was read about it.
+        guard active.status == .ok else {
+            let message = active.error ?? (active.status == .loginRequired
+                ? "사용 중 계정의 로그인이 풀렸어요" : "사용 중 계정을 조회하지 못했어요")
+            return Outcome(entry: entry(.failed, message: message), rest: (AutoSwitchRules.restAfterFailure, .failed))
+        }
         guard let trigger = AutoSwitchRules.trigger(for: active, now: now) else {
             guard request == .switchNow else { return Outcome() }
             return Outcome(entry: entry(.belowLimit), rest: (AutoSwitchRules.restAfterBelowLimit, .belowLimit))
