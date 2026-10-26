@@ -27,13 +27,6 @@ func after(days: Int = 0, hours: Int = 0, minutes: Int = 0, seconds: Int = 0) ->
     #expect(UsageText.remaining(until: nil, now: now) == "—")
 }
 
-@Test func remainingShortDropsTheSuffix() {
-    #expect(UsageText.remainingShort(until: after(hours: 1, minutes: 20), now: now) == "1시간 20분")
-    #expect(UsageText.remainingShort(until: after(days: 1, hours: 8), now: now) == "1일 8시간")
-    #expect(UsageText.remainingShort(until: after(minutes: -1), now: now) == "초기화됨")
-    #expect(UsageText.remainingShort(until: nil, now: now) == "—")
-}
-
 @Test func fullWeekNamesTheResetDayInKorean() {
     let reset = Date(timeIntervalSince1970: 1_791_331_200)  // 2026-10-07 00:00 UTC = 09:00 KST, Wednesday
     #expect(UsageText.fullWeek(reset: reset, timeZone: seoul) == "10/7(수) 09:00 초기화")

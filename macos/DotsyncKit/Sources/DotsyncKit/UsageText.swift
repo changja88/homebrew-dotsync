@@ -14,12 +14,6 @@ public enum UsageText {
         return "\(span) 후 초기화"
     }
 
-    /// The short form for a list row: "1시간 20분", "1일 8시간".
-    public static func remainingShort(until reset: Date?, now: Date) -> String {
-        guard let reset else { return "—" }
-        return span(until: reset, now: now) ?? "초기화됨"
-    }
-
     /// "10/7(수) 09:00 초기화" — a used-up week shows only when it resets; its
     /// row is tinted red to say it's used up.
     public static func fullWeek(reset: Date, timeZone: TimeZone = .current) -> String {

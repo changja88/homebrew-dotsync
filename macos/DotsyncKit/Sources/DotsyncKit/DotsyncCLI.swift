@@ -19,7 +19,11 @@ public struct DotsyncCLI: Sendable {
     /// `defaults write com.changja88.dotsync cliPath <path>`).
     public static func locate(defaults: UserDefaults = .standard,
                               fileManager: FileManager = .default) -> URL? {
-        let candidates = [defaults.string(forKey: "cliPath"), "/opt/homebrew/bin/dotsync", "/usr/local/bin/dotsync"]
+        locate(configuredPath: defaults.string(forKey: "cliPath"), fileManager: fileManager)
+    }
+
+    static func locate(configuredPath: String?, fileManager: FileManager = .default) -> URL? {
+        let candidates = [configuredPath, "/opt/homebrew/bin/dotsync", "/usr/local/bin/dotsync"]
         return candidates.compactMap { $0 }
             .first { fileManager.isExecutableFile(atPath: $0) }
             .map { URL(fileURLWithPath: $0) }

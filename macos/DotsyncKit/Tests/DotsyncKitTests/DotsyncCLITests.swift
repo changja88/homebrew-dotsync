@@ -102,11 +102,10 @@ import Testing
 
 @Test func locatePrefersTheDevelopmentPath() throws {
     let fake = try FakeDotsync(script: "")
-    let defaults = UserDefaults(suiteName: "dotsynckit-\(UUID().uuidString)")!
-    defaults.set(fake.executable.path, forKey: "cliPath")
-    #expect(DotsyncCLI.locate(defaults: defaults) == fake.executable)
-    defaults.set("/nonexistent/dotsync", forKey: "cliPath")
-    #expect(DotsyncCLI.locate(defaults: defaults) != URL(fileURLWithPath: "/nonexistent/dotsync"))
+    // Not through a UserDefaults suite: each one is a plist in ~/Library/Preferences
+    // that macOS writes back even after the test removes it.
+    #expect(DotsyncCLI.locate(configuredPath: fake.executable.path) == fake.executable)
+    #expect(DotsyncCLI.locate(configuredPath: "/nonexistent/dotsync") != URL(fileURLWithPath: "/nonexistent/dotsync"))
 }
 
 @Test func defaultEnvironmentPutsHomebrewFirst() {
