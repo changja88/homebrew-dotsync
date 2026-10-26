@@ -1,11 +1,13 @@
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from dotsync import cli
 from dotsync.sessions import codex_blockers, procs, roots
+from tests.sessions.test_procs import KOREAN, KOREAN_LSOF
 
 CHATGPT = "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"
 LOCK_A = "11111111-1111-4111-8111-111111111111"
@@ -146,6 +148,26 @@ def test_any_process_with_codex_home_file_open_blocks(tmp_path, monkeypatch):
         {"pid": 200, "kind": "other", "name": "vim", "elapsed": 60},
         {"pid": 201, "kind": "other", "name": "less", "elapsed": 60},
     ]
+
+
+def test_files_under_a_korean_codex_home_are_seen(tmp_path, monkeypatch):
+    # lsof runs under LC_ALL=C, so it prints the folder's UTF-8 bytes as \xNN.
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / KOREAN / ".codex"))
+    printed = f"{tmp_path}/{KOREAN_LSOF}/.codex"
+    out = (
+        f"p600\ncnode\nftxt\nn/opt/homebrew/bin/node\nf9\nn{printed}/sessions/x.jsonl\n"
+        f"p100\ncChatGPT\nftxt\nn{CHATGPT}\n"
+        f"p101\nccodex\nftxt\nn/x/codex\nf5\nn{printed}/thread-writer-locks/{LOCK_A}.lock\n"
+    )
+    monkeypatch.setattr(
+        procs, "ps_table",
+        lambda: {600: procs.Proc(600, 1, 60, "node"), 100: procs.Proc(100, 1, 60, CHATGPT),
+                 101: procs.Proc(101, 100, 60, "/x/codex")},
+    )
+    monkeypatch.setattr(procs, "run", lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, out, ""))
+    result = codex_blockers.detect()
+    assert {b["pid"]: b["kind"] for b in result["blockers"]} == {600: "other", 100: "chatgpt_app", 101: "chatgpt_child"}
+    assert result["chatgpt_open_threads"] == 1
 
 
 def test_open_threads_counts_only_chatgpt_tree_locks(monkeypatch):

@@ -68,6 +68,62 @@ def test_lsof_scan_parses_records(monkeypatch):
     assert kwargs["timeout"] == 10
 
 
+# How /usr/sbin/lsof on macOS prints names under LC_ALL=C (seen on a real run).
+KOREAN = "한글폴더"
+KOREAN_LSOF = r"\xed\x95\x9c\xea\xb8\x80\xed\x8f\xb4\xeb\x8d\x94"
+
+
+@pytest.mark.parametrize(
+    "printed, path",
+    [
+        (f"/w/{KOREAN_LSOF}/{KOREAN_LSOF}.lock", f"/w/{KOREAN}/{KOREAN}.lock"),
+        (r"/w/a\\x41b", "/w/a\\x41b"),  # a typed backslash is doubled
+        (r"/w/t\tab", "/w/t\tab"),
+        (r"/w/n\nl", "/w/n\nl"),
+        (r"/w/i\bj", "/w/i\bj"),
+        (r"/w/k\fl", "/w/k\fl"),
+        (r"/w/m\rn", "/w/m\rn"),
+        (r"/w/d\x7fel", "/w/d\x7fel"),
+        (r"/w/\xff", "/w/\udcff"),  # bytes that are not UTF-8 stay as os.fsdecode gives them
+        ("/w/s p", "/w/s p"),
+        ("/w/v^2", "/w/v^2"),  # a typed caret before anything but @-_ or ?
+        ("", ""),
+    ],
+)
+def test_lsof_path_decodes_each_escape(printed, path):
+    assert procs.lsof_path(printed) == (path, True)
+
+
+@pytest.mark.parametrize(
+    "printed",
+    [
+        "/w/c^Ad",  # a typed caret, or the control character 0x01: lsof prints both so
+        "/w/g^[h",
+        "/w/^_^",
+        "/w/^?",
+        r"/w/odd\q",  # an escape lsof does not write
+        "/w/end\\",
+    ],
+)
+def test_lsof_path_keeps_an_unsure_name_as_typed(printed):
+    assert procs.lsof_path(printed) == (printed, False)
+
+
+def test_lsof_scan_decodes_every_path_field(monkeypatch):
+    out = (
+        f"p10\ncclaude\nfcwd\nn/work/{KOREAN_LSOF}\nftxt\nn/opt/{KOREAN_LSOF}/claude\n"
+        f"f5\nn/tmp/{KOREAN_LSOF}.lock\nf6\nn/tmp/t\\tab\n"
+        "p20\ncnode\nfcwd\nn/work/^_^\nftxt\nn/opt/^_^/node\nf7\nn/tmp/^_^/x\n"
+    )
+    patch_run(monkeypatch, completed(stdout=out))
+    scan = procs.lsof_scan()
+    assert scan[10] == procs.OpenFiles(
+        "claude", f"/work/{KOREAN}", [f"/opt/{KOREAN}/claude"], [f"/tmp/{KOREAN}.lock", "/tmp/t\tab"]
+    )
+    # A cwd that may hold a control character is not known; the other names keep the caret as typed.
+    assert scan[20] == procs.OpenFiles("node", None, ["/opt/^_^/node"], ["/tmp/^_^/x"])
+
+
 def test_lsof_scan_limits_fds(monkeypatch):
     calls = patch_run(monkeypatch, completed(stdout=""))
     procs.lsof_scan(fds="cwd,txt")

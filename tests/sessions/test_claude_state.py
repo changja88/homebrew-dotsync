@@ -7,11 +7,13 @@ import pytest
 
 from dotsync.sessions import claude, procs, roots
 from tests.sessions.claude_fixtures import make_session, user
+from tests.sessions.test_procs import KOREAN, KOREAN_LSOF
 
 SID = "11111111-1111-4111-8111-111111111111"
 SID2 = "22222222-2222-4222-8222-222222222222"
 NOW = 1_000_000.0
 CWD = "/work/proj"
+REAL_LSOF_SCAN = procs.lsof_scan  # before any test fakes it
 
 
 class Env:
@@ -244,3 +246,38 @@ def test_claude_process_with_unknown_cwd_is_unexplained(env):
     env.claude_proc(77, cwd=None, elapsed=10000)
     assert state(env) == ("unknown", "unexplained_process")
     assert state(env, session(last_activity=NOW - 20000)) == ("idle", "idle")  # started later
+
+
+def lsof_prints(monkeypatch, env, out):
+    """`lsof` itself answers `out`, read by the real lsof_scan; `claude
+    agents` still answers from `env`."""
+    agents = env._run
+
+    def run(argv, **kwargs):
+        if argv[0] == "/usr/sbin/lsof":
+            return subprocess.CompletedProcess(argv, 0, out, "")
+        return agents(argv, **kwargs)
+
+    monkeypatch.setattr(procs, "run", run)
+    monkeypatch.setattr(procs, "lsof_scan", REAL_LSOF_SCAN)
+
+
+def test_claude_process_in_a_korean_folder_is_unexplained(env, monkeypatch):
+    # lsof runs under LC_ALL=C, so it prints the folder's UTF-8 bytes as \xNN.
+    cwd = f"/work/{KOREAN}"
+    env.table[77] = procs.Proc(77, 1, 10000, "claude")
+    lsof_prints(monkeypatch, env, f"p77\ncclaude\nfcwd\nn/work/{KOREAN_LSOF}\nftxt\nn/opt/homebrew/bin/claude\n")
+    folder = [Path("/p/" + claude.encode_cwd(cwd))]
+    assert state(env, session(cwd=cwd, project_dirs=folder)) == ("unknown", "unexplained_process")
+    # matched through the encoded project folder name as well
+    assert state(env, session(cwd="/gone", project_dirs=folder)) == ("unknown", "unexplained_process")
+    assert state(env, session(cwd="/work/other", project_dirs=[Path("/p/-work-other")])) == ("idle", "idle")
+
+
+def test_claude_process_whose_folder_lsof_prints_unsure_counts_for_every_session(env, monkeypatch):
+    # `^_` is a typed caret and underscore, or the control character 0x1f.
+    env.table[77] = procs.Proc(77, 1, 10000, "claude")
+    lsof_prints(monkeypatch, env, "p77\ncclaude\nfcwd\nn/work/^_^\nftxt\nn/opt/homebrew/bin/claude\n")
+    assert state(env, session(cwd="/work/other", project_dirs=[Path("/p/-work-other")])) == (
+        "unknown", "unexplained_process",
+    )

@@ -1,6 +1,7 @@
 import json
 import os
 import sqlite3
+import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +17,7 @@ from tests.sessions.codex_fixtures import (
     make_codex_home,
     write_rollout,
 )
+from tests.sessions.test_procs import KOREAN, KOREAN_LSOF
 
 ROOT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 CHILD = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
@@ -23,6 +25,7 @@ GRANDCHILD = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 GUARDIAN = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 OTHER = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
 REVERTED = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+REAL_LSOF_SCAN = procs.lsof_scan  # before any test fakes it
 SPAWN = json.dumps({"subagent": {"thread_spawn": {"parent_thread_id": ROOT}}})
 GUARDIAN_SOURCE = json.dumps({"subagent": {"other": "guardian"}})
 
@@ -125,6 +128,20 @@ def test_lock_open_through_a_symlinked_path_counts(home, monkeypatch, tmp_path):
     link.symlink_to(roots.codex_home())
     hold(monkeypatch, link / "thread-writer-locks" / f"{ROOT}.lock")
     assert items_of(codex.list_payload())[ROOT]["state"] == "running"
+
+
+def test_a_lock_under_a_korean_codex_home_counts(tmp_path, monkeypatch):
+    # lsof runs under LC_ALL=C, so it prints the folder's UTF-8 bytes as \xNN.
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / KOREAN / ".codex"))
+    db = make_codex_home(roots.codex_home())
+    add_thread(db, ROOT)
+    add_thread(db, OTHER)
+    lock = f"{tmp_path}/{KOREAN_LSOF}/.codex/thread-writer-locks/{ROOT}.lock"
+    out = f"p4242\nccodex\nftxt\nn/opt/homebrew/bin/codex\nf12\nn{lock}\n"
+    monkeypatch.setattr(procs, "lsof_scan", REAL_LSOF_SCAN)
+    monkeypatch.setattr(procs, "run", lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, out, ""))
+    items = items_of(codex.list_payload())
+    assert (items[ROOT]["state"], items[OTHER]["state"]) == ("running", "idle")
 
 
 def test_dotsync_itself_holding_a_lock_is_not_running(home, monkeypatch):

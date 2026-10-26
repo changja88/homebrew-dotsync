@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import selectors
 import subprocess
 import time
@@ -155,13 +156,48 @@ def ps_table() -> dict[int, Proc]:
 
 @dataclass
 class OpenFiles:
+    """One process in `lsof_scan`, its names decoded (`lsof_path`). `cwd` is
+    None when lsof did not print one, or printed one that is not certain."""
+
     command: str
     cwd: str | None = None
     txt: list[str] = field(default_factory=list)
     files: list[str] = field(default_factory=list)
 
 
+# One piece of an lsof name: \xNN, one of \b \f \t \n \r \\, an unsure piece
+# (^ before @-_ or ?, or a backslash lsof would not write), or plain text.
+_LSOF_PIECE = re.compile(rb"\\x([0-9a-f]{2})|\\([bftnr\\])|(\^[@-_?]|\\)|[^\\^]+|\^")
+_LSOF_ESCAPES = {b"b": b"\b", b"f": b"\f", b"t": b"\t", b"n": b"\n", b"r": b"\r", b"\\": b"\\"}
+
+
+def lsof_path(name: str) -> tuple[str, bool]:
+    """The path behind a name lsof printed (`-F n`, LC_ALL=C), and whether it
+    is certain. lsof prints each byte it cannot show as `\\xNN`, `\\b \\f \\t
+    \\n \\r`, or `^X` for another control character, and a backslash as `\\\\`.
+    A typed `^` is printed as it is, so `^A` may be either: it is kept as
+    typed, and the path is not certain. A backslash lsof would not write is
+    kept the same way."""
+    if "\\" not in name and "^" not in name:
+        return name, True
+    path = bytearray()
+    certain = True
+    for piece in _LSOF_PIECE.finditer(os.fsencode(name)):
+        byte, escape, unsure = piece.groups()
+        if byte:
+            path.append(int(byte, 16))
+        elif escape:
+            path += _LSOF_ESCAPES[escape]
+        else:
+            certain = certain and unsure is None
+            path += piece.group()
+    return os.fsdecode(bytes(path)), certain
+
+
 def lsof_scan(fds: str | None = None) -> dict[int, OpenFiles]:
+    """Every process of this user and what it has open, with each name
+    decoded. A cwd that is not certain is None, which Claude's process rule
+    counts against every session; the other names keep an unsure `^` as typed."""
     argv = ["/usr/sbin/lsof", "-nP", "-w", "-u", str(os.getuid()), "-F", "pcfn"]
     if fds:
         argv += ["-a", "-d", fds]
@@ -186,12 +222,13 @@ def lsof_scan(fds: str | None = None) -> dict[int, OpenFiles]:
         elif tag == "f":
             fd = value
         elif tag == "n":
+            path, certain = lsof_path(value)
             if fd == "cwd":
-                current.cwd = value
+                current.cwd = path if certain else None
             elif fd == "txt":
-                current.txt.append(value)
+                current.txt.append(path)
             else:
-                current.files.append(value)
+                current.files.append(path)
     return scan
 
 
