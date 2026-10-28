@@ -31,15 +31,17 @@ enum AgentRegistration {
     }
 
     /// A loaded agent reads `.enabled` (spike 1d); one turned off in System
-    /// Settings asks for approval.
+    /// Settings asks for approval. launchctl runs here only in the seconds
+    /// before login items record a new agent; `print` returns at once.
     static func state(enabled: Bool) -> AgentState {
         guard enabled else { return .off }
         guard FileManager.default.fileExists(atPath: plistURL.path) else { return .notInstalled }
-        switch SMAppService.statusForLegacyPlist(at: plistURL) {
-        case .enabled: return .on
-        case .requiresApproval: return .needsApproval
-        default: return .notInstalled
+        let background: BackgroundItemStatus = switch SMAppService.statusForLegacyPlist(at: plistURL) {
+        case .enabled: .enabled
+        case .requiresApproval: .requiresApproval
+        default: .noRecord
         }
+        return AutoSwitchAgent.state(background: background, isLoaded: { launchctl(["print", service]).status == 0 })
     }
 
     /// At launch: the agent matches the setting and this copy of the app

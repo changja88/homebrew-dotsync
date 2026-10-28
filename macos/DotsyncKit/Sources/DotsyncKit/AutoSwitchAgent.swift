@@ -25,6 +25,18 @@ public enum AutoSwitchAgent {
         return installed == wanted ? .none : .install
     }
 
+    /// The agent's state once it is on and its plist is in place. Login items
+    /// record an agent launchd just loaded only seconds later (2026-10-28:
+    /// "record not found" right after bootstrap, found 8 s on), so without a
+    /// record launchd itself says whether the check is in.
+    public static func state(background: BackgroundItemStatus, isLoaded: () -> Bool) -> AgentState {
+        switch background {
+        case .enabled: .on
+        case .requiresApproval: .needsApproval
+        case .noRecord: isLoaded() ? .on : .notInstalled
+        }
+    }
+
     /// launchctl run with these arguments: its exit status and what it wrote
     /// to stderr.
     public typealias Launchctl = ([String]) -> (status: Int32, error: String)
@@ -87,6 +99,14 @@ public struct AgentPlist: Equatable, Sendable {
         ]
         return try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
     }
+}
+
+/// What System Settings' login items say about the agent's plist.
+public enum BackgroundItemStatus: Equatable, Sendable {
+    case enabled
+    /// Turned off in System Settings → Login Items & Extensions.
+    case requiresApproval
+    case noRecord
 }
 
 public enum AgentAction: Equatable, Sendable {
