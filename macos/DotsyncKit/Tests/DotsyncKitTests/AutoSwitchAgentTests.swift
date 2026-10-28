@@ -113,3 +113,22 @@ private final class FakeLaunchctl {
     }
     #expect(!FileManager.default.fileExists(atPath: url.path))
 }
+
+// Login items record an agent launchd just loaded only seconds later
+// (2026-10-28: "record not found" right after bootstrap, found 8 s on).
+
+@Test func anAgentLaunchdHasLoadedIsOnBeforeLoginItemsRecordIt() {
+    #expect(AutoSwitchAgent.state(background: .noRecord, isLoaded: { true }) == .on)
+}
+
+@Test func withNoRecordAndNothingInLaunchdTheAgentIsGone() {
+    #expect(AutoSwitchAgent.state(background: .noRecord, isLoaded: { false }) == .notInstalled)
+}
+
+@Test func aRecordInLoginItemsDecidesWithoutAskingLaunchd() {
+    var asked = 0
+    let isLoaded = { asked += 1; return false }
+    #expect(AutoSwitchAgent.state(background: .enabled, isLoaded: isLoaded) == .on)
+    #expect(AutoSwitchAgent.state(background: .requiresApproval, isLoaded: isLoaded) == .needsApproval)
+    #expect(asked == 0)
+}
