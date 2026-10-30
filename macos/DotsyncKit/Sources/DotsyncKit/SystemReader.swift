@@ -8,13 +8,15 @@ public enum SystemReader {
     /// CPU use is the difference between two reads this far apart.
     public static let cpuWindow: Duration = .milliseconds(500)
 
-    /// Widgets reloading together get one reading: a second read of the GPU
-    /// close behind another would say 0, at both of its two reads.
+    /// One press of ↻ reloads every "맥 상태" on screen, one after another, and
+    /// CPU and GPU move by tens of percent within seconds: they get one reading
+    /// so that they agree. Close behind another, a read of the GPU would also
+    /// say 0.
     public static func read() async -> SystemStats {
         await shared.value()
     }
 
-    private static let shared = SharedWork { await measure() }
+    private static let shared = SharedWork(keep: .seconds(10)) { await measure() }
 
     private static func measure() async -> SystemStats {
         let coresBefore = coreTicks()
@@ -80,21 +82,27 @@ public enum SystemReader {
     }
 }
 
-/// Runs `work` once for everyone who asks while it is running.
+/// Runs `work` once for everyone who asks while it is running, or within
+/// `keep` after it ended.
 actor SharedWork<Value: Sendable> {
+    private let keep: Duration
     private let work: @Sendable () async -> Value
     private var running: Task<Value, Never>?
+    private var last: (value: Value, at: ContinuousClock.Instant)?
 
-    init(work: @escaping @Sendable () async -> Value) {
+    init(keep: Duration = .zero, work: @escaping @Sendable () async -> Value) {
+        self.keep = keep
         self.work = work
     }
 
     func value() async -> Value {
+        if let last, last.at.duration(to: .now) < keep { return last.value }
         if let running { return await running.value }
         let task = Task { await work() }
         running = task
         let value = await task.value
         running = nil
+        last = (value, .now)
         return value
     }
 }

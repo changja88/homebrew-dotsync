@@ -98,3 +98,12 @@ private actor Runs {
     #expect(answers == [1, 1, 1])
     #expect(await shared.value() == 2)  // over: the next reader runs it again
 }
+
+@Test func aReaderSoonAfterGetsTheSameRunAndALaterOneANewRun() async throws {
+    let runs = Runs()
+    let shared = SharedWork<Int>(keep: .milliseconds(300)) { await runs.next() }
+    #expect(await shared.value() == 1)
+    #expect(await shared.value() == 1)
+    try await Task.sleep(for: .milliseconds(400))
+    #expect(await shared.value() == 2)
+}
