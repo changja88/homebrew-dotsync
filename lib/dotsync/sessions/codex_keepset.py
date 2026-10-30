@@ -47,7 +47,7 @@ class Refusal(JSONCommandError):
 
 def support_check() -> tuple[Refusal | None, bool]:
     """(refusal, vacuum_available). It refuses unless the state, queue and
-    history databases have applied exactly Codex 0.164.0's migrations, and no
+    history databases have applied exactly Codex 0.165.0's migrations, and no
     rollout migration is pending or being staged. Vacuum is available when the
     history database has `auto_vacuum` = 2 (incremental); it is False with a
     refusal."""
@@ -169,12 +169,12 @@ def zstd_binary() -> str | None:
 
 
 def keep_set(progress: Callable[[int, int], None] | None = None) -> KeepSet:
-    """The ids of every thread and spawn edge in the state database, and of
-    every rollout file, active or archived, plain or `.zst`: the thread and
-    rollout ids in its name, and its SessionMeta's id and
-    `history_base.thread_id`. A `threads.rollout_path` adds the ids in its
-    name too, whether or not its file is still there. `progress(done, total)`
-    follows the rollouts.
+    """The ids of every thread, attached parent and spawn edge in the state
+    database, and of every rollout file, active or archived, plain or `.zst`:
+    the thread and rollout ids in its name, and its SessionMeta's id,
+    `history_base.thread_id` and attached `forked_from_id`. A
+    `threads.rollout_path` adds the ids in its name too, whether or not its
+    file is still there. `progress(done, total)` follows the rollouts.
     Raises Refusal when the state database is missing or cannot be read, or
     holds an id that is not canonical."""
     ids, rollout_paths = _read_state()
@@ -207,18 +207,21 @@ def scan_refusal(keep: KeepSet) -> Refusal | None:
 
 
 def _read_state() -> tuple[set[str], list[object]]:
-    """Every `threads.id` and both ids of every spawn edge, and every
-    `threads.rollout_path`."""
+    """Every `threads.id` and `threads.attached_thread_parent_id`, both ids of
+    every spawn edge, and every `threads.rollout_path`."""
     with reading(roots.codex_sqlite_home() / codex.STATE_DB) as con:
-        threads = con.execute("SELECT id, rollout_path FROM threads").fetchall()
-        found = [thread_id for thread_id, _path in threads]
+        threads = con.execute(
+            "SELECT id, rollout_path, attached_thread_parent_id FROM threads"
+        ).fetchall()
+        found = [thread_id for thread_id, _path, _attached in threads]
+        found += [attached for _id, _path, attached in threads if attached is not None]
         for parent, child in con.execute(
             "SELECT parent_thread_id, child_thread_id FROM thread_spawn_edges"
         ):
             found += [parent, child]
     if not all(safety.is_valid_id(i) for i in found):
         raise Refusal("codex_version", f"{codex.STATE_DB} has a thread id that is not canonical")
-    return set(found), [path for _thread_id, path in threads]
+    return set(found), [path for _thread_id, path, _attached in threads]
 
 
 def _named_rollout_ids(paths: list[object]) -> tuple[set[str], int]:
@@ -307,14 +310,21 @@ def _name_ids(name: str) -> set[str] | None:
 
 
 def _meta_ids(payload: dict) -> set[str]:
-    """`payload.id` and, when there is a history base, its `thread_id` (a
-    rollout id). Each must be a canonical id."""
+    """`payload.id`; when there is a history base, its `thread_id` (a rollout
+    id); and when the rollout is an attached thread, the `forked_from_id` it
+    is attached to (a plain fork's source is no reference, as in Codex's
+    rollout_reference_index.rs). Each must be a canonical id."""
     ids = [payload.get("id")]
     base = payload.get("history_base")
     if base is not None:
         if not isinstance(base, dict):
             raise MetaUnreadable("history_base is not an object")
         ids.append(base.get("thread_id"))
+    attached = payload.get("attached_thread", False)
+    if not isinstance(attached, bool):
+        raise MetaUnreadable("attached_thread is not a boolean")
+    if attached and payload.get("forked_from_id") is not None:
+        ids.append(payload["forked_from_id"])
     if not all(safety.is_valid_id(i) for i in ids):
         raise MetaUnreadable("a SessionMeta id is not a canonical id")
     return set(ids)

@@ -127,10 +127,10 @@ def test_known_checksums_match_the_fixture_files():
         for folder in ("state", "queue", "thread_history")
     }
     assert codex_migrations.KNOWN == recomputed
-    assert [len(codex_migrations.KNOWN[f]) for f in ("state", "queue", "thread_history")] == [61, 2, 8]
+    assert [len(codex_migrations.KNOWN[f]) for f in ("state", "queue", "thread_history")] == [62, 2, 8]
 
 
-def test_codex_0164_home_is_supported(home):
+def test_codex_0165_home_is_supported(home):
     assert codex_keepset.support_check() == (None, True)
 
 
@@ -303,6 +303,36 @@ def test_keep_set_takes_state_thread_and_edge_ids(home):
     assert (keep.unreadable, keep.staging) == (0, 0)
 
 
+def test_keep_set_takes_the_attached_parent_of_a_state_thread(home):
+    # Codex 0.165.0 refuses to delete a thread an attached thread points at.
+    add_thread(home, CHILD, attached_parent=THREAD)
+    assert codex_keepset.keep_set().ids == {CHILD, THREAD}
+
+
+def test_keep_set_takes_the_fork_source_of_an_attached_rollout(home):
+    write_rollout(home, CHILD, meta={"id": CHILD, "forked_from_id": THREAD, "attached_thread": True})
+    keep = codex_keepset.keep_set()
+    assert keep.ids == {CHILD, THREAD}
+    assert keep.unreadable == 0
+
+
+@pytest.mark.parametrize(
+    "meta",
+    [
+        {"id": CHILD, "forked_from_id": THREAD},
+        {"id": CHILD, "forked_from_id": THREAD, "attached_thread": False},
+        {"id": CHILD, "attached_thread": True},
+        {"id": CHILD, "forked_from_id": None, "attached_thread": True},
+    ],
+    ids=["fork_not_attached", "attached_false", "attached_without_source", "attached_null_source"],
+)
+def test_keep_set_skips_a_fork_source_codex_does_not_refer_to(home, meta):
+    write_rollout(home, CHILD, meta=meta)
+    keep = codex_keepset.keep_set()
+    assert keep.ids == {CHILD}
+    assert keep.unreadable == 0
+
+
 def test_keep_set_reads_the_state_db_in_the_sqlite_home(tmp_path, monkeypatch):
     sqlite_home = tmp_path / "elsewhere"
     make_codex_home(roots.codex_home(), sqlite_home)
@@ -393,6 +423,10 @@ UNREADABLE = {
     "history_base_not_an_object": _meta({"id": CHILD, "history_base": BASE}),
     "history_base_without_thread_id": _meta({"id": CHILD, "history_base": {}}),
     "history_base_id_not_canonical": _meta({"id": CHILD, "history_base": {"thread_id": BASE.upper()}}),
+    "attached_thread_not_a_bool": _meta({"id": CHILD, "forked_from_id": BASE, "attached_thread": "yes"}),
+    "attached_source_not_canonical": _meta(
+        {"id": CHILD, "forked_from_id": BASE.upper(), "attached_thread": True}
+    ),
     "name_fails_the_regex": _named("rollout-garbage.jsonl"),
     "zst_name_fails_the_regex": _named("rollout-2026-01-02.jsonl.zst"),
     "name_thread_id_not_canonical": _named(rollout_name(CHILD.upper())),
@@ -491,8 +525,9 @@ def test_staging_file_refuses(home):
         lambda home: add_thread(home, THREAD.upper()),
         lambda home: add_edge(home, "not-an-id", CHILD),
         lambda home: add_edge(home, OTHER, CHILD.upper()),
+        lambda home: add_thread(home, CHILD, attached_parent=THREAD.upper()),
     ],
-    ids=["thread_id", "edge_parent", "edge_child"],
+    ids=["thread_id", "edge_parent", "edge_child", "attached_parent"],
 )
 def test_db_id_that_is_not_canonical_refuses_as_an_unknown_version(home, bad):
     bad(home)
