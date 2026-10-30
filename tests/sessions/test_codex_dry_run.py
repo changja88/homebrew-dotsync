@@ -220,10 +220,23 @@ def free_pages(db_dir):
     return pages * size
 
 
-def test_vacuum_free_bytes_is_what_the_history_db_could_give_back(home):
-    freed = free_pages(home)
-    assert freed > 0
-    assert codex_cleanup.dry_run_payload()["vacuum_free_bytes"] == freed
+def free_state_pages(db_dir):
+    """Threads written and deleted again, in the state database."""
+    for n in range(40):
+        add_thread(db_dir, f"{n:08d}-0000-4000-8000-000000000000", title="x" * 4000)
+    con = sqlite3.connect(db_dir / "state_5.sqlite")
+    con.execute("DELETE FROM threads")
+    con.commit()
+    (pages,) = con.execute("PRAGMA freelist_count").fetchone()
+    (size,) = con.execute("PRAGMA page_size").fetchone()
+    con.close()
+    return pages * size
+
+
+def test_vacuum_free_bytes_is_what_the_history_and_state_dbs_could_give_back(home):
+    history, state = free_pages(home), free_state_pages(home)
+    assert history > 0 and state > 0
+    assert codex_cleanup.dry_run_payload()["vacuum_free_bytes"] == history + state
 
 
 def test_vacuum_free_bytes_reads_two_pragmas_read_only(home, monkeypatch):
@@ -239,8 +252,8 @@ def test_vacuum_free_bytes_reads_two_pragmas_read_only(home, monkeypatch):
 
     monkeypatch.setattr(codex, "open_ro", spying)
     assert codex_cleanup.vacuum_free_bytes() > 0
-    assert opened == [home / "thread_history_1.sqlite"]
-    assert statements == ["PRAGMA freelist_count", "PRAGMA page_size"]
+    assert opened == [home / "thread_history_1.sqlite", home / "state_5.sqlite"]
+    assert statements == ["PRAGMA freelist_count", "PRAGMA page_size"] * 2
 
 
 def test_vacuum_free_bytes_is_null_when_the_history_db_cannot_be_read(home):
@@ -248,6 +261,19 @@ def test_vacuum_free_bytes_is_null_when_the_history_db_cannot_be_read(home):
     payload = codex_cleanup.dry_run_payload()
     assert payload["vacuum_free_bytes"] is None
     assert not (home / "thread_history_1.sqlite").exists()  # never made
+
+
+def test_vacuum_free_bytes_is_null_when_the_state_db_cannot_be_read(home, monkeypatch):
+    free_pages(home)
+    real = codex.open_ro
+
+    def failing_on_state(path):
+        if path.name == "state_5.sqlite":
+            raise sqlite3.OperationalError("unable to open database file")
+        return real(path)
+
+    monkeypatch.setattr(codex, "open_ro", failing_on_state)
+    assert codex_cleanup.vacuum_free_bytes() is None
 
 
 def test_blockers_are_reported_but_do_not_refuse(home, monkeypatch):

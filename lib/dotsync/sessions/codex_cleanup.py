@@ -173,17 +173,25 @@ def dry_run_payload(progress: PhaseProgress | None = None) -> dict:
 
 
 def vacuum_free_bytes() -> int | None:
-    """The history database's free pages in bytes (`freelist_count` ×
-    `page_size`), read-only: what a vacuum alone could give back. None when
-    the database cannot be read, since an unknown amount is no reason to quit
-    ChatGPT for a vacuum."""
+    """The free pages of the databases the vacuum rewrites, in bytes
+    (`freelist_count` × `page_size`), read-only: what a vacuum alone could
+    give back. None when one of them cannot be read, since an unknown amount
+    is no reason to quit ChatGPT for a vacuum."""
+    total = 0
     try:
-        with contextlib.closing(codex.open_ro(roots.codex_sqlite_home() / codex.HISTORY_DB)) as con:
-            (pages,) = con.execute("PRAGMA freelist_count").fetchone()
-            (size,) = con.execute("PRAGMA page_size").fetchone()
+        for path in _vacuum_paths():
+            with contextlib.closing(codex.open_ro(path)) as con:
+                (pages,) = con.execute("PRAGMA freelist_count").fetchone()
+                (size,) = con.execute("PRAGMA page_size").fetchone()
+            total += pages * size
     except sqlite3.Error:
         return None
-    return pages * size
+    return total
+
+
+def _vacuum_paths() -> list[Path]:
+    """The databases deleting sessions leaves free pages in."""
+    return [roots.codex_sqlite_home() / name for name in (codex.HISTORY_DB, codex.STATE_DB)]
 
 
 def _items(found: Orphans) -> list[dict]:
@@ -212,8 +220,7 @@ COORDINATION_WAIT = 10.0  # seconds; a coordination lock held longer means a Cod
 JSONL_LOCK_WAIT = 5.0  # seconds for a JSONL file's own lock
 WRITE_TIMEOUT = 5.0  # seconds a write waits on a locked database
 BACKUP_INFIX = ".dotsync-backup-"
-VACUUM_CAP = 600  # seconds in total (spec: 10 minutes)
-VACUUM_BATCH_PAGES = 25600
+VACUUM_STOP_CHECK = 1000  # SQLite steps between two looks at SIGTERM while a VACUUM runs
 
 
 def run_cleanup(
@@ -264,9 +271,9 @@ def run_cleanup(
 def _vacuum(report: dict, stop: StopSignal, progress: PhaseProgress) -> dict:
     """The `--vacuum` result, run while both locks are still held. It starts
     only when the items ended normally; a stop or a Codex that started leaves
-    the database as it is, and the result says so."""
-    path = roots.codex_sqlite_home() / codex.HISTORY_DB
-    before = codex.db_bytes(path)
+    the databases as they are, and the result says so."""
+    paths = _vacuum_paths()
+    before = sum(codex.db_bytes(p) for p in paths)
     reasons = {item.get("reason") for item in report["items"]}
     if report["stopped"] or stop.requested:
         why = "stopped"
@@ -282,7 +289,7 @@ def _vacuum(report: dict, stop: StopSignal, progress: PhaseProgress) -> dict:
         if not available:
             why = "unavailable"
         else:
-            return reclaim(path, stop=stop, detect=codex_blockers.detect, progress=_in_phase(progress, "vacuum"))
+            return reclaim(paths, stop=stop, detect=codex_blockers.detect, progress=_in_phase(progress, "vacuum"))
     return {"stopped_because": why, "bytes_before": before, "bytes_after": before}
 
 
@@ -472,64 +479,56 @@ def _writing(db: Path) -> Iterator[sqlite3.Connection]:
 
 
 def reclaim(
-    path: Path,
+    paths: list[Path],
     *,
     stop: StopSignal,
     detect: Callable[[], dict],
     progress: Callable[[int, int], None] = lambda freed, total: None,
-    now: Callable[[], float] = time.monotonic,
-    cap: float = VACUUM_CAP,
-    batch_pages: int = VACUUM_BATCH_PAGES,
 ) -> dict:
-    """Give the history database's free pages back to the disk, `batch_pages`
-    at a time (`PRAGMA incremental_vacuum`), and say why it stopped:
-    `freelist_empty`, `no_progress` (a batch freed nothing), `blocker` (a
-    Codex started), `stopped` (SIGTERM), `busy` (a checkpoint could not
-    finish, or the database stayed locked), `error` (any other sqlite or OS
-    error, with a `message`) or `time_cap` (`cap` seconds).
-    Between batches it checkpoints, so the WAL does not grow with the file.
-    Sizes are the database plus its `-wal`. `progress(freed, total)` runs
-    after each batch, in pages."""
-    deadline = now() + cap
-    before = codex.db_bytes(path)
-    why = "busy"
+    """Give the databases' free pages back to the disk by rewriting each one
+    whole (`VACUUM`), and say why it stopped: `freelist_empty` (all given
+    back), `blocker` (a Codex started), `stopped` (SIGTERM; it interrupts a
+    running VACUUM, which leaves that database as it was), `busy` (a
+    checkpoint could not finish, or a database stayed locked) or `error` (any
+    other sqlite or OS error, with a `message`). Nothing else uses the
+    databases then, so the rewrite contends with no writer; it keeps their
+    auto_vacuum mode. A database with nothing free is not rewritten.
+    Sizes are the databases plus their `-wal`. `progress(freed, total)` runs
+    after each database, in pages."""
+    before = sum(codex.db_bytes(p) for p in paths)
+    why = "freelist_empty"
     try:
-        with _writing(path) as con:
-            if not _checkpointed(con):
-                return _reclaimed(path, before, "busy")
-            total = con.execute("PRAGMA freelist_count").fetchall()[0][0]
-            free = total
-            if free > 0 and detect()["blockers"]:
-                return _reclaimed(path, before, "blocker")
-            while True:
-                if free == 0:
-                    why = "freelist_empty"
-                    break
-                con.execute(f"PRAGMA incremental_vacuum({batch_pages})").fetchall()
-                left = con.execute("PRAGMA freelist_count").fetchall()[0][0]
-                progress(total - left, total)
-                if left >= free:
-                    why = "no_progress"
-                    break
-                free = left
+        with contextlib.ExitStack() as stack:
+            cons = [stack.enter_context(_writing(p)) for p in paths]
+            if not all(_checkpointed(con) for con in cons):
+                return _reclaimed(paths, before, "busy")
+            free = [con.execute("PRAGMA freelist_count").fetchall()[0][0] for con in cons]
+            freed = 0
+            for con, pages in zip(cons, free):
+                if pages == 0:
+                    continue
                 if detect()["blockers"]:
                     why = "blocker"
                     break
                 if stop.requested:
                     why = "stopped"
                     break
+                con.set_progress_handler(lambda: stop.requested, VACUUM_STOP_CHECK)
+                con.execute("VACUUM")
+                freed += pages
+                progress(freed, sum(free))
                 if not _checkpointed(con):
                     why = "busy"
                     break
-                if now() >= deadline:
-                    why = "time_cap"
-                    break
     except (sqlite3.Error, OSError) as e:
-        if isinstance(e, sqlite3.OperationalError) and ("locked" in str(e) or "busy" in str(e)):
+        message = str(e)
+        if isinstance(e, sqlite3.OperationalError) and message == "interrupted":
+            why = "stopped"
+        elif isinstance(e, sqlite3.OperationalError) and ("locked" in message or "busy" in message):
             why = "busy"
         else:
-            return {**_reclaimed(path, before, "error"), "message": _one_line(e)}
-    return _reclaimed(path, before, why)
+            return {**_reclaimed(paths, before, "error"), "message": _one_line(e)}
+    return _reclaimed(paths, before, why)
 
 
 def _checkpointed(con: sqlite3.Connection) -> bool:
@@ -538,8 +537,8 @@ def _checkpointed(con: sqlite3.Connection) -> bool:
     return con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()[0][0] == 0
 
 
-def _reclaimed(path: Path, before: int, why: str) -> dict:
-    return {"bytes_before": before, "bytes_after": codex.db_bytes(path), "stopped_because": why}
+def _reclaimed(paths: list[Path], before: int, why: str) -> dict:
+    return {"bytes_before": before, "bytes_after": sum(codex.db_bytes(p) for p in paths), "stopped_because": why}
 
 
 @contextlib.contextmanager

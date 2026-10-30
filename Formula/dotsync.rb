@@ -5,32 +5,28 @@ class Dotsync < Formula
   sha256 "3684193f4dbaf7c11e33b29bd68aa6dc64f0b0138ea704cd4255387c4d914d94"
   license "MIT"
 
-  # Reuse an existing Python 3.12+ binary if the user already has one — avoids
-  # a duplicate ~100 MB python@3.12 install when they already use python.org,
-  # pyenv, uv, or any other source. Canonical paths only (no PATH search and
-  # no shell-out at formula load time).
+  # dotsync needs Python 3.14+: `dotsync sessions` reads compressed (.zst)
+  # Codex rollouts with its `compression.zstd`. Reuse an existing 3.14 binary
+  # if the user already has one — avoids a duplicate ~100 MB python@3.14
+  # install when they already use python.org, pyenv, uv, or any other source.
+  # Canonical paths only (no PATH search and no shell-out at formula load time).
   def self.external_python
     [
-      "/opt/homebrew/bin/python3.12",
-      "/opt/homebrew/bin/python3.13",
-      "/usr/local/bin/python3.12",
-      "/usr/local/bin/python3.13",
-      "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12",
-      "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13",
+      "/opt/homebrew/bin/python3.14",
+      "/usr/local/bin/python3.14",
+      "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
     ].find { |p| File.executable?(p) }
   end
 
-  depends_on "python@3.12" if external_python.nil?
-  # `dotsync sessions` reads compressed (.zst) Codex rollouts with `zstd -dc`.
-  depends_on "zstd"
+  depends_on "python@3.14" if external_python.nil?
 
   def install
     libexec.install "lib/dotsync"
     libexec.install "bin"
-    # Prefer an already-installed Python 3.12+ over brew's python@3.12; pin
+    # Prefer an already-installed Python 3.14 over brew's python@3.14; pin
     # the shebang so dotsync runs with a known version regardless of the
     # user's `python3` resolution.
-    py = self.class.external_python || (formula_opt_bin("python@3.12")/"python3.12").to_s
+    py = self.class.external_python || (formula_opt_bin("python@3.14")/"python3.14").to_s
     inreplace libexec/"bin/dotsync", /^#!.*python.*$/, "#!#{py}"
     (bin/"dotsync").write_env_script libexec/"bin/dotsync", PYTHONPATH: libexec
   end

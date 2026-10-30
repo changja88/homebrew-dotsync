@@ -38,6 +38,7 @@ CODEX = "/fake/bin/codex"
 GENERIC = "Error: failed to delete session\n"
 TITLE = "secret-title-xyz"
 SPAWN = json.dumps({"subagent": {"thread_spawn": {"parent_thread_id": ROOT}}})
+GUARDIAN_SOURCE = json.dumps({"subagent": {"other": "guardian"}})
 _NAME = re.compile(r"^rollout-.{19}-([0-9a-f-]{36})(?:_([0-9a-f-]{36}))?\.jsonl(?:\.zst)?$")
 
 
@@ -368,6 +369,7 @@ def test_timeout_after_partial_work_is_partial(fake, db):
         "freed_bytes": freed, "remaining": ["state", "history"],
     }
     assert left(db)["caches"] == sorted(FAMILY)  # Codex still has the threads
+    assert fake.deleted_ids() == [ROOT]  # it already took its 180 s: no second try
 
 
 def test_only_history_left_is_no_rollout(fake, db):
@@ -433,8 +435,15 @@ def remove_the_child_row(db):
 def test_a_change_inside_a_part_is_partial_not_unchanged(fake, db, setup):
     work, remaining = setup(db)
     fake.parts = set()
-    fake.then = work
     fake.answer = (1, GENERIC)
+    tried = []
+
+    def first_call_only():
+        if not tried:
+            tried.append(True)
+            work()
+
+    fake.then = first_call_only
 
     [result] = run_delete(ROOT)["results"]
 
@@ -452,6 +461,7 @@ def test_unreadable_history_db_after_the_call_is_partial_failed(fake, db):
 
     assert (result["outcome"], result["reason"]) == ("partial", "failed")
     assert (result["remaining"], result["unchecked"]) == (["history"], ["history"])
+    assert fake.deleted_ids() == [ROOT]  # what is left is unknown: no second try
 
 
 def test_unreadable_db_before_the_call_skips_without_calling_codex(fake, db):
@@ -555,6 +565,19 @@ def test_a_child_id_is_not_a_root_and_is_not_deleted(fake, db):
     assert result == {"id": CHILD, "outcome": "skipped", "reason": "not_root", "children": 0, "freed_bytes": 0}
     assert fake.calls == []
     assert left(db) == before
+
+
+def test_a_sub_agent_that_no_thread_spawned_is_deleted(fake, db):
+    single(db, THIRD)
+    sqlite3.connect(db / "state_5.sqlite").execute(
+        "UPDATE threads SET source = ? WHERE id = ?", (GUARDIAN_SOURCE, THIRD)
+    ).connection.commit()
+
+    [result] = run_delete(THIRD)["results"]
+
+    assert result["outcome"] == "deleted"
+    assert [argv for argv, _ in fake.calls] == [[CODEX, "--no-daemon", "delete", THIRD, "--force"]]
+    assert left(db)["threads"] == []
 
 
 def test_rollout_left_without_a_state_row_runs_codex_again(fake, db):
@@ -724,6 +747,78 @@ def test_sigterm_finishes_the_running_ids_and_starts_no_more(fake, db, monkeypat
     ]
     assert sorted(fake.deleted_ids()) == sorted([first, second])
     assert set(left(db)["threads"]) == set(rest)
+
+
+def stopping_short_once(fake, monkeypatch, thread_id):
+    """The first `codex delete` of `thread_id` removes the rollout and the
+    history but not the state rows, and exits 1: what a delete that loses the
+    database to another one running does. Every other call goes through."""
+    tried = []
+
+    def run(argv, **kwargs):
+        first = argv[3] == thread_id and not tried
+        if first:
+            tried.append(thread_id)
+        fake.parts = {"history", "rollout"} if first else {"history", "rollout", "state"}
+        fake.answer = (1, GENERIC) if first else (0, "")
+        return fake(argv, **kwargs)
+
+    monkeypatch.setattr(procs, "run", run)
+
+
+def test_a_delete_that_stopped_halfway_is_tried_again_after_the_others(fake, db, monkeypatch):
+    monkeypatch.setattr(codex, "DELETE_WORKERS", 1)
+    rollout = single(db, ROOT)
+    size = rollout.stat().st_size
+    single(db, OTHER)
+    stopping_short_once(fake, monkeypatch, ROOT)
+    seen = []
+
+    report = codex.delete([ROOT, OTHER], stop=StopSignal(), progress=lambda d, t: seen.append((d, t)))
+
+    assert fake.deleted_ids() == [ROOT, OTHER, ROOT]
+    assert [(r["id"], r["outcome"]) for r in report["results"]] == [(ROOT, "deleted"), (OTHER, "deleted")]
+    assert report["results"][0]["freed_bytes"] == size  # what the first try freed still counts
+    assert seen == [(1, 2), (2, 2)]
+    assert left(db)["threads"] == [] and left(db)["caches"] == []
+
+
+def test_a_retry_keeps_the_first_tries_rollouts_in_the_log(fake, db, monkeypatch):
+    rollout = single(db, ROOT)
+    stopping_short_once(fake, monkeypatch, ROOT)
+    run_delete(ROOT)
+    [log_path] = roots.log_dir().iterdir()
+    doc = json.loads(log_path.read_text())
+    assert doc["result"]["paths"][ROOT]["rollouts"] == [str(rollout)]
+    assert doc["result"]["paths"][ROOT]["removed"] == [str(cache(ROOT))]
+
+
+def test_a_delete_that_stops_halfway_twice_stays_partial(fake, db):
+    rollout = single(db, ROOT)
+    size = rollout.stat().st_size
+    fake.parts = {"history", "rollout"}
+    fake.answer = (1, GENERIC)
+
+    [result] = run_delete(ROOT)["results"]
+
+    assert fake.deleted_ids() == [ROOT, ROOT]
+    assert result == {
+        "id": ROOT, "outcome": "partial", "reason": "failed", "children": 0,
+        "freed_bytes": size, "remaining": ["state"],
+    }
+
+
+def test_nothing_is_tried_again_after_a_stop(fake, db):
+    single(db, ROOT)
+    fake.parts = {"history", "rollout"}
+    fake.answer = (1, GENERIC)
+    stop = StopSignal()
+    fake.then = lambda: setattr(stop, "requested", True)
+
+    [result] = codex.delete([ROOT], stop=stop, progress=lambda done, total: None)["results"]
+
+    assert fake.deleted_ids() == [ROOT]
+    assert (result["outcome"], result["reason"]) == ("partial", "failed")
 
 
 def test_an_unexpected_error_still_writes_the_log(fake, db):

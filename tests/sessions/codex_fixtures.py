@@ -7,6 +7,7 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Iterable
+from compression import zstd
 from pathlib import Path
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "codex-0.165.0"
@@ -143,13 +144,14 @@ def write_rollout(
     meta: dict | None = None,
 ) -> Path:
     """A rollout file for `thread_id` under `home`. `rollout_id` makes it a
-    reverted-style `<thread>_<rollout>` name; `zst` only changes the name (the
-    list never reads contents)."""
+    reverted-style `<thread>_<rollout>` name; `zst` compresses it, as Codex
+    does with older rollouts."""
     stamp = "2026-01-02T03-04-05"
     folder = home / ("archived_sessions" if archived else "sessions/2026/01/02")
     folder.mkdir(parents=True, exist_ok=True)
     suffix = f"_{rollout_id}" if rollout_id else ""
     path = folder / f"rollout-{stamp}-{thread_id}{suffix}.jsonl{'.zst' if zst else ''}"
     records = [*before_meta, {"type": "session_meta", "payload": meta or {"id": thread_id}}]
-    path.write_text("".join(json.dumps(r) + "\n" for r in records))
+    content = "".join(json.dumps(r) + "\n" for r in records).encode()
+    path.write_bytes(zstd.compress(content) if zst else content)
     return path

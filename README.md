@@ -2,7 +2,7 @@
 
 A macOS app that consolidates your app configs into **one folder of your choice**, with two-way sync · macOS 앱 설정을 **사용자가 지정한 한 폴더**에서 관리하는 양방향 sync 앱
 
-> **macOS only · Python 3.12+**
+> **macOS only · Python 3.14+**
 
 ---
 
@@ -22,7 +22,7 @@ brew install --cask changja88/dotsync/dotsync-app   # dotsync.app, and the dotsy
 
 - The app is signed but not notarized: the first time, and after each update, open it once via System Settings → Privacy & Security → "Open Anyway".
 - The cask installs the `dotsync` formula too. That command is the app's engine, not a terminal tool: every command answers the app with one JSON object (`--json`), and run without it, it only says so (see [For developers](#for-developers-the-json-contract)).
-- If Python 3.12 or 3.13 already exists at a canonical path (`/opt/homebrew/bin/python3.{12,13}`, `/usr/local/bin/python3.{12,13}`, or `/Library/Frameworks/Python.framework/Versions/3.{12,13}/...`), dotsync reuses it — no duplicate install. Otherwise Homebrew pulls in `python@3.12` as a dependency. Pythons installed via pyenv / uv are at non-canonical paths and won't be auto-detected; functionality is unaffected, but the duplicate install is not avoided.
+- If Python 3.14 already exists at a canonical path (`/opt/homebrew/bin/python3.14`, `/usr/local/bin/python3.14`, or `/Library/Frameworks/Python.framework/Versions/3.14/...`), dotsync reuses it — no duplicate install. Otherwise Homebrew pulls in `python@3.14` as a dependency. Pythons installed via pyenv / uv are at non-canonical paths and won't be auto-detected; functionality is unaffected, but the duplicate install is not avoided.
 
 ### Usage
 
@@ -132,11 +132,11 @@ The 세션 menu lists, deletes and recovers the sessions Claude Code and Codex k
 
 - A session is not deleted if it is running or if dotsync cannot tell whether it is in use.
 - **Claude Code** — a session written in the last 30 minutes is not deleted either. dotsync checks again right before each delete and skips what changed meanwhile. A delete removes the conversation, subagent transcripts, tool results, MCP task records, file-history, the session environment, debug log, pasted files, and the temp images and task folder. It leaves the prompt history, to-do lists, plans, project memory, settings, and tool results other sessions still use (those files are shared, so they are not picked apart per session). A delete that stops halfway shows as "interrupted": it can be undone (the transcripts are renamed back) or finished (what is left is deleted). Claude Code deletes the same files itself once 30 days have passed since the last entry.
-- **Codex** — dotsync checks once per batch, before deleting, which sessions are open. A delete is Codex's own (`codex delete`), so Codex may stay open; it refuses sessions open in another window. It removes the conversation, the thread's rows in the history database, the name-list entry and logs, including the sessions forked below it. dotsync then removes the reference cache files. It leaves the prompt history, attachments, desktop-app state and generated images. The history database does not shrink right away.
-- **Codex cleanup** removes what deleted sessions left in Codex's files (`history_rows`, `history_lines`, `session_index`, `queue`, plus the cache files), and can also reclaim the history database's free space (vacuum). It only runs while nothing uses `~/.codex`; dotsync.app quits ChatGPT.app for the cleanup and relaunches it afterwards, but a terminal Codex is never closed for you: the cleanup refuses while one runs. It also refuses as a whole when it cannot be sure what to keep: a rollout file cannot be read, `zstd` is missing while compressed rollouts exist, or Codex's database version is not the one dotsync knows.
-- Codex rollouts compressed as `.zst` are read with the `zstd` command, which the Homebrew formula installs.
+- **Codex** — dotsync checks once per batch, before deleting, which sessions are open. A delete is Codex's own (`codex delete`), so Codex may stay open; it refuses sessions open in another window. It removes the conversation, the thread's rows in the history database, the name-list entry and logs, including the sessions forked below it. Codex's guardian reviews (sub-agents no session spawned) are listed as sessions of their own, titled "Guardian review", so they can be deleted too. dotsync then removes the reference cache files. It leaves the prompt history, attachments, desktop-app state and generated images. The history database does not shrink right away.
+- **Codex cleanup** removes what deleted sessions left in Codex's files (`history_rows`, `history_lines`, `session_index`, `queue`, plus the cache files), and can also reclaim the free space of the history and state databases (vacuum: each is rewritten whole, in seconds). It only runs while nothing uses `~/.codex`; dotsync.app quits ChatGPT.app for the cleanup and relaunches it afterwards, but a terminal Codex is never closed for you: the cleanup refuses while one runs. It also refuses as a whole when it cannot be sure what to keep: a rollout file cannot be read, or Codex's database version is not the one dotsync knows.
+- Codex rollouts compressed as `.zst` are decompressed inside dotsync (Python's `compression.zstd`).
 - Every delete, recover and cleanup writes a log, even when it was stopped: `~/Library/Logs/dotsync/sessions-<timestamp>-<pid>.json`. It holds session ids, file paths and outcomes, never conversation contents (no titles, no transcript or history text).
-- Stopping a running delete or cleanup (`SIGTERM`) stops it at the next safe point (between sessions, cleanup items or vacuum batches), then reports and logs what was done.
+- Stopping a running delete or cleanup (`SIGTERM`) stops it at the next safe point (between sessions, cleanup items or the databases a vacuum rewrites), then reports and logs what was done.
 
 #### 6. `dotsync.toml`
 
@@ -184,7 +184,7 @@ brew install --cask changja88/dotsync/dotsync-app   # dotsync.app과, 앱이 실
 
 - 앱은 서명했지만 공증은 안 했다. 처음과 업데이트할 때마다 시스템 설정 → 개인정보 보호 및 보안 → "그래도 열기"로 한 번 연다.
 - cask는 `dotsync` formula도 함께 설치한다. 이 명령은 앱의 엔진이지 터미널 도구가 아니다. 모든 명령은 JSON 객체 하나(`--json`)로 앱에 답하고, `--json` 없이 실행하면 그렇다고만 알린다([개발자용](#개발자용-json-규약) 참고).
-- Python 3.12 또는 3.13 이 canonical 경로 (`/opt/homebrew/bin/python3.{12,13}`, `/usr/local/bin/python3.{12,13}`, `/Library/Frameworks/Python.framework/Versions/3.{12,13}/...`)에 이미 있으면 그것을 그대로 재사용한다 — 중복 설치하지 않는다. 없을 때만 brew 가 `python@3.12` 를 함께 설치한다. pyenv / uv 처럼 비-canonical 경로에 깔린 Python 은 자동 감지되지 않아 brew 가 자기 `python@3.12` 를 설치한다. 동작은 정상이지만 중복 설치는 발생.
+- Python 3.14 가 canonical 경로 (`/opt/homebrew/bin/python3.14`, `/usr/local/bin/python3.14`, `/Library/Frameworks/Python.framework/Versions/3.14/...`)에 이미 있으면 그것을 그대로 재사용한다 — 중복 설치하지 않는다. 없을 때만 brew 가 `python@3.14` 를 함께 설치한다. pyenv / uv 처럼 비-canonical 경로에 깔린 Python 은 자동 감지되지 않아 brew 가 자기 `python@3.14` 를 설치한다. 동작은 정상이지만 중복 설치는 발생.
 
 ### 사용법
 
@@ -294,11 +294,11 @@ skills_ignore = ["my-tool"]
 
 - 실행 중이거나 쓰는 중인지 알 수 없는 세션은 지우지 않는다.
 - **Claude Code** — 최근 30분 안에 기록된 세션도 지우지 않는다. 지우기 직전에 한 번 더 확인하고, 그사이 바뀐 세션은 건너뛴다. 삭제하면 대화 기록, 하위 에이전트 기록, 도구 결과, MCP 작업 기록, 파일 되돌리기 기록, 세션 환경, 디버그 로그, 첨부한 파일, 임시 이미지·작업 폴더가 지워진다. 입력 기록, 할 일 목록, 계획, 프로젝트 기억(memory), 설정, 다른 세션이 쓰는 도구 결과는 남는다(여러 세션이 같이 쓰는 파일이라 세션별로 골라 지우지 않는다). 삭제가 중간에 멈추면 "지우다 멈춤"으로 보이고, 되돌리거나(대화 기록 이름을 되돌린다) 마저 지울 수 있다(남은 것을 지운다). 그냥 두어도 마지막 기록에서 30일이 지나면 Claude Code가 같은 범위를 지운다.
-- **Codex** — 지우기 전에 열려 있는 세션을 배치마다 한 번 확인한다. 삭제는 Codex 자체의 `codex delete`라서 Codex를 켜 둔 채로 할 수 있고, 다른 창에서 열린 세션은 Codex가 거절한다. 대화 기록, 대화 저장소의 해당 내용, 이름 목록, 로그가 지워지고, 그 세션에서 갈라져 나온 하위 세션도 같이 지워진다. 이어서 dotsync가 참조 캐시 파일을 지운다. 입력 기록, 첨부 파일, 데스크톱 앱 상태, 생성 이미지는 남는다. 대화 저장소의 빈 공간은 바로 줄지 않는다.
-- **Codex 남은 데이터 정리**는 지운 세션이 Codex 파일에 남긴 것(`history_rows`, `history_lines`, `session_index`, `queue`, 그리고 캐시 파일)을 지우고, 대화 저장소의 빈 공간도 돌려받을 수 있다(vacuum). `~/.codex`를 쓰는 것이 없을 때만 실행된다. dotsync.app은 정리하는 동안 ChatGPT.app을 끄고 끝나면 다시 켜지만, 터미널 Codex는 대신 닫아 주지 않으며 실행 중이면 정리를 거절한다. 무엇을 남겨야 할지 확신할 수 없을 때도 통째로 거절한다: 기록 파일을 읽을 수 없거나, 압축된 기록이 있는데 `zstd`가 없거나, Codex 데이터베이스 버전이 dotsync가 아는 것과 다를 때다.
-- `.zst`로 압축된 Codex 기록은 `zstd` 명령으로 읽는다. Homebrew Formula가 설치한다.
+- **Codex** — 지우기 전에 열려 있는 세션을 배치마다 한 번 확인한다. 삭제는 Codex 자체의 `codex delete`라서 Codex를 켜 둔 채로 할 수 있고, 다른 창에서 열린 세션은 Codex가 거절한다. 대화 기록, 대화 저장소의 해당 내용, 이름 목록, 로그가 지워지고, 그 세션에서 갈라져 나온 하위 세션도 같이 지워진다. Codex의 자동 검토 기록(어느 세션도 띄우지 않은 하위 세션)은 "Guardian review"라는 제목의 세션으로 따로 보여서 이것도 지울 수 있다. 이어서 dotsync가 참조 캐시 파일을 지운다. 입력 기록, 첨부 파일, 데스크톱 앱 상태, 생성 이미지는 남는다. 대화 저장소의 빈 공간은 바로 줄지 않는다.
+- **Codex 남은 데이터 정리**는 지운 세션이 Codex 파일에 남긴 것(`history_rows`, `history_lines`, `session_index`, `queue`, 그리고 캐시 파일)을 지우고, 대화 저장소와 상태 데이터베이스의 빈 공간도 돌려받을 수 있다(vacuum: 각각을 통째로 다시 써서 몇 초면 끝난다). `~/.codex`를 쓰는 것이 없을 때만 실행된다. dotsync.app은 정리하는 동안 ChatGPT.app을 끄고 끝나면 다시 켜지만, 터미널 Codex는 대신 닫아 주지 않으며 실행 중이면 정리를 거절한다. 무엇을 남겨야 할지 확신할 수 없을 때도 통째로 거절한다: 기록 파일을 읽을 수 없거나, Codex 데이터베이스 버전이 dotsync가 아는 것과 다를 때다.
+- `.zst`로 압축된 Codex 기록은 dotsync 안에서 푼다(Python의 `compression.zstd`).
 - 삭제, 되돌리기, 정리는 멈춘 경우에도 로그를 남긴다: `~/Library/Logs/dotsync/sessions-<timestamp>-<pid>.json`. 세션 id, 파일 경로, 결과만 담고 대화 내용(제목, 대화·입력 기록 텍스트)은 담지 않는다.
-- 실행 중인 삭제나 정리를 멈추면(`SIGTERM`) 다음 안전한 지점(세션 사이, 정리 항목 사이, vacuum 배치 사이)에서 멈추고, 한 일을 알리고 로그에 남긴다.
+- 실행 중인 삭제나 정리를 멈추면(`SIGTERM`) 다음 안전한 지점(세션 사이, 정리 항목 사이, vacuum이 다시 쓰는 데이터베이스 사이)에서 멈추고, 한 일을 알리고 로그에 남긴다.
 
 #### 6. `dotsync.toml`
 

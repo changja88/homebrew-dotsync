@@ -11,17 +11,17 @@ import contextlib
 import json
 import os
 import re
-import shutil
 import sqlite3
 import stat
 import tomllib
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
+from compression import zstd
 from dataclasses import dataclass
 from pathlib import Path
 
 from dotsync.cli_json import JSONCommandError
-from dotsync.sessions import codex, codex_migrations, procs, roots, safety
+from dotsync.sessions import codex, codex_migrations, roots, safety
 
 
 # The support check
@@ -136,7 +136,6 @@ def _check_rollout_migrations() -> None:
 
 # The keep-set
 
-ZSTD_TIMEOUT = 10  # seconds per file
 _LOOKS_LIKE_ROLLOUT = re.compile(r"rollout-.*\.jsonl(?:\.zst)?", re.DOTALL)
 # What Codex refuses to find before the SessionMeta; every other record, and
 # every line it cannot parse, it skips (codex-rs rollout/src/list.rs).
@@ -151,21 +150,11 @@ class MetaUnreadable(Exception):
 class KeepSet:
     """Every id something of Codex still refers to. `unreadable` counts what
     the scan could not read, and `staging` the half-written rollout files it
-    found; `zstd_missing` says `.zst` rollouts were left unread for want of
-    zstd (they count as unreadable too). Any of them makes the set
-    incomplete: see `scan_refusal`."""
+    found. Either makes the set incomplete: see `scan_refusal`."""
 
     ids: set[str]
     unreadable: int
     staging: int
-    zstd_missing: bool = False
-
-
-def zstd_binary() -> str | None:
-    homebrew = "/opt/homebrew/bin/zstd"
-    if os.access(homebrew, os.X_OK):
-        return homebrew
-    return shutil.which("zstd")
 
 
 def keep_set(progress: Callable[[int, int], None] | None = None) -> KeepSet:
@@ -182,7 +171,6 @@ def keep_set(progress: Callable[[int, int], None] | None = None) -> KeepSet:
     ids |= named
     rollouts, unwalkable, staging = _rollout_files()
     unreadable += unwalkable
-    zstd_missing = any(p.name.endswith(".zst") for p, _ in rollouts) and zstd_binary() is None
     for done, (path, name_ids) in enumerate(rollouts, start=1):
         ids |= name_ids
         try:
@@ -191,16 +179,13 @@ def keep_set(progress: Callable[[int, int], None] | None = None) -> KeepSet:
             unreadable += 1
         if progress is not None:
             progress(done, len(rollouts))
-    return KeepSet(ids, unreadable, staging, zstd_missing)
+    return KeepSet(ids, unreadable, staging)
 
 
 def scan_refusal(keep: KeepSet) -> Refusal | None:
     """Why the keep-set cannot be trusted, if it cannot."""
-    if keep.unreadable or keep.zstd_missing:
-        why = " (zstd is not installed)" if keep.zstd_missing else ""
-        return Refusal(
-            "incomplete_scan", f"could not read {keep.unreadable} of the rollout files{why}"
-        )
+    if keep.unreadable:
+        return Refusal("incomplete_scan", f"could not read {keep.unreadable} of the rollout files")
     if keep.staging:
         return Refusal("codex_version", f"Codex has half-written rollout files ({keep.staging})")
     return None
@@ -334,28 +319,22 @@ def first_session_meta(path: Path) -> dict:
     """The payload of the rollout's first SessionMeta record, found the way
     Codex finds it: blank lines, lines that do not parse and other records
     are skipped; a response item or inter-agent message before it, or the end
-    of the file, is an error. Nothing past that record is read. A `.jsonl.zst`
-    is streamed through zstd, which is killed once the record is found.
-    MetaUnreadable when there is no such record or the file cannot be read."""
-    if path.name.endswith(".zst"):
-        zstd = zstd_binary()
-        if zstd is None:
-            raise MetaUnreadable("zstd is not installed")
-        try:
-            with contextlib.closing(
-                procs.stream_lines([zstd, "-dc", "--", str(path)], timeout=ZSTD_TIMEOUT)
-            ) as lines:
-                return _meta_in(lines)
-        except procs.ToolFailure as e:
-            raise MetaUnreadable(f"zstd: {e}") from e
+    of the file, is an error. Reading stops at that record. A `.jsonl.zst` is
+    decompressed in this process as it is read: one zstd process per file
+    made reading thousands of rollouts take minutes.
+    MetaUnreadable when there is no such record or the file cannot be read
+    or decompressed."""
     try:
         # No symlink, and no waiting on a FIFO put in a rollout's place.
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, "rb") as f:
             if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
                 raise MetaUnreadable("not a regular file")
+            if path.name.endswith(".zst"):
+                with zstd.ZstdFile(f) as lines:
+                    return _meta_in(lines)
             return _meta_in(f)
-    except OSError as e:
+    except (OSError, EOFError, zstd.ZstdError) as e:  # EOFError: a frame cut short
         raise MetaUnreadable(str(e)) from e
 
 

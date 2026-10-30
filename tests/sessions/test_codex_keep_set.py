@@ -6,11 +6,12 @@ import hashlib
 import json
 import os
 import sqlite3
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from dotsync.sessions import codex_keepset, codex_migrations, procs, roots
+from dotsync.sessions import codex_keepset, codex_migrations, roots
 from tests.sessions.codex_fixtures import (
     DATABASES,
     FIXTURES,
@@ -27,7 +28,6 @@ BASE = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 OTHER = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
 CHILD = "ffffffff-ffff-4fff-8fff-ffffffffffff"
 STAMP = "2026-01-02T03-04-05"
-ZSTD = "/fake/bin/zstd"
 # The records Codex skips before the SessionMeta (codex-facts.md).
 SKIPPED = (
     "inter_agent_communication_metadata",
@@ -45,41 +45,6 @@ SKIPPED = (
 @pytest.fixture
 def home():
     return make_codex_home(roots.codex_home())
-
-
-class FakeZstd:
-    """Stands in for `procs.stream_lines` running zstd. The `.zst` files in
-    these tests hold plain JSON lines, served as `zstd -dc` would serve them.
-    Records each call, and how many lines each stream handed out."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[list[str], float]] = []
-        self.served: dict[Path, int] = {}
-        self.closed: list[Path] = []
-        self.failure: Exception | None = None
-
-    def __call__(self, argv, *, timeout):
-        self.calls.append((argv, timeout))
-        return self._stream(Path(argv[-1]))
-
-    def _stream(self, path):
-        if self.failure is not None:
-            raise self.failure
-        self.served[path] = 0
-        try:
-            for line in path.read_bytes().splitlines(keepends=True):
-                self.served[path] += 1
-                yield line
-        finally:
-            self.closed.append(path)
-
-
-@pytest.fixture
-def zstd(monkeypatch):
-    fake = FakeZstd()
-    monkeypatch.setattr(codex_keepset, "zstd_binary", lambda: ZSTD)
-    monkeypatch.setattr(procs, "stream_lines", fake)
-    return fake
 
 
 def run_sql(db: Path, sql: str) -> None:
@@ -272,27 +237,28 @@ def test_keep_set_takes_history_base_ids(home):
     assert keep.unreadable == 0
 
 
-def test_keep_set_reads_archived_and_zst(home, zstd):
+def test_keep_set_reads_archived_and_zst(home):
     write_rollout(home, OTHER, archived=True, meta={"id": OTHER})
-    compressed = write_rollout(
-        home, THREAD, zst=True, meta={"id": META, "history_base": {"thread_id": BASE}}
-    )
-    with compressed.open("a") as f:
-        f.write(json.dumps({"type": "response_item", "payload": {}}) + "\n")  # past the meta
+    write_rollout(home, THREAD, zst=True, meta={"id": META, "history_base": {"thread_id": BASE}})
     keep = codex_keepset.keep_set()
     assert keep.ids == {OTHER, THREAD, META, BASE}
     assert keep.unreadable == 0
-    assert zstd.calls == [([ZSTD, "-dc", "--", str(compressed)], 10)]
-    assert zstd.served[compressed] == 1  # nothing past the SessionMeta was read
-    assert zstd.closed == [compressed]
 
 
-def test_keep_set_reads_a_rollout_and_its_zst_both(home, zstd):
+def test_keep_set_reads_a_rollout_and_its_zst_both(home):
     write_rollout(home, THREAD, meta={"id": THREAD})
     write_rollout(home, THREAD, zst=True, meta={"id": THREAD, "history_base": {"thread_id": BASE}})
     keep = codex_keepset.keep_set()
     assert keep.ids == {THREAD, BASE}
-    assert len(zstd.calls) == 1
+
+
+def test_reading_a_zst_rollout_starts_no_child_process(home, monkeypatch):
+    def no_child(*args, **kwargs):
+        raise AssertionError("a .zst rollout is read in this process")
+
+    monkeypatch.setattr(subprocess, "Popen", no_child)
+    write_rollout(home, THREAD, zst=True, meta={"id": META})
+    assert codex_keepset.keep_set().ids == {THREAD, META}
 
 
 def test_keep_set_takes_state_thread_and_edge_ids(home):
@@ -476,12 +442,17 @@ def test_folder_that_cannot_be_listed_is_unreadable(home):
     assert codex_keepset.scan_refusal(keep).code == "incomplete_scan"
 
 
-def test_zstd_that_fails_makes_the_rollout_unreadable(home, zstd):
-    write_rollout(home, THREAD, zst=True)
-    zstd.failure = procs.ToolFailure("timeout", "zstd timed out")
+@pytest.mark.parametrize(
+    "spoil",
+    [lambda data: b"not zstd at all\n" + data, lambda data: data[: len(data) // 2]],
+    ids=["not_zstd", "cut_short"],
+)
+def test_a_zst_rollout_that_does_not_decompress_is_unreadable(home, spoil):
+    path = write_rollout(home, THREAD, zst=True, meta={"id": META})
+    path.write_bytes(spoil(path.read_bytes()))
     keep = codex_keepset.keep_set()
     assert keep.unreadable == 1
-    assert THREAD in keep.ids
+    assert THREAD in keep.ids and META not in keep.ids
     assert codex_keepset.scan_refusal(keep).code == "incomplete_scan"
 
 
@@ -490,24 +461,6 @@ def test_unreadable_rollouts_are_counted(home):
         _no_meta_for(home, thread_id)
     keep = codex_keepset.keep_set()
     assert codex_keepset.scan_refusal(keep).message == "could not read 3 of the rollout files"
-
-
-def test_missing_zstd_refuses(home, monkeypatch):
-    def no_child(argv, *, timeout):
-        raise AssertionError(f"nothing should run without zstd: {argv!r}")
-
-    monkeypatch.setattr(codex_keepset, "zstd_binary", lambda: None)
-    monkeypatch.setattr(procs, "stream_lines", no_child)
-    write_rollout(home, OTHER)
-    assert codex_keepset.scan_refusal(codex_keepset.keep_set()) is None  # no .zst, no need
-
-    write_rollout(home, THREAD, zst=True)
-    keep = codex_keepset.keep_set()
-    assert keep.zstd_missing is True
-    assert keep.unreadable == 1
-    refusal = codex_keepset.scan_refusal(keep)
-    assert refusal.code == "incomplete_scan"
-    assert "zstd" in refusal.message
 
 
 def test_staging_file_refuses(home):
@@ -556,16 +509,6 @@ def test_refusal_is_a_json_command_error():
     refusal = codex_keepset.Refusal("codex_version", "why")
     assert isinstance(refusal, JSONCommandError)
     assert (refusal.code, refusal.message, str(refusal)) == ("codex_version", "why", "why")
-
-
-def test_zstd_binary_prefers_homebrew(monkeypatch):
-    monkeypatch.setattr(codex_keepset.os, "access", lambda path, mode: path == "/opt/homebrew/bin/zstd")
-    monkeypatch.setattr(codex_keepset.shutil, "which", lambda name: "/usr/local/bin/zstd")
-    assert codex_keepset.zstd_binary() == "/opt/homebrew/bin/zstd"
-    monkeypatch.setattr(codex_keepset.os, "access", lambda path, mode: False)
-    assert codex_keepset.zstd_binary() == "/usr/local/bin/zstd"
-    monkeypatch.setattr(codex_keepset.shutil, "which", lambda name: None)
-    assert codex_keepset.zstd_binary() is None
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root searches any folder")

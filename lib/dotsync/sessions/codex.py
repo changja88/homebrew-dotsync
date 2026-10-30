@@ -5,7 +5,6 @@ process still holds them, and deleting them through Codex's own command."""
 from __future__ import annotations
 
 import contextlib
-import json
 import os
 import re
 import shutil
@@ -54,17 +53,11 @@ def open_ro(path: Path) -> sqlite3.Connection:
     return con
 
 
-def _is_subagent_source(source: object) -> bool:
-    # Plain sources are `cli`, `exec`, `vscode`; sub-agents are JSON objects.
-    try:
-        parsed = json.loads(source) if isinstance(source, str) else None
-    except ValueError:
-        return False
-    return isinstance(parsed, dict) and "subagent" in parsed
-
-
 def read_tree(con: sqlite3.Connection) -> tuple[list[Thread], dict[str, list[str]]]:
-    """The root threads, and for each root id the ids of all its descendants."""
+    """The root threads, and for each root id the ids of all its descendants.
+    A root is a thread no spawn edge points at, whatever its source: a
+    sub-agent that no thread spawned (Codex's guardian reviews) is folded into
+    no root, so it is listed on its own."""
     edges: dict[str, list[str]] = {}
     children: set[str] = set()
     for parent, child in con.execute(
@@ -73,12 +66,12 @@ def read_tree(con: sqlite3.Connection) -> tuple[list[Thread], dict[str, list[str
         edges.setdefault(parent, []).append(child)
         children.add(child)
     rows = con.execute(
-        "SELECT id, name, title, cwd, archived, rollout_path, updated_at_ms, source FROM threads"
+        "SELECT id, name, title, cwd, archived, rollout_path, updated_at_ms FROM threads"
     )
     threads = [
         Thread(r[0], r[1], r[2] or "", r[3] or "", bool(r[4]), r[5] or "", r[6] or 0)
         for r in rows
-        if r[0] not in children and not _is_subagent_source(r[7])
+        if r[0] not in children
     ]
     return threads, {t.id: _descendants(t.id, edges) for t in threads}
 
@@ -419,10 +412,10 @@ def delete(
 ) -> dict:
     """Delete each root thread, with its spawn subtree, through Codex's own
     `codex delete`, then the reference-cache files Codex leaves behind. When
-    Codex does not finish, the result says what is left. A stop lets the
-    deletes already running finish and starts no more. The results follow the
-    order of `ids`. The report, plus the paths involved, goes to the result
-    log under `log_command`."""
+    Codex does not finish, even on a second try, the result says what is left.
+    A stop lets the deletes already running finish and starts no more. The
+    results follow the order of `ids`. The report, plus the paths involved,
+    goes to the result log under `log_command`."""
     for tid in ids:
         safety.validate_id(tid)  # one bad id and nothing is touched
     ids = list(dict.fromkeys(ids))
@@ -452,10 +445,32 @@ def delete(
                 report["stopped"] = True
                 for rest in waiting:
                     finished[rest] = _result(rest, "skipped", "stopped", len(batch.tree.get(rest, ())))
+            _try_again(ids, finished, paths, batch, stop)
         finally:
             report["results"] = [finished[tid] for tid in ids if tid in finished]
             log.write(log_command, "codex", started_at, {**report, "paths": paths})
     return report
+
+
+def _try_again(
+    ids: list[str], finished: dict[str, dict], paths: dict[str, dict], batch: _Batch, stop: StopSignal
+) -> None:
+    """One more try, one at a time, for each delete that stopped halfway: with
+    several running at once, one now and then loses a database to another and
+    exits 1 with its state rows left. Alone it finishes. A timeout has already
+    taken its time, and what an unchecked part holds is unknown."""
+    for tid in ids:
+        first = finished[tid]
+        if first["outcome"] != "partial" or first.get("reason") != "failed" or "unchecked" in first:
+            continue
+        if stop.requested:
+            return
+        result, used = _delete_one(tid, batch)
+        if result["outcome"] == "skipped":  # it changed nothing: the first result stands
+            continue
+        finished[tid] = {**result, "freed_bytes": first["freed_bytes"] + result["freed_bytes"]}
+        for kind, found in used.items():
+            paths.setdefault(tid, {}).setdefault(kind, []).extend(found)
 
 
 def _delete_one(tid: str, batch: _Batch) -> tuple[dict, dict]:

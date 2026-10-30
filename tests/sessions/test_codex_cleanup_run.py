@@ -284,6 +284,25 @@ def run_vacuum(items=ALL, *, stop=None):
     )
 
 
+def stores_bytes():
+    """The history and state databases with their `-wal`: what the vacuum weighs."""
+    home = roots.codex_sqlite_home()
+    return codex.db_bytes(home / "thread_history_1.sqlite") + codex.db_bytes(home / "state_5.sqlite")
+
+
+def test_the_vacuum_covers_the_history_and_state_databases(db, monkeypatch):
+    full_home(db)
+    given = []
+
+    def fake_reclaim(paths, **kwargs):
+        given.append(list(paths))
+        return {"stopped_because": "freelist_empty", "bytes_before": 2, "bytes_after": 1}
+
+    monkeypatch.setattr(codex_cleanup, "reclaim", fake_reclaim)
+    run_vacuum()
+    assert given == [[db / "thread_history_1.sqlite", db / "state_5.sqlite"]]
+
+
 def test_vacuum_pages_are_reported_in_the_vacuum_phase(db, monkeypatch):
     full_home(db)
 
@@ -304,14 +323,14 @@ def test_vacuum_runs_after_the_items_under_both_locks(db, monkeypatch):
     held: list[bool] = []
     real = codex_cleanup.reclaim
 
-    def checking(path, **kwargs):
+    def checking(paths, **kwargs):
         held.append(not try_coordination_lock())
-        return real(path, **kwargs)
+        return real(paths, **kwargs)
 
     monkeypatch.setattr(codex_cleanup, "reclaim", checking)
     report = run_vacuum()
     assert held == [True]
-    assert report["vacuum"]["stopped_because"] in ("freelist_empty", "no_progress")
+    assert report["vacuum"]["stopped_because"] == "freelist_empty"
     assert outcomes(report) == [(i, "done", None) for i in ORDER]
 
 
@@ -323,7 +342,7 @@ def test_vacuum_is_unavailable_without_incremental_auto_vacuum(db):
     con.close()
     vacuum = run_vacuum()["vacuum"]
     assert vacuum["stopped_because"] == "unavailable"
-    assert vacuum["bytes_before"] == vacuum["bytes_after"] == codex.history_bytes()
+    assert vacuum["bytes_before"] == vacuum["bytes_after"] == stores_bytes()
 
 
 def test_vacuum_does_not_start_after_a_stop(db, monkeypatch):
@@ -333,7 +352,7 @@ def test_vacuum_does_not_start_after_a_stop(db, monkeypatch):
     stop.requested = True
     vacuum = run_vacuum(stop=stop)["vacuum"]
     assert vacuum["stopped_because"] == "stopped"
-    assert vacuum["bytes_before"] == vacuum["bytes_after"] == codex.history_bytes()
+    assert vacuum["bytes_before"] == vacuum["bytes_after"] == stores_bytes()
 
 
 def test_vacuum_does_not_start_after_a_blocker(db, monkeypatch):
@@ -349,7 +368,7 @@ def test_vacuum_does_not_start_after_a_blocker(db, monkeypatch):
 def test_a_vacuum_that_cannot_open_keeps_the_item_results(db, monkeypatch, capsys):
     full_home(db)
     monkeypatch.setattr(codex_keepset, "support_check", lambda: (None, True))
-    monkeypatch.setattr(codex_cleanup, "reclaim", lambda path, **kw: codex_cleanup._failed_vacuum(0, "unable to open"))
+    monkeypatch.setattr(codex_cleanup, "reclaim", lambda paths, **kw: codex_cleanup._failed_vacuum(0, "unable to open"))
     argv = ["sessions", "cleanup", "codex", "--yes", "--items", "queue", "--vacuum", "--json"]
     assert cli.main(argv) == 0
     out = json.loads(capsys.readouterr().out)

@@ -57,16 +57,25 @@ app with one JSON object; without `--json` it says so and exits 2.
     `~/Library/Logs/dotsync/sessions-<timestamp>-<pid>.json` (mode 0600, even
     when stopped) with ids, paths and outcomes, never titles or transcript or
     history text. `SIGTERM` (`StopSignal`) stops at the next safe point
-    (between sessions, cleanup items, vacuum batches); a running child
-    (`codex delete`, `zstd`) is waited for, never signalled.
+    (between sessions, cleanup items, the databases a vacuum rewrites; it
+    interrupts a running `VACUUM`, which leaves that database as it was); a
+    running child (`codex delete`) is waited for, never signalled.
   - Codex cleanup runs only while nothing uses `~/.codex` (ChatGPT.app, a
     terminal Codex, or any other process holding a file there). It also
     refuses as a whole (`incomplete_scan`, `codex_version`) when the keep-set
     cannot be trusted. The CLI refuses
     with `codex_running` and quits nothing; dotsync.app quits ChatGPT.app
     first and relaunches it, and it refuses while a terminal Codex runs.
-  - `.zst` Codex rollouts are read with the Homebrew `zstd` CLI
-    (`depends_on "zstd"` in the Formula).
+  - `.zst` Codex rollouts are read in-process with `compression.zstd`
+    (Python 3.14+), not a `zstd` child per file.
+  - The Codex list shows every thread no spawn edge points at, with its
+    spawn subtree folded in: a sub-agent no thread spawned (Codex's guardian
+    reviews) is listed on its own so it can be deleted.
+  - `codex delete`s run four at a time. One that stops halfway (it lost a
+    database to another, and left its state rows) is tried once more, alone,
+    after the others.
+  - The cleanup's vacuum rewrites the history and state databases whole
+    (`VACUUM`), which keeps their auto_vacuum mode.
 - `lib/dotsync/shellrc.py` owns the marked `DOTSYNC_DIR` line: finding it
   (`rc_candidates`, `marked_dir`) and keeping it (`update_shell_rc`, which
   `config dir` calls; with no rc file it starts `~/.bash_profile`, never the
@@ -145,7 +154,7 @@ app with one JSON object; without `--json` it says so and exits 2.
 
 - Runtime dependencies must stay stdlib-only. Do not add `click`, `requests`,
   `pydantic`, or similar dependencies. This keeps the Homebrew formula simple.
-- Target runtime is Python 3.12+. Keep `pyproject.toml`,
+- Target runtime is Python 3.14+ (`compression.zstd`). Keep `pyproject.toml`,
   `lib/dotsync/__init__.py`, and `Formula/dotsync.rb` aligned when changing
   versions.
 - Treat the project as macOS-only. Do not add Linux or Windows branches unless

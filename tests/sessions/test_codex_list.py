@@ -58,16 +58,25 @@ def tree(home):
     add_edge(home, CHILD, GRANDCHILD)
 
 
-def test_roots_exclude_spawn_children_and_subagent_sources(home):
+def test_roots_exclude_spawn_children(home):
     tree(home)
     add_thread(home, OTHER, source="exec")
     payload = codex.list_payload()
     items = items_of(payload)
-    assert set(items) == {ROOT, OTHER}
+    assert set(items) == {ROOT, OTHER, GUARDIAN}
     assert items[ROOT]["children"] == 2
     assert items[OTHER]["children"] == 0
     assert payload["tool"] == "codex"
-    assert payload["totals"]["sessions"] == 2
+    assert payload["totals"]["sessions"] == 3
+
+
+def test_a_sub_agent_that_no_thread_spawned_is_a_root(home):
+    # Codex's guardian reviews have a sub-agent source but no spawn edge, so
+    # no root folds them in: listed on their own, they can be deleted.
+    add_thread(home, GUARDIAN, source=GUARDIAN_SOURCE, name="Guardian review")
+    item = items_of(codex.list_payload())[GUARDIAN]
+    assert item["title"] == "Guardian review"
+    assert item["children"] == 0
 
 
 def test_title_prefers_name(home):
@@ -301,8 +310,8 @@ def test_list_codex_json_shape(home, capsys):
     datetime.strptime(payload["checked_at"], "%Y-%m-%dT%H:%M:%SZ")
     assert set(payload["totals"]) == {"sessions", "bytes", "running", "history_db_bytes"}
     (group,) = payload["groups"]
-    (item,) = group["items"]
-    assert item["id"] == ROOT
+    assert {i["id"] for i in group["items"]} == {ROOT, GUARDIAN}
+    item = next(i for i in group["items"] if i["id"] == ROOT)
     assert item["folder"] == "repo" and item["cwd"] == "/work/repo"
     assert item["children"] == 2 and item["archived"] is False
     assert item["state"] == "idle" and "reason" not in item
