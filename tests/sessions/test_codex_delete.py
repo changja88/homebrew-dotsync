@@ -9,6 +9,8 @@ import shutil
 import signal
 import sqlite3
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -646,7 +648,99 @@ def test_inspect_unreadable_rollout_folder_is_unchecked(db):
 # Stop, lock, log, CLI
 
 
-def test_sigterm_while_codex_runs_finishes_that_id(fake, db):
+def many(db, count) -> list[str]:
+    ids = [f"{n:08x}-1111-4111-8111-111111111111" for n in range(1, count + 1)]
+    for tid in ids:
+        single(db, tid)
+    return ids
+
+
+def test_deletes_run_at_the_same_time(fake, db):
+    ids = many(db, codex.DELETE_WORKERS)
+    # Every call waits here for the others: one at a time would break the barrier.
+    fake.then = threading.Barrier(codex.DELETE_WORKERS, timeout=10).wait
+    report = run_delete(*ids)
+    assert [r["outcome"] for r in report["results"]] == ["deleted"] * len(ids)
+    assert left(db)["threads"] == []
+
+
+def test_no_more_than_the_limit_run_at_once(fake, db):
+    ids = many(db, codex.DELETE_WORKERS * 2 + 1)
+    guard = threading.Lock()
+    running, most = [0], [0]
+
+    def count_one():
+        with guard:
+            running[0] += 1
+            most[0] = max(most[0], running[0])
+        time.sleep(0.05)
+        with guard:
+            running[0] -= 1
+
+    fake.then = count_one
+    report = run_delete(*ids)
+    assert len(report["results"]) == len(ids)
+    assert most[0] <= codex.DELETE_WORKERS
+
+
+def test_results_keep_the_given_order_whichever_finishes_first(fake, db, monkeypatch):
+    single(db, ROOT)
+    single(db, OTHER)
+    other_finished = threading.Event()
+
+    def run(argv, **kwargs):
+        if argv[3] == ROOT:
+            assert other_finished.wait(10)
+        done = fake(argv, **kwargs)
+        if argv[3] == OTHER:
+            other_finished.set()
+        return done
+
+    monkeypatch.setattr(procs, "run", run)
+    seen = []
+    report = codex.delete(
+        [ROOT, OTHER], stop=StopSignal(), progress=lambda done, total: seen.append((done, total))
+    )
+    assert [r["id"] for r in report["results"]] == [ROOT, OTHER]
+    assert seen == [(1, 2), (2, 2)]
+
+
+def test_sigterm_finishes_the_running_ids_and_starts_no_more(fake, db, monkeypatch):
+    monkeypatch.setattr(codex, "DELETE_WORKERS", 2)
+    first, second, *rest = ids = many(db, 4)
+    # Both calls are running when the signal comes; neither is cut short.
+    fake.then = threading.Barrier(
+        2, action=lambda: os.kill(os.getpid(), signal.SIGTERM), timeout=10
+    ).wait
+
+    with StopSignal() as stop:
+        report = codex.delete(ids, stop=stop, progress=lambda done, total: None)
+
+    assert report["stopped"] is True
+    assert [(r["id"], r["outcome"], r.get("reason")) for r in report["results"]] == [
+        (first, "deleted", None),
+        (second, "deleted", None),
+        *((tid, "skipped", "stopped") for tid in rest),
+    ]
+    assert sorted(fake.deleted_ids()) == sorted([first, second])
+    assert set(left(db)["threads"]) == set(rest)
+
+
+def test_an_unexpected_error_still_writes_the_log(fake, db):
+    single(db, ROOT)
+
+    def boom():
+        raise RuntimeError("boom")
+
+    fake.then = boom
+    with pytest.raises(RuntimeError):
+        run_delete(ROOT)
+    [log_path] = roots.log_dir().iterdir()
+    assert json.loads(log_path.read_text())["result"]["results"] == []
+
+
+def test_sigterm_while_codex_runs_finishes_that_id(fake, db, monkeypatch):
+    monkeypatch.setattr(codex, "DELETE_WORKERS", 1)
     rollouts = family(db)
     single(db, OTHER)
     single(db, THIRD)
