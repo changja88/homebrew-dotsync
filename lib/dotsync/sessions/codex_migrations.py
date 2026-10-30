@@ -1,10 +1,10 @@
-"""The migrations of Codex 0.164.0 (tag `rust-v0.164.0`): for each of its
+"""The migrations of Codex 0.165.0 (tag `rust-v0.165.0`): for each of its
 three migrators, version → the SHA-384 of the migration file's bytes, in
 upper-case hex. sqlx stores that digest in each database's
 `_sqlx_migrations.checksum`. Generated once from the copies in
-`tests/fixtures/codex-0.164.0/`; a test recomputes it from them."""
+`tests/fixtures/codex-0.165.0/`; a test recomputes it from them."""
 
-VERSION = "0.164.0"
+VERSION = "0.165.0"
 
 KNOWN: dict[str, dict[int, str]] = {
     "state": {
@@ -69,6 +69,7 @@ KNOWN: dict[str, dict[int, str]] = {
         59: "4297DFFB4FB308F0C665E4D126B7D2A96DB7BE48EB2E13C7E1245A5D95C4DF4E66D64E79AD00FEC26B0910436703090C",
         60: "D7F0CF0A69FA71999AFFCD48CC74B2D0A2637B8BBDA73BD5819547CCDB15543A75D239311FA07FCF699BE9BCBC1874A8",
         61: "4A8337048BB958A21FD5272C1BD670605C84D4063534270D3E41CDC5C5A2E865F0FE6AE3C336DED873877EE2EA10F2E0",
+        62: "DAB8B7C8390F9C764D5D64733DA39FA0B79AD4F67931FA15263C1129143C1717BC252930B1A5668AD119C50844950304",
     },
     "queue": {
         1: "CEA113C9A74FE4ED12CF41951B57C66CA375A14A722AC28D41BC06A096ED3E1D777AC0710C5377E8CD75F645C99CA03C",

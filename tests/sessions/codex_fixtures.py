@@ -1,5 +1,5 @@
 """Builds fake Codex homes for the Codex session tests: the three SQLite
-databases from Codex 0.164.0's own migrations, and rollout files."""
+databases from Codex 0.165.0's own migrations, and rollout files."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
 
-FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "codex-0.164.0"
+FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "codex-0.165.0"
 DATABASES = {
     "state_5.sqlite": "state",
     "queue_1.sqlite": "queue",
@@ -61,12 +61,14 @@ def add_thread(
     source: str = "cli",
     updated_at_ms: int = 1_700_000_000_000,
     rollout_path: str = "",
+    attached_parent: str | None = None,
 ) -> None:
     con = sqlite3.connect(db_dir / "state_5.sqlite")
     con.execute(
         "INSERT INTO threads (id, rollout_path, created_at, updated_at, source, model_provider,"
-        " cwd, title, sandbox_policy, approval_mode, archived, name, updated_at_ms)"
-        " VALUES (?, ?, 0, ?, ?, 'p', ?, ?, 's', 'a', ?, ?, ?)",
+        " cwd, title, sandbox_policy, approval_mode, archived, name, updated_at_ms,"
+        " attached_thread_parent_id)"
+        " VALUES (?, ?, 0, ?, ?, 'p', ?, ?, 's', 'a', ?, ?, ?, ?)",
         (
             thread_id,
             rollout_path,
@@ -77,6 +79,7 @@ def add_thread(
             int(archived),
             name,
             updated_at_ms,
+            attached_parent,
         ),
     )
     con.commit()
