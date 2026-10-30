@@ -75,10 +75,11 @@ public enum SystemMeters {
         return value
     }
 
-    /// Two reads of the GPU. One read right after another (measured: within
-    /// tens of ms) says 0, and the widget's last reading may have just ended.
-    public static func larger(_ first: Int?, _ second: Int?) -> Int? {
-        [first, second].compactMap { $0 }.max()
+    /// The mean of a run of GPU reads; a read that failed does not count as 0.
+    public static func average(_ reads: [Int?]) -> Int? {
+        let values = reads.compactMap { $0 }
+        guard !values.isEmpty else { return nil }
+        return Int((Double(values.reduce(0, +)) / Double(values.count)).rounded())
     }
 
     private static func percent(_ part: UInt64, of whole: UInt64) -> Int? {

@@ -5,13 +5,16 @@ import IOKit
 /// Reads the machine. Nothing here needs more than the widget's sandbox, and
 /// one read of all three takes well under a millisecond.
 public enum SystemReader {
-    /// CPU use is the difference between two reads this far apart.
-    public static let cpuWindow: Duration = .milliseconds(500)
+    /// How long one reading lasts. CPU and GPU jump from one moment to the next:
+    /// against five seconds' mean, 0.5 s was off by 6 points on average for the
+    /// CPU, 2 s by 2.7, and a single GPU read by 13 where eight in 2 s were by 4
+    /// (measured under load, 2026-10-30).
+    public static let window: Duration = .seconds(2)
+    private static let gpuReads = 8
 
     /// One press of ↻ reloads every "맥 상태" on screen, one after another, and
     /// CPU and GPU move by tens of percent within seconds: they get one reading
-    /// so that they agree. Close behind another, a read of the GPU would also
-    /// say 0.
+    /// so that they agree.
     public static func read() async -> SystemStats {
         await shared.value()
     }
@@ -20,12 +23,15 @@ public enum SystemReader {
 
     private static func measure() async -> SystemStats {
         let coresBefore = coreTicks()
-        let gpuBefore = gpuPercent()
-        try? await Task.sleep(for: cpuWindow)
+        var gpu: [Int?] = []
+        for _ in 0..<gpuReads {
+            gpu.append(gpuPercent())
+            try? await Task.sleep(for: window / gpuReads)
+        }
         let cores = coreTicks()
         return SystemStats(
             cpu: coresBefore.flatMap { before in cores.flatMap { SystemMeters.cpuPercent(from: before, to: $0) } },
-            gpu: SystemMeters.larger(gpuBefore, gpuPercent()),
+            gpu: SystemMeters.average(gpu),
             ram: ramPercent())
     }
 

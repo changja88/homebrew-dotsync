@@ -58,12 +58,11 @@ private func core(user: UInt32 = 0, system: UInt32 = 0, idle: UInt32 = 0, nice: 
     #expect(SystemMeters.gpuPercent(in: ["Device Utilization %": -1]) == nil)
 }
 
-@Test func twoGPUReadsKeepTheLargerBecauseAReadRightAfterAnotherSaysZero() {
-    #expect(SystemMeters.larger(0, 33) == 33)
-    #expect(SystemMeters.larger(33, 0) == 33)
-    #expect(SystemMeters.larger(nil, 20) == 20)
-    #expect(SystemMeters.larger(20, nil) == 20)
-    #expect(SystemMeters.larger(nil, nil) == nil)
+@Test func gpuReadsAreAveragedLeavingOutTheFailedOnes() {
+    #expect(SystemMeters.average([10, 25]) == 18)
+    #expect(SystemMeters.average([0, 84, nil, 0]) == 28)
+    #expect(SystemMeters.average([nil, nil]) == nil)
+    #expect(SystemMeters.average([]) == nil)
 }
 
 @Test func readingThisMachineGivesThreePercents() async {
