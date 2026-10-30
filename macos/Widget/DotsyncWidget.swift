@@ -61,6 +61,7 @@ struct DotsyncWidgets: WidgetBundle {
         AccountsWidget()
         InUseWidget()
         AccountListWidget()
+        SystemStatsWidget()
     }
 }
 

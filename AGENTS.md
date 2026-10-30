@@ -92,13 +92,15 @@ app with one JSON object; without `--json` it says so and exits 2.
   and its error codes are the contract the dotsync app depends on — change
   them together with the app. Accounts are separate from syncing: no sync
   folder, no push/pull.
-- `macos/` is dotsync.app (SwiftUI) and its three widgets ("Claude 계정",
-  "지금 사용 중", "Claude 계정 목록"). `macos/DotsyncKit` holds
+- `macos/` is dotsync.app (SwiftUI) and its four widgets ("Claude 계정",
+  "지금 사용 중", "Claude 계정 목록", "맥 상태"). `macos/DotsyncKit` holds
   everything testable (`swift test --package-path macos/DotsyncKit`): models
   of the `--json` output, usage.json in the app group `GR53VV7ZD2.dotsync`,
   the merge rule, texts, the dotsync runner. The app runs
-  `dotsync account … --json -- <args>`; the widget only reads usage.json and
-  its buttons are `AudioPlaybackIntent`s so they run in the app process.
+  `dotsync account … --json -- <args>`; the Claude widgets only read usage.json
+  and their buttons are `AudioPlaybackIntent`s so they run in the app process. "맥 상태" needs
+  neither: the widget reads CPU, GPU and RAM itself (`SystemReader`) when its
+  timeline is reloaded, and its ↻ is a plain `AppIntent`.
   Beside usage.json, claude-hud's `display.externalUsageWritePath` may write
   live-usage.json: the status line's `rate_limits` after each Claude answer.
   When their weekly reset matches the active account's, the widget and the

@@ -37,8 +37,8 @@ cask "dotsync-app" do
   caveats <<~EOS
     dotsync.app is signed but not notarized. The first time you open it, and
     after each update: System Settings → Privacy & Security → "Open Anyway".
-    Then add a widget from Edit Widgets: "Claude 계정", "지금 사용 중" or
-    "Claude 계정 목록". Turning on 자동 교체 adds a background item; allow
+    Then add a widget from Edit Widgets: "Claude 계정", "지금 사용 중",
+    "Claude 계정 목록" or "맥 상태". Turning on 자동 교체 adds a background item; allow
     dotsync if macOS asks (System Settings → General → Login Items).
   EOS
 end

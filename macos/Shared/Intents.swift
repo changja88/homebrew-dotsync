@@ -73,6 +73,17 @@ struct ShowLiveIntent: AppIntent {
     }
 }
 
+/// ↻ on "맥 상태": the widget reads the machine itself when its timeline is
+/// reloaded, which the system does once perform() returns. Like ShowLiveIntent
+/// it runs in the widget extension and wakes nothing else.
+struct ReadSystemStatsIntent: AppIntent {
+    static let title: LocalizedStringResource = "맥 상태 다시 읽기"
+
+    func perform() async throws -> some IntentResult {
+        .result()
+    }
+}
+
 @MainActor
 enum IntentWork {
     /// Intents still at work; the app keeps running until this is 0.

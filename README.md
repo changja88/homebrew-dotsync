@@ -114,6 +114,7 @@ Widgets — add one from Edit Widgets, on the desktop or in Notification Center:
 - "Claude 계정" (large or extra large): the account in use and the other accounts together.
 - "지금 사용 중" (medium): the account in use alone.
 - "Claude 계정 목록" (large): the other accounts, up to seven (with more, six and "외 n개"). Under "지금 사용 중" in Notification Center, the two read as one tall widget.
+- "맥 상태" (small or medium): this Mac's CPU, GPU and RAM use, read when the widget redraws (about every 15 minutes, or ↻ at once). It runs nothing in between.
 
 On a widget, ↻ refreshes (about 10 s, no tokens) and "사용" switches Claude. The app runs only while you use it; with auto switch on, only a short check runs in the background (below). An install or update stops the widget that was running, so the new one takes over. If a widget still stays blank, open the app once: it reloads the widgets.
 
@@ -276,6 +277,7 @@ skills_ignore = ["my-tool"]
 - "Claude 계정"(큰 크기, 아주 큰 크기): 지금 쓰는 계정과 나머지 계정을 함께 본다.
 - "지금 사용 중"(중간 크기): 지금 쓰는 계정만 본다.
 - "Claude 계정 목록"(큰 크기): 나머지 계정을 일곱 개까지 본다(더 많으면 여섯 개와 "외 n개"). 알림 센터에서 "지금 사용 중" 아래에 두면 둘이 긴 위젯 하나처럼 보인다.
+- "맥 상태"(작은 크기, 중간 크기): 이 맥의 CPU, GPU, RAM 사용률을 본다. 위젯을 다시 그릴 때(약 15분마다, ↻ 는 바로) 읽고, 그 사이에는 아무것도 돌지 않는다.
 
 위젯에서 ↻ 는 새로고침(약 10초, 토큰 안 씀), "사용"은 계정을 바꾼다. 앱은 쓸 때만 실행된다. 자동 교체를 켜면 짧은 검사만 뒤에서 돈다(아래). 설치하거나 업데이트하면 실행 중이던 위젯을 끄고 새 위젯이 대신 뜬다. 그래도 위젯이 비어 있으면 앱을 한 번 연다. 앱이 위젯을 다시 그린다.
 

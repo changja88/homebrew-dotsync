@@ -141,21 +141,24 @@ struct WidgetHeader: View {
             if loading {
                 // 조회 중 already: another press would only wait on this one,
                 // so there is nothing to press.
-                refreshIcon.opacity(0.4)
+                RefreshIcon().opacity(0.4)
             } else if UsageMerge.liveMatchesActive(file, live) {
                 // Claude's numbers are on disk already: drawn again at once,
                 // without waking the app to read every account.
-                Button(intent: ShowLiveIntent()) { refreshIcon }
+                Button(intent: ShowLiveIntent()) { RefreshIcon() }
                     .buttonStyle(.plain)
             } else {
-                Button(intent: RefreshIntent()) { refreshIcon }
+                Button(intent: RefreshIntent()) { RefreshIcon() }
                     .buttonStyle(.plain)
             }
         }
         .frame(height: 22)
     }
+}
 
-    private var refreshIcon: some View {
+/// ↻ in a widget's header.
+struct RefreshIcon: View {
+    var body: some View {
         Image(systemName: "arrow.clockwise")
             .font(.system(size: 10, weight: .bold))
             .frame(width: 24, height: 24)
