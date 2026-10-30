@@ -14,6 +14,7 @@ import stat
 import time
 from collections import deque
 from collections.abc import Callable, Iterable
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -265,6 +266,9 @@ def _iso(epoch: float) -> str:
 # Delete
 
 CODEX_TIMEOUT = 180  # seconds, for `codex delete`
+# `codex delete`s at once. Each rereads every rollout (4 s at 5,600 of them) and
+# Codex has no command for several threads, so one by one takes hours.
+DELETE_WORKERS = 4
 CACHE_DIR = "tui-thread-reference-capabilities"
 PARTS = ("rollout", "state", "history")  # what a result's `remaining` can name
 HISTORY_TABLES = (
@@ -415,32 +419,41 @@ def delete(
 ) -> dict:
     """Delete each root thread, with its spawn subtree, through Codex's own
     `codex delete`, then the reference-cache files Codex leaves behind. When
-    Codex does not finish, the result says what is left. The report, plus the
-    paths involved, goes to the result log under `log_command`."""
+    Codex does not finish, the result says what is left. A stop lets the
+    deletes already running finish and starts no more. The results follow the
+    order of `ids`. The report, plus the paths involved, goes to the result
+    log under `log_command`."""
     for tid in ids:
         safety.validate_id(tid)  # one bad id and nothing is touched
     ids = list(dict.fromkeys(ids))
     started_at = now_iso()
-    results: list[dict] = []
-    report = {"tool": "codex", "results": results, "stopped": False}
+    finished: dict[str, dict] = {}
+    report = {"tool": "codex", "results": [], "stopped": False}
     paths: dict[str, dict] = {}
     with locks.tool_lock("codex", shared=False):
         try:
             batch = _gather()
-            for done, tid in enumerate(ids, start=1):
-                if stop.requested:
-                    report["stopped"] = True
-                    results.extend(
-                        _result(rest, "skipped", "stopped", len(batch.tree.get(rest, ())))
-                        for rest in ids[done - 1 :]
-                    )
-                    break
-                result, used = _delete_one(tid, batch)
-                results.append(result)
-                if used:
-                    paths[tid] = used
-                progress(done, len(ids))
+            waiting = deque(ids)
+            running: dict[Future, str] = {}
+            # Workers only delete; the stop, progress and results stay on this thread.
+            with ThreadPoolExecutor(DELETE_WORKERS) as pool:
+                while running or (waiting and not stop.requested):
+                    while waiting and len(running) < DELETE_WORKERS and not stop.requested:
+                        tid = waiting.popleft()
+                        running[pool.submit(_delete_one, tid, batch)] = tid
+                    done, _ = wait(running, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        tid = running.pop(future)
+                        finished[tid], used = future.result()
+                        if used:
+                            paths[tid] = used
+                        progress(len(finished), len(ids))
+            if waiting:
+                report["stopped"] = True
+                for rest in waiting:
+                    finished[rest] = _result(rest, "skipped", "stopped", len(batch.tree.get(rest, ())))
         finally:
+            report["results"] = [finished[tid] for tid in ids if tid in finished]
             log.write(log_command, "codex", started_at, {**report, "paths": paths})
     return report
 
