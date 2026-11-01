@@ -78,7 +78,7 @@ struct AccountListWidgetContent: View {
         let loading = entry.file.isRefreshing(at: entry.date)
         VStack(alignment: .leading, spacing: 7) {
             WidgetHeader(title: "다른 계정", file: entry.file, now: entry.date, loading: loading)
-            AccountRows(layout: layout, now: entry.date, loading: loading, nameWidth: 60, spacing: 5)
+            AccountRows(layout: layout, now: entry.date, loading: loading, nameWidth: 96, spacing: 5)
             MoreLink(hidden: layout.hidden)
         }
         .padding(14)
@@ -104,13 +104,13 @@ struct AccountsWidgetContent: View {
                         MoreLink(hidden: layout.hidden)
                     }
                     .frame(width: 236)
-                    AccountRows(layout: layout, now: entry.date, loading: loading, nameWidth: 84)
+                    AccountRows(layout: layout, now: entry.date, loading: loading, nameWidth: 120)
                 }
             } else {
                 VStack(alignment: .leading, spacing: 7) {
                     WidgetHeader(file: entry.file, now: entry.date, loading: loading)
                     InUseCard(layout: layout, now: entry.date, loading: loading, stacked: false, fills: false)
-                    AccountRows(layout: layout, now: entry.date, loading: loading, nameWidth: 60)
+                    AccountRows(layout: layout, now: entry.date, loading: loading, nameWidth: 96)
                     MoreLink(hidden: layout.hidden)
                 }
             }
@@ -249,7 +249,7 @@ struct InUseCard: View {
     let layout: WidgetLayout
     let now: Date
     let loading: Bool
-    /// Extra large: the two rings one above the other.
+    /// Extra large: the ring over its reset date.
     let stacked: Bool
     /// The card takes the height left, its rings centered in it.
     let fills: Bool
@@ -278,15 +278,15 @@ struct InUseCard: View {
                 }
             } else if stacked {
                 VStack(alignment: .leading, spacing: 22) {
-                    RingMetric(title: "5시간", window: five, now: now, ringSize: 72)
                     RingMetric(title: "주간", window: week, now: now, ringSize: 72)
+                    WeekResetLine(window: week)
                 }
                 .frame(maxHeight: fills ? .infinity : nil)
                 .redacted(reason: loading ? .placeholder : [])
             } else {
                 HStack(spacing: 12) {
-                    RingMetric(title: "5시간", window: five, now: now)
                     RingMetric(title: "주간", window: week, now: now)
+                    WeekResetDate(window: week)
                 }
                 .frame(maxHeight: fills ? .infinity : nil)
                 .redacted(reason: loading ? .placeholder : [])
@@ -303,8 +303,36 @@ struct InUseCard: View {
         return "로그인 안 됨"
     }
 
-    private var five: UsageWindow? { layout.current?.fiveHour ?? layout.unsavedSeat?.fiveHour }
     private var week: UsageWindow? { layout.current?.sevenDay ?? layout.unsavedSeat?.sevenDay }
+}
+
+/// "초기화" over the weekly reset's date, beside the in-use card's ring. Claude
+/// dropped the five-hour limit for the $200 plan (2026-10-30), which left the
+/// week alone in the card.
+struct WeekResetDate: View {
+    let window: UsageWindow?
+
+    var body: some View {
+        if window?.resetsAt != nil {
+            VStack(alignment: .trailing, spacing: 1) {
+                Text("초기화").font(.system(size: 10.5)).foregroundStyle(.secondary)
+                Text(UsageText.resetDate(of: window)).font(.system(size: 13, weight: .semibold)).monospacedDigit()
+            }
+            .fixedSize()
+        }
+    }
+}
+
+/// "11/6(금) 21:44 초기화" under the extra large widget's ring.
+struct WeekResetLine: View {
+    let window: UsageWindow?
+
+    var body: some View {
+        if window?.resetsAt != nil {
+            Text("\(Text(UsageText.resetDate(of: window)).bold()) 초기화")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+        }
+    }
 }
 
 /// The in-use card's metric: ring, then label, big percent and
@@ -333,7 +361,7 @@ struct RingMetric: View {
     }
 }
 
-/// One other account: a glass row, 36 to 50 pt — name, two metrics, "사용"
+/// One other account: a glass row, 36 to 50 pt — name, the week, "사용"
 /// (none while auto switch is on).
 struct AccountBox: View {
     let account: AccountUsage
@@ -356,11 +384,8 @@ struct AccountBox: View {
             .frame(width: nameWidth, alignment: .leading)
             switch WidgetLayout.kind(of: account, now: now) {
             case .metrics:
-                Group {
-                    RowMetric(window: account.fiveHour, now: now)
-                    RowMetric(window: account.sevenDay, now: now)
-                }
-                .redacted(reason: loading ? .placeholder : [])
+                RowMetric(window: account.sevenDay, now: now)
+                    .redacted(reason: loading ? .placeholder : [])
                 if showsUse { useButton }
             case .fullWeek(let reset):
                 Text("\(Text(UsageText.resetDate(reset)).bold()) 초기화")
@@ -393,8 +418,7 @@ struct AccountBox: View {
 }
 
 /// A row's metric: bar over the time left, and the percent beside both,
-/// centered on them. On the large widget the column is about 90 pt: "94%"
-/// takes 29 and the gap 6, leaving 55 for "6일 23시간" (about 50 at 10 pt).
+/// centered on them.
 struct RowMetric: View {
     let window: UsageWindow?
     let now: Date

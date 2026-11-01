@@ -1,14 +1,17 @@
 import DotsyncKit
 import SwiftUI
 
-/// The window's columns (approved mockup "앱 A"): name, 5시간, 주간, actions.
+/// The window's columns (approved mockup "앱 A", the five-hour column replaced
+/// by the weekly reset in 2026-11): name, 주간, 초기화, actions.
 enum AccountColumns {
     static let name: CGFloat = 200
     static let actions: CGFloat = 132
+    static let reset: CGFloat = 130
     static let spacing: CGFloat = 20
 }
 
-/// The account in use, on top in a blue-tinted glass card with two rings.
+/// The account in use, on top in a blue-tinted glass card: the weekly ring and
+/// when the week resets.
 struct ActiveAccountCard: View {
     let account: AccountUsage
     let now: Date
@@ -34,8 +37,8 @@ struct ActiveAccountCard: View {
                     .font(.system(size: 13)).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             case .metrics:
-                RingMetricView(title: "5시간", window: account.fiveHour, now: now)
                 RingMetricView(title: "주간", window: account.sevenDay, now: now)
+                ResetDateBlock(window: account.sevenDay)
             }
             AccountActions(account: account, isActive: true, now: now, model: model, menuSize: 30)
                 .frame(maxHeight: .infinity, alignment: .top)
@@ -71,8 +74,9 @@ struct AccountRow: View {
                     .font(.system(size: 13)).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             case .metrics:
-                MetricView(window: account.fiveHour, now: now)
                 MetricView(window: account.sevenDay, now: now)
+                Text(UsageText.resetDate(of: account.sevenDay)).font(.system(size: 13)).monospacedDigit()
+                    .frame(width: AccountColumns.reset, alignment: .leading)
             }
             AccountActions(account: account, isActive: false, now: now, model: model)
                 .frame(width: AccountColumns.actions, alignment: .trailing)
@@ -137,6 +141,20 @@ struct AccountActions: View {
             .accessibilityLabel("\(account.label) 더 보기")
         }
         .disabled(model.isBusy)
+    }
+}
+
+/// "초기화" over the weekly reset's date, beside the card's ring.
+struct ResetDateBlock: View {
+    let window: UsageWindow?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("초기화").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+            Text(UsageText.resetDate(of: window))
+                .font(.system(size: 20, weight: .bold, design: .rounded)).monospacedDigit()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

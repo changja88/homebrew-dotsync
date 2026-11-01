@@ -99,7 +99,7 @@ A pull keeps the local marketplace/plugin tables and replaces the rest of `confi
 
 #### 4. Claude Code accounts and widgets
 
-The 사용량 menu keeps several claude.ai logins and switches the one Claude Code uses — the same effect as `/login`, without the browser each time. Running sessions follow the switch the way they follow a `/login`. It shows each account's 5-hour and weekly usage with reset times, and adds, logs in again, renames and removes accounts.
+The 사용량 menu keeps several claude.ai logins and switches the one Claude Code uses — the same effect as `/login`, without the browser each time. Running sessions follow the switch the way they follow a `/login`. It shows each account's weekly usage and when it resets (Claude's $200 plan has no 5-hour limit since 2026-10-30), and adds, logs in again, renames and removes accounts.
 
 - Claude Code saves each account itself: adding one runs `claude auth login` with `CLAUDE_CONFIG_DIR=~/.claude-accounts/<name>`, so the tokens stay in that folder's Keychain entry.
 - 사용 copies that login into Claude's default Keychain entry and the account details into `~/.claude.json`. It first hands the login in use back to its own account, because Claude refreshes tokens as it runs and a used refresh token stops working.
@@ -262,7 +262,7 @@ skills_ignore = ["my-tool"]
 
 #### 4. Claude Code 계정과 위젯
 
-사용량 메뉴는 claude.ai 로그인 여러 개를 저장해 두고 Claude Code 가 쓰는 계정을 바꾼다. `/login` 과 같은 효과지만 매번 브라우저를 거치지 않는다. 실행 중인 세션도 `/login` 때처럼 바뀐 계정을 따라간다. 계정별 5시간·주간 사용량과 초기화 시각을 보여주고, 계정 추가, 다시 로그인, 이름 바꾸기, 삭제를 한다.
+사용량 메뉴는 claude.ai 로그인 여러 개를 저장해 두고 Claude Code 가 쓰는 계정을 바꾼다. `/login` 과 같은 효과지만 매번 브라우저를 거치지 않는다. 실행 중인 세션도 `/login` 때처럼 바뀐 계정을 따라간다. 계정별 주간 사용량과 초기화 시각을 보여주고(Claude 의 $200 플랜은 2026-10-30 부터 5시간 제한이 없다), 계정 추가, 다시 로그인, 이름 바꾸기, 삭제를 한다.
 
 - 계정 저장은 Claude Code 가 직접 한다. 계정을 추가하면 `CLAUDE_CONFIG_DIR=~/.claude-accounts/<이름>` 으로 `claude auth login` 을 실행하므로 토큰은 그 폴더의 키체인 항목에 남는다.
 - 사용은 그 로그인을 Claude 의 기본 키체인 항목에, 계정 정보를 `~/.claude.json` 에 복사한다. 그 전에 지금 쓰던 로그인을 원래 계정으로 돌려놓는다. Claude 는 쓰는 동안 토큰을 갱신하고, 한 번 쓴 갱신 토큰은 다시 못 쓰기 때문이다.

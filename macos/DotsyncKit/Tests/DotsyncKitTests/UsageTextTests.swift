@@ -33,6 +33,13 @@ func after(days: Int = 0, hours: Int = 0, minutes: Int = 0, seconds: Int = 0) ->
     #expect(UsageText.resetDate(reset, timeZone: seoul) == "10/7(수) 09:00")
 }
 
+@Test func aWindowsResetDateIsADashWithoutOne() {
+    #expect(UsageText.resetDate(of: UsageWindow(percent: 57, resetsAt: after(days: 2, hours: 12)), timeZone: seoul)
+        == "10/7(수) 09:00")
+    #expect(UsageText.resetDate(of: UsageWindow(percent: 57, resetsAt: nil), timeZone: seoul) == "—")
+    #expect(UsageText.resetDate(of: nil, timeZone: seoul) == "—")
+}
+
 @Test func resetDateRoundsToTheNearestMinute() {
     // Claude reports resets like 02:59:59.85 UTC; people read that as 12:00 KST.
     let almostNoon = Date(timeIntervalSince1970: 1_791_082_799)  // 2026-10-04 02:59:59 UTC

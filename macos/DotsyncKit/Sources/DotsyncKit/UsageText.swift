@@ -31,6 +31,11 @@ public enum UsageText {
         return formatter.string(from: Date(timeIntervalSince1970: minute))
     }
 
+    /// When `window` resets, as `resetDate`; "—" when that is unknown.
+    public static func resetDate(of window: UsageWindow?, timeZone: TimeZone = .current) -> String {
+        window?.resetsAt.map { resetDate($0, timeZone: timeZone) } ?? "—"
+    }
+
     /// "방금", "3분 전", "2시간 전", "1일 전"; "갱신 전" before the first refresh.
     public static func ago(_ date: Date?, now: Date) -> String {
         guard let date else { return "갱신 전" }
