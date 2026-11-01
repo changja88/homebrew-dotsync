@@ -93,17 +93,19 @@ def test_login_again_for_the_account_in_use_also_puts_it_in_the_seat(fake_home, 
     cli = fake_accounts_cli
     folder = _saved(fake_home, cli, "alice", ALICE, "a1")
     _seat(fake_home, cli, ALICE, "a2")
-    cli.browser = {"oauthAccount": ALICE, "secret": "a3"}
+    cli.browser = {"oauthAccount": ALICE, "secret": "a3-secret"}
 
     accounts.login("alice")
 
-    assert cli.keychain[cli.service_for(folder)] == "a3"
-    assert cli.keychain[SEAT] == "a3"
+    assert cli.keychain[cli.service_for(folder)] == "a3-secret"
+    assert cli.keychain[SEAT] == "a3-secret"
     seat_doc = _doc(fake_home / ".claude.json")
     assert seat_doc["oauthAccount"] == ALICE
     assert seat_doc["numStartups"] == 3
     assert accounts.active_account() == "alice"
-    assert "a3" not in cli.argv_text()
+    # Not "a3" alone: a Keychain name ends in 8 hex digits of the folder's
+    # path, and a fresh tmp path's could hold it.
+    assert "a3-secret" not in cli.argv_text()
 
 
 def test_login_again_for_another_account_leaves_the_seat_alone(fake_home, fake_accounts_cli):
