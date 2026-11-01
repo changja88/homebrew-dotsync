@@ -33,6 +33,37 @@ func after(days: Int = 0, hours: Int = 0, minutes: Int = 0, seconds: Int = 0) ->
     #expect(UsageText.resetDate(reset, timeZone: seoul) == "10/7(수) 09:00")
 }
 
+@Test func aLoginCountsDownInDaysThenHours() {
+    #expect(UsageText.loginLeft(after(days: 16), now: now) == "16일 남음")
+    #expect(UsageText.loginLeft(after(days: 1, hours: 21), now: now) == "2일 남음")  // as Claude's own warning rounds
+    #expect(UsageText.loginLeft(after(days: 1), now: now) == "1일 남음")
+    #expect(UsageText.loginLeft(after(hours: 4, minutes: 10), now: now) == "5시간 남음")
+    #expect(UsageText.loginLeft(after(minutes: 5), now: now) == "1시간 남음")
+}
+
+@Test func aLoginPastItsDateIsExpiredAndNoDateIsADash() {
+    #expect(UsageText.loginLeft(now, now: now) == "만료됨")
+    #expect(UsageText.loginLeft(after(minutes: -5), now: now) == "만료됨")
+    #expect(UsageText.loginLeft(nil, now: now) == "—")
+    #expect(UsageText.loginExpired(after(minutes: -5), now: now))
+    #expect(UsageText.loginExpired(now, now: now))
+    #expect(!UsageText.loginExpired(after(minutes: 5), now: now))
+    #expect(!UsageText.loginExpired(nil, now: now))
+}
+
+@Test func aLoginCountsAsExpiringFromThreeDaysBefore() {
+    #expect(UsageText.loginExpiresSoon(after(days: 3), now: now))
+    #expect(!UsageText.loginExpiresSoon(after(days: 3, seconds: 1), now: now))
+    #expect(UsageText.loginExpiresSoon(after(hours: 5), now: now))
+    #expect(UsageText.loginExpiresSoon(after(minutes: -5), now: now))
+    #expect(!UsageText.loginExpiresSoon(nil, now: now))
+}
+
+@Test func aLoginsDateIsADashWithoutOne() {
+    #expect(UsageText.loginDate(after(days: 2, hours: 12), timeZone: seoul) == "10/7(수) 09:00")
+    #expect(UsageText.loginDate(nil, timeZone: seoul) == "—")
+}
+
 @Test func aWindowsResetDateIsADashWithoutOne() {
     #expect(UsageText.resetDate(of: UsageWindow(percent: 57, resetsAt: after(days: 2, hours: 12)), timeZone: seoul)
         == "10/7(수) 09:00")

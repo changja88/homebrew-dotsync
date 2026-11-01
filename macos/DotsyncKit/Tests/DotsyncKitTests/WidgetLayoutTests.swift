@@ -84,6 +84,43 @@ func file(_ accounts: [AccountUsage], active: String?) -> UsageFile {
     #expect(WidgetLayout.kind(of: full, now: now) == .metrics)
 }
 
+private func expiring(_ date: Date?) -> AccountUsage {
+    var usage = account("a")
+    usage.fiveHour = nil  // their resets would add entries of their own
+    usage.sevenDay = nil
+    usage.loginExpiresAt = date
+    return usage
+}
+
+@Test func theTimelineChangesWhereALoginsWarningDoes() {
+    // Three days before, each day after that, and the expiry: within the day ahead.
+    let starting = WidgetLayout.timelineDates(for: file([expiring(after(days: 3, hours: 5))], active: "a"), now: now)
+    #expect(starting == [now, after(hours: 5)])
+    let ending = WidgetLayout.timelineDates(for: file([expiring(after(hours: 20))], active: "a"), now: now)
+    #expect(ending == [now, after(hours: 20)])
+    let daily = WidgetLayout.timelineDates(for: file([expiring(after(days: 1, hours: 2))], active: "a"), now: now)
+    #expect(daily == [now, after(hours: 2)])
+}
+
+@Test func aLoginFarFromItsExpiryAddsNoEntry() {
+    #expect(WidgetLayout.timelineDates(for: file([expiring(after(days: 20))], active: "a"), now: now) == [now])
+    #expect(WidgetLayout.timelineDates(for: file([expiring(after(days: -1))], active: "a"), now: now) == [now])
+}
+
+@Test func theListWidgetReloadsWhenALoginsHoursChange() {
+    func next(_ date: Date?) -> Date {
+        WidgetLayout.nextReload(after: now, showsInUse: false, file: file([expiring(date)], active: "a"))
+    }
+    #expect(next(nil) == after(days: 1))
+    #expect(next(after(days: 20)) == after(days: 1))
+    #expect(next(after(hours: 5)) == after(hours: 1))  // "5시간 남음" counts down
+    #expect(next(after(hours: 5, minutes: 30)) == after(minutes: 30))  // "6시간" turns "5시간" then
+    #expect(next(after(days: 1, hours: 2)) == after(hours: 2))  // when hours begin
+    #expect(next(after(minutes: -5)) == after(days: 1))  // over: nothing counts anymore
+    #expect(WidgetLayout.nextReload(after: now, showsInUse: true, file: file([expiring(after(hours: 5))], active: "a"))
+        == after(minutes: 15))
+}
+
 @Test func theTimelineHasAnEntryOnlyWhereTheWidgetChanges() {
     var accounts = [account("a", week: after(days: 2)), account("b", week: after(hours: 30))]
     accounts[1].fiveHour = UsageWindow(percent: 50, resetsAt: after(hours: 4))

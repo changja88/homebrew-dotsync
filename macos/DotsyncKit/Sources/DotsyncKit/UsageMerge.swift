@@ -15,7 +15,10 @@ public enum UsageMerge {
                 merged.fiveHour = nil
                 merged.sevenDay = nil
                 merged.fetchedAt = nil
+                merged.loginExpiresAt = nil
             case .error:
+                // Read from the Keychain, not the probe; usually still fresh.
+                merged.loginExpiresAt = account.loginExpiresAt ?? before[account.name]?.loginExpiresAt
                 if let old = before[account.name], old.fetchedAt != nil {
                     merged.fiveHour = old.fiveHour
                     merged.sevenDay = old.sevenDay

@@ -60,20 +60,34 @@ public struct WidgetLayout: Equatable, Sendable {
     public static let liveReload: TimeInterval = 15 * 60
 
     /// When WidgetKit should ask for the next timeline. The other accounts
-    /// change only at their resets, which the timeline already has entries for.
-    public static func nextReload(after now: Date, showsInUse: Bool) -> Date {
-        now.addingTimeInterval(showsInUse ? liveReload : timelineSpan)
+    /// change only at their resets, which the timeline already has entries for,
+    /// and when the hours of a login's last day change ("5시간 남음"), which
+    /// would take too many entries.
+    public static func nextReload(after now: Date, showsInUse: Bool, file: UsageFile = .empty) -> Date {
+        if showsInUse { return now.addingTimeInterval(liveReload) }
+        var next = now.addingTimeInterval(timelineSpan)
+        for expiry in file.accounts.compactMap(\.loginExpiresAt) where expiry > now {
+            let left = expiry.timeIntervalSince(now)
+            let intoTheHour = left.truncatingRemainder(dividingBy: 3_600)
+            let change = left > 86_400 ? left - 86_400 : intoTheHour > 0 ? intoTheHour : 3_600
+            next = min(next, now.addingTimeInterval(change))
+        }
+        return next
     }
 
     /// When the widget looks different without new data: now, each reset in
-    /// the coming day (its countdown turns into 초기화됨) and the end of a 조회 중
-    /// mark an app left behind. Remaining times count down by themselves, so a
+    /// the coming day (its countdown turns into 초기화됨), a login's warning (from
+    /// three days before, a day at a time) and the end of a 조회 중 mark an app
+    /// left behind. Remaining times count down by themselves, so a
     /// handful of entries replaces one a minute — WidgetKit renders every
     /// entry on each reload, and sixty of them took seconds and got too big.
     public static func timelineDates(for file: UsageFile, now: Date) -> [Date] {
         let windows = file.accounts.flatMap { [$0.fiveHour, $0.sevenDay] }
             + [file.unsavedSeat?.fiveHour, file.unsavedSeat?.sevenDay]
         var changes = windows.compactMap { $0?.resetsAt }
+        for expiry in file.accounts.compactMap(\.loginExpiresAt) {
+            changes += [3, 2, 1, 0].map { expiry.addingTimeInterval(-86_400 * $0) }
+        }
         if file.isRefreshing(at: now), let start = file.refreshingSince {
             changes.append(start.addingTimeInterval(UsageFile.refreshLimit))
         }

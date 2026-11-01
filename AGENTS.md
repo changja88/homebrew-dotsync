@@ -108,6 +108,10 @@ app with one JSON object; without `--json` it says so and exits 2.
   same window (claude-hud's `updated_at` is when it wrote, so an idle session
   rewrites old numbers), or the later window (`UsageMerge.withLive`).
   usage.json itself keeps only what dotsync probed.
+  `account usage` also reports `login_expires_at` for each login, from
+  `refreshTokenExpiresAt` in its Keychain entry (the entry Claude uses for the
+  account in use): only that date leaves `accounts._login_expiry`, never a
+  token. The window always shows it; the widgets only from three days before.
   Auto switch (the 자동 교체 menu): DotsyncKit's `AutoSwitchRules` decides
   from live-usage.json (only numbers newer than usage.json's `fetched_at`)
   and picks the next account; `AutoSwitchService` is one wake-up (probe,

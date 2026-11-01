@@ -68,6 +68,34 @@ func account(_ name: String, weekUsed percent: Int, resets: Date?) -> AccountUsa
     #expect(merged.accounts[0].fetchedAt == now)
 }
 
+@Test func mergeTakesAFreshLoginExpiry() {
+    var previous = UsageFile.empty
+    var old = account("a", five: 1)
+    old.loginExpiresAt = after(days: 1)
+    previous.accounts = [old]
+    var fresh = account("a", five: 2)
+    fresh.loginExpiresAt = after(days: 30)
+    let merged = UsageMerge.merge(previous: previous, report: report([fresh], active: "a"))
+    #expect(merged.accounts[0].loginExpiresAt == after(days: 30))
+}
+
+@Test func aFailedProbeKeepsTheKnownLoginExpiryWhenTheKeychainGaveNone() {
+    var previous = UsageFile.empty
+    var old = account("a", five: 44, fetchedAt: after(minutes: -10))
+    old.loginExpiresAt = after(days: 2)
+    previous.accounts = [old]
+    let failed = account("a", .error)
+    #expect(UsageMerge.merge(previous: previous, report: report([failed], active: "a")).accounts[0].loginExpiresAt
+        == after(days: 2))
+}
+
+@Test func aLostLoginForgetsItsExpiry() {
+    var lost = account("a", .loginRequired)
+    lost.loginExpiresAt = after(minutes: -5)
+    let merged = UsageMerge.merge(previous: nil, report: report([lost], active: "a"))
+    #expect(merged.accounts[0].loginExpiresAt == nil)
+}
+
 @Test func mergeKeepsTheLastGoodValuesOfAFailedProbe() {
     let earlier = after(minutes: -10)
     var previous = UsageFile.empty

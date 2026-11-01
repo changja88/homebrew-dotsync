@@ -1,6 +1,7 @@
 import json
 import re
 import stat
+import subprocess
 import threading
 from pathlib import Path
 
@@ -464,8 +465,125 @@ def test_usage_probes_the_account_in_use_through_the_seat(fake_home, fake_accoun
         "name": "alice", "label": "alice", "email": "alice@example.com", "status": "ok",
         "five_hour": {"percent": 31, "resets_at": "2026-10-04T15:39:00Z"},
         "seven_day": {"percent": 15, "resets_at": "2026-10-09T05:59:00Z"},
+        "login_expires_at": None,
     }
     assert bob["seven_day"]["percent"] == 64
+
+
+def _login(expires, **others) -> str:
+    """A login as Claude keeps it in the Keychain."""
+    return json.dumps({"claudeAiOauth": {
+        "accessToken": "access-secret", "refreshToken": "refresh-secret",
+        "refreshTokenExpiresAt": expires, **others,
+    }})
+
+
+NOV_3 = 1793696400000  # 2026-11-03T09:00:00Z
+NOV_9 = 1794214800000  # 2026-11-09T09:00:00Z
+
+
+def test_usage_says_when_each_login_expires_from_where_it_lives(fake_home, fake_accounts_cli):
+    cli = fake_accounts_cli
+    _saved(fake_home, cli, "alice", ALICE, _login(NOV_9))  # a copy older than the seat's
+    _saved(fake_home, cli, "bob", BOB, _login(NOV_9))
+    _seat(fake_home, cli, ALICE, _login(NOV_3))
+    cli.reply_usage("seat", FIVE, WEEK)
+    cli.reply_usage("bob", FIVE, WEEK)
+
+    alice, bob = accounts.usage()["accounts"]
+
+    assert alice["login_expires_at"] == "2026-11-03T09:00:00Z"
+    assert bob["login_expires_at"] == "2026-11-09T09:00:00Z"
+
+
+def test_usage_reads_the_expiry_after_the_probes_which_may_refresh_the_login(fake_home, fake_accounts_cli, monkeypatch):
+    cli = fake_accounts_cli
+    folder = _saved(fake_home, cli, "bob", BOB, _login(NOV_3))
+    _seat(fake_home, cli, ALICE, "a2")
+
+    def refreshing_probe(_claude, _config, *, cwd):
+        cli.keychain[cli.service_for(folder)] = _login(NOV_9)
+        return {"status": "ok", "five_hour": None, "seven_day": None}
+
+    monkeypatch.setattr(accounts.claude_usage, "probe", refreshing_probe)
+
+    assert accounts.usage()["accounts"][0]["login_expires_at"] == "2026-11-09T09:00:00Z"
+
+
+def test_usage_gives_an_unsaved_login_its_expiry(fake_home, fake_accounts_cli):
+    cli = fake_accounts_cli
+    _seat(fake_home, cli, UNSAVED, _login(NOV_3))
+    cli.reply_usage("seat", FIVE, WEEK)
+
+    assert accounts.usage()["unsaved_seat"]["login_expires_at"] == "2026-11-03T09:00:00Z"
+
+
+@pytest.mark.parametrize("stored", [
+    "not json",
+    "[1, 2]",
+    json.dumps({"claudeAiOauth": None}),
+    json.dumps({"claudeAiOauth": {"refreshToken": "refresh-secret"}}),
+    _login("2026-11-03"),
+    _login(True),
+    _login(1e30),
+])
+def test_usage_says_nothing_about_a_login_without_a_readable_expiry(fake_home, fake_accounts_cli, stored):
+    cli = fake_accounts_cli
+    _saved(fake_home, cli, "bob", BOB, stored)
+    _seat(fake_home, cli, ALICE, "a2")
+    cli.reply_usage("seat", FIVE, WEEK)
+    cli.reply_usage("bob", FIVE, WEEK)
+
+    assert accounts.usage()["accounts"][0]["login_expires_at"] is None
+
+
+def test_usage_keeps_answering_when_the_keychain_cannot_be_read(fake_home, fake_accounts_cli, monkeypatch):
+    cli = fake_accounts_cli
+    _saved(fake_home, cli, "bob", BOB, _login(NOV_3))
+    _seat(fake_home, cli, ALICE, "a2")
+    cli.reply_usage("seat", FIVE, WEEK)
+    cli.reply_usage("bob", FIVE, WEEK)
+
+    def locked(service, **_):
+        raise AccountError(f"could not read the Keychain entry {service!r}")
+
+    monkeypatch.setattr(accounts, "_read_secret", locked)
+
+    bob = accounts.usage()["accounts"][0]
+    assert bob["status"] == "ok" and bob["login_expires_at"] is None
+
+
+def test_usage_does_not_wait_for_a_keychain_prompt_nobody_answers(fake_home, fake_accounts_cli, monkeypatch):
+    cli = fake_accounts_cli
+    _saved(fake_home, cli, "bob", BOB, _login(NOV_3))
+    _seat(fake_home, cli, ALICE, "a2")
+    cli.reply_usage("seat", FIVE, WEEK)
+    cli.reply_usage("bob", FIVE, WEEK)
+    real = accounts._security
+
+    def prompting(*args, stdin=None, timeout=None):
+        if "-w" not in args:
+            return real(*args, stdin=stdin)
+        assert timeout == accounts.LOGIN_READ_SECONDS
+        raise subprocess.TimeoutExpired(args, timeout)
+
+    monkeypatch.setattr(accounts, "_security", prompting)
+
+    bob = accounts.usage()["accounts"][0]
+    assert bob["status"] == "ok" and bob["login_expires_at"] is None
+
+
+def test_usage_reports_the_date_and_nothing_else_of_a_login(fake_home, fake_accounts_cli):
+    cli = fake_accounts_cli
+    _saved(fake_home, cli, "bob", BOB, _login(NOV_3))
+    _seat(fake_home, cli, ALICE, _login(NOV_9))
+    cli.reply_usage("seat", FIVE, WEEK)
+    cli.reply_usage("bob", FIVE, WEEK)
+
+    text = json.dumps(accounts.usage())
+
+    assert "secret" not in text
+    assert "secret" not in cli.argv_text()
 
 
 def test_usage_does_not_probe_a_logged_out_account(fake_home, fake_accounts_cli):
@@ -480,7 +598,7 @@ def test_usage_does_not_probe_a_logged_out_account(fake_home, fake_accounts_cli)
     assert cli.probes == ["seat"]
     assert report["accounts"][1] == {
         "name": "bob", "label": "bob", "email": None, "status": "login_required",
-        "five_hour": None, "seven_day": None,
+        "five_hour": None, "seven_day": None, "login_expires_at": None,
     }
 
 
@@ -526,7 +644,7 @@ def test_usage_with_a_corrupt_claude_json_still_answers(fake_home, fake_accounts
 
     assert report["accounts"] == [{
         "name": "bob", "label": "bob", "email": None, "status": "login_required",
-        "five_hour": None, "seven_day": None,
+        "five_hour": None, "seven_day": None, "login_expires_at": None,
     }]
 
 

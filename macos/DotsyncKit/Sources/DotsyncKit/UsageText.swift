@@ -36,6 +36,33 @@ public enum UsageText {
         window?.resetsAt.map { resetDate($0, timeZone: timeZone) } ?? "—"
     }
 
+    /// From when a widget warns about a login, as Claude Code itself does.
+    public static let loginWarningSpan: TimeInterval = 3 * 86_400
+
+    public static func loginExpiresSoon(_ date: Date?, now: Date) -> Bool {
+        guard let date else { return false }
+        return date.timeIntervalSince(now) <= loginWarningSpan
+    }
+
+    public static func loginExpired(_ date: Date?, now: Date) -> Bool {
+        guard let date else { return false }
+        return date <= now
+    }
+
+    /// "16일 남음", rounded up as Claude Code's warning does; "5시간 남음" in the
+    /// last day; "만료됨" after it; "—" when unknown.
+    public static func loginLeft(_ date: Date?, now: Date) -> String {
+        guard let date else { return "—" }
+        let left = date.timeIntervalSince(now)
+        if left <= 0 { return "만료됨" }
+        if left < 86_400 { return "\(Int((left / 3_600).rounded(.up)))시간 남음" }
+        return "\(Int((left / 86_400).rounded(.up)))일 남음"
+    }
+
+    public static func loginDate(_ date: Date?, timeZone: TimeZone = .current) -> String {
+        date.map { resetDate($0, timeZone: timeZone) } ?? "—"
+    }
+
     /// "방금", "3분 전", "2시간 전", "1일 전"; "갱신 전" before the first refresh.
     public static func ago(_ date: Date?, now: Date) -> String {
         guard let date else { return "갱신 전" }

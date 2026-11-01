@@ -28,6 +28,8 @@ public struct AccountUsage: Codable, Equatable, Sendable, Identifiable {
     public var fiveHour: UsageWindow?
     public var sevenDay: UsageWindow?
     public var fetchedAt: Date?
+    /// When the login must be renewed in the browser.
+    public var loginExpiresAt: Date? = nil
 
     public var id: String { name }
 }
@@ -39,6 +41,7 @@ public struct UnsavedSeat: Codable, Equatable, Sendable {
     public var error: String?
     public var fiveHour: UsageWindow?
     public var sevenDay: UsageWindow?
+    public var loginExpiresAt: Date? = nil
 }
 
 /// `dotsync account usage --json`.

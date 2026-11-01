@@ -42,6 +42,8 @@ _RESERVED_NAMES = {"default"}
 _ITEM_NOT_FOUND = 44
 # How long a command waits for another account command to finish.
 LOCK_WAIT_SECONDS = 60.0
+# The Keychain may ask the person; a date on a screen is not worth waiting for.
+LOGIN_READ_SECONDS = 5.0
 # The dotsync app's display name for an account lives in its folder.
 _LABEL_FILE = ".dotsync-account.json"
 LABEL_MAX = 40
@@ -202,7 +204,8 @@ def account_info(name: str) -> dict:
 def usage() -> dict:
     """Every saved account's usage, probed at the same time. The account in
     use is probed through Claude's default folder: its own folder holds an
-    older copy of the login until the next switch hands the latest one back."""
+    older copy of the login until the next switch hands the latest one back.
+    Each login's expiry is read after the probes, which may refresh it."""
     claude = _claude_binary()
     names = saved_accounts()
     active = active_account()
@@ -225,13 +228,20 @@ def usage() -> dict:
     return {
         "fetched_at": _utc_now(),
         "active": active,
-        "unsaved_seat": None if seat_job is None else {"email": unsaved_email, **seat_job.result()},
+        "unsaved_seat": None if seat_job is None else {
+            "email": unsaved_email,
+            **seat_job.result(),
+            "login_expires_at": _login_expiry(DEFAULT_SERVICE),
+        },
         "accounts": [
             {
                 "name": name,
                 "label": label(name),
                 "email": account_email(name),
                 **(jobs[name].result() if name in jobs else logged_out),
+                "login_expires_at": _login_expiry(
+                    DEFAULT_SERVICE if name == active else service_for(account_dir(name))
+                ),
             }
             for name in names
         ],
@@ -240,6 +250,21 @@ def usage() -> dict:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _login_expiry(service: str) -> str | None:
+    """When the login in `service` must be renewed in the browser, or None when
+    that can't be read. Only this date leaves here, never the tokens beside it.
+    Claude warns from the same field, three days before."""
+    try:
+        secret = _read_secret(service, timeout=LOGIN_READ_SECONDS)
+        expires = json.loads(secret)["claudeAiOauth"]["refreshTokenExpiresAt"]
+        if isinstance(expires, bool):
+            return None
+        moment = datetime.fromtimestamp(expires / 1000, timezone.utc)
+    except (AccountError, subprocess.TimeoutExpired, ValueError, TypeError, KeyError, OverflowError, OSError):
+        return None
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def login(name: str) -> str:
@@ -402,8 +427,8 @@ def _set_oauth_account(config: Path, account: dict | None) -> None:
         config.chmod(0o600)
 
 
-def _security(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(["security", *args], input=stdin, capture_output=True, text=True)
+def _security(*args: str, stdin: str | None = None, timeout: float | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(["security", *args], input=stdin, capture_output=True, text=True, timeout=timeout)
 
 
 def _has_secret(service: str) -> bool:
@@ -413,8 +438,8 @@ def _has_secret(service: str) -> bool:
     return result.returncode == 0
 
 
-def _read_secret(service: str) -> str | None:
-    result = _security("find-generic-password", "-s", service, "-a", getpass.getuser(), "-w")
+def _read_secret(service: str, *, timeout: float | None = None) -> str | None:
+    result = _security("find-generic-password", "-s", service, "-a", getpass.getuser(), "-w", timeout=timeout)
     if result.returncode == _ITEM_NOT_FOUND:
         return None
     if result.returncode != 0:

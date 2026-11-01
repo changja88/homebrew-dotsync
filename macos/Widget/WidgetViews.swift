@@ -257,7 +257,13 @@ struct InUseCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text("지금 사용 중").font(.system(size: 11)).foregroundStyle(.secondary)
+                if let account = layout.current, UsageText.loginExpiresSoon(account.loginExpiresAt, now: now) {
+                    Link(destination: AppLink.relogin(account.name).url) {
+                        LoginExpiryLabel(date: account.loginExpiresAt, now: now, size: 11)
+                    }
+                } else {
+                    Text("지금 사용 중").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
                 Spacer(minLength: 8)
                 HStack(spacing: 5) {
                     if layout.current != nil || layout.unsavedSeat != nil {
@@ -304,6 +310,24 @@ struct InUseCard: View {
     }
 
     private var week: UsageWindow? { layout.current?.sevenDay ?? layout.unsavedSeat?.sevenDay }
+}
+
+/// "로그인 2일 남음": a widget says this only from three days before, in orange,
+/// red once the date has passed. A press opens the account's 다시 로그인.
+struct LoginExpiryLabel: View {
+    let date: Date?
+    let now: Date
+    let size: CGFloat
+    var icon = true
+
+    var body: some View {
+        HStack(spacing: 3) {
+            if icon { Image(systemName: "exclamationmark.triangle.fill").font(.system(size: size - 1)) }
+            Text("로그인 \(UsageText.loginLeft(date, now: now))")
+                .font(.system(size: size, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.8)
+        }
+        .foregroundStyle(UsageText.loginExpired(date, now: now) ? Color.red : Color.orange)
+    }
 }
 
 /// "초기화" over the weekly reset's date, beside the in-use card's ring. Claude
@@ -376,6 +400,11 @@ struct AccountBox: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(account.label).font(.system(size: 13, weight: .semibold))
                     .lineLimit(1).minimumScaleFactor(0.75)
+                if UsageText.loginExpiresSoon(account.loginExpiresAt, now: now) {
+                    Link(destination: AppLink.relogin(account.name).url) {
+                        LoginExpiryLabel(date: account.loginExpiresAt, now: now, size: 9, icon: false)
+                    }
+                }
                 if account.status == .error, let at = account.fetchedAt {
                     Text("\(agoText(at)) 값").font(.system(size: 8.5)).foregroundStyle(.secondary)
                         .lineLimit(1).minimumScaleFactor(0.8)

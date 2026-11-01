@@ -36,7 +36,7 @@ struct UsageProvider: TimelineProvider {
             UsageEntry(date: $0, file: file, live: live, autoSwitchOn: autoSwitchOn)
         }
         completion(Timeline(entries: entries,
-                            policy: .after(WidgetLayout.nextReload(after: now, showsInUse: showsInUse))))
+                            policy: .after(WidgetLayout.nextReload(after: now, showsInUse: showsInUse, file: file))))
     }
 
     /// auto-switch.json beside usage.json; the app redraws the widget when it

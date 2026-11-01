@@ -2,11 +2,12 @@ import DotsyncKit
 import SwiftUI
 
 /// The window's columns (approved mockup "앱 A", the five-hour column replaced
-/// by the weekly reset in 2026-11): name, 주간, 초기화, actions.
+/// by the weekly reset in 2026-11): name, 주간, 초기화, 로그인, actions.
 enum AccountColumns {
     static let name: CGFloat = 200
     static let actions: CGFloat = 132
     static let reset: CGFloat = 130
+    static let login: CGFloat = 108
     static let spacing: CGFloat = 20
 }
 
@@ -39,6 +40,9 @@ struct ActiveAccountCard: View {
             case .metrics:
                 RingMetricView(title: "주간", window: account.sevenDay, now: now)
                 ResetDateBlock(window: account.sevenDay)
+            }
+            if account.status != .loginRequired {
+                LoginExpiryBlock(date: account.loginExpiresAt, now: now)
             }
             AccountActions(account: account, isActive: true, now: now, model: model, menuSize: 30)
                 .frame(maxHeight: .infinity, alignment: .top)
@@ -78,6 +82,12 @@ struct AccountRow: View {
                 Text(UsageText.resetDate(of: account.sevenDay)).font(.system(size: 13)).monospacedDigit()
                     .frame(width: AccountColumns.reset, alignment: .leading)
             }
+            Group {
+                if account.status != .loginRequired {
+                    LoginExpiryColumn(date: account.loginExpiresAt, now: now)
+                }
+            }
+            .frame(width: AccountColumns.login, alignment: .leading)
             AccountActions(account: account, isActive: false, now: now, model: model)
                 .frame(width: AccountColumns.actions, alignment: .trailing)
         }
@@ -154,7 +164,46 @@ struct ResetDateBlock: View {
             Text(UsageText.resetDate(of: window))
                 .font(.system(size: 20, weight: .bold, design: .rounded)).monospacedDigit()
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize()
+    }
+}
+
+/// A login's time left: orange from three days before, red once it has passed.
+private func loginColor(_ date: Date?, now: Date) -> Color {
+    if UsageText.loginExpired(date, now: now) { return .red }
+    return UsageText.loginExpiresSoon(date, now: now) ? .orange : .primary
+}
+
+/// "로그인" over the time left and its date, beside the card's ring.
+struct LoginExpiryBlock: View {
+    let date: Date?
+    let now: Date
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("로그인").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+            Text(UsageText.loginLeft(date, now: now))
+                .font(.system(size: 20, weight: .bold, design: .rounded)).monospacedDigit()
+                .foregroundStyle(loginColor(date, now: now))
+            Text(UsageText.loginDate(date)).font(.system(size: 12)).foregroundStyle(.secondary)
+        }
+        .fixedSize()
+    }
+}
+
+/// A row's 로그인 column: the time left over its date.
+struct LoginExpiryColumn: View {
+    let date: Date?
+    let now: Date
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(UsageText.loginLeft(date, now: now))
+                .font(.system(size: 13, weight: UsageText.loginExpiresSoon(date, now: now) ? .bold : .regular))
+                .monospacedDigit()
+                .foregroundStyle(loginColor(date, now: now))
+            Text(UsageText.loginDate(date)).font(.system(size: 11)).foregroundStyle(.secondary)
+        }
     }
 }
 

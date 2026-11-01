@@ -99,7 +99,7 @@ A pull keeps the local marketplace/plugin tables and replaces the rest of `confi
 
 #### 4. Claude Code accounts and widgets
 
-The 사용량 menu keeps several claude.ai logins and switches the one Claude Code uses — the same effect as `/login`, without the browser each time. Running sessions follow the switch the way they follow a `/login`. It shows each account's weekly usage and when it resets (Claude's $200 plan has no 5-hour limit since 2026-10-30), and adds, logs in again, renames and removes accounts.
+The 사용량 menu keeps several claude.ai logins and switches the one Claude Code uses — the same effect as `/login`, without the browser each time. Running sessions follow the switch the way they follow a `/login`. It shows each account's weekly usage and when it resets (Claude's $200 plan has no 5-hour limit since 2026-10-30), how long its login has left, and adds, logs in again, renames and removes accounts.
 
 - Claude Code saves each account itself: adding one runs `claude auth login` with `CLAUDE_CONFIG_DIR=~/.claude-accounts/<name>`, so the tokens stay in that folder's Keychain entry.
 - 사용 copies that login into Claude's default Keychain entry and the account details into `~/.claude.json`. It first hands the login in use back to its own account, because Claude refreshes tokens as it runs and a used refresh token stops working.
@@ -114,6 +114,7 @@ Widgets — add one from Edit Widgets, on the desktop or in Notification Center:
 - "Claude 계정" (large or extra large): the account in use and the other accounts together.
 - "지금 사용 중" (medium): the account in use alone.
 - "Claude 계정 목록" (large): the other accounts, up to seven (with more, six and "외 n개"). Under "지금 사용 중" in Notification Center, the two read as one tall widget.
+- From three days before an account's login expires, its card or row says so ("로그인 2일 남음"); a press opens its 다시 로그인. A login can only be renewed in the browser.
 - "맥 상태" (small or medium): this Mac's CPU, GPU and RAM use, read when the widget redraws (about every 15 minutes, or ↻ at once). It runs nothing in between.
 
 On a widget, ↻ refreshes (about 10 s, no tokens) and "사용" switches Claude. The app runs only while you use it; with auto switch on, only a short check runs in the background (below). An install or update stops the widget that was running, so the new one takes over. If a widget still stays blank, open the app once: it reloads the widgets.
@@ -262,7 +263,7 @@ skills_ignore = ["my-tool"]
 
 #### 4. Claude Code 계정과 위젯
 
-사용량 메뉴는 claude.ai 로그인 여러 개를 저장해 두고 Claude Code 가 쓰는 계정을 바꾼다. `/login` 과 같은 효과지만 매번 브라우저를 거치지 않는다. 실행 중인 세션도 `/login` 때처럼 바뀐 계정을 따라간다. 계정별 주간 사용량과 초기화 시각을 보여주고(Claude 의 $200 플랜은 2026-10-30 부터 5시간 제한이 없다), 계정 추가, 다시 로그인, 이름 바꾸기, 삭제를 한다.
+사용량 메뉴는 claude.ai 로그인 여러 개를 저장해 두고 Claude Code 가 쓰는 계정을 바꾼다. `/login` 과 같은 효과지만 매번 브라우저를 거치지 않는다. 실행 중인 세션도 `/login` 때처럼 바뀐 계정을 따라간다. 계정별 주간 사용량과 초기화 시각(Claude 의 $200 플랜은 2026-10-30 부터 5시간 제한이 없다), 로그인 남은 기간을 보여주고, 계정 추가, 다시 로그인, 이름 바꾸기, 삭제를 한다.
 
 - 계정 저장은 Claude Code 가 직접 한다. 계정을 추가하면 `CLAUDE_CONFIG_DIR=~/.claude-accounts/<이름>` 으로 `claude auth login` 을 실행하므로 토큰은 그 폴더의 키체인 항목에 남는다.
 - 사용은 그 로그인을 Claude 의 기본 키체인 항목에, 계정 정보를 `~/.claude.json` 에 복사한다. 그 전에 지금 쓰던 로그인을 원래 계정으로 돌려놓는다. Claude 는 쓰는 동안 토큰을 갱신하고, 한 번 쓴 갱신 토큰은 다시 못 쓰기 때문이다.
@@ -277,6 +278,7 @@ skills_ignore = ["my-tool"]
 - "Claude 계정"(큰 크기, 아주 큰 크기): 지금 쓰는 계정과 나머지 계정을 함께 본다.
 - "지금 사용 중"(중간 크기): 지금 쓰는 계정만 본다.
 - "Claude 계정 목록"(큰 크기): 나머지 계정을 일곱 개까지 본다(더 많으면 여섯 개와 "외 n개"). 알림 센터에서 "지금 사용 중" 아래에 두면 둘이 긴 위젯 하나처럼 보인다.
+- 계정의 로그인이 3일 안에 끝나면 그 카드나 줄에 나온다("로그인 2일 남음"). 누르면 그 계정의 다시 로그인으로 간다. 로그인은 브라우저로만 갱신할 수 있다.
 - "맥 상태"(작은 크기, 중간 크기): 이 맥의 CPU, GPU, RAM 사용률을 본다. 위젯을 다시 그릴 때(약 15분마다, ↻ 는 바로) 읽고, 그 사이에는 아무것도 돌지 않는다.
 
 위젯에서 ↻ 는 새로고침(약 10초, 토큰 안 씀), "사용"은 계정을 바꾼다. 앱은 쓸 때만 실행된다. 자동 교체를 켜면 짧은 검사만 뒤에서 돈다(아래). 설치하거나 업데이트하면 실행 중이던 위젯을 끄고 새 위젯이 대신 뜬다. 그래도 위젯이 비어 있으면 앱을 한 번 연다. 앱이 위젯을 다시 그린다.

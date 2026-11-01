@@ -93,7 +93,7 @@ struct AccountsWindow: View {
     }
 }
 
-/// "다른 계정 6 · 주간 · 초기화" over the list, on the rows' columns.
+/// "다른 계정 6 · 주간 · 초기화 · 로그인" over the list, on the rows' columns.
 struct ColumnHeader: View {
     let title: String
 
@@ -102,6 +102,7 @@ struct ColumnHeader: View {
             Text(title).frame(width: AccountColumns.name, alignment: .leading)
             Text("주간").frame(maxWidth: .infinity, alignment: .leading)
             Text("초기화").frame(width: AccountColumns.reset, alignment: .leading)
+            Text("로그인").frame(width: AccountColumns.login, alignment: .leading)
             Color.clear.frame(width: AccountColumns.actions, height: 1)
         }
         .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(.secondary)
@@ -126,6 +127,7 @@ struct UnsavedSeatCard: View {
             .frame(width: 190, alignment: .leading)
             RingMetricView(title: "주간", window: seat.sevenDay, now: now)
             ResetDateBlock(window: seat.sevenDay)
+            LoginExpiryBlock(date: seat.loginExpiresAt, now: now)
             Button("저장하기…") { model.sheet = .add(thenUse: nil) }
                 .buttonStyle(PillButtonStyle(prominent: true))
                 .disabled(model.isBusy)

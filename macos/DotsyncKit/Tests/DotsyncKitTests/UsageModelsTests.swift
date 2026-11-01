@@ -27,6 +27,23 @@ let sampleReport = """
     #expect(report.accounts[2].fiveHour?.resetsAt == nil)
 }
 
+@Test func decodesWhenALoginExpiresAndDoesWithoutIt() throws {
+    let json = """
+    {"fetched_at": "2026-10-04T12:00:00Z", "active": null,
+     "unsaved_seat": {"email": "x@example.com", "status": "ok", "five_hour": null, "seven_day": null,
+                      "login_expires_at": "2026-10-04T12:00:00Z"},
+     "accounts": [
+      {"name": "a", "label": "a", "email": null, "status": "ok", "five_hour": null, "seven_day": null,
+       "login_expires_at": "2026-10-04T12:00:00Z"},
+      {"name": "b", "label": "b", "email": null, "status": "ok", "five_hour": null, "seven_day": null}]}
+    """
+    let report = try UsageJSON.decoder().decode(UsageReport.self, from: Data(json.utf8))
+    let noon = Date(timeIntervalSince1970: 1_791_115_200)
+    #expect(report.accounts[0].loginExpiresAt == noon)
+    #expect(report.accounts[1].loginExpiresAt == nil)
+    #expect(report.unsavedSeat?.loginExpiresAt == noon)
+}
+
 @Test func decodesAnUnsavedSeat() throws {
     let json = """
     {"fetched_at": "2026-10-04T12:00:00Z", "active": null, "accounts": [],
