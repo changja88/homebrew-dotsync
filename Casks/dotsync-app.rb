@@ -1,6 +1,6 @@
 cask "dotsync-app" do
-  version "0.8.2"
-  sha256 "cd45056811b7e8eacc6f22258d7460e9366887d12b8d9e21cd06947f494cb141"
+  version "0.8.3"
+  sha256 "6bf81bec3928160f8672f588e425d83ac0d4634780bf01c11cea0f05c9506544"
 
   url "https://github.com/changja88/homebrew-dotsync/releases/download/v#{version}/dotsync-app-#{version}.zip"
   name "dotsync"
