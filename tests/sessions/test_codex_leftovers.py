@@ -145,10 +145,27 @@ def test_the_sidebar_counts_deleted_sessions_the_app_still_holds(home):
     assert (row["label"], row["count"], row["checked"]) == ("ChatGPT 앱 목록에 남은 지운 세션", 2, True)
 
 
-def test_rows_the_app_marked_missing_get_another_full_check(home):
+def test_rows_the_app_marked_missing_go_at_once(home):
+    """The app already counts them gone: dotsync deletes them before the
+    vacuum, so their bytes go too. A row it still shows waits for its check."""
+    path = catalog("codex.db", [(LOCAL_HOST, GONE, 1), (LOCAL_HOST, GONE2, 0), (LOCAL_HOST, KEPT, 1), (CHAT_HOST, GONE3, 1)])
+    result = run("app_list")["app_list"]
+    assert (result["outcome"], result["count"]) == ("done", 2)
+    assert catalog_rows(path) == [(CHAT_HOST, GONE3, 1), (LOCAL_HOST, KEPT, 1), (LOCAL_HOST, GONE2, 0)]
+    assert synced(path)[LOCAL_HOST] is None
+
+
+def test_only_marked_rows_go_with_no_check_to_ask_for(home):
     path = catalog("codex.db", [(LOCAL_HOST, GONE, 1)])
     assert run("app_list")["app_list"]["count"] == 1
-    assert synced(path)[LOCAL_HOST] is None
+    assert (catalog_rows(path), synced(path)[LOCAL_HOST]) == ([], DONE_AT)
+
+
+def test_marked_rows_go_even_while_a_check_is_due(home):
+    path = catalog("codex.db", [(LOCAL_HOST, GONE, 1), (LOCAL_HOST, GONE2, 0)], synced={LOCAL_HOST: None, CHAT_HOST: DONE_AT})
+    assert found().catalog_ids == {GONE}
+    run("app_list")
+    assert catalog_rows(path) == [(LOCAL_HOST, GONE2, 0)]
 
 
 def test_the_cleanup_has_the_app_check_its_whole_list_again(home):

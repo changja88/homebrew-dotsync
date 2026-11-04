@@ -77,14 +77,16 @@ app with one JSON object; without `--json` it says so and exits 2.
     after the others.
   - The cleanup's vacuum rewrites the history and state databases whole
     (`VACUUM`), which keeps their auto_vacuum mode, and the queue and log
-    databases and the app's catalogs when they are there as plain files:
-    a deleted row's bytes stay in a database's free pages until then.
+    databases and the app's catalogs when they are there as plain files,
+    each of them even with nothing free: a deleted row's bytes stay in free
+    pages, or inside a page still in use, until it is rewritten.
   - The cleanup also removes what deleted sessions leave outside Codex's
     session stores, by the same keep-set: the ChatGPT app's sidebar catalog
     (`sqlite/codex.db`: only the local host's `last_full_reconciled_at` is
     cleared, so the app checks its whole list when it next starts and drops
-    what is gone itself, the rows it marked missing too; the old
-    `codex-dev.db`, which no production app opens, loses the rows), its
+    what is gone itself; rows the app already marked missing are deleted
+    by dotsync, before the vacuum, and so are the old `codex-dev.db`'s,
+    which no production app opens), its
     state file and `.bak` (entries keyed by a deleted UUIDv7 thread id,
     the read state's and the project migration's lists of this machine,
     `["local","<id>"]` keys; ChatGPT conversations, other hosts' threads

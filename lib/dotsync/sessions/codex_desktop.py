@@ -63,13 +63,29 @@ def known_catalog(con: sqlite3.Connection) -> bool:
 
 
 def listed_threads(con: sqlite3.Connection, *, active: bool) -> set[str]:
-    """The local threads the catalog still holds, the rows the app marked
-    missing too: those stay in the file until the app's next full check. In
-    the active catalog, none once that check is due: the app will drop what
-    is gone by itself."""
-    if active and _check_due(con):
-        return set()
-    rows = con.execute(f"SELECT thread_id FROM local_thread_catalog WHERE host_id IN ({_LOCAL_HOSTS})")
+    """The local threads the catalog still holds. In the old catalog, every
+    row. In the active one, the rows the app marked missing (it counts them
+    gone; `marked_threads`), and those it still shows unless a full check is
+    due: the app then drops what is gone by itself."""
+    if not active:
+        rows = con.execute(f"SELECT thread_id FROM local_thread_catalog WHERE host_id IN ({_LOCAL_HOSTS})")
+        return {thread_id for (thread_id,) in rows}
+    listed = marked_threads(con)
+    if not _check_due(con):
+        rows = con.execute(
+            f"SELECT thread_id FROM local_thread_catalog WHERE missing_candidate = 0 AND host_id IN ({_LOCAL_HOSTS})"
+        )
+        listed |= {thread_id for (thread_id,) in rows}
+    return listed
+
+
+def marked_threads(con: sqlite3.Connection) -> set[str]:
+    """The local rows the app marked missing: hidden, and dropped at its next
+    full check, which may come after the cleanup's vacuum and so leave their
+    bytes in free pages."""
+    rows = con.execute(
+        f"SELECT thread_id FROM local_thread_catalog WHERE missing_candidate != 0 AND host_id IN ({_LOCAL_HOSTS})"
+    )
     return {thread_id for (thread_id,) in rows}
 
 

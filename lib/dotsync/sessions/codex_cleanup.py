@@ -785,12 +785,13 @@ def _delete_queue(ids: list[str]) -> tuple[dict, list[str]]:
 
 
 def _clear_catalogs(ids: set[str]) -> tuple[dict, list[str]]:
-    """In each catalog that lists one of `ids`, in one transaction: the
-    active one gets a full check requested, so the app drops what is gone
-    when it next starts (rows it marks itself, as it does after its own
-    migrations); the old one, which no app here opens, loses their rows. A
-    catalog that became a link or another shape is left alone. The count is
-    the ids of the catalogs that changed, kept when a later one fails."""
+    """In each catalog that lists one of `ids`, in one transaction: rows the
+    app marked missing, and every row of the old catalog, which no app here
+    opens, are deleted; for a row the active one still shows, a full check
+    is requested, so the app drops what is gone when it next starts (as it
+    does after its own migrations). A catalog that became a link or another
+    shape is left alone. The count is the ids of the catalogs that changed,
+    kept when a later one fails."""
     changed: set[str] = set()
     if not ids or not _catalog_folder():
         return _item("app_list", "done", 0), []
@@ -804,10 +805,11 @@ def _clear_catalogs(ids: set[str]) -> tuple[dict, list[str]]:
                     continue
                 with _transaction(con):
                     listed = codex_desktop.listed_threads(con, active=active) & ids
-                    if listed and active:
+                    marked = codex_desktop.marked_threads(con) & listed if active else listed
+                    if marked:
+                        codex_desktop.delete_threads(con, marked)
+                    if listed - marked:
                         codex_desktop.request_full_check(con)
-                    elif listed:
-                        codex_desktop.delete_threads(con, listed)
                 changed |= listed
     except (codex_keepset.Refusal, sqlite3.Error, OSError) as e:
         return _item("app_list", "failed", len(changed), message=_one_line(e)), sorted(changed)
@@ -917,8 +919,9 @@ def reclaim(
     checkpoint could not finish, or a database stayed locked) or `error` (any
     other sqlite or OS error, with a `message`). Nothing else uses the
     databases then, so the rewrite contends with no writer; it keeps their
-    auto_vacuum mode. A database with nothing free is not rewritten.
-    Sizes are the databases plus their `-wal`. `progress(freed, total)` runs
+    auto_vacuum mode. A database with nothing free is rewritten too: a
+    deleted row's bytes can stay inside a page still in use. Sizes are the
+    databases plus their `-wal`. `progress(freed, total)` runs
     after each database, in pages."""
     before = sum(codex.db_bytes(p) for p in paths)
     why = "freelist_empty"
@@ -930,8 +933,6 @@ def reclaim(
             free = [con.execute("PRAGMA freelist_count").fetchall()[0][0] for con in cons]
             freed = 0
             for con, pages in zip(cons, free):
-                if pages == 0:
-                    continue
                 if detect()["blockers"]:
                     why = "blocker"
                     break

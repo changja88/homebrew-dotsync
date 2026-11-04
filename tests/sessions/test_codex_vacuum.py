@@ -94,11 +94,20 @@ def test_bytes_are_the_databases_and_their_wal_summed(two):
     assert (result["bytes_before"], result["bytes_after"]) == (before, sum(weight(p) for p in two))
 
 
-def test_a_database_with_nothing_free_is_not_rewritten(tmp_path, statements):
+def test_a_database_with_nothing_free_is_rewritten_too(tmp_path, statements):
+    """A deleted row's bytes can stay inside a page that is still in use, not
+    on the freelist: only a rewrite takes them out."""
     db = tmp_path / "h.sqlite"
-    fresh_db(db, rows=0)
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, body TEXT)")
+    con.executemany("INSERT INTO t (body) VALUES (?)", [("kept",), ("deleted-secret",), ("kept",)])
+    con.execute("DELETE FROM t WHERE body = 'deleted-secret'")
+    con.commit()
+    con.close()
+    assert pragma(db, "freelist_count") == 0 and b"deleted-secret" in db.read_bytes()
     assert reclaim([db])["stopped_because"] == "freelist_empty"
-    assert "VACUUM" not in statements
+    assert "VACUUM" in statements
+    assert b"deleted-secret" not in db.read_bytes()
 
 
 def test_only_the_allowed_statements_run(two, statements):
