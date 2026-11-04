@@ -33,8 +33,9 @@ GONE3 = "ffffffff-ffff-4fff-8fff-ffffffffffff"
 BASE = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"  # kept only by FORK's history_base
 FORK = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
 SECRET = "secret-history-text-xyz"
-ALL = ["history_rows", "history_lines", "session_index", "queue"]
+ALL = ["history_rows", "history_lines", "session_index", "queue"]  # Codex's own stores
 ORDER = [*ALL, "cache_files"]
+EVERY = [*codex_cleanup.ITEMS, "cache_files"]  # no --items
 BLOCKER = {"pid": 9, "kind": "terminal_codex", "name": "codex", "elapsed": 1}
 
 
@@ -890,6 +891,11 @@ def test_a_full_run_cleans_every_store_and_reports_in_order(db):
             ("history_lines", "입력 기록에서 지운 세션의 줄", {"lines": 0}),
             ("session_index", "이름 목록에서 지운 세션", {}),
             ("queue", "큐 기록", {}),
+            ("app_list", "ChatGPT 앱 목록에 남은 지운 세션", {}),
+            ("app_state", "ChatGPT 앱 상태에 남은 지운 세션", {}),
+            ("logs", "로그에 남은 지운 세션", {"lines": 0}),
+            ("shell_snapshots", "지운 세션의 셸 스냅숏", {}),
+            ("images", "지운 세션의 생성 이미지", {"bytes": 0}),
         ]
     ]
     assert keyed(db / "thread_history_1.sqlite", "thread_turns", BASE) != []  # kept by history_base
@@ -994,7 +1000,7 @@ def test_yes_json_is_one_object_with_progress_on_stderr(db, capsys):
     out, err = capsys.readouterr()
     assert out.count("\n") == 1
     report = json.loads(out)
-    assert [r["id"] for r in report["items"]] == ORDER
+    assert [r["id"] for r in report["items"]] == EVERY
     assert err.splitlines() == [
         "dotsync-progress 1/2 read",
         "dotsync-progress 2/2 read",

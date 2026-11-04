@@ -54,8 +54,23 @@ import Testing
 }
 
 @Test func keptRowsAreFixedCopy() {
-    #expect(SessionText.cleanupKept.map(\.name) == ["데스크톱 앱 상태", "첨부 파일", "생성 이미지", "로그"])
-    #expect(SessionText.cleanupKept[2].reason == "다른 세션이 쓸 수 있어요")
+    #expect(SessionText.cleanupKept.map(\.name) == ["첨부 파일", "로그인·설정·스킬·플러그인"])
+    #expect(SessionText.cleanupKept.map(\.reason) == ["어느 세션 것인지 알 수 없어요", "세션 데이터가 아니에요"])
+}
+
+/// The report names an item as the dry-run did (the CLI's own labels).
+@Test func everyItemHasItsReportLabel() {
+    #expect(SessionText.cleanupItemLabels == [
+        "history_rows": "대화 저장소에 남은 내용",
+        "history_lines": "입력 기록에서 지운 세션의 줄",
+        "session_index": "이름 목록에서 지운 세션",
+        "queue": "큐 기록",
+        "app_list": "ChatGPT 앱 목록에 남은 지운 세션",
+        "app_state": "ChatGPT 앱 상태에 남은 지운 세션",
+        "logs": "로그에 남은 지운 세션",
+        "shell_snapshots": "지운 세션의 셸 스냅숏",
+        "images": "지운 세션의 생성 이미지",
+    ])
 }
 
 @Test func progressLineNamesThePhase() {

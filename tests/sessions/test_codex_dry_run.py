@@ -78,6 +78,11 @@ def test_counts_each_store(home):
         "history_lines",
         "session_index",
         "queue",
+        "app_list",
+        "app_state",
+        "logs",
+        "shell_snapshots",
+        "images",
     ]
     found = items(payload)
     assert found["history_rows"]["count"] == 2
@@ -85,7 +90,7 @@ def test_counts_each_store(home):
     assert (found["history_lines"]["count"], found["history_lines"]["lines"]) == (1, 3)
     assert found["session_index"]["count"] == 1
     assert found["queue"]["count"] == 4  # two items and their two revisions
-    assert all(i["checked"] for i in payload["items"])
+    assert all(found[i]["checked"] for i in ("history_rows", "history_lines", "session_index", "queue"))
     assert payload["vacuum_available"] is True
     assert payload["history_db_bytes"] > 0
     assert codex_cleanup.orphans(codex_keepset.keep_set()).cache_ids == {GONE}
@@ -93,7 +98,7 @@ def test_counts_each_store(home):
 
 def test_empty_stores_give_unchecked_items(home):
     payload = codex_cleanup.dry_run_payload()
-    assert [(i["count"], i["checked"]) for i in payload["items"]] == [(0, False)] * 4
+    assert [(i["count"], i["checked"]) for i in payload["items"]] == [(0, False)] * 9
 
 
 def test_history_line_matches_session_id_exactly(home):
@@ -132,7 +137,7 @@ def test_kept_ids_are_not_orphans(home):
     add_queue(home, BASE)
     payload = codex_cleanup.dry_run_payload()
     assert payload["refusal"] is None
-    assert [i["count"] for i in payload["items"]] == [0, 0, 0, 0]
+    assert [i["count"] for i in payload["items"]] == [0] * 9
 
 
 def test_ids_that_are_not_canonical_are_ignored(home):
@@ -148,7 +153,10 @@ def test_ids_that_are_not_canonical_are_ignored(home):
     (cache / GONE2).mkdir()
     (cache / BASE).symlink_to(cache / UPPER)
     found = codex_cleanup.orphans(codex_keepset.keep_set())
-    assert found == codex_cleanup.Orphans(set(), {}, set(), 0, set(), set())
+    assert found == codex_cleanup.Orphans(
+        set(), {}, set(), 0, set(), set(),
+        catalog_ids=set(), state_ids=set(), log_rows={}, snapshot_names=[], image_bytes={},
+    )
 
 
 def test_refusal_empties_items(home):

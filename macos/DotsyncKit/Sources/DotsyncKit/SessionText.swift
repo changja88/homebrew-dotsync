@@ -161,9 +161,9 @@ public enum SessionText {
                 ConfirmRow(label: "Codex가 지움", pills: own, kind: .removes, note: nil),
                 ConfirmRow(label: "dotsync가 이어서", pills: ["참조 캐시 파일"], kind: .removes, note: nil),
                 ConfirmRow(label: "남는 것", pills: [
-                    "입력 기록", "첨부 파일", "데스크톱 앱 상태", "생성 이미지 — 다른 세션이 쓸 수 있어요",
+                    "ChatGPT 앱 목록·상태", "생성 이미지", "셸 스냅숏", "입력 기록", "첨부 파일",
                 ], kind: .keeps,
-                    note: "입력 기록은 Codex를 끈 뒤 \"남은 데이터 정리\"에서 지워요. 첨부 파일은 어느 세션 것인지 알 수 없어서 두어요."),
+                    note: "첨부 파일 말고는 Codex를 끈 뒤 \"남은 데이터 정리\"에서 지워요. 첨부 파일은 어느 세션 것인지 알 수 없어서 두어요."),
             ]
         }
     }

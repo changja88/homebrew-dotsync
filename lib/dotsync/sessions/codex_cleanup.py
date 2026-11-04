@@ -1,9 +1,11 @@
 """The Codex cleanup: the orphans it finds and the run that cleans.
 
 `orphans` and `dry_run_payload` are read-only: what the stores hold for ids
-outside the keep-set. The run (`run_cleanup`) is the one place dotsync writes
-inside Codex's own databases and history files. It runs only while nothing
-uses ~/.codex (`codex_blockers`), after the support check and the keep-set
+outside the keep-set, Codex's own and the leftovers around them (the ChatGPT
+app's files, logs, shell snapshots, generated images). The run
+(`run_cleanup`) is the one place dotsync writes inside Codex's own databases
+and history files. It runs only while nothing uses ~/.codex
+(`codex_blockers`), after the support check and the keep-set
 (`codex_keepset`), under Codex's own coordination lock, and deletes only
 what `orphans` reports."""
 
@@ -27,7 +29,7 @@ from urllib.parse import quote
 
 from dotsync import locks
 from dotsync.cli_json import JSONCommandError, now_iso
-from dotsync.sessions import codex, codex_blockers, codex_keepset, log, roots, safety
+from dotsync.sessions import codex, codex_blockers, codex_desktop, codex_keepset, log, roots, safety
 from dotsync.sessions.stop import StopSignal
 
 
@@ -36,6 +38,9 @@ from dotsync.sessions.stop import StopSignal
 HISTORY_JSONL = "history.jsonl"
 SESSION_INDEX_JSONL = "session_index.jsonl"
 _QUEUE_TABLES = ("queued_items", "queued_thread_revisions")
+LOGS_DB = "logs_2.sqlite"
+SNAPSHOTS_DIR = "shell_snapshots"  # <thread id>.<stamp>.sh
+IMAGES_DIR = "generated_images"  # <thread id>/
 
 
 @dataclass
@@ -50,12 +55,18 @@ class Orphans:
     queue_rows: int
     queue_ids: set[str]
     cache_ids: set[str]  # names in `tui-thread-reference-capabilities/`
+    catalog_ids: set[str]  # the ChatGPT app's sidebar catalogs
+    state_ids: set[str]  # the ChatGPT app's state file and its copy
+    log_rows: dict[str, int]  # id -> its rows in the logs
+    snapshot_names: list[str]  # files in the shell snapshot folder
+    image_bytes: dict[str, int]  # id -> what its generated image folder weighs
 
 
 def orphans(keep: codex_keepset.KeepSet) -> Orphans:
     """Read-only. Raises Refusal(codex_db_failed) when a store cannot be read:
     that is never a count of 0. A missing `history.jsonl`,
-    `session_index.jsonl` or cache folder holds nothing."""
+    `session_index.jsonl`, folder or leftover file holds nothing, and a
+    ChatGPT app file of another shape is left alone (`codex_desktop`)."""
 
     def orphan(value: object) -> bool:
         return safety.is_valid_id(value) and value not in keep.ids
@@ -75,7 +86,184 @@ def orphans(keep: codex_keepset.KeepSet) -> Orphans:
     history_lines = dict(Counter(_jsonl_ids(HISTORY_JSONL, "session_id", orphan)))
     index_ids = set(_jsonl_ids(SESSION_INDEX_JSONL, "id", orphan))
     cache_ids = {name for name in _cache_names() if orphan(name)}
-    return Orphans(history_ids, history_lines, index_ids, queue_rows, queue_ids, cache_ids)
+    catalogs = _quietly(lambda: _read_catalogs(orphan), None)
+    return Orphans(
+        history_ids,
+        history_lines,
+        index_ids,
+        queue_rows,
+        queue_ids,
+        cache_ids,
+        catalog_ids=catalogs.listed if catalogs else set(),
+        state_ids=_quietly(lambda: _state_ids(catalogs, orphan), set()),
+        log_rows=_quietly(lambda: _log_rows(orphan), {}),
+        snapshot_names=_quietly(
+            lambda: sorted(name for name in _plain_files(SNAPSHOTS_DIR) if orphan(name.split(".", 1)[0])), []
+        ),
+        image_bytes=_quietly(
+            lambda: {name: _tree_bytes(roots.codex_home() / IMAGES_DIR / name)
+                     for name in _folders(IMAGES_DIR) if orphan(name)},
+            {},
+        ),
+    )
+
+
+def _quietly[T](find: Callable[[], T], nothing: T) -> T:
+    """A leftover store that cannot be read is left alone and the rest of the
+    cleanup goes on: unlike Codex's own stores, none of them decides what to
+    keep."""
+    try:
+        return find()
+    except (codex_keepset.Refusal, OSError, sqlite3.Error):
+        return nothing
+
+
+@dataclass
+class _Catalogs:
+    listed: set[str]  # the deleted sessions they still list
+    others: set[str]  # the threads of every host but this machine
+    complete: bool  # every catalog read, and no host runs Codex elsewhere
+
+
+def _read_catalogs(orphan: Callable[[object], bool]) -> _Catalogs:
+    """What the app's catalogs say. A catalog that is a link or in a linked
+    folder (it may be another profile's), cannot be read, or is of another
+    shape adds nothing, and makes the state impossible to judge
+    (`_state_ids`), as does no active catalog at all: nothing then says
+    whether the app knows remote hosts."""
+    listed: set[str] = set()
+    others: set[str] = set()
+    if not _catalog_folder():
+        return _Catalogs(listed, others, complete=False)
+    complete = True
+    active_read = False
+    for path in codex_desktop.catalog_paths():
+        if not _exists(path):
+            continue
+        if not _regular(path):
+            complete = False
+            continue
+        try:
+            with codex_keepset.reading(path) as con:
+                if not codex_desktop.known_catalog(con):
+                    complete = False
+                    continue
+                active = path.name == codex_desktop.ACTIVE_CATALOG
+                listed |= {i for i in codex_desktop.listed_threads(con, active=active) if orphan(i)}
+                others |= codex_desktop.other_hosts_threads(con)
+                complete = complete and not codex_desktop.has_remote_hosts(con)
+                active_read = active_read or active
+        except (codex_keepset.Refusal, sqlite3.Error):
+            complete = False
+    return _Catalogs(listed, others, complete and active_read)
+
+
+def _catalog_folder() -> bool:
+    """Whether the catalogs' folder is a folder, not a link (to another
+    profile's, it may be)."""
+    try:
+        return stat.S_ISDIR(os.lstat(codex_desktop.catalog_paths()[0].parent).st_mode)
+    except OSError:
+        return False
+
+
+def _state_ids(catalogs: _Catalogs | None, orphan: Callable[[object], bool]) -> set[str]:
+    """The deleted sessions the app's state files hold an entry for: a
+    UUIDv7 (`codex_desktop.is_thread_id`) outside the keep-set, every other
+    host's catalogued threads, and the threads a key of either file names
+    with another host. None unless the catalogs were all read and no host
+    runs Codex threads elsewhere, since those are UUIDv7 too."""
+    if catalogs is None or not catalogs.complete:
+        return set()
+    states = [s for s in (_read_state(roots.codex_home() / n) for n in codex_desktop.STATE_FILES) if s is not None]
+    others = catalogs.others.union(*(codex_desktop.remote_ids(s) for s in states))
+
+    def wanted(value: str) -> bool:
+        return codex_desktop.is_thread_id(value) and orphan(value) and value not in others
+
+    return set().union(*(codex_desktop.state_ids(s, wanted) for s in states))
+
+
+def _read_state(path: Path) -> dict | None:
+    """The state in one of the app's state files; None, so it is left alone,
+    when there is none, it is a link or cannot be read, or it is not the
+    app's shape."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                return None
+            raw = f.read()
+    except OSError:
+        return None
+    return codex_desktop.parse_state(raw)
+
+
+def _log_rows(orphan: Callable[[object], bool]) -> dict[str, int]:
+    """id -> its rows in the logs; none without the logs or a `thread_id`."""
+    path = roots.codex_sqlite_home() / LOGS_DB
+    if not _exists(path) or not _regular(path):
+        return {}
+    with codex_keepset.reading(path) as con:
+        if "thread_id" not in {row[1] for row in con.execute("PRAGMA table_info(logs)")}:
+            return {}
+        rows = con.execute("SELECT thread_id, COUNT(*) FROM logs WHERE thread_id IS NOT NULL GROUP BY thread_id")
+        return {thread_id: count for thread_id, count in rows if orphan(thread_id)}
+
+
+def _regular(path: Path) -> bool:
+    """A plain file: a link is not followed, whatever it points to."""
+    return stat.S_ISREG(os.lstat(path).st_mode)
+
+
+def _exists(path: Path) -> bool:
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return False
+    except OSError as e:
+        raise codex_keepset.Refusal("codex_db_failed", f"cannot read {path.name}: {e}") from e
+    return True
+
+
+def _plain_files(folder: str) -> list[str]:
+    return [entry.name for entry in _listing(folder) if _is(entry.is_file)]
+
+
+def _folders(folder: str) -> list[str]:
+    return [entry.name for entry in _listing(folder) if _is(entry.is_dir)]
+
+
+def _is(check: Callable[..., bool]) -> bool:
+    """A symlink is neither a file nor a folder here: what it points to is
+    not Codex's."""
+    try:
+        return check(follow_symlinks=False)
+    except OSError:
+        return False
+
+
+def _listing(folder: str) -> list[os.DirEntry]:
+    try:
+        with os.scandir(roots.codex_home() / folder) as listing:
+            return list(listing)
+    except FileNotFoundError:
+        return []
+    except OSError as e:
+        raise codex_keepset.Refusal("codex_db_failed", f"cannot read {folder}: {e}") from e
+
+
+def _tree_bytes(folder: Path) -> int:
+    """What the files in a folder weigh, symlinks not followed; a file that
+    cannot be read counts 0."""
+    total = 0
+    for top, _dirs, files in os.walk(folder):
+        for name in files:
+            with contextlib.suppress(OSError):
+                info = os.lstat(os.path.join(top, name))
+                if stat.S_ISREG(info.st_mode):
+                    total += info.st_size
+    return total
 
 
 def _jsonl_ids(filename: str, key: str, wanted: Callable[[str], bool]) -> Iterator[str]:
@@ -118,23 +306,10 @@ def _line_owner(line: bytes, key: str, wanted: Callable[[str], bool]) -> str | N
     return value if safety.is_valid_id(value) and wanted(value) else None
 
 
-def _cache_names() -> Iterator[str]:
+def _cache_names() -> list[str]:
     """Names of the plain files in the reference-cache folder. A symlink, a
     folder or anything else in it is ignored."""
-    folder = roots.codex_home() / codex.CACHE_DIR
-    try:
-        with os.scandir(folder) as listing:
-            entries = list(listing)
-    except FileNotFoundError:
-        return
-    except OSError as e:
-        raise codex_keepset.Refusal("codex_db_failed", f"cannot read {codex.CACHE_DIR}: {e}") from e
-    for entry in entries:
-        try:
-            if entry.is_file(follow_symlinks=False):
-                yield entry.name
-        except OSError:
-            continue
+    return _plain_files(codex.CACHE_DIR)
 
 
 # (done, total, phase): `read` the rollout files of the keep-set walk,
@@ -205,6 +380,11 @@ def _items(found: Orphans) -> list[dict]:
         ),
         ("session_index", "이름 목록에서 지운 세션", len(found.index_ids), {}),
         ("queue", "큐 기록", found.queue_rows, {}),
+        ("app_list", "ChatGPT 앱 목록에 남은 지운 세션", len(found.catalog_ids), {}),
+        ("app_state", "ChatGPT 앱 상태에 남은 지운 세션", len(found.state_ids), {}),
+        ("logs", "로그에 남은 지운 세션", len(found.log_rows), {"lines": sum(found.log_rows.values())}),
+        ("shell_snapshots", "지운 세션의 셸 스냅숏", len(found.snapshot_names), {}),
+        ("images", "지운 세션의 생성 이미지", len(found.image_bytes), {"bytes": sum(found.image_bytes.values())}),
     ]
     return [
         {"id": item_id, "label": label, "count": count, **extra, "checked": count > 0}
@@ -214,7 +394,17 @@ def _items(found: Orphans) -> list[dict]:
 
 # The cleanup
 
-ITEMS = ("history_rows", "history_lines", "session_index", "queue")  # what --items picks among
+ITEMS = (  # what --items picks among
+    "history_rows",
+    "history_lines",
+    "session_index",
+    "queue",
+    "app_list",
+    "app_state",
+    "logs",
+    "shell_snapshots",
+    "images",
+)
 CACHE_ITEM = "cache_files"  # not a choice: it always runs, last
 COORDINATION_WAIT = 10.0  # seconds; a coordination lock held longer means a Codex is at work
 JSONL_LOCK_WAIT = 5.0  # seconds for a JSONL file's own lock
@@ -406,6 +596,16 @@ def _clean(
             return _drop_lines(item, SESSION_INDEX_JSONL, "id", found.index_ids)
         if item == "queue":
             return _delete_queue(sorted(found.queue_ids))
+        if item == "app_list":
+            return _clear_catalogs(found.catalog_ids)
+        if item == "app_state":
+            return _drop_state(found.state_ids)
+        if item == "logs":
+            return _delete_logs(found.log_rows)
+        if item == "shell_snapshots":
+            return _remove_in(item, SNAPSHOTS_DIR, found.snapshot_names)
+        if item == "images":
+            return _remove_in(item, IMAGES_DIR, sorted(found.image_bytes))
         return _remove_caches(sorted(found.cache_ids))
     except Exception as e:
         return _item(item, "failed", 0, message=_one_line(e)), None
@@ -461,6 +661,107 @@ def _delete_queue(ids: list[str]) -> tuple[dict, list[str]]:
             con.executemany("DELETE FROM queued_items WHERE thread_id = ?", args)
             con.executemany("DELETE FROM queued_thread_revisions WHERE thread_id = ?", args)
     return _item("queue", "done", count), ids
+
+
+def _clear_catalogs(ids: set[str]) -> tuple[dict, list[str]]:
+    """In each catalog that lists one of `ids`, in one transaction: the
+    active one gets a full check requested, so the app drops what is gone
+    when it next starts (rows it marks itself, as it does after its own
+    migrations); the old one, which no app here opens, loses their rows. A
+    catalog that became a link or another shape is left alone. The count is
+    the ids of the catalogs that changed, kept when a later one fails."""
+    changed: set[str] = set()
+    if not ids or not _catalog_folder():
+        return _item("app_list", "done", 0), []
+    try:
+        for path in codex_desktop.catalog_paths():
+            if not _exists(path) or not _regular(path):
+                continue
+            active = path.name == codex_desktop.ACTIVE_CATALOG
+            with _writing(path) as con:
+                if not codex_desktop.known_catalog(con):
+                    continue
+                with _transaction(con):
+                    listed = codex_desktop.listed_threads(con, active=active) & ids
+                    if listed and active:
+                        codex_desktop.request_full_check(con)
+                    elif listed:
+                        codex_desktop.delete_threads(con, listed)
+                changed |= listed
+    except (codex_keepset.Refusal, sqlite3.Error, OSError) as e:
+        return _item("app_list", "failed", len(changed), message=_one_line(e)), sorted(changed)
+    return _item("app_list", "done", len(changed)), sorted(changed)
+
+
+def _drop_state(ids: set[str]) -> tuple[dict, list[str]]:
+    """Each of the app's state files without the entries of `ids`, put in
+    place whole (`_replace`); one that holds none, or is left alone
+    (`_read_state`), is not touched. The count is the ids dropped from a
+    file, kept when a later file fails."""
+    changed: set[str] = set()
+    try:
+        for name in codex_desktop.STATE_FILES:
+            path = roots.codex_home() / name
+            data = _read_state(path) if ids else None
+            dropped = codex_desktop.state_ids(data, ids.__contains__) if data is not None else set()
+            if not dropped:
+                continue
+            kept = codex_desktop.dump_state(codex_desktop.without(data, ids))
+            try:
+                _replace(path, [kept], stat.S_IMODE(os.lstat(path).st_mode))
+            except OSError:
+                if _holds(path, kept):  # in place; only the folder's sync failed
+                    changed |= dropped
+                raise
+            changed |= dropped
+    except OSError as e:
+        return _item("app_state", "failed", len(changed), message=_one_line(e)), sorted(changed)
+    return _item("app_state", "done", len(changed)), sorted(changed)
+
+
+def _holds(path: Path, content: bytes) -> bool:
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as f:
+            return f.read() == content
+    except OSError:
+        return False
+
+
+def _delete_logs(rows: dict[str, int]) -> tuple[dict, list[str]]:
+    """The log rows of the ids, in one transaction; logs that became a link
+    are left alone. The count is the ids that had rows, and `lines` the rows
+    deleted, as the dry run's row counts them."""
+    ids = sorted(rows)
+    deleted: list[str] = []
+    lines = 0
+    path = roots.codex_sqlite_home() / LOGS_DB
+    if ids and _regular(path):
+        with _writing(path) as con:
+            with _transaction(con):
+                for tid in ids:
+                    count = con.execute("DELETE FROM logs WHERE thread_id = ?", (tid,)).rowcount
+                    if count > 0:
+                        deleted.append(tid)
+                        lines += count
+    return _item("logs", "done", len(deleted), lines=lines), deleted
+
+
+def _remove_in(item: str, folder: str, names: list[str]) -> tuple[dict, list[str]]:
+    """The named files or folders in one of Codex's folders. A symlink put in
+    one's place since the scan is removed, never followed (`safety.remove`)."""
+    root = roots.codex_home() / folder
+    gone: list[str] = []
+    errors: list[str] = []
+    for name in names:
+        error = safety.remove(safety.child(root, name))
+        if error:
+            errors.append(error)
+        else:
+            gone.append(name)
+    if errors:
+        return _item(item, "failed", len(gone), message=errors[0]), gone
+    return _item(item, "done", len(gone)), gone
 
 
 @contextlib.contextmanager

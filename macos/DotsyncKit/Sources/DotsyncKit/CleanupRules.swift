@@ -95,12 +95,16 @@ public enum CleanupRules {
         visibleItems(items).filter { $0.count > 0 }.map(\.id).filter(selection.contains)
     }
 
-    /// The right column of an item: "세션 2,304개", "세션 2개 · 37줄", "83개".
+    /// The right column of an item: "세션 2,304개", "세션 2개 · 37줄", "31개 · 862 MB", "83개".
     public static func countText(_ item: CleanupItem) -> String {
         let count = item.count.formatted(.number.locale(Locale(identifier: "en_US")))
         if let lines = item.lines { return "세션 \(count)개 · \(lines.formatted(.number.locale(Locale(identifier: "en_US"))))줄" }
-        return item.id == "history_rows" ? "세션 \(count)개" : "\(count)개"
+        if let bytes = item.bytes { return "\(count)개 · \(SessionText.bytes(bytes))" }
+        return countsSessions.contains(item.id) ? "세션 \(count)개" : "\(count)개"
     }
+
+    /// The items whose count is sessions, not rows or files.
+    private static let countsSessions: Set<String> = ["history_rows", "app_list", "app_state"]
 
     // MARK: 빈 공간 돌려받기
 
@@ -117,13 +121,19 @@ public enum CleanupRules {
         !selectedIds(preview.items, selection: selection).isEmpty
     }
 
+    /// A pick that leaves free pages for the vacuum: of all the items, only
+    /// the history rows are in a database it rewrites.
+    private static func freesPages(_ preview: CleanupPreview, _ selection: Set<String>) -> Bool {
+        selectedIds(preview.items, selection: selection).contains("history_rows")
+    }
+
     /// `ticked` is the person's own tick, which starts on. Free space makes
     /// the box usable; with none, only a cleaning that will make some does.
     /// With neither, it shows off and disabled, and the person's tick waits
     /// for the next pick.
     public static func vacuumBox(preview: CleanupPreview, selection: Set<String>, ticked: Bool) -> VacuumBox? {
         guard preview.vacuumAvailable else { return nil }
-        let cleaning = isCleaning(preview, selection)
+        let cleaning = freesPages(preview, selection)
         let free = preview.vacuumFreeBytes ?? 0
         if free > 0 {
             let now = "지금 \(SessionText.bytes(free))를 돌려받을 수 있어요"

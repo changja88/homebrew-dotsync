@@ -118,7 +118,7 @@ def _cleanup_payload(args: argparse.Namespace) -> dict:
 
 
 def _cleanup_items(arg: str | None) -> list[str]:
-    """No `--items` is all four; `--items ""` is none of them, so only the
+    """No `--items` is all of them; `--items ""` is none, so only the
     cache files run, and the vacuum when asked (the app's vacuum-only run).
     An empty name among others is left for `run_cleanup` to refuse as
     `bad_items`."""

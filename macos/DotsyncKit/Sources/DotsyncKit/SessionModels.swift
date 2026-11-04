@@ -123,7 +123,7 @@ public struct CleanupItem: Decodable, Sendable, Equatable, Identifiable {
     public var label: String
     public var count: Int
     public var lines: Int?
-    /// The CLI does not report sizes per item.
+    /// What the item weighs: the generated images only.
     public var bytes: Int64?
     public var checked: Bool
 }

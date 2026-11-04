@@ -32,7 +32,8 @@ app with one JSON object; without `--json` it says so and exits 2.
   delete, `recover`), `codex.py` (list, delete through `codex delete`),
   `codex_blockers.py` (who uses `~/.codex`), `codex_keepset.py` (which thread
   ids are live), `codex_cleanup.py` (orphans, dry run, the cleanup run,
-  vacuum), `grouping.py` (project grouping), `procs.py` (`ps`/`lsof`, always
+  vacuum), `codex_desktop.py` (the ChatGPT app's sidebar catalogs and state
+  file, as the cleanup reads and edits them), `grouping.py` (project grouping), `procs.py` (`ps`/`lsof`, always
   with a timeout), `safety.py` (id validation, `child` path rule), `roots.py`
   (every default location, read at call time), `log.py`, `stop.py`. Session
   commands need no sync folder and never load `dotsync.toml`.
@@ -76,6 +77,16 @@ app with one JSON object; without `--json` it says so and exits 2.
     after the others.
   - The cleanup's vacuum rewrites the history and state databases whole
     (`VACUUM`), which keeps their auto_vacuum mode.
+  - The cleanup also removes what deleted sessions leave outside Codex's
+    session stores, by the same keep-set: the ChatGPT app's sidebar catalog
+    (`sqlite/codex.db`: only the local host's `last_full_reconciled_at` is
+    cleared, so the app checks its whole list when it next starts and drops
+    what is gone itself; the old `codex-dev.db`, which no production app
+    opens, loses the rows), its state file and `.bak` (entries keyed by a
+    deleted UUIDv7 thread id; ChatGPT conversations and other UUIDs stay),
+    `logs_2.sqlite` rows, `shell_snapshots/<id>.*` and
+    `generated_images/<id>/`. A ChatGPT app file of another shape is left
+    alone, not refused.
 - `lib/dotsync/shellrc.py` owns the marked `DOTSYNC_DIR` line: finding it
   (`rc_candidates`, `marked_dir`) and keeping it (`update_shell_rc`, which
   `config dir` calls; with no rc file it starts `~/.bash_profile`, never the
