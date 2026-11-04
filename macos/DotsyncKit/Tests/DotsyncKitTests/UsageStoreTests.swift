@@ -2,8 +2,16 @@ import Foundation
 import Testing
 @testable import DotsyncKit
 
+/// Every test's folder lives under this one, which goes away when the test
+/// process exits. Swift Testing has no per-test teardown for free functions.
+private let temporaryRoot: URL = {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("dotsynckit-\(UUID().uuidString)")
+    atexit_b { try? FileManager.default.removeItem(at: root) }
+    return root
+}()
+
 func temporaryDirectory() throws -> URL {
-    let url = FileManager.default.temporaryDirectory.appendingPathComponent("dotsynckit-\(UUID().uuidString)")
+    let url = temporaryRoot.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
 }
