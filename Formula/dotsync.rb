@@ -2,7 +2,7 @@ class Dotsync < Formula
   desc "Sync app configs with a local folder"
   homepage "https://github.com/changja88/homebrew-dotsync"
   url "https://github.com/changja88/homebrew-dotsync/archive/refs/tags/v0.10.1.tar.gz"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  sha256 "530165b69170ff49deac38f1f167aa0ebaa68b33eb860dc5a3fc0fc4ea57eab5"
   license "MIT"
 
   # dotsync needs Python 3.14+: `dotsync sessions` reads compressed (.zst)
