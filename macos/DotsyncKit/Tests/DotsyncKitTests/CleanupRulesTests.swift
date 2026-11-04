@@ -210,16 +210,22 @@ private func box(_ preview: CleanupPreview, selection: Set<String> = [], ticked:
     #expect(CleanupRules.reclaims(preview: preview, selection: ["history_rows"], ticked: true))
 }
 
-/// Only the history rows live in a database the vacuum rewrites: another
-/// pick gives it nothing more to give back.
-@Test func onlyTheHistoryRowsGiveTheVacuumMore() {
-    let none = plan(items: [item("history_rows", count: 0), item("queue", count: 1), item("images", count: 31, bytes: 9)], freeBytes: 0)
-    #expect(box(none, selection: ["queue", "images"]) == CleanupRules.VacuumBox(
+/// The items in a database the vacuum rewrites (the history, the queue, the
+/// logs, the app's catalogs) leave it more to give back; files, the state
+/// file and the active catalog's check request do not.
+@Test func onlyPicksInAVacuumedDatabaseGiveTheVacuumMore() {
+    let items = ["history_rows", "queue", "logs", "app_list", "app_state", "images", "history_lines"]
+        .map { item($0, count: 1) }
+    let none = plan(items: items, freeBytes: 0)
+    for freeing in ["history_rows", "queue", "logs", "app_list"] {
+        #expect(box(none, selection: [freeing])?.enabled == true)
+    }
+    #expect(box(none, selection: ["app_state", "images", "history_lines"]) == CleanupRules.VacuumBox(
         enabled: false, ticked: false, hint: "돌려받을 빈 공간이 없어요"))
-    let free = plan(items: [item("queue", count: 1)], freeBytes: 8_700_000_000)
-    #expect(box(free, selection: ["queue"])?.hint == "지금 8.7 GB를 돌려받을 수 있어요")
+    let free = plan(items: items, freeBytes: 8_700_000_000)
+    #expect(box(free, selection: ["images"])?.hint == "지금 8.7 GB를 돌려받을 수 있어요")
     // The picks still start a cleanup.
-    #expect(start(none, selection: ["queue", "images"], vacuum: true).allowed)
+    #expect(start(none, selection: ["images"], vacuum: true).allowed)
 }
 
 @Test func aRefusedDryRunShowsTheRefusalCopy() {
@@ -241,7 +247,7 @@ private func box(_ preview: CleanupPreview, selection: Set<String> = [], ticked:
     #expect(summary?.rows.map(\.label) == ["대화 저장소에 남은 내용", "입력 기록에서 지운 세션의 줄"])
     #expect(summary?.rows.map(\.text) == ["4개 정리했어요", "2개 정리했어요 · 37줄"])
     #expect(summary?.rows.map(\.mark) == [.done, .done])
-    #expect(summary?.vacuumLines == ["대화 저장소가 8.6 GB에서 6.1 GB로 줄었어요"])
+    #expect(summary?.vacuumLines == ["Codex 저장소가 8.6 GB에서 6.1 GB로 줄었어요"])
     #expect(summary?.relaunchFailed == false)
 }
 

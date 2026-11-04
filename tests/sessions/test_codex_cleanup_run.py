@@ -286,12 +286,13 @@ def run_vacuum(items=ALL, *, stop=None):
 
 
 def stores_bytes():
-    """The history and state databases with their `-wal`: what the vacuum weighs."""
+    """The history, state and queue databases with their `-wal`: what the vacuum weighs."""
     home = roots.codex_sqlite_home()
-    return codex.db_bytes(home / "thread_history_1.sqlite") + codex.db_bytes(home / "state_5.sqlite")
+    return sum(codex.db_bytes(home / name) for name in ("thread_history_1.sqlite", "state_5.sqlite", "queue_1.sqlite"))
 
 
-def test_the_vacuum_covers_the_history_and_state_databases(db, monkeypatch):
+def test_the_vacuum_covers_the_history_state_and_queue_databases(db, monkeypatch):
+    """And the logs and the app's catalogs when they are there (test_codex_leftovers)."""
     full_home(db)
     given = []
 
@@ -301,7 +302,7 @@ def test_the_vacuum_covers_the_history_and_state_databases(db, monkeypatch):
 
     monkeypatch.setattr(codex_cleanup, "reclaim", fake_reclaim)
     run_vacuum()
-    assert given == [[db / "thread_history_1.sqlite", db / "state_5.sqlite"]]
+    assert given == [[db / "thread_history_1.sqlite", db / "state_5.sqlite", db / "queue_1.sqlite"]]
 
 
 def test_vacuum_pages_are_reported_in_the_vacuum_phase(db, monkeypatch):

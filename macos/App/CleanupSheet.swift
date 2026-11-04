@@ -59,7 +59,7 @@ private struct ChoosingView: View {
                let box = CleanupRules.vacuumBox(preview: preview, selection: state.selection, ticked: state.vacuum) {
                 Toggle(isOn: Binding(get: { box.ticked }, set: { model.cleanup.vacuum = $0 })) {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("정리 뒤 대화 저장소의 빈 공간 돌려받기").font(.system(size: 12.5, weight: .semibold))
+                        Text("정리 뒤 Codex 저장소의 빈 공간 돌려받기").font(.system(size: 12.5, weight: .semibold))
                         Text(box.hint).font(.system(size: 11.5)).foregroundStyle(.secondary)
                     }
                 }

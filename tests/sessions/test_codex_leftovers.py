@@ -21,6 +21,7 @@ GONE2 = "01a00000-0000-7000-8000-00000000000c"
 GONE3 = "01a00000-0000-7000-8000-00000000000d"
 CHAT = "01a00000-0000-7000-8000-0000000000c7"  # a ChatGPT conversation in the sidebar
 DRAFT = "11111111-1111-4111-8111-111111111111"  # a UUID the app uses for something else
+REMOTE = "01a00000-0000-7000-8000-0000000000ee"  # a thread of an SSH host
 LOCAL_HOST = "local"
 CHAT_HOST = "chatgpt:workspace:user"
 DONE_AT = 1_793_337_644_724  # last_full_reconciled_at, in ms
@@ -53,11 +54,24 @@ def item(item_id):
     return {i["id"]: i for i in payload["items"]}[item_id]
 
 
-def run(*items):
+def run(*items, vacuum=False):
     report = codex_cleanup.run_cleanup(
-        list(items), False, stop=StopSignal(), progress=lambda done, total, phase: None
+        list(items), vacuum, stop=StopSignal(), progress=lambda done, total, phase: None
     )
     return {r["id"]: r for r in report["items"]}
+
+
+def dotsync_deleted(*ids, outcome="deleted", children=()):
+    """A delete log of dotsync's own, as `sessions/log.py` writes it: the
+    sub-sessions of the first id are in its rollout paths."""
+    folder = roots.log_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    results = [{"id": i, "outcome": outcome, "children": len(children), "freed_bytes": 0} for i in ids]
+    rollouts = [f"/home/.codex/sessions/2026/01/02/rollout-2026-01-02T03-04-05-{c}.jsonl" for c in (*ids[:1], *children)]
+    result = {"tool": "codex", "results": results, "stopped": False, "paths": {ids[0]: {"rollouts": rollouts}}}
+    (folder / f"sessions-20261030T000000Z-{len(list(folder.iterdir()))}.json").write_text(
+        json.dumps({"command": "delete", "tool": "codex", "result": result})
+    )
 
 
 # The ChatGPT app's sidebar catalogs (<codex home>/sqlite/codex.db, codex-dev.db)
@@ -119,14 +133,22 @@ def synced(path):
         con.close()
 
 
-def test_the_sidebar_counts_deleted_sessions_the_app_still_shows(home):
+def test_the_sidebar_counts_deleted_sessions_the_app_still_holds(home):
+    """A row the app marked missing is hidden but still there: the app drops
+    it at its next full check, so it counts too."""
     catalog(
         "codex.db",
         [(LOCAL_HOST, KEPT, 0), (LOCAL_HOST, GONE, 0), (LOCAL_HOST, GONE2, 1), (CHAT_HOST, GONE3, 0)],
     )
-    assert found().catalog_ids == {GONE}
+    assert found().catalog_ids == {GONE, GONE2}
     row = item("app_list")
-    assert (row["label"], row["count"], row["checked"]) == ("ChatGPT 앱 목록에 남은 지운 세션", 1, True)
+    assert (row["label"], row["count"], row["checked"]) == ("ChatGPT 앱 목록에 남은 지운 세션", 2, True)
+
+
+def test_rows_the_app_marked_missing_get_another_full_check(home):
+    path = catalog("codex.db", [(LOCAL_HOST, GONE, 1)])
+    assert run("app_list")["app_list"]["count"] == 1
+    assert synced(path)[LOCAL_HOST] is None
 
 
 def test_the_cleanup_has_the_app_check_its_whole_list_again(home):
@@ -208,8 +230,8 @@ def app_state(*ids):
         "thread-writable-roots": {i: ["/work"] for i in ids},
         "electron-thread-read-state-v1": {
             "version": 1,
-            "unreadByIdentity": {"me": {"local:abc": list(ids), "ssh:server": list(ids)}},
-            "legacyMigration": {"unreadThreadIdsByHostId": {"local": list(ids), "ssh:server": list(ids)}},
+            "unreadByIdentity": {"me": {"local:abc": list(ids), "ssh:server": [REMOTE]}},
+            "legacyMigration": {"unreadThreadIdsByHostId": {"local": list(ids), "ssh:server": [REMOTE]}},
         },
     }
 
@@ -253,15 +275,9 @@ def test_the_cleanup_drops_every_entry_of_a_deleted_session_from_both_files(home
         "local-chatgpt:0": KEPT,
         "local-chatgpt:3": CHAT,
     }
-    # Unread lists of another host are that host's.
-    every = [KEPT, GONE, GONE2, CHAT]
-    want["electron-thread-read-state-v1"]["unreadByIdentity"]["me"]["ssh:server"] = every
-    want["electron-thread-read-state-v1"]["legacyMigration"]["unreadThreadIdsByHostId"]["ssh:server"] = every
     assert read_state() == want
     bak = app_state()
     bak["electron-persisted-atom-state"]["recent-workspace-files-v3"] = {'["local","/work"]': [f"mentions {GONE}"]}
-    bak["electron-thread-read-state-v1"]["unreadByIdentity"]["me"]["ssh:server"] = [GONE]
-    bak["electron-thread-read-state-v1"]["legacyMigration"]["unreadThreadIdsByHostId"]["ssh:server"] = [GONE]
     assert read_state(STATE + ".bak") == bak
 
 
@@ -290,6 +306,111 @@ def test_a_state_with_nothing_to_drop_is_not_rewritten(home):
     run("app_state")
     after = os.stat(roots.codex_home() / STATE)
     assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+
+
+def test_pending_project_assignments_of_this_machine_lose_deleted_sessions(home):
+    app_catalog()
+    data = app_state()
+    data["app-server-projects-migration-by-host"] = {
+        "local:/home/.codex": {"version": 1, "projectsMigrated": True, "pendingThreadAssignmentIds": [GONE, KEPT]},
+        "ssh:server": {"pendingThreadAssignmentIds": [GONE2]},
+    }
+    write_state(data)
+    assert found().state_ids == {GONE}
+    run("app_state")
+    hosts = read_state()["app-server-projects-migration-by-host"]
+    assert hosts["local:/home/.codex"] == {"version": 1, "projectsMigrated": True, "pendingThreadAssignmentIds": [KEPT]}
+    assert hosts["ssh:server"] == {"pendingThreadAssignmentIds": [GONE2]}
+
+
+def test_activity_times_keyed_by_host_and_thread(home):
+    app_catalog()
+    data = app_state()
+    times = {json.dumps(["local", GONE]): 1, json.dumps(["ssh:server", GONE2]): 2, json.dumps(["local", KEPT]): 3}
+    data["electron-persisted-atom-state"]["thread-user-activity-times-v1"] = times
+    write_state(data)
+    assert found().state_ids == {GONE}
+    run("app_state")
+    assert read_state()["electron-persisted-atom-state"]["thread-user-activity-times-v1"] == {
+        json.dumps(["ssh:server", GONE2]): 2,
+        json.dumps(["local", KEPT]): 3,
+    }
+
+
+LOADED = "app-server-daemon/loaded-threads.json"
+
+
+def interrupted(*ids):
+    return "codex-interrupted-v1:" + json.dumps(
+        {"interrupted": {i: {"turn_id": "t"} for i in ids}}, separators=(",", ":")
+    )
+
+
+def test_the_daemons_loaded_threads_lose_deleted_sessions(home):
+    app_catalog()
+    path = home / LOADED
+    path.parent.mkdir()
+    path.write_text(json.dumps([GONE, KEPT, interrupted(GONE, KEPT), interrupted(GONE2), "another-v1:x"]))
+    assert found().state_ids == {GONE, GONE2}
+    assert run("app_state")["app_state"]["count"] == 2
+    assert json.loads(path.read_text()) == [KEPT, interrupted(KEPT), "another-v1:x"]
+
+
+def test_a_linked_daemon_folder_is_not_followed(home, tmp_path):
+    app_catalog()
+    other = tmp_path / "other-profile-daemon"
+    other.mkdir()
+    (other / "loaded-threads.json").write_text(json.dumps([GONE]))
+    os.symlink(other, home / "app-server-daemon")
+    assert found().state_ids == set()
+    run("app_state")
+    assert json.loads((other / "loaded-threads.json").read_text()) == [GONE]
+
+
+def test_an_entry_that_cannot_be_encoded_leaves_the_list_alone_and_stops_nothing(home):
+    app_catalog()
+    path = home / LOADED
+    path.parent.mkdir()
+    path.write_text('["codex-interrupted-v1:\\ud800", "%s"]' % GONE)
+    before = path.read_bytes()
+    assert codex_cleanup.dry_run_payload()["refusal"] is None
+    assert found().state_ids == set()
+    run("app_state")
+    assert path.read_bytes() == before
+
+
+def test_a_state_file_that_cannot_be_read_back_stops_the_state_and_the_logs(home):
+    """It may be the one that names a thread's other host: without it,
+    nothing that needs telling hosts apart runs."""
+    app_catalog()
+    write_state(app_state(GONE))
+    (home / (STATE + ".bak")).write_text('{"x": "\\ud800"}')
+    dotsync_deleted(GONE3)
+    logs([], bodies=[f"thread {GONE3} closed"])
+    leftovers = found()
+    assert (leftovers.state_ids, leftovers.log_mentions) == (set(), {})
+
+
+def test_an_interrupted_entry_that_cannot_be_written_back_stays(home):
+    app_catalog()
+    path = home / LOADED
+    path.parent.mkdir()
+    entry = 'codex-interrupted-v1:{"interrupted":{"%s":{"x":"\\ud800"},"%s":{}}}' % (KEPT, GONE2)
+    path.write_text(json.dumps([GONE, entry]))
+    assert found().state_ids == {GONE}
+    assert run("app_state")["app_state"]["count"] == 1
+    assert json.loads(path.read_text()) == [entry]
+
+
+def test_loaded_threads_of_another_shape_are_left_alone(home):
+    app_catalog()
+    path = home / LOADED
+    path.parent.mkdir()
+    path.write_text(json.dumps({"threads": [GONE]}))
+    before = path.read_bytes()
+    assert found().state_ids == set()
+    run("app_state")
+    assert path.read_bytes() == before
 
 
 def test_an_unread_mark_alone_is_counted(home):
@@ -422,7 +543,9 @@ def test_a_symlinked_catalog_is_not_followed(home, tmp_path):
     assert catalog_rows(target) == rows
 
 
-def test_a_state_file_that_is_a_link_is_left_alone_and_blocks_nothing(home, tmp_path):
+def test_a_state_file_that_is_a_link_leaves_the_state_alone_and_blocks_nothing_else(home, tmp_path):
+    """The link is not followed, so what it holds is unknown: no state file
+    is edited, and the other items run."""
     from tests.sessions.codex_fixtures import add_history
 
     add_history(roots.codex_home(), GONE2)
@@ -430,11 +553,12 @@ def test_a_state_file_that_is_a_link_is_left_alone_and_blocks_nothing(home, tmp_
     target = tmp_path / "elsewhere.json"
     target.write_bytes(json.dumps(app_state(GONE)).encode())
     os.symlink(target, roots.codex_home() / (STATE + ".bak"))
-    write_state(app_state(GONE))
+    raw = write_state(app_state(GONE))
     assert codex_cleanup.dry_run_payload()["refusal"] is None
     results = run("history_rows", "app_state")
-    assert (results["history_rows"]["count"], results["app_state"]["count"]) == (1, 1)
+    assert (results["history_rows"]["count"], results["app_state"]["count"]) == (1, 0)
     assert json.loads(target.read_bytes()) == app_state(GONE)
+    assert (roots.codex_home() / STATE).read_bytes() == raw
 
 
 def test_a_catalog_that_fails_midway_reports_what_it_changed(home, monkeypatch):
@@ -456,7 +580,8 @@ def test_a_catalog_that_fails_midway_reports_what_it_changed(home, monkeypatch):
 # The logs (logs_2.sqlite)
 
 
-def logs(rows):
+def logs(rows, bodies=()):
+    """Rows keyed by `rows` thread ids, and thread-less rows with `bodies`."""
     con = sqlite3.connect(roots.codex_home() / "logs_2.sqlite")
     con.execute(
         "CREATE TABLE logs (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,"
@@ -468,8 +593,20 @@ def logs(rows):
         "INSERT INTO logs (ts, ts_nanos, level, target, thread_id) VALUES (0, 0, 'INFO', 't', ?)",
         [(r,) for r in rows],
     )
+    con.executemany(
+        "INSERT INTO logs (ts, ts_nanos, level, target, feedback_log_body) VALUES (0, 0, 'INFO', 't', ?)",
+        [(b,) for b in bodies],
+    )
     con.commit()
     con.close()
+
+
+def log_bodies():
+    con = sqlite3.connect(roots.codex_home() / "logs_2.sqlite")
+    try:
+        return sorted(b for (b,) in con.execute("SELECT feedback_log_body FROM logs WHERE feedback_log_body IS NOT NULL"))
+    finally:
+        con.close()
 
 
 def log_threads():
@@ -490,6 +627,71 @@ def test_the_logs_of_deleted_sessions_are_counted_and_deleted(home):
     assert log_threads() == [("", 2), (KEPT, 1), ("not-an-id", 1)]
 
 
+def test_log_lines_that_name_a_session_dotsync_deleted_go(home):
+    """Only a text mention of a session dotsync's own logs say it deleted
+    counts: another UUIDv7 in a line may be a turn or a request."""
+    app_catalog()
+    dotsync_deleted(GONE3)
+    logs([], bodies=[f"thread {GONE3} closed", f"turn {GONE2} done", f"thread {KEPT} open", "no id"])
+    assert list(found().log_mentions.values()) == [{GONE3}]
+    row = item("logs")
+    assert (row["count"], row["lines"]) == (1, 1)
+    result = run("logs")["logs"]
+    assert (result["count"], result["lines"]) == (1, 1)
+    assert log_bodies() == sorted(["no id", f"thread {KEPT} open", f"turn {GONE2} done"])
+
+
+def test_a_sub_session_in_a_deleted_rollout_counts(home):
+    app_catalog()
+    dotsync_deleted(GONE, children=[GONE3])
+    logs([], bodies=[f"child {GONE3} closed"])
+    assert list(found().log_mentions.values()) == [{GONE3}]
+
+
+def test_what_a_cleanup_removed_is_evidence_in_either_shape(home):
+    """A cleanup logs most items' ids as a list, and the two JSONL items'
+    as {id: lines}."""
+    app_catalog()
+    folder = roots.log_dir()
+    folder.mkdir(parents=True)
+    ids = {"history_lines": {GONE3: 2}, "queue": [GONE2]}
+    (folder / "sessions-20261030T000001Z-1.json").write_text(
+        json.dumps({"command": "cleanup", "tool": "codex", "result": {"items": [], "ids": ids}})
+    )
+    logs([], bodies=[f"thread {GONE3} closed", f"queue of {GONE2}"])
+    assert sorted(i for named in found().log_mentions.values() for i in named) == sorted([GONE2, GONE3])
+
+
+def test_a_session_dotsync_only_skipped_is_no_evidence(home):
+    app_catalog()
+    dotsync_deleted(GONE3, outcome="skipped")
+    logs([], bodies=[f"thread {GONE3} closed"])
+    assert found().log_mentions == {}
+
+
+def test_a_line_that_also_names_a_kept_or_remote_session_stays(home):
+    app_catalog()
+    data = app_state()
+    data["app-server-projects-migration-by-host"] = {"ssh:server": {"pendingThreadAssignmentIds": [REMOTE]}}
+    write_state(data)
+    dotsync_deleted(GONE3)
+    dotsync_deleted(REMOTE)
+    logs([], bodies=[f"{KEPT} referenced {GONE3}", f"remote {REMOTE}", f"{REMOTE} and {GONE3}"])
+    assert found().log_mentions == {}
+
+
+def test_without_the_apps_catalog_no_log_line_goes(home):
+    dotsync_deleted(GONE3)
+    logs([], bodies=[f"thread {GONE3} closed"])
+    assert found().log_mentions == {}
+
+
+def test_a_kept_session_named_in_dotsyncs_logs_stays(home):
+    dotsync_deleted(KEPT)
+    logs([], bodies=[f"thread {KEPT} open"])
+    assert found().log_mentions == {}
+
+
 def test_no_logs_is_nothing_to_clean(home):
     assert found().log_rows == {}
 
@@ -504,6 +706,26 @@ def test_symlinked_logs_are_not_followed(home, tmp_path):
     con = sqlite3.connect(target)
     assert con.execute("SELECT COUNT(*) FROM logs").fetchone()[0] == 1
     con.close()
+
+
+def freelist(path):
+    con = sqlite3.connect(path)
+    try:
+        return con.execute("PRAGMA freelist_count").fetchone()[0]
+    finally:
+        con.close()
+
+
+def test_the_vacuum_gives_back_what_the_logs_and_the_old_catalog_freed(home):
+    logs([GONE] * 400, bodies=[])
+    con = sqlite3.connect(home / "logs_2.sqlite")
+    con.execute("UPDATE logs SET feedback_log_body = ?", ("x" * 4000,))
+    con.commit()
+    con.close()
+    old = catalog("codex-dev.db", [(LOCAL_HOST, f"01a00000-0000-7000-8000-{n:012x}", 0) for n in range(16, 400)])
+    run("logs", "app_list", vacuum=True)
+    assert (freelist(home / "logs_2.sqlite"), freelist(old)) == (0, 0)
+    assert catalog_rows(old) == []
 
 
 # The shell snapshots (shell_snapshots/<thread id>.<stamp>.sh)

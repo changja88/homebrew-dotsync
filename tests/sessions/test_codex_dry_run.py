@@ -155,7 +155,7 @@ def test_ids_that_are_not_canonical_are_ignored(home):
     found = codex_cleanup.orphans(codex_keepset.keep_set())
     assert found == codex_cleanup.Orphans(
         set(), {}, set(), 0, set(), set(),
-        catalog_ids=set(), state_ids=set(), log_rows={}, snapshot_names=[], image_bytes={},
+        catalog_ids=set(), state_ids=set(), log_rows={}, log_mentions={}, snapshot_names=[], image_bytes={},
     )
 
 
@@ -247,7 +247,7 @@ def test_vacuum_free_bytes_is_what_the_history_and_state_dbs_could_give_back(hom
     assert codex_cleanup.dry_run_payload()["vacuum_free_bytes"] == history + state
 
 
-def test_vacuum_free_bytes_reads_two_pragmas_read_only(home, monkeypatch):
+def test_vacuum_free_bytes_reads_two_pragmas_of_each_database_read_only(home, monkeypatch):
     free_pages(home)
     real = codex.open_ro
     opened, statements = [], []
@@ -260,8 +260,8 @@ def test_vacuum_free_bytes_reads_two_pragmas_read_only(home, monkeypatch):
 
     monkeypatch.setattr(codex, "open_ro", spying)
     assert codex_cleanup.vacuum_free_bytes() > 0
-    assert opened == [home / "thread_history_1.sqlite", home / "state_5.sqlite"]
-    assert statements == ["PRAGMA freelist_count", "PRAGMA page_size"] * 2
+    assert opened == [home / "thread_history_1.sqlite", home / "state_5.sqlite", home / "queue_1.sqlite"]
+    assert statements == ["PRAGMA freelist_count", "PRAGMA page_size"] * 3
 
 
 def test_vacuum_free_bytes_is_null_when_the_history_db_cannot_be_read(home):

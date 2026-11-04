@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 from dotsync.cli_json import now_iso
-from dotsync.sessions import roots
+from dotsync.sessions import roots, safety
 
 
 def write(command: str, tool: str, started_at: str, result: dict) -> Path:
@@ -30,3 +31,43 @@ def write(command: str, tool: str, started_at: str, result: dict) -> Path:
         json.dump(doc, f, ensure_ascii=False, indent=2)
     path.chmod(0o600)
     return path
+
+
+_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def deleted_ids(tool: str) -> set[str]:
+    """The ids the logs show dotsync deleted for `tool`: a delete's sessions
+    whose outcome is `deleted`, with the ids in their rollout paths (their
+    sub-sessions), and what a cleanup removed. A log that cannot be read, or
+    is of another shape, shows none."""
+    ids: set[str] = set()
+    for path in roots.log_dir().glob("sessions-*.json"):
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, RecursionError):
+            continue
+        if not isinstance(doc, dict) or doc.get("tool") != tool or not isinstance(doc.get("result"), dict):
+            continue
+        result = doc["result"]
+        if doc.get("command") == "delete":
+            ids |= _deleted_in(result)
+        elif doc.get("command") == "cleanup" and isinstance(result.get("ids"), dict):
+            # Most items log a list of ids; the two JSONL ones {id: lines}.
+            ids |= {i for removed in result["ids"].values() if isinstance(removed, (list, dict)) for i in removed
+                    if isinstance(i, str) and safety.is_valid_id(i)}
+    return ids
+
+
+def _deleted_in(result: dict) -> set[str]:
+    ids: set[str] = set()
+    paths = result.get("paths") if isinstance(result.get("paths"), dict) else {}
+    for entry in result.get("results") or []:
+        if not isinstance(entry, dict) or entry.get("outcome") != "deleted" or not safety.is_valid_id(entry.get("id")):
+            continue
+        ids.add(entry["id"])
+        rollouts = paths.get(entry["id"], {}).get("rollouts") if isinstance(paths.get(entry["id"]), dict) else None
+        for rollout in rollouts if isinstance(rollouts, list) else []:
+            if isinstance(rollout, str):
+                ids |= set(_ID.findall(rollout.rsplit("/", 1)[-1]))
+    return ids

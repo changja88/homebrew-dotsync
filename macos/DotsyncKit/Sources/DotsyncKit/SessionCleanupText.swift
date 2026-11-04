@@ -44,7 +44,7 @@ extension SessionText {
     public static func vacuumLines(_ vacuum: VacuumResult) -> [String] {
         var lines: [String] = []
         if vacuum.bytesAfter < vacuum.bytesBefore {
-            lines.append("대화 저장소가 \(bytes(vacuum.bytesBefore))에서 \(bytes(vacuum.bytesAfter))로 줄었어요")
+            lines.append("Codex 저장소가 \(bytes(vacuum.bytesBefore))에서 \(bytes(vacuum.bytesAfter))로 줄었어요")
         }
         switch vacuum.stoppedBecause {
         case "time_cap": lines.append("10분이 지나서 멈췄어요. 다음 정리 때 이어서 줄여요")

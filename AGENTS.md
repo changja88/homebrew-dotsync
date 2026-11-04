@@ -76,17 +76,24 @@ app with one JSON object; without `--json` it says so and exits 2.
     database to another, and left its state rows) is tried once more, alone,
     after the others.
   - The cleanup's vacuum rewrites the history and state databases whole
-    (`VACUUM`), which keeps their auto_vacuum mode.
+    (`VACUUM`), which keeps their auto_vacuum mode, and the queue and log
+    databases and the app's catalogs when they are there as plain files:
+    a deleted row's bytes stay in a database's free pages until then.
   - The cleanup also removes what deleted sessions leave outside Codex's
     session stores, by the same keep-set: the ChatGPT app's sidebar catalog
     (`sqlite/codex.db`: only the local host's `last_full_reconciled_at` is
     cleared, so the app checks its whole list when it next starts and drops
-    what is gone itself; the old `codex-dev.db`, which no production app
-    opens, loses the rows), its state file and `.bak` (entries keyed by a
-    deleted UUIDv7 thread id; ChatGPT conversations and other UUIDs stay),
-    `logs_2.sqlite` rows, `shell_snapshots/<id>.*` and
-    `generated_images/<id>/`. A ChatGPT app file of another shape is left
-    alone, not refused.
+    what is gone itself, the rows it marked missing too; the old
+    `codex-dev.db`, which no production app opens, loses the rows), its
+    state file and `.bak` (entries keyed by a deleted UUIDv7 thread id,
+    the read state's and the project migration's lists of this machine,
+    `["local","<id>"]` keys; ChatGPT conversations, other hosts' threads
+    and other UUIDs stay) and its daemon's `loaded-threads.json`,
+    `logs_2.sqlite` rows (by `thread_id`, and thread-less rows whose text
+    names a session dotsync's own logs say it deleted), `shell_snapshots/<id>.*`
+    and `generated_images/<id>/`. A ChatGPT app file of another shape is
+    left alone, not refused. Codex's `rollout_migration_state` cursor and
+    the app's own browser history and logs are not touched.
 - `lib/dotsync/shellrc.py` owns the marked `DOTSYNC_DIR` line: finding it
   (`rc_candidates`, `marked_dir`) and keeping it (`update_shell_rc`, which
   `config dir` calls; with no rc file it starts `~/.bash_profile`, never the

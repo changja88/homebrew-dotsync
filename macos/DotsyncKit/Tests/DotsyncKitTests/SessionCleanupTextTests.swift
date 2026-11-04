@@ -41,7 +41,7 @@ import Testing
     func lines(_ why: String, after: Int64 = 6_100_000_000) -> [String] {
         SessionText.vacuumLines(VacuumResult(bytesBefore: 8_600_000_000, bytesAfter: after, stoppedBecause: why, message: nil))
     }
-    let shrunk = "대화 저장소가 8.6 GB에서 6.1 GB로 줄었어요"
+    let shrunk = "Codex 저장소가 8.6 GB에서 6.1 GB로 줄었어요"
     #expect(lines("freelist_empty") == [shrunk])
     #expect(lines("time_cap") == [shrunk, "10분이 지나서 멈췄어요. 다음 정리 때 이어서 줄여요"])
     #expect(lines("busy") == [shrunk, "저장소가 바빠서 멈췄어요"])

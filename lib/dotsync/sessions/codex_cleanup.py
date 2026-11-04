@@ -16,6 +16,7 @@ import errno
 import fcntl
 import json
 import os
+import re
 import sqlite3
 import stat
 import tempfile
@@ -58,6 +59,7 @@ class Orphans:
     catalog_ids: set[str]  # the ChatGPT app's sidebar catalogs
     state_ids: set[str]  # the ChatGPT app's state file and its copy
     log_rows: dict[str, int]  # id -> its rows in the logs
+    log_mentions: dict[int, set[str]]  # a thread-less log row -> the deleted sessions its text names
     snapshot_names: list[str]  # files in the shell snapshot folder
     image_bytes: dict[str, int]  # id -> what its generated image folder weighs
 
@@ -87,6 +89,9 @@ def orphans(keep: codex_keepset.KeepSet) -> Orphans:
     index_ids = set(_jsonl_ids(SESSION_INDEX_JSONL, "id", orphan))
     cache_ids = {name for name in _cache_names() if orphan(name)}
     catalogs = _quietly(lambda: _read_catalogs(orphan), None)
+    documents = _quietly(_read_documents, None)
+    others = _others(catalogs, documents)
+    documents = documents or []
     return Orphans(
         history_ids,
         history_lines,
@@ -95,8 +100,9 @@ def orphans(keep: codex_keepset.KeepSet) -> Orphans:
         queue_ids,
         cache_ids,
         catalog_ids=catalogs.listed if catalogs else set(),
-        state_ids=_quietly(lambda: _state_ids(catalogs, orphan), set()),
+        state_ids=_quietly(lambda: _state_ids(documents, others, orphan), set()),
         log_rows=_quietly(lambda: _log_rows(orphan), {}),
+        log_mentions=_quietly(lambda: _log_mentions(orphan, others), {}),
         snapshot_names=_quietly(
             lambda: sorted(name for name in _plain_files(SNAPSHOTS_DIR) if orphan(name.split(".", 1)[0])), []
         ),
@@ -114,7 +120,7 @@ def _quietly[T](find: Callable[[], T], nothing: T) -> T:
     keep."""
     try:
         return find()
-    except (codex_keepset.Refusal, OSError, sqlite3.Error):
+    except (codex_keepset.Refusal, OSError, sqlite3.Error, ValueError):  # UnicodeError is a ValueError
         return nothing
 
 
@@ -167,36 +173,85 @@ def _catalog_folder() -> bool:
         return False
 
 
-def _state_ids(catalogs: _Catalogs | None, orphan: Callable[[object], bool]) -> set[str]:
-    """The deleted sessions the app's state files hold an entry for: a
-    UUIDv7 (`codex_desktop.is_thread_id`) outside the keep-set, every other
-    host's catalogued threads, and the threads a key of either file names
-    with another host. None unless the catalogs were all read and no host
-    runs Codex threads elsewhere, since those are UUIDv7 too."""
-    if catalogs is None or not catalogs.complete:
+@dataclass
+class _AppDocument:
+    """One of the app's JSON files the state item edits, and how."""
+
+    path: Path
+    parse: Callable[[bytes], object]
+    ids: Callable[[object, Callable[[str], bool]], set[str]]
+    without: Callable[[object, set[str]], object]
+    remote: Callable[[object], set[str]]
+
+
+def _app_documents() -> list[_AppDocument]:
+    """The state file and its copy, then the daemon's loaded threads."""
+    home = roots.codex_home()
+    state = [
+        _AppDocument(home / name, codex_desktop.parse_state, codex_desktop.state_ids,
+                     codex_desktop.without, codex_desktop.remote_ids)
+        for name in codex_desktop.STATE_FILES
+    ]
+    loaded = _AppDocument(home / codex_desktop.LOADED_THREADS, codex_desktop.parse_loaded, codex_desktop.loaded_ids,
+                          codex_desktop.without_loaded, lambda _data: set())
+    return [*state, loaded]
+
+
+def _read_documents() -> list[tuple[_AppDocument, object]] | None:
+    """The app's files that are there, read; None when one that is there
+    cannot be read (`_read_document`): it may be the one that names a
+    thread's other host."""
+    read = []
+    for doc in _app_documents():
+        data = _read_document(doc)
+        if data is not None:
+            read.append((doc, data))
+        elif os.path.lexists(doc.path):
+            return None
+    return read
+
+
+def _others(catalogs: _Catalogs | None, documents: list[tuple[_AppDocument, object]] | None) -> set[str] | None:
+    """The threads of every host but this machine: every other host's
+    catalogued threads, and those a state file names with another host.
+    None unless the catalogs and the app's files were all read and no host
+    runs Codex threads elsewhere, since those are UUIDv7 too: nothing that
+    needs telling them apart can then run."""
+    if catalogs is None or not catalogs.complete or documents is None:
+        return None
+    return catalogs.others.union(*(doc.remote(data) for doc, data in documents))
+
+
+def _state_ids(documents: list[tuple[_AppDocument, object]], others: set[str] | None,
+               orphan: Callable[[object], bool]) -> set[str]:
+    """The deleted sessions the app's state files and its daemon's list hold
+    an entry for: a UUIDv7 (`codex_desktop.is_thread_id`) outside the
+    keep-set and outside `others`."""
+    if others is None:
         return set()
-    states = [s for s in (_read_state(roots.codex_home() / n) for n in codex_desktop.STATE_FILES) if s is not None]
-    others = catalogs.others.union(*(codex_desktop.remote_ids(s) for s in states))
 
     def wanted(value: str) -> bool:
         return codex_desktop.is_thread_id(value) and orphan(value) and value not in others
 
-    return set().union(*(codex_desktop.state_ids(s, wanted) for s in states))
+    return set().union(*(doc.ids(data, wanted) for doc, data in documents))
 
 
-def _read_state(path: Path) -> dict | None:
-    """The state in one of the app's state files; None, so it is left alone,
-    when there is none, it is a link or cannot be read, or it is not the
+def _read_document(doc: _AppDocument) -> object | None:
+    """What one of the app's files holds; None, so it is left alone, when
+    there is none, it or a folder on its way from the Codex home is a link
+    (it may be another profile's), it cannot be read, or it is not the
     app's shape."""
+    if not _real_folders(doc.path.parent):
+        return None
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = os.open(doc.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, "rb") as f:
             if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
                 return None
             raw = f.read()
     except OSError:
         return None
-    return codex_desktop.parse_state(raw)
+    return doc.parse(raw)
 
 
 def _log_rows(orphan: Callable[[object], bool]) -> dict[str, int]:
@@ -209,6 +264,50 @@ def _log_rows(orphan: Callable[[object], bool]) -> dict[str, int]:
             return {}
         rows = con.execute("SELECT thread_id, COUNT(*) FROM logs WHERE thread_id IS NOT NULL GROUP BY thread_id")
         return {thread_id: count for thread_id, count in rows if orphan(thread_id)}
+
+
+def _log_mentions(orphan: Callable[[object], bool], others: set[str] | None) -> dict[int, set[str]]:
+    """The thread-less log rows whose text names a session dotsync's own
+    logs show it deleted (`log.deleted_ids`) and that is gone, and names no
+    kept session and no other host's thread: another UUID in a line may be a
+    turn or a request, so only that evidence counts, and a line that is also
+    a live session's stays. None without the catalogs (`_others`)."""
+    path = roots.codex_sqlite_home() / LOGS_DB
+    if others is None or not _exists(path) or not _regular(path):
+        return {}
+    deleted = {i for i in log.deleted_ids("codex") if orphan(i) and i not in others}
+    if not deleted:
+        return {}
+    mentions: dict[int, set[str]] = {}
+    with codex_keepset.reading(path) as con:
+        if not {"id", "thread_id", "feedback_log_body"} <= {row[1] for row in con.execute("PRAGMA table_info(logs)")}:
+            return {}
+        rows = con.execute("SELECT id, feedback_log_body FROM logs WHERE thread_id IS NULL AND feedback_log_body IS NOT NULL")
+        for row_id, body in rows:
+            ids = set(_ID.findall(body)) if isinstance(body, str) else set()
+            named = ids & deleted
+            if named and not any(not orphan(i) or i in others for i in ids):
+                mentions[row_id] = named
+    return mentions
+
+
+_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def _real_folders(folder: Path) -> bool:
+    """Whether `folder` and every folder between it and the Codex home are
+    folders, not links."""
+    home = roots.codex_home()
+    while folder != home:
+        try:
+            if not stat.S_ISDIR(os.lstat(folder).st_mode):
+                return False
+        except OSError:
+            return False
+        if folder.parent == folder:
+            return False
+        folder = folder.parent
+    return True
 
 
 def _regular(path: Path) -> bool:
@@ -244,7 +343,11 @@ def _is(check: Callable[..., bool]) -> bool:
 
 
 def _listing(folder: str) -> list[os.DirEntry]:
+    """The entries of one of Codex's folders; none when it is missing or a
+    link (what it points to is not Codex's)."""
     try:
+        if stat.S_ISLNK(os.lstat(roots.codex_home() / folder).st_mode):
+            return []
         with os.scandir(roots.codex_home() / folder) as listing:
             return list(listing)
     except FileNotFoundError:
@@ -365,8 +468,26 @@ def vacuum_free_bytes() -> int | None:
 
 
 def _vacuum_paths() -> list[Path]:
-    """The databases deleting sessions leaves free pages in."""
-    return [roots.codex_sqlite_home() / name for name in (codex.HISTORY_DB, codex.STATE_DB)]
+    """The databases deleting sessions and this cleanup leave free pages in,
+    where a deleted session's bytes stay until they are rewritten: Codex's
+    history and state, and, when they are there as plain files, its queue
+    and logs and the app's catalogs (in a folder that is no link)."""
+    sqlite_home = roots.codex_sqlite_home()
+    optional = [sqlite_home / codex.QUEUE_DB, sqlite_home / LOGS_DB]
+    if _catalog_folder():
+        optional += codex_desktop.catalog_paths()
+    return [sqlite_home / codex.HISTORY_DB, sqlite_home / codex.STATE_DB, *(p for p in optional if _plain(p))]
+
+
+def _plain(path: Path) -> bool:
+    try:
+        return stat.S_ISREG(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
+def _log_ids(found: Orphans) -> set[str]:
+    return set(found.log_rows).union(*found.log_mentions.values())
 
 
 def _items(found: Orphans) -> list[dict]:
@@ -382,7 +503,7 @@ def _items(found: Orphans) -> list[dict]:
         ("queue", "큐 기록", found.queue_rows, {}),
         ("app_list", "ChatGPT 앱 목록에 남은 지운 세션", len(found.catalog_ids), {}),
         ("app_state", "ChatGPT 앱 상태에 남은 지운 세션", len(found.state_ids), {}),
-        ("logs", "로그에 남은 지운 세션", len(found.log_rows), {"lines": sum(found.log_rows.values())}),
+        ("logs", "로그에 남은 지운 세션", len(_log_ids(found)), {"lines": sum(found.log_rows.values()) + len(found.log_mentions)}),
         ("shell_snapshots", "지운 세션의 셸 스냅숏", len(found.snapshot_names), {}),
         ("images", "지운 세션의 생성 이미지", len(found.image_bytes), {"bytes": sum(found.image_bytes.values())}),
     ]
@@ -601,7 +722,7 @@ def _clean(
         if item == "app_state":
             return _drop_state(found.state_ids)
         if item == "logs":
-            return _delete_logs(found.log_rows)
+            return _delete_logs(found.log_rows, found.log_mentions)
         if item == "shell_snapshots":
             return _remove_in(item, SNAPSHOTS_DIR, found.snapshot_names)
         if item == "images":
@@ -694,27 +815,26 @@ def _clear_catalogs(ids: set[str]) -> tuple[dict, list[str]]:
 
 
 def _drop_state(ids: set[str]) -> tuple[dict, list[str]]:
-    """Each of the app's state files without the entries of `ids`, put in
-    place whole (`_replace`); one that holds none, or is left alone
-    (`_read_state`), is not touched. The count is the ids dropped from a
+    """Each of the app's files without the entries of `ids`, put in place
+    whole (`_replace`); one that holds none, or is left alone
+    (`_read_document`), is not touched. The count is the ids dropped from a
     file, kept when a later file fails."""
     changed: set[str] = set()
     try:
-        for name in codex_desktop.STATE_FILES:
-            path = roots.codex_home() / name
-            data = _read_state(path) if ids else None
-            dropped = codex_desktop.state_ids(data, ids.__contains__) if data is not None else set()
+        for doc in _app_documents():
+            data = _read_document(doc) if ids else None
+            dropped = doc.ids(data, ids.__contains__) if data is not None else set()
             if not dropped:
                 continue
-            kept = codex_desktop.dump_state(codex_desktop.without(data, ids))
+            kept = codex_desktop.dump_state(doc.without(data, ids))
             try:
-                _replace(path, [kept], stat.S_IMODE(os.lstat(path).st_mode))
+                _replace(doc.path, [kept], stat.S_IMODE(os.lstat(doc.path).st_mode))
             except OSError:
-                if _holds(path, kept):  # in place; only the folder's sync failed
+                if _holds(doc.path, kept):  # in place; only the folder's sync failed
                     changed |= dropped
                 raise
             changed |= dropped
-    except OSError as e:
+    except (OSError, ValueError) as e:  # UnicodeEncodeError is a ValueError
         return _item("app_state", "failed", len(changed), message=_one_line(e)), sorted(changed)
     return _item("app_state", "done", len(changed)), sorted(changed)
 
@@ -728,23 +848,27 @@ def _holds(path: Path, content: bytes) -> bool:
         return False
 
 
-def _delete_logs(rows: dict[str, int]) -> tuple[dict, list[str]]:
-    """The log rows of the ids, in one transaction; logs that became a link
-    are left alone. The count is the ids that had rows, and `lines` the rows
-    deleted, as the dry run's row counts them."""
-    ids = sorted(rows)
-    deleted: list[str] = []
+def _delete_logs(rows: dict[str, int], mentions: dict[int, set[str]]) -> tuple[dict, list[str]]:
+    """In one transaction, the log rows of the ids, and the thread-less rows
+    whose text names one; logs that became a link are left alone. The count
+    is the ids that had a row deleted, and `lines` the rows, as the dry run
+    counts them."""
+    deleted: set[str] = set()
     lines = 0
     path = roots.codex_sqlite_home() / LOGS_DB
-    if ids and _regular(path):
+    if (rows or mentions) and _regular(path):
         with _writing(path) as con:
             with _transaction(con):
-                for tid in ids:
+                for tid in sorted(rows):
                     count = con.execute("DELETE FROM logs WHERE thread_id = ?", (tid,)).rowcount
                     if count > 0:
-                        deleted.append(tid)
+                        deleted.add(tid)
                         lines += count
-    return _item("logs", "done", len(deleted), lines=lines), deleted
+                for row_id, named in sorted(mentions.items()):
+                    if con.execute("DELETE FROM logs WHERE id = ? AND thread_id IS NULL", (row_id,)).rowcount:
+                        deleted |= named
+                        lines += 1
+    return _item("logs", "done", len(deleted), lines=lines), sorted(deleted)
 
 
 def _remove_in(item: str, folder: str, names: list[str]) -> tuple[dict, list[str]]:

@@ -121,11 +121,13 @@ public enum CleanupRules {
         !selectedIds(preview.items, selection: selection).isEmpty
     }
 
-    /// A pick that leaves free pages for the vacuum: of all the items, only
-    /// the history rows are in a database it rewrites.
+    /// A pick that leaves free pages for the vacuum: the items in a database
+    /// it rewrites (the history, the queue, the logs, the old catalog's rows).
     private static func freesPages(_ preview: CleanupPreview, _ selection: Set<String>) -> Bool {
-        selectedIds(preview.items, selection: selection).contains("history_rows")
+        !Set(selectedIds(preview.items, selection: selection)).isDisjoint(with: vacuumedItems)
     }
+
+    private static let vacuumedItems: Set<String> = ["history_rows", "queue", "logs", "app_list"]
 
     /// `ticked` is the person's own tick, which starts on. Free space makes
     /// the box usable; with none, only a cleaning that will make some does.
