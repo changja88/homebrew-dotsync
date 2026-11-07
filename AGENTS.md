@@ -193,8 +193,11 @@ app with one JSON object; without `--json` it says so and exits 2.
   `dotsync account login` creates for Claude Code, and the lock files and
   result logs of the session commands (`~/Library/Application Support/dotsync/locks/`,
   `~/Library/Logs/dotsync/`).
-- Claude tokens never go on a command line or into output: pass them to
-  `security` on stdin, and read a Keychain entry back after writing it.
+- Claude tokens never go into output. Pass them to `security -i` on stdin;
+  only a login too long for one 4096-byte line of it (MCP servers' OAuth
+  tokens share the entry) goes on `security`'s command line, as Claude Code
+  does, because `security -i` keeps only the start of a longer line. Read a
+  Keychain entry back after writing it.
 - Never create `~/.dotsync`, `~/.config/dotsync`, or any hidden global pointer
   file for application state.
 - Public command names are important: `push` means local app config to sync

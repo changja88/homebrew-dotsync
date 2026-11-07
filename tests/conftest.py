@@ -141,6 +141,9 @@ class FakeAccountsCli:
     """
 
     USER = "tester"
+    # Observed 2026-11-07 on macOS 27.2: `security -i` takes a line of up to
+    # 4096 bytes, newline included.
+    STDIN_LINE_MAX = 4096
     # Recorded 2026-10-04 from `claude -p … get_usage` with an empty,
     # never-logged-in CLAUDE_CONFIG_DIR (exit 0).
     NOT_LOGGED_IN_ANSWER = (
@@ -186,15 +189,22 @@ class FakeAccountsCli:
 
         if cmd[1:] == ["-i"]:
             self.stdin.append(stdin)
-            for line in stdin.splitlines():
+            for line in stdin.splitlines(keepends=True):
+                if len(line.encode()) > self.STDIN_LINE_MAX:
+                    # What the real `security -i` does: it runs the first
+                    # 4096 bytes, unclosed quote and all, and fails on the
+                    # rest as a command of its own.
+                    words = shlex.split(line.encode()[: self.STDIN_LINE_MAX].decode() + '"')
+                    x = words.index("-X") + 1
+                    words[x] = words[x][: len(words[x]) // 2 * 2]
+                    self._add(words)
+                    return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="security: unknown command\n")
                 words = shlex.split(line)
-                if not words:
-                    continue
-                assert words[0] == "add-generic-password" and "-U" in words, line
-                assert words[words.index("-a") + 1] == self.USER
-                service = words[words.index("-s") + 1]
-                if not self.ignore_writes:
-                    self.keychain[service] = bytes.fromhex(words[words.index("-X") + 1]).decode()
+                if words:
+                    self._add(words)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[1] == "add-generic-password":
+            self._add(cmd[1:])
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
         if cmd[1] == "delete-generic-password":
             assert cmd[cmd.index("-a") + 1] == self.USER
@@ -211,6 +221,13 @@ class FakeAccountsCli:
             out = self.keychain[service] + "\n" if "-w" in cmd else f'    "svce"<blob>="{service}"\n'
             return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
         raise AssertionError(f"unexpected security command: {cmd!r}")
+
+    def _add(self, words: list[str]) -> None:
+        assert words[0] == "add-generic-password" and "-U" in words, words
+        assert words[words.index("-a") + 1] == self.USER
+        service = words[words.index("-s") + 1]
+        if not self.ignore_writes:
+            self.keychain[service] = bytes.fromhex(words[words.index("-X") + 1]).decode()
 
     def _claude(self, cmd, env, kwargs):
         import json
@@ -311,8 +328,9 @@ class FakeAccountsCli:
         return subprocess.CompletedProcess(cmd, returncode, stdout=stdout, stderr="")
 
     def argv_text(self) -> str:
-        """Every argument passed on a command line, joined — secrets must
-        never show up here (they would be visible in the process list)."""
+        """Every argument passed on a command line, joined — a secret that
+        fits `security -i` must never show up here (it would be visible in
+        the process list)."""
         return " ".join(" ".join(c) for c in self.calls)
 
 

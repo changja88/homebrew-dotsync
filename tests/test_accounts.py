@@ -255,6 +255,47 @@ def test_use_passes_secrets_on_stdin_not_the_command_line(fake_home, fake_accoun
     assert any("b1-secret".encode().hex() in s for s in cli.stdin)
 
 
+# Claude Code keeps MCP servers' OAuth tokens in the same Keychain entry; with
+# three of them a real login was 2216 bytes, more than one line of
+# `security -i` holds once hex-encoded.
+LONG_LOGIN = "x" * 2216
+
+
+def test_use_hands_back_a_login_too_long_for_one_stdin_line(fake_home, fake_accounts_cli):
+    cli = fake_accounts_cli
+    alice = _saved(fake_home, cli, "alice", ALICE, "a1")
+    _saved(fake_home, cli, "bob", BOB, "b1")
+    _seat(fake_home, cli, ALICE, LONG_LOGIN)
+
+    accounts.use("bob")
+
+    assert cli.keychain[cli.service_for(alice)] == LONG_LOGIN
+    assert cli.keychain[SEAT] == "b1"
+
+
+def test_use_puts_a_login_too_long_for_one_stdin_line_in_the_seat(fake_home, fake_accounts_cli):
+    cli = fake_accounts_cli
+    _saved(fake_home, cli, "alice", ALICE, "a1")
+    _saved(fake_home, cli, "bob", BOB, LONG_LOGIN)
+    _seat(fake_home, cli, ALICE, "a2")
+
+    accounts.use("bob")
+
+    assert cli.keychain[SEAT] == LONG_LOGIN
+
+
+def test_a_login_that_fits_one_stdin_line_stays_off_the_command_line(fake_home, fake_accounts_cli):
+    cli = fake_accounts_cli
+    frame = f'add-generic-password -U -a "{cli.USER}" -s "{SEAT}" -X ""\n'
+    longest = "b" * ((cli.STDIN_LINE_MAX - len(frame)) // 2)
+    _saved(fake_home, cli, "bob", BOB, longest)
+
+    accounts.use("bob")
+
+    assert cli.keychain[SEAT] == longest
+    assert longest.encode().hex() not in cli.argv_text()
+
+
 def test_use_fails_loudly_when_the_keychain_write_does_not_stick(fake_home, fake_accounts_cli):
     cli = fake_accounts_cli
     _saved(fake_home, cli, "bob", BOB, "b1")

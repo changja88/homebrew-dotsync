@@ -40,6 +40,10 @@ _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _RESERVED_NAMES = {"default"}
 # `security find-generic-password` exit status for "no such item".
 _ITEM_NOT_FOUND = 44
+# The longest line `security -i` reads, newline included (macOS 27.2). It runs
+# the first 4096 bytes of a longer line and fails on the rest as a command of
+# its own. A login with MCP servers' OAuth tokens in it can be that long.
+_STDIN_LINE_MAX = 4096
 # How long a command waits for another account command to finish.
 LOCK_WAIT_SECONDS = 60.0
 # The Keychain may ask the person; a date on a screen is not worth waiting for.
@@ -459,12 +463,15 @@ def _delete_secret(service: str) -> None:
 
 
 def _write_secret(service: str, secret: str) -> None:
-    # `security -i` reads the command from stdin, so the secret never shows
-    # up in the process list the way a command-line argument would.
-    command = (
-        f'add-generic-password -U -a "{getpass.getuser()}" -s "{service}" '
-        f'-X "{secret.encode().hex()}"\n'
-    )
-    _security("-i", stdin=command)
+    user, data = getpass.getuser(), secret.encode().hex()
+    command = f'add-generic-password -U -a "{user}" -s "{service}" -X "{data}"\n'
+    if len(command.encode()) <= _STDIN_LINE_MAX:
+        # `security -i` reads the command from stdin, so the secret never
+        # shows up in the process list the way a command-line argument would.
+        _security("-i", stdin=command)
+    else:
+        # Too long for one line of `security -i`: it would keep only the
+        # start. Claude Code passes such a login on the command line too.
+        _security("add-generic-password", "-U", "-a", user, "-s", service, "-X", data)
     if _read_secret(service) != secret:
         raise AccountError(f"could not save the login in the Keychain entry {service!r}")
